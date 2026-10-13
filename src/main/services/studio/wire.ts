@@ -125,7 +125,8 @@ function vfxLab(deps: StudioWireDeps): StudioLab {
       const e = await lab().get(id)
       const frames = markStudioFrames([...studio, ...preview], { studio: studio.length, preview: preview.length })
       const c = await lab().critique(e, e.effect!, frames, times, (e.iterations?.length ?? 0) + 1, null)
-      return { overall: c.overall, summary: c.summary }
+      // A pinned video reference ("make it like this") reaches the critic too; its match score is reported here.
+      return { overall: c.overall, summary: c.match != null ? `${c.summary} Match with the reference: ${c.match.toFixed(1)}/10.` : c.summary }
     },
     setThumb: async (id, file) => {
       const h = await hit(id)
@@ -149,6 +150,7 @@ function animLab(deps: StudioWireDeps): StudioLab {
   return {
     prepare: async (id, jobId) => {
       const e = await lab().get(id)
+      if (e.kind === 'media' || !e.clip) throw new Error(`"${e.name}" is a video reference; there is nothing to play in Studio`)
       return { name: e.name, job: animJob(e.clip, { id: jobId, times: beatFrameTimes(e.clip, 6) }) }
     },
     writeFile: async (id, file, bytes) => (await hit(id)).store.writeFile(id, file, bytes),
@@ -163,7 +165,8 @@ function animLab(deps: StudioWireDeps): StudioLab {
       const e = await lab().get(id)
       const frames = markStudioFrames([...studio, ...preview], { studio: studio.length, preview: preview.length })
       const c = await lab().critique(e, e.clip, frames, times, (e.iterations?.length ?? 0) + 1, null)
-      return { overall: c.overall, summary: c.summary }
+      // A pinned video reference ("make it like this") reaches the critic too; its match score is reported here.
+      return { overall: c.overall, summary: c.match != null ? `${c.summary} Match with the reference: ${c.match.toFixed(1)}/10.` : c.summary }
     },
     setThumb: async (id, file) => {
       const h = await hit(id)

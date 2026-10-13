@@ -8,6 +8,7 @@ import { prop } from './schema.ts'
 import { curveShape, sequenceMax } from './sequence.ts'
 import { flipbookFrames } from './simulate.ts'
 import type { NumberRange, NumberSequence, VfxEntry, VfxRecipe } from './types.ts'
+import { videoHintNote, videoHints } from '../videoref/prompt.ts'
 
 export const RECIPE_PREFIX = 'vfx-recipe-'
 // Tags that are colours or too generic to make a recipe of their own.
@@ -104,6 +105,9 @@ export function extractRecipe(tag: string, entries: VfxEntry[]): VfxRecipe | nul
   if (le && le.median >= 0.6) notes.push(`Mostly additive (LightEmission median ${le.median}); keep smoke layers near 0 so they darken.`)
   if (good.length >= 2 && sortedCounts.length) notes.push(`Typically ${quantile(sortedCounts, 0.5)} emitters (range ${sortedCounts[0]}-${sortedCounts[sortedCounts.length - 1]}).`)
   if (burstEffects / good.length >= 0.5) notes.push('Burst driven: emitters disabled, played with Emit(n) at cue times.')
+  // Video references with this tag feed only their measured timing and palette (marked as such).
+  const video = videoHints(tag, entries)
+  if (video) notes.push(videoHintNote(video, 'vfx'))
   return {
     tag,
     samples: good.length,
@@ -115,7 +119,8 @@ export function extractRecipe(tag: string, entries: VfxEntry[]): VfxRecipe | nul
     burstShare: r(burstEffects / good.length),
     colors: [...colorCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([c]) => c),
     avoid,
-    notes
+    notes,
+    ...(video ? { video } : {})
   }
 }
 

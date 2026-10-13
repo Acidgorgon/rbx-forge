@@ -70,6 +70,8 @@ const methods = [
   'abilityExport', 'abilityExamples', 'abilityAddExample', 'abilityFile', 'abilitySaveThumb', 'abilityChooseSounds', 'abilitySoundUrl',
   // Studio check (Forge Bridge plugin: play in Roblox Studio, capture the key beats)
   'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile',
+  // Video references (VFX Lab + Animation Lab: "make it like this")
+  'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

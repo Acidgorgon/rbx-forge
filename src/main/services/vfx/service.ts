@@ -26,6 +26,9 @@ import type { VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, V
 import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { entryId, PROJECT_VFX_DIR, safeFileName, VfxLibraryError, VfxStore } from './library.ts'
 import { PROCEDURAL_GUIDE, isTexRef, type ExportPlan } from '../../../shared/vfx/tex/textures.ts'
+import { loadPinnedRef, type PinnedRef } from '../videoref/refs.ts'
+import { blendMatch, parseMatch, REF_MATCH_TEXT } from '../../../shared/videoref/prompt.ts'
+import { vfxNumericMatch } from '../../../shared/videoref/match.ts'
 import { luneExtract, luneTimeline, type LuneRun } from './lune.ts'
 
 export interface ImagePayload {
@@ -224,13 +227,14 @@ export class VfxService {
     return scored.slice(0, opts.limit ?? 50).map((x) => x.e)
   }
 
-  async update(id: string, patch: { name?: string; description?: string; tags?: string[]; effect?: VfxEffect }): Promise<VfxEntry> {
+  async update(id: string, patch: { name?: string; description?: string; tags?: string[]; notes?: string; effect?: VfxEffect }): Promise<VfxEntry> {
     const hit = await this.find(id)
     if (!hit) throw new VfxError(`no VFX entry "${id}"`)
     const e: VfxEntry = { ...hit.entry, updatedAt: this.now() }
     if (typeof patch.name === 'string' && patch.name.trim()) e.name = patch.name.trim().slice(0, 80)
     if (typeof patch.description === 'string') e.description = patch.description.slice(0, 2000)
     if (Array.isArray(patch.tags)) e.tags = [...new Set(patch.tags.map((t) => String(t).toLowerCase().trim()).filter(Boolean))].slice(0, 16)
+    if (typeof patch.notes === 'string') e.notes = patch.notes.slice(0, 2000)
     if (patch.effect) {
       e.effect = await this.prepareTextures(patch.effect, hit.store.scope)
       e.stats = effectStats(e.effect)
@@ -532,7 +536,7 @@ export class VfxService {
   }
 
   // Saves an effect as a generated entry (new, or replacing `id`) and writes it into the project.
-  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[] } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
     const spec = { name: raw.name, description: opts.description, tags: opts.tags }
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new VfxError(`no VFX entry "${opts.id}"`)
@@ -551,7 +555,8 @@ export class VfxService {
       updatedAt: now,
       origin: opts.prompt ?? prev?.entry.origin ?? effect.name,
       effect,
-      stats: effectStats(effect)
+      stats: effectStats(effect),
+      ...(opts.refId ? { refId: opts.refId } : {})
     } as VfxEntry
     let saved = await store.save(entry)
     if (this.deps.projectRoot()) saved = await this.writeProjectFiles(saved)
@@ -665,21 +670,45 @@ export class VfxService {
     return out
   }
 
+  // A video reference in this library ("make it like this"): prompt block, critic block, key frames.
+  async pinnedRef(id: string): Promise<PinnedRef> {
+    const hit = await this.find(String(id ?? ''))
+    if (!hit) throw new VfxError(`no video reference "${id}" in the VFX library`)
+    return loadPinnedRef(hit.entry, (f) => hit.store.readFile(hit.entry.id, f))
+  }
+
+  // With a pinned reference, the critic's (or the numbers-only) match is blended into the score.
+  private withMatch(c: VfxCritique, effect: VfxEffect, pinned: PinnedRef, raw?: string): VfxCritique {
+    const fromCritic = raw ? parseMatch(raw) : null
+    const numeric = vfxNumericMatch(effect, pinned.video)
+    const match = fromCritic?.match ?? numeric.match
+    return { ...c, overall: blendMatch(c.overall, match), match, matchNotes: fromCritic?.notes ?? numeric.notes }
+  }
+
   async critique(entry: VfxEntry, effect: VfxEffect, frames: Buffer[], times: number[], iteration: number, previous: VfxCritique | null): Promise<VfxCritique> {
     const tags = entry.tags
     const refs = await this.references(tags, entry.origin, entry.id)
     const recipe = await this.recipeFor(tags)
     const refNames = refs.map((r) => r.name)
+    const pinned = entry.refId ? await this.pinnedRef(entry.refId).catch(() => null) : null
     const vision = this.deps.vision?.('critic')
-    if (!vision) return heuristicCritique(effect, recipe, refNames)
+    if (!vision) {
+      const c = heuristicCritique(effect, recipe, refNames)
+      return pinned ? this.withMatch(c, effect, pinned) : c
+    }
     const prompt = critiquePrompt({ prompt: entry.origin, effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })
-    const images: ImagePayload[] = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...(await this.referenceImages(refs, tags))]
+    // Pinned reference: its key frames follow the rendered frames (compared side by side).
+    const extra = pinned ? pinned.images : await this.referenceImages(refs, tags)
+    const images: ImagePayload[] = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...extra]
+    const note = pinned ? `\n\n${pinned.critique}` : images.length > frames.length ? `\nThe last ${images.length - frames.length} image(s) are reference effects from the library.` : ''
     try {
-      const raw = await vision(CRITIC_SYSTEM, prompt + studioFramesNote(frames) + (images.length > frames.length ? `\nThe last ${images.length - frames.length} image(s) are reference effects from the library.` : ''), images)
-      return parseCritique(raw, effect, refNames)
+      const raw = await vision(pinned ? `${CRITIC_SYSTEM}\n${REF_MATCH_TEXT}` : CRITIC_SYSTEM, prompt + studioFramesNote(frames) + note, images)
+      const c = parseCritique(raw, effect, refNames)
+      return pinned ? this.withMatch(c, effect, pinned, raw) : c
     } catch (e) {
       this.deps.log?.(`vfx: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')
-      return heuristicCritique(effect, recipe, refNames)
+      const c = heuristicCritique(effect, recipe, refNames)
+      return pinned ? this.withMatch(c, effect, pinned) : c
     }
   }
 
@@ -846,8 +875,11 @@ export class VfxService {
   // One step from a request to a scripted multi-stage effect: the model writes the timeline script
   // with the kit (one repair round on errors), else the built-in draft for the request's archetype.
   // Saved as a new entry; refined in the background when frames can be rendered (refine: false skips).
-  async compose(request: string, opts: VfxRefineOptions & { wait?: boolean; refine?: boolean; script?: string } = {}): Promise<VfxScriptResult & { refined?: Promise<unknown> }> {
-    const text = String(request ?? '').trim()
+  // reference: the id of a video reference in this library; its beats, palette, vision summary and key
+  // frames go into the prompt, and the result keeps it pinned (the critic scores the match).
+  async compose(request: string, opts: VfxRefineOptions & { wait?: boolean; refine?: boolean; script?: string; reference?: string } = {}): Promise<VfxScriptResult & { refined?: Promise<unknown> }> {
+    const pinned = opts.reference ? await this.pinnedRef(opts.reference) : null
+    const text = String(request ?? '').trim() || (pinned ? `an effect like the reference video ${pinned.name}` : '')
     if (text.length < 3) throw new VfxError('Describe the effect, e.g. "a fireball that charges, flies forward and explodes".')
     let source: VfxScriptResult['source'] = 'draft'
     let result: VfxScriptResult | null = null
@@ -861,10 +893,11 @@ export class VfxService {
         `Make: ${text}`,
         ...liked.map((e) => `The user liked this related sequence ("${e.origin}"); reuse what fits:\n\`\`\`lua\n${e.effect!.script!.slice(0, 4000)}\n\`\`\``),
         ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : []),
-        ...(await this.textureLines())
+        ...(await this.textureLines()),
+        ...(pinned ? [pinned.compose] : [])
       ]
       try {
-        let raw = await vision(COMPOSE_SYSTEM, lines.join('\n\n'), [])
+        let raw = await vision(COMPOSE_SYSTEM, lines.join('\n\n'), pinned?.images ?? [])
         for (let attempt = 0; attempt < 2; attempt++) {
           const s = extractScript(raw)
           if (!s) throw new Error('no script in the answer')
@@ -877,7 +910,7 @@ export class VfxService {
           }
           if (attempt === 1) throw new Error(r.error?.message ?? 'the script failed')
           const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
-          raw = await vision(COMPOSE_SYSTEM, `${lines.join('\n\n')}\n\nYour script:\n\`\`\`lua\n${s}\`\`\`\nfailed: ${r.error?.message}${where}\nFix it and answer with the whole corrected script.`, [])
+          raw = await vision(COMPOSE_SYSTEM, `${lines.join('\n\n')}\n\nYour script:\n\`\`\`lua\n${s}\`\`\`\nfailed: ${r.error?.message}${where}\nFix it and answer with the whole corrected script.`, pinned?.images ?? [])
         }
       } catch (e) {
         this.deps.log?.(`vfx: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
@@ -893,8 +926,9 @@ export class VfxService {
         throw new VfxError(`could not record the draft timeline: ${result.error?.message}`)
       }
     }
-    const tags = [...new Set([...promptTags(text), 'sequence'])]
-    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})` })
+    const refTags = pinned ? ((await this.find(pinned.id))?.entry.tags ?? []).filter((t) => t !== 'video') : []
+    const tags = [...new Set([...promptTags(text), ...refTags, 'sequence'])]
+    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})`, ...(pinned ? { refId: pinned.id } : {}) })
     await this.ensureChoreographySkill()
     const out: VfxScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source }
     if (opts.refine !== false && this.deps.capture) {

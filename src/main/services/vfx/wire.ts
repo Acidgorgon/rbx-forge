@@ -78,7 +78,7 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     vfxSearch: (q: string) => service.search(String(q ?? ''), { includeAvoid: true }),
     vfxImport: (paths: unknown, s: unknown) => service.import(Array.isArray(paths) ? paths.map(String) : [], scope(s)),
     vfxChooseImport: async () => (deps.chooseImport ? deps.chooseImport() : []),
-    vfxUpdate: (id: string, patch: { name?: string; description?: string; tags?: string[]; effect?: VfxEffect }) => service.update(String(id ?? ''), patch ?? {}),
+    vfxUpdate: (id: string, patch: { name?: string; description?: string; tags?: string[]; notes?: string; effect?: VfxEffect }) => service.update(String(id ?? ''), patch ?? {}),
     vfxDelete: (id: string) => service.remove(String(id ?? '')),
     vfxRate: (id: string, r: unknown) => service.rate(String(id ?? ''), r === 'up' || r === 'down' ? r : null),
     vfxLearn: () => service.learn(),
@@ -96,7 +96,7 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     vfxRunScript: (script: string, opts?: { id?: string; save?: boolean; prompt?: string }) =>
       service.runScript(String(script ?? ''), { id: opts?.id ? String(opts.id) : undefined, save: !!opts?.save, prompt: opts?.prompt ? String(opts.prompt) : undefined }),
     // The background refinement promise stays in main (not serialisable).
-    vfxCompose: async (request: string, opts?: VfxRefineOptions & { refine?: boolean }) => {
+    vfxCompose: async (request: string, opts?: VfxRefineOptions & { refine?: boolean; reference?: string }) => {
       const { refined: _refined, ...r } = await service.compose(String(request ?? ''), { ...(opts ?? {}), wait: false })
       return r
     },

@@ -17,10 +17,13 @@ import { AnimPreview } from './AnimPreview'
 import { AnimScriptPanel } from './AnimScriptPanel'
 import { figureDataUrl } from './figure'
 import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
+import { RefCard, RefCompare, RefDetail } from '../videoref/RefViews'
+import { RefImport } from '../videoref/RefImport'
+import { isRefFile } from '../videoref/decode'
 import '../vfx/vfx.css'
 import './anim.css'
 
-const IMPORT_HINT = '.rbxm · .rbxmx (KeyframeSequence) · .bvh (mocap; FBX: export BVH from Blender) · folders'
+const IMPORT_HINT = '.rbxm · .rbxmx (KeyframeSequence) · .bvh (mocap; FBX: export BVH from Blender) · folders · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['heavy overhead punch', 'quick jab', 'roundhouse kick', 'dodge roll back', 'fireball cast', 'stagger from a hit', 'combat idle']
 const EXAMPLES = [
   { key: 'sign-push', label: 'Sign → palm push' },
@@ -417,7 +420,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
   useEffect(() => setTab(entry.clip.script ? 'script' : 'info'), [entry.id])
 
   const refining = !!progress && progress.phase !== 'done' && progress.phase !== 'error'
-  const refs = useMemo(() => entries.filter((e) => e.id !== entry.id && !bad(e) && e.tags.some((t) => entry.tags.includes(t))).slice(0, 12), [entries, entry])
+  const refs = useMemo(() => entries.filter((e) => e.id !== entry.id && e.kind !== 'media' && !bad(e) && e.tags.some((t) => entry.tags.includes(t))).slice(0, 12), [entries, entry])
   const reference = entry.reference ? entries.find((e) => e.id === entry.reference)?.clip ?? null : null
   const rig = clipRig(entry.clip)
   const other: RigType = rig === 'R6' ? 'R15' : 'R6'
@@ -563,6 +566,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
       {tab === 'script' && <AnimScriptPanel entry={entry} onPreview={setClip} />}
       {tab === 'checks' && <Checks entry={entry} />}
       {tab === 'studio' && <StudioCheckPanel kind="anim" id={entry.id} />}
+      {tab === 'iterations' && entry.refId && <PinnedCompare entry={entry} />}
       {tab === 'iterations' && <Iterations entry={entry} onRestore={(c, n) => void h.animUpdate(entry.id, { clip: c }).then(() => actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'info' && (
         <div className="vfx-info">
@@ -683,6 +687,13 @@ function ImportReview({ rows, scope, onChange, onCancel, onImport, busy, convert
   )
 }
 
+// The best iteration's rendered beats next to the pinned video reference's key frames.
+function PinnedCompare({ entry }: { entry: AnimEntry }) {
+  const its = entry.iterations ?? []
+  const best = its.length ? its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0]) : null
+  return <RefCompare lab="anim" refId={entry.refId!} entryId={entry.id} frames={best?.frames ?? []} times={best?.times} match={best?.critique?.match} matchNotes={best?.critique?.matchNotes} clip={best?.clip ?? entry.clip} iteration={best?.n} />
+}
+
 export function AnimLabPage() {
   const { state, actions } = useStore()
   const h = window.harness
@@ -704,6 +715,9 @@ export function AnimLabPage() {
   const [review, setReview] = useState<ImportRow[] | null>(null)
   const [importRig, setImportRig] = useState<RigType | null>(null)
   const [progress, setProgress] = useState<Record<string, AnimRefineProgress>>({})
+  // Video reference import review (a dropped / picked clip), and the reference pinned to Make.
+  const [refImport, setRefImport] = useState<{ file: File | null } | null>(null)
+  const [pin, setPin] = useState<{ id: string; name: string } | null>(null)
   const rig: RigType = status?.rig ?? 'R15'
   const switchRig = async (r: RigType) => {
     if (r === rig) return
@@ -792,7 +806,11 @@ export function AnimLabPage() {
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setDrag(false)
-    void startImport([...e.dataTransfer.files].map((f) => window.forgeFiles?.pathFor(f) ?? '').filter(Boolean))
+    // Clips and GIFs open the video reference review; animations import as before.
+    const files = [...e.dataTransfer.files]
+    const clip = files.find(isRefFile)
+    if (clip) setRefImport({ file: clip })
+    void startImport(files.filter((f) => !isRefFile(f)).map((f) => window.forgeFiles?.pathFor(f) ?? '').filter(Boolean))
   }
   const learn = async () => {
     setBusy('learning…')
@@ -811,7 +829,7 @@ export function AnimLabPage() {
     if (!what || making) return
     setMaking(true)
     try {
-      const r = await h.animCompose(what, { maxIterations: iters, threshold, scope, rig })
+      const r = await h.animCompose(what, { maxIterations: iters, threshold, scope, rig, ...(pin ? { reference: pin.id } : {}) })
       if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the script did not compile')
       await load()
       setSelected(r.entry.id)
@@ -868,6 +886,9 @@ export function AnimLabPage() {
             <button className="btn" onClick={() => void choose()}>
               <Icon name="upload" size={12} /> Import
             </button>
+            <button className="btn" onClick={() => setRefImport({ file: null })} title="A clip or GIF to animate something like it: trim, crop, analyse beats, holds and fast motion">
+              <Icon name="image" size={12} /> Video ref
+            </button>
             <button className="btn" onClick={() => void learn()} disabled={!entries.length || !!busy} title="Measure style profiles per move type and save them as memory skills">
               <Icon name="memory" size={12} /> Learn
             </button>
@@ -896,6 +917,14 @@ export function AnimLabPage() {
               <span className="vfx-prompt-sigil">›</span> Animate
             </span>
             <input className="input grow" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="a heavy overhead punch with a long windup" aria-label="Animation to make" spellCheck />
+            {pin && (
+              <span className="badge-o hot vfx-make-pin" title="Pinned video reference: Make animates like it">
+                like {pin.name}
+                <button type="button" className="btn small ghost" onClick={() => setPin(null)} aria-label="Unpin the reference">
+                  <Icon name="x" size={10} />
+                </button>
+              </span>
+            )}
             <button className="btn primary" disabled={!prompt.trim() || making}>
               {making ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
             </button>
@@ -992,15 +1021,36 @@ export function AnimLabPage() {
                   </div>
                 )}
                 <div className="vfx-grid">
-                  {shown.map((e) => (
-                    <Card key={e.id} entry={e} selected={e.id === selected} progress={progress[e.id]} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
-                  ))}
+                  {shown.map((e) =>
+                    e.video ? (
+                      <RefCard key={e.id} lab="anim" entry={e} selected={e.id === selected} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
+                    ) : (
+                      <Card key={e.id} entry={e} selected={e.id === selected} progress={progress[e.id]} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
+                    )
+                  )}
                 </div>
               </>
             )}
           </div>
-          {current && <Detail key={current.id} entry={current} entries={entries} progress={progress[current.id]} status={status} onClose={() => setSelected(null)} />}
+          {current &&
+            (current.video ? (
+              <RefDetail key={current.id} lab="anim" entry={current} onClose={() => setSelected(null)} onMade={(id) => void load().then(() => (setSelected(id), setView('library')))} onPin={setPin} />
+            ) : (
+              <Detail key={current.id} entry={current} entries={entries} progress={progress[current.id]} status={status} onClose={() => setSelected(null)} />
+            ))}
         </div>
+        {refImport && (
+          <RefImport
+            lab="anim"
+            scope={scope}
+            file={refImport.file}
+            onClose={() => setRefImport(null)}
+            onSaved={(r) => {
+              setRefImport(null)
+              void load().then(() => (setSelected(r.id), setView('library')))
+            }}
+          />
+        )}
       </div>
     </div>
   )

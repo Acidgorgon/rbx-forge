@@ -4,6 +4,7 @@
 
 import type { AnimMarker } from './types.ts'
 import type { R6Joint } from './r6.ts'
+import type { VideoRef } from '../videoref/types.ts'
 
 export type { R6Joint }
 
@@ -84,7 +85,8 @@ export interface AnimClip {
 }
 
 export type AnimScope = 'user' | 'project'
-export type AnimEntryKind = 'imported' | 'generated'
+// media: a video reference (no keys; its clip is an empty placeholder with the measured beats).
+export type AnimEntryKind = 'imported' | 'generated' | 'media'
 
 export interface AnimEntry {
   id: string
@@ -111,6 +113,10 @@ export interface AnimEntry {
   iterations?: AnimIteration[]
   // Reference clip the preview ghosts against.
   reference?: string
+  // Video references (kind 'media'): the analysed clip (shared/videoref).
+  video?: VideoRef
+  // Generated clips: the video reference pinned with "make it like this" (critic compares to it).
+  refId?: string
 }
 
 // Timing and shape numbers of one clip (style.ts measureClip).
@@ -160,6 +166,8 @@ export interface AnimStyleProfile {
   poses: LearnedPose[]
   notes: string[]
   avoid: string[]
+  // Timing (median seconds per beat) from video references with this tag; never poses.
+  video?: { samples: number; beats: Record<string, number> }
 }
 
 export interface AnimStyle {
@@ -212,6 +220,9 @@ export interface AnimCritique {
   changes: AnimChange[]
   checks?: AnimCheckReport
   references: string[]
+  // With a pinned video reference: 0..10 match (blended into overall) and the biggest difference.
+  match?: number
+  matchNotes?: string
 }
 
 export interface AnimIteration {

@@ -28,6 +28,12 @@ async function boot(): Promise<void> {
     createRoot(document.getElementById('root')!).render(<AnimCapture />)
     return
   }
+  // Offscreen decoder for ref_import: decodes and analyses a video reference (no UI).
+  if (new URLSearchParams(location.search).has('ref-decode')) {
+    const { RefDecode } = await import('./pages/videoref/RefDecode')
+    createRoot(document.getElementById('root')!).render(<RefDecode />)
+    return
+  }
   // Offscreen capture window for the Ability Composer critic: only the ability preview.
   if (new URLSearchParams(location.search).has('ability-capture')) {
     const { AbilityCapture } = await import('./pages/ability/AbilityCapture')

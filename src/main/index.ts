@@ -47,6 +47,9 @@ import { withVfxTools } from './services/vfx/tools.ts'
 import { createAnimWiring } from './services/anim/wire.ts'
 import { animElectronDeps } from './services/anim/electron.ts'
 import { withAnimTools } from './services/anim/tools.ts'
+import { createRefWiring } from './services/videoref/wire.ts'
+import { refElectronDeps } from './services/videoref/electron.ts'
+import { withRefTools } from './services/videoref/tools.ts'
 import { createAbilityWiring } from './services/ability/wire.ts'
 import { abilityElectronDeps } from './services/ability/electron.ts'
 import { withAbilityTools } from './services/ability/tools.ts'
@@ -355,7 +358,7 @@ const ctx: HarnessContext = {
   emit,
   log: (line) => logs.push(line),
 
-  serviceTools: () => ({ ...withStudioTools(withAbilityTools(withAnimTools(withVfxTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), vfx.tools()), anim.tools()), ability.tools()), studio.tools()), chat: terminal.chatTools() }),
+  serviceTools: () => ({ ...withStudioTools(withAbilityTools(withRefTools(withAnimTools(withVfxTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), vfx.tools()), anim.tools()), refs.tools()), ability.tools()), studio.tools()), chat: terminal.chatTools() }),
   notifyTestFailure: (event) => integrations.notifyTestFailure(event)
 }
 
@@ -467,6 +470,19 @@ const anim = createAnimWiring({
 // The user animation library rides along in .forgepack export/import and device sync.
 registerPackSection({ id: 'anim', label: 'Animation library', dir: () => anim.service.userLibraryDir })
 
+// Video references (services/videoref): clips / GIFs decoded in the renderer, analysed in shared code
+// and stored as 'media' entries in the VFX / Animation libraries (so they ride along in the packs
+// above); the vision summary runs on the Labs critic tier.
+const refs = createRefWiring({
+  vfx: vfx.service,
+  anim: anim.service,
+  model: (tier) => (system, prompt, images) => agentIpc.vision(system, prompt, images, { tier }),
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[ref] ${text}` }),
+  chatImage: defaultChatImage,
+  ...refElectronDeps(preloadPath())
+})
+
 // Ability Composer (services/ability): moves that reference VFX Lab effects and Animation Lab clips by
 // id; compose uses vfx_compose / anim_compose from the tool registry when they exist.
 const ability = createAbilityWiring({
@@ -550,7 +566,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 for (const [name, handler] of Object.entries(handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers, ...studio.handlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers, ...studio.handlers, ...refs.handlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }

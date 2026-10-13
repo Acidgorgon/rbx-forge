@@ -8,6 +8,7 @@
 // picks the references, and models (per Labs tier: cheap / default / critic) draft, tag and critique.
 // No electron imports: capture, models, memory and the Open Cloud key come in as functions.
 
+import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import type { AnimClipRef } from '../../../shared/anim/types.ts'
@@ -893,7 +894,7 @@ export class AnimService {
     if (!critic || !frames.length) return heuristicAnimCritique(clip, checks, profile, refNames)
     const prompt = animCritiquePrompt({ request: entry.origin, clip, frameTimes: times, checks, profile, references: refs.map((r) => ({ name: r.name, description: r.description })), iteration, previous })
     try {
-      const raw = await critic(animCriticSystem(rig), prompt, frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })))
+      const raw = await critic(animCriticSystem(rig), prompt + studioFramesNote(frames), frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })))
       return parseAnimCritique(raw, checks, refNames)
     } catch (e) {
       this.deps.log?.(`anim: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')

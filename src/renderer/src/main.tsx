@@ -34,6 +34,12 @@ async function boot(): Promise<void> {
     createRoot(document.getElementById('root')!).render(<AbilityCapture />)
     return
   }
+  // Hidden capture window for the Studio check: the live stream of the Roblox Studio window.
+  if (new URLSearchParams(location.search).has('studio-capture')) {
+    const { StudioCapture } = await import('./pages/studio/StudioCapture')
+    createRoot(document.getElementById('root')!).render(<StudioCapture />)
+    return
+  }
   const { App } = await import('./App')
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

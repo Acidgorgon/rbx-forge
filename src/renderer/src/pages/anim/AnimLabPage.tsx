@@ -16,6 +16,7 @@ import { errorText } from '../../lib/format'
 import { AnimPreview } from './AnimPreview'
 import { AnimScriptPanel } from './AnimScriptPanel'
 import { figureDataUrl } from './figure'
+import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
 import '../vfx/vfx.css'
 import './anim.css'
 
@@ -405,7 +406,7 @@ function Checks({ entry }: { entry: AnimEntry }) {
 function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntry; entries: AnimEntry[]; progress?: AnimRefineProgress; status: AnimLabStatus | null; onClose: () => void }) {
   const { actions } = useStore()
   const h = window.harness
-  const [tab, setTab] = useState<'script' | 'checks' | 'iterations' | 'info'>(entry.clip.script ? 'script' : 'info')
+  const [tab, setTab] = useState<'script' | 'checks' | 'iterations' | 'studio' | 'info'>(entry.clip.script ? 'script' : 'info')
   const [clip, setClip] = useState<AnimClip>(entry.clip)
   const [notes, setNotes] = useState(entry.notes)
   const [busy, setBusy] = useState<string | null>(null)
@@ -506,6 +507,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
             <Icon name="restart" size={11} /> Refine
           </button>
         )}
+        <StudioCheckButton kind="anim" id={entry.id} onShow={() => setTab('studio')} />
         <button className="btn small" onClick={() => void exportIt()} disabled={!status?.projectRoot || !!busy} title="Write src/shared/Animations/<Name>/init.luau + Sequence.rbxmx and copy a command-bar line">
           {busy === 'Export' ? <span className="spinner" aria-hidden /> : <Icon name="studio" size={11} />} Export
         </button>
@@ -549,7 +551,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
       </p>
 
       <div className="seg vfx-tabs" role="tablist">
-        {(['script', 'checks', 'iterations', 'info'] as const).map((k) => (
+        {(['script', 'checks', 'iterations', 'studio', 'info'] as const).map((k) => (
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
             {k}
             {k === 'iterations' && entry.iterations?.length ? ` · ${entry.iterations.length}` : ''}
@@ -560,6 +562,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
 
       {tab === 'script' && <AnimScriptPanel entry={entry} onPreview={setClip} />}
       {tab === 'checks' && <Checks entry={entry} />}
+      {tab === 'studio' && <StudioCheckPanel kind="anim" id={entry.id} />}
       {tab === 'iterations' && <Iterations entry={entry} onRestore={(c, n) => void h.animUpdate(entry.id, { clip: c }).then(() => actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'info' && (
         <div className="vfx-info">

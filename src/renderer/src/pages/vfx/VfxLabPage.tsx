@@ -12,6 +12,7 @@ import { errorText } from '../../lib/format'
 import { VfxPreview } from './VfxPreview'
 import { ParamEditor } from './ParamEditor'
 import { ScriptPanel } from './ScriptPanel'
+import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
 import './vfx.css'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg/gif · mp4/webm'
@@ -152,7 +153,7 @@ function Media({ entry }: { entry: VfxEntry }) {
 function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progress?: VfxRefineProgress; recipes: VfxRecipe[]; onClose: () => void }) {
   const { actions } = useStore()
   const h = window.harness
-  const [tab, setTab] = useState<'params' | 'script' | 'iterations' | 'info'>(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info')
+  const [tab, setTab] = useState<'params' | 'script' | 'iterations' | 'studio' | 'info'>(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info')
   const [draft, setDraft] = useState<VfxEffect | undefined>(entry.effect)
   const [saving, setSaving] = useState(false)
   const [tags, setTags] = useState(entry.tags.join(', '))
@@ -270,6 +271,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
               <Icon name="restart" size={11} /> Refine
             </button>
           )}
+          <StudioCheckButton kind="vfx" id={entry.id} before={flush} onShow={() => setTab('studio')} />
           <button className="btn small" onClick={() => void studio()} title="Write src/shared/VFX/<Name>, sync with Rojo, copy a command-bar line">
             <Icon name="studio" size={11} /> Test in Studio
           </button>
@@ -307,6 +309,11 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
             iterations{entry.iterations?.length ? ` · ${entry.iterations.length}` : ''}
           </button>
         )}
+        {draft && (
+          <button role="tab" aria-selected={tab === 'studio'} className={tab === 'studio' ? 'on' : ''} onClick={() => setTab('studio')} title="Studio check: the effect played in Roblox Studio, next to the preview">
+            studio
+          </button>
+        )}
         <button role="tab" aria-selected={tab === 'info'} className={tab === 'info' ? 'on' : ''} onClick={() => setTab('info')}>
           info
         </button>
@@ -314,6 +321,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
 
       {tab === 'params' && draft && <ParamEditor effect={draft} onChange={edit} />}
       {tab === 'script' && draft && <ScriptPanel entry={entry} effect={draft} onPreview={setDraft} />}
+      {tab === 'studio' && draft && <StudioCheckPanel kind="vfx" id={entry.id} before={flush} />}
       {tab === 'iterations' && draft && <Iterations entry={entry} onRestore={(e, n) => (edit(e), actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'info' && (
         <div className="vfx-info">

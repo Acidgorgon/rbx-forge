@@ -31,6 +31,7 @@ import { uiPreviewMock, uiPreviewMockSources } from './mockUiPreview'
 import { vfxMock } from './mockVfx'
 import { animMock } from './mockAnim'
 import { abilityMock } from './mockAbility'
+import { studioMock } from './mockStudio'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -872,6 +873,8 @@ const api: HarnessApi = {
   // Animation Lab (mockAnim.ts): built-in examples and imported-looking clips from the shared code.
   ...animMock(emit),
   ...abilityMock(emit),
+  // Studio check (mockStudio.ts): fake Forge Bridge + SVG Studio frames; ?studio=ready|offline|noplugin|outdated|nocapture.
+  ...studioMock(emit),
 
   on(event, handler) {
     let set = listeners.get(event)

@@ -3,6 +3,7 @@
 // (client Luau module + AbilityRunner). No electron imports: rendering, the model, the VFX Lab, the
 // Animation Lab and the tool registry come in as functions.
 
+import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { extname, join, resolve, sep } from 'node:path'
 import type { AnimClipRef } from '../../../shared/anim/types.ts'
@@ -151,7 +152,7 @@ export class AbilityService {
     return [...(p ? await p.list() : []), ...(await this.user.list())]
   }
 
-  private async find(id: string): Promise<{ entry: AbilityEntry; store: AbilityStore } | null> {
+  async find(id: string): Promise<{ entry: AbilityEntry; store: AbilityStore } | null> {
     for (const s of [this.project(), this.user]) {
       if (!s) continue
       const e = await s.read(id).catch(() => null)
@@ -423,7 +424,7 @@ export class AbilityService {
 
   // ------------------------------------------------------------ critique
 
-  async critique(id: string, opts: { vision?: boolean; apply?: boolean } = {}): Promise<{ entry: AbilityEntry; critique: AbilityCritique; applied: string[] }> {
+  async critique(id: string, opts: { vision?: boolean; apply?: boolean; frames?: Buffer[] } = {}): Promise<{ entry: AbilityEntry; critique: AbilityCritique; applied: string[] }> {
     const hit = await this.find(id)
     if (!hit) throw new AbilityServiceError(`no ability "${id}"`)
     const ability = hit.entry.ability
@@ -433,15 +434,16 @@ export class AbilityService {
     const frames: string[] = []
     let vision: AbilityCritique['vision']
     const model = opts.vision === false ? null : this.deps.model?.('critic')
-    if (model && this.deps.capture) {
+    if (model && (this.deps.capture || opts.frames?.length)) {
       try {
-        const pngs = await this.deps.capture({ ability, effects, times: beats.map((b) => b.t), ...FRAME_SIZE })
+        // Studio check frames (studio/...) come in ready-made; otherwise render the beats.
+        const pngs = opts.frames?.length ? opts.frames : await this.deps.capture!({ ability, effects, times: beats.map((b) => b.t), ...FRAME_SIZE })
         for (const [i, png] of pngs.entries()) {
           const f = `frames/critique-${i + 1}.png`
           await hit.store.writeFile(id, f, png)
           frames.push(f)
         }
-        const raw = await model(ABILITY_CRITIC_SYSTEM, critiquePrompt({ request: hit.entry.origin, timeline: timelineText(ability, ctx), checks, beats }), pngs.map((p) => ({ mime: 'image/png', base64: p.toString('base64') })))
+        const raw = await model(ABILITY_CRITIC_SYSTEM, critiquePrompt({ request: hit.entry.origin, timeline: timelineText(ability, ctx), checks, beats }) + studioFramesNote(pngs), pngs.map((p) => ({ mime: 'image/png', base64: p.toString('base64') })))
         vision = parseVisionCritique(raw)
       } catch (e) {
         this.deps.log?.(`ability: vision critique unavailable (${(e as Error).message}); timing rules only`, 'stderr')

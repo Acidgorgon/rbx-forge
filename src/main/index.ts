@@ -50,6 +50,9 @@ import { withAnimTools } from './services/anim/tools.ts'
 import { createAbilityWiring } from './services/ability/wire.ts'
 import { abilityElectronDeps } from './services/ability/electron.ts'
 import { withAbilityTools } from './services/ability/tools.ts'
+import { createStudioWiring } from './services/studio/wire.ts'
+import { studioElectronDeps } from './services/studio/electron.ts'
+import { withStudioTools } from './services/studio/tools.ts'
 import { defaultChatImage } from './services/art/wire.ts'
 
 // Name and data folder. The data folder stays "rbx-forge" (what development builds have always
@@ -352,7 +355,7 @@ const ctx: HarnessContext = {
   emit,
   log: (line) => logs.push(line),
 
-  serviceTools: () => ({ ...withAbilityTools(withAnimTools(withVfxTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), vfx.tools()), anim.tools()), ability.tools()), chat: terminal.chatTools() }),
+  serviceTools: () => ({ ...withStudioTools(withAbilityTools(withAnimTools(withVfxTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), vfx.tools()), anim.tools()), ability.tools()), studio.tools()), chat: terminal.chatTools() }),
   notifyTestFailure: (event) => integrations.notifyTestFailure(event)
 }
 
@@ -406,6 +409,23 @@ const updater = wireUpdater({
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text })
 })
 
+// Studio check (services/studio): the Forge Bridge plugin plays lab items in the user's Roblox Studio
+// and Forge records the Studio window at the key beats. Created before the labs because their render
+// step goes through it ("critique in Studio when connected"); it reaches the labs lazily.
+const vfxElectron = vfxElectronDeps(preloadPath())
+const animElectron = animElectronDeps(preloadPath())
+const abilityElectron = abilityElectronDeps(preloadPath())
+const studio = createStudioWiring({
+  settings,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[studio] ${text}` }),
+  labs: () => ({ vfx: vfx.service, anim: anim.service, ability: ability.service }),
+  previews: { vfx: vfxElectron.capture, anim: animElectron.capture, ability: abilityElectron.capture },
+  rojo: () => (supervisor.statuses().some((s) => s.id === 'rojo' && (s.state === 'running' || s.state === 'starting')) ? 'running' : 'stopped'),
+  chatImage: defaultChatImage,
+  ...studioElectronDeps(preloadPath())
+})
+
 // VFX Lab (services/vfx): reference library, recipes as memory skills, offscreen three.js renders and
 // the render / critique / refine loop (critique on the default model through the agent layer).
 const vfx = createVfxWiring({
@@ -421,7 +441,8 @@ const vfx = createVfxWiring({
     start: () => supervisor.start('rojo')
   },
   chatImage: defaultChatImage,
-  ...vfxElectronDeps(preloadPath())
+  ...vfxElectron,
+  capture: studio.wrap.vfx(vfxElectron.capture)
 })
 // The user VFX library rides along in .forgepack export/import and device sync (one folder per entry).
 registerPackSection({ id: 'vfx', label: 'VFX library', dir: () => vfx.service.userLibraryDir })
@@ -437,7 +458,8 @@ const anim = createAnimWiring({
   memory,
   model: (tier) => (system, prompt, images) => agentIpc.vision(system, prompt, images, { tier }),
   openCloud: integrations.openCloud,
-  ...animElectronDeps(preloadPath())
+  ...animElectron,
+  capture: studio.wrap.anim(animElectron.capture)
 })
 // The user animation library rides along in .forgepack export/import and device sync.
 registerPackSection({ id: 'anim', label: 'Animation library', dir: () => anim.service.userLibraryDir })
@@ -458,7 +480,8 @@ const ability = createAbilityWiring({
     return sets ? [...sets.read, ...sets.write] : []
   },
   lune: async () => (await vfx.service.status()).lune.available,
-  ...abilityElectronDeps(preloadPath())
+  ...abilityElectron,
+  capture: studio.wrap.ability(abilityElectron.capture)
 })
 registerPackSection({ id: 'abilities', label: 'Ability library', dir: () => ability.service.userLibraryDir })
 
@@ -524,7 +547,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 for (const [name, handler] of Object.entries(handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers, ...studio.handlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
@@ -599,6 +622,7 @@ app.whenReady().then(async () => {
   })
   updater.start()
   brainSync.start()
+  void studio.start()
   const last = settings.lastProject()
   if (last && isProjectDir(last)) {
     await openProject(last).catch((error) => harnessLog(`reopen ${last}: ${error}`, 'stderr'))
@@ -623,6 +647,7 @@ app.on('before-quit', (event) => {
   updater.dispose()
   vfx.service.dispose()
   anim.service.dispose()
+  void studio.dispose()
   lsp.dispose()
   closeProject()
     .catch(() => undefined)

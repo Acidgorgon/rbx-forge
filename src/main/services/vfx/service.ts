@@ -23,6 +23,7 @@ import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeSkill } from '../../../shared/vfx/recipes.ts'
 import { compactEffect, effectFromSpec, safeName, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
 import type { VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
+import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { entryId, PROJECT_VFX_DIR, safeFileName, VfxLibraryError, VfxStore } from './library.ts'
 import { luneExtract, luneTimeline, type LuneRun } from './lune.ts'
 
@@ -640,7 +641,7 @@ export class VfxService {
     const prompt = critiquePrompt({ prompt: entry.origin, effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })
     const images: ImagePayload[] = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...(await this.referenceImages(refs, tags))]
     try {
-      const raw = await vision(CRITIC_SYSTEM, prompt + (images.length > frames.length ? `\nThe last ${images.length - frames.length} image(s) are reference effects from the library.` : ''), images)
+      const raw = await vision(CRITIC_SYSTEM, prompt + studioFramesNote(frames) + (images.length > frames.length ? `\nThe last ${images.length - frames.length} image(s) are reference effects from the library.` : ''), images)
       return parseCritique(raw, effect, refNames)
     } catch (e) {
       this.deps.log?.(`vfx: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')

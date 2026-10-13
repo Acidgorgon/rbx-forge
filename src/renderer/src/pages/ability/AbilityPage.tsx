@@ -13,6 +13,7 @@ import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { AbilityPreview } from './AbilityPreview'
 import { Inspector } from './Inspector'
+import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
 import '../vfx/vfx.css'
 import './ability.css'
 
@@ -190,7 +191,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
   const h = window.harness
   const [draft, setDraft] = useState<Ability>(entry.ability)
   const [selected, setSelected] = useState<string | null>(null)
-  const [tab, setTab] = useState<'edit' | 'critique' | 'export' | 'info'>('edit')
+  const [tab, setTab] = useState<'edit' | 'critique' | 'studio' | 'export' | 'info'>('edit')
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<'critique' | 'export' | null>(null)
   const [exported, setExported] = useState<AbilityExportResult | null>(null)
@@ -319,6 +320,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
         <button className="btn small primary" onClick={() => void critique(false)} disabled={!!busy}>
           {busy === 'critique' ? <span className="spinner" aria-hidden /> : <Icon name="eye" size={11} />} Critique
         </button>
+        <StudioCheckButton kind="ability" id={entry.id} before={flush} onShow={() => setTab('studio')} />
         <button className="btn small" onClick={() => void doExport()} disabled={!!busy || !status?.projectRoot} title={status?.projectRoot ? 'Write the client module and AbilityRunner into the game' : 'Open a project to export'}>
           <Icon name="code" size={11} /> Export
         </button>
@@ -335,7 +337,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
       </div>
 
       <div className="seg vfx-tabs" role="tablist">
-        {(['edit', 'critique', 'export', 'info'] as const).map((k) => (
+        {(['edit', 'critique', 'studio', 'export', 'info'] as const).map((k) => (
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
             {k}
             {k === 'critique' && entry.critique ? ` · ${entry.critique.overall.toFixed(1)}` : ''}
@@ -345,6 +347,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
 
       {tab === 'edit' && <Inspector ability={draft} selected={selected} t={0} vfxEntries={vfxEntries} onChange={edit} onSelect={setSelected} />}
       {tab === 'critique' && <CritiquePanel entry={entry} ability={draft} busy={busy === 'critique'} onCritique={(apply) => void critique(apply)} ctx={ctx} />}
+      {tab === 'studio' && <StudioCheckPanel kind="ability" id={entry.id} before={flush} />}
       {tab === 'export' && <ExportPanel entry={entry} status={status} onExport={() => void doExport()} result={exported} busy={busy === 'export'} />}
       {tab === 'info' && (
         <div className="vfx-info">

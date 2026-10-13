@@ -441,11 +441,14 @@ const vfx = createVfxWiring({
     start: () => supervisor.start('rojo')
   },
   chatImage: defaultChatImage,
+  images: integrations.images,
+  openCloud: integrations.openCloud,
   ...vfxElectron,
   capture: studio.wrap.vfx(vfxElectron.capture)
 })
 // The user VFX library rides along in .forgepack export/import and device sync (one folder per entry).
 registerPackSection({ id: 'vfx', label: 'VFX library', dir: () => vfx.service.userLibraryDir })
+registerPackSection({ id: 'vfx-textures', label: 'VFX textures', dir: () => vfx.textures.userLibraryDir })
 
 // Animation Lab (services/anim): clip library, style profiles as memory skills, timeline scripts and
 // the render / critique / refine loop. Models per Labs tier (Settings > Labs) through the agent layer.

@@ -22,6 +22,8 @@ import type { BrainSyncApi, BrainSyncEvents } from './brainSyncTypes.ts'
 export type * from './brainSyncTypes.ts'
 import type { VfxApi, VfxEvents } from './vfxTypes.ts'
 export type * from './vfxTypes.ts'
+import type { VfxTextureApi, VfxTextureEvents } from './vfxTextureTypes.ts'
+export type * from './vfxTextureTypes.ts'
 import type { AnimApi, AnimEvents } from './animTypes.ts'
 export type * from './animTypes.ts'
 import type { AbilityApi, AbilityEvents } from './abilityTypes.ts'
@@ -449,7 +451,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, AnimEvents, AbilityEvents, StudioEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -474,7 +476,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, AnimApi, AbilityApi, StudioApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

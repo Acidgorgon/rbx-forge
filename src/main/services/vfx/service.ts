@@ -25,6 +25,7 @@ import { compactEffect, effectFromSpec, safeName, SpecError, type VfxSpec } from
 import type { VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
 import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { entryId, PROJECT_VFX_DIR, safeFileName, VfxLibraryError, VfxStore } from './library.ts'
+import { PROCEDURAL_GUIDE, isTexRef, type ExportPlan } from '../../../shared/vfx/tex/textures.ts'
 import { luneExtract, luneTimeline, type LuneRun } from './lune.ts'
 
 export interface ImagePayload {
@@ -62,6 +63,16 @@ export interface VfxServiceDeps {
   emit?: (event: 'vfx:changed' | 'vfx:progress', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   now?: () => number
+  // Custom textures (textures/service.ts): forgetex:// previews, gen-ref materialisation on save,
+  // the rbxassetid swap when effects are written to the project, and the list for prompts.
+  textures?: VfxTextureHooks
+}
+
+export interface VfxTextureHooks {
+  resolve(ref: string): Promise<string | null>
+  prepareEffect(effect: VfxEffect, scope?: VfxScope): Promise<VfxEffect>
+  exportEffect(effect: VfxEffect): Promise<ExportPlan>
+  promptList(limit?: number): Promise<string[]>
 }
 
 const MODEL_EXT = new Set(['.rbxm', '.rbxmx'])
@@ -81,7 +92,8 @@ export function frameTimes(duration: number, n: number): number[] {
 const DRAFT_SYSTEM = `You write Roblox VFX as a JSON spec for the RBX Forge VFX Lab. Answer with JSON only, no prose.
 Spec: {"name","description","tags":[...],"duration":seconds,"motion":"static|swing|orbit|dash|rise","anchor":[x,y,z] (studs from the dummy's feet; it faces -Z),
 "layers":[{"name","class":"ParticleEmitter|Beam|Trail|PointLight|SpotLight|Highlight","props":{Roblox property: value},"emit":[{"at":s,"count":n}],"enable":[[from,to]],"shape":{"size":[x,y,z]},"width":studs (Trail),"from":[x,y,z],"to":[x,y,z] (Beam)}]}
-Values: numbers; ranges [min,max]; vectors [x,y,z]; NumberSequence [[t,v],[t,v,envelope]]; ColorSequence ["#hex",...] or [[t,"#hex"],...]; enums by item name ("Top", "VelocityParallel", "Grid4x4", "OneShot"); Texture "rbxassetid://<id>".
+Values: numbers; ranges [min,max]; vectors [x,y,z]; NumberSequence [[t,v],[t,v,envelope]]; ColorSequence ["#hex",...] or [[t,"#hex"],...]; enums by item name ("Top", "VelocityParallel", "Grid4x4", "OneShot"); Texture "rbxassetid://<id>" or "forgetex://...".
+${PROCEDURAL_GUIDE}
 Good Roblox VFX are layered (bright additive core, soft glow, fast sparks with VelocityParallel + Squash, low-LightEmission smoke, a ring), sizes swell fast then decay, transparency fades to 1, bursts are emitters with emit cues, and stay under ~400 live particles.`
 
 // System prompt for vfx_compose: the model writes a whole multi-stage effect as a timeline script.
@@ -91,11 +103,14 @@ ${'$'}{API}
 
 ${'$'}{GUIDE}
 
+${'$'}{TEXTURES}
+
 A complete example (a charge-and-slash):
 \`\`\`lua
 ${'$'}{EXAMPLE}\`\`\``
   .replace('${API}', kitReference())
   .replace('${GUIDE}', CHOREOGRAPHY_GUIDE)
+  .replace('${TEXTURES}', `${PROCEDURAL_GUIDE} When none of the built-in textures fits a layer (a ring that should be a ring, smoke that should be a puff, a crack, a slash crescent), pass texture = "forgetex://gen/<type>" in the spawn options; prefer the user's liked library textures when they fit.`)
   .replace('${EXAMPLE}', CHARGE_SLASH)
 
 const EMPTY_BASE = (name: string): VfxEffect => ({ name, roots: [], cues: [], duration: 2 })
@@ -217,8 +232,8 @@ export class VfxService {
     if (typeof patch.description === 'string') e.description = patch.description.slice(0, 2000)
     if (Array.isArray(patch.tags)) e.tags = [...new Set(patch.tags.map((t) => String(t).toLowerCase().trim()).filter(Boolean))].slice(0, 16)
     if (patch.effect) {
-      e.effect = patch.effect
-      e.stats = effectStats(patch.effect)
+      e.effect = await this.prepareTextures(patch.effect, hit.store.scope)
+      e.stats = effectStats(e.effect)
     }
     const saved = await hit.store.save(e)
     // Live edits of a generated effect write back to its Luau module and .rbxmx.
@@ -517,11 +532,12 @@ export class VfxService {
   }
 
   // Saves an effect as a generated entry (new, or replacing `id`) and writes it into the project.
-  async saveEffect(effect: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[] } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
-    const spec = { name: effect.name, description: opts.description, tags: opts.tags }
+  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[] } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+    const spec = { name: raw.name, description: opts.description, tags: opts.tags }
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new VfxError(`no VFX entry "${opts.id}"`)
     const store = prev?.store ?? this.project() ?? this.user
+    const effect = await this.prepareTextures(raw, store.scope)
     const now = this.now()
     const tags = [...new Set([...(spec.tags ?? []).map((t) => String(t).toLowerCase()), ...autoTags(effect, opts.prompt ?? '')])].slice(0, 10)
     const entry: VfxEntry = {
@@ -557,15 +573,33 @@ export class VfxService {
     const abs = resolve(root, dir)
     if (!abs.startsWith(resolve(root) + sep)) throw new VfxError('effect path escapes the project')
     await mkdir(abs, { recursive: true })
-    await writeFile(join(abs, 'init.luau'), luauModule(entry.effect, { description: entry.description }), 'utf8')
-    await writeFile(join(abs, 'Effect.rbxmx'), writeRbxmx(entry.effect.roots), 'utf8')
+    // Custom textures: forgetex:// -> rbxassetid:// (uploaded) or a built-in fallback (not yet).
+    const fx = await this.exportTextures(entry.effect)
+    await writeFile(join(abs, 'init.luau'), luauModule(fx, { description: entry.description }), 'utf8')
+    await writeFile(join(abs, 'Effect.rbxmx'), writeRbxmx(fx.roots), 'utf8')
     const timelineFile = join(abs, 'Timeline.luau')
-    if (entry.effect.script) await writeFile(timelineFile, timelineModule(entry.effect.script), 'utf8')
+    if (fx.script) await writeFile(timelineFile, timelineModule(fx.script), 'utf8')
     else if (await exists(timelineFile)) await writeFile(timelineFile, '-- No timeline script (the effect plays its compiled cues).\nreturn nil\n', 'utf8')
-    if (needsRuntime(entry.effect)) await this.writeRuntime(root)
+    if (needsRuntime(fx)) await this.writeRuntime(root)
     const written = { module: `${dir}/init.luau`, model: `${dir}/Effect.rbxmx` }
     if (entry.written?.module === written.module) return entry
     return store.save({ ...entry, written })
+  }
+
+  private async prepareTextures(effect: VfxEffect, scope?: VfxScope): Promise<VfxEffect> {
+    if (!this.deps.textures) return effect
+    return this.deps.textures.prepareEffect(effect, scope).catch((e) => {
+      this.deps.log?.(`vfx: textures: ${(e as Error).message}`, 'stderr')
+      return effect
+    })
+  }
+
+  // The effect with custom texture references swapped for what Roblox can load.
+  async exportTextures(effect: VfxEffect): Promise<VfxEffect> {
+    if (!this.deps.textures) return effect
+    const plan = await this.deps.textures.exportEffect(effect)
+    for (const f of plan.fallbacks) this.deps.log?.(`vfx: ${f.ref} ${f.reason}; wrote ${f.to} instead (upload it in the VFX Lab textures tab)`, 'info')
+    return plan.effect
   }
 
   // src/shared/VFX/ForgeFX.luau, the runtime scripted effects require. Rewritten when it is ours (starts
@@ -711,10 +745,11 @@ export class VfxService {
       // Keep the best iteration as the effect.
       const current = (await hit.store.read(id)) ?? hit.entry
       const bestFrames = result.best.frames
+      const bestEffect = await this.prepareTextures(result.best.effect, hit.store.scope)
       let entry = await hit.store.save({
         ...current,
-        effect: result.best.effect,
-        stats: effectStats(result.best.effect),
+        effect: bestEffect,
+        stats: effectStats(bestEffect),
         thumbs: [bestFrames[Math.min(bestFrames.length - 1, 1)] ?? bestFrames[0], ...current.thumbs.filter((t) => !t.startsWith('frames/'))].filter(Boolean).slice(0, 6),
         updatedAt: this.now()
       })
@@ -745,6 +780,7 @@ export class VfxService {
       recipe ? `Learned recipe "${recipe.tag}": ${JSON.stringify({ layers: recipe.layers, ranges: recipe.ranges, notes: recipe.notes, avoid: recipe.avoid }).slice(0, 4000)}` : 'No learned recipe for this type yet.',
       ...refs.map((r) => `Reference "${r.name}": ${JSON.stringify(compactEffect(r.effect!)).slice(0, 2500)}`),
       `Library textures by role (use these ids; never invent asset ids): ${JSON.stringify(libraryTextures(entries))}`,
+      ...(await this.textureLines()),
       `A starting draft you may improve: ${JSON.stringify(fallback)}`
     ]
     try {
@@ -824,7 +860,8 @@ export class VfxService {
       const lines = [
         `Make: ${text}`,
         ...liked.map((e) => `The user liked this related sequence ("${e.origin}"); reuse what fits:\n\`\`\`lua\n${e.effect!.script!.slice(0, 4000)}\n\`\`\``),
-        ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : [])
+        ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : []),
+        ...(await this.textureLines())
       ]
       try {
         let raw = await vision(COMPOSE_SYSTEM, lines.join('\n\n'), [])
@@ -900,11 +937,18 @@ export class VfxService {
 
   // ------------------------------------------------------------ textures
 
+  private async textureLines(): Promise<string[]> {
+    const list = (await this.deps.textures?.promptList(10).catch(() => [])) ?? []
+    return list.length ? [`Custom textures in the user's library (forgetex:// refs; liked ones first):\n${list.join('\n')}`] : []
+  }
+
   // rbxassetid:// -> PNG data URL via the public thumbnails API (no auth); a local file path (Art
   // page images, project-relative or absolute) -> its bytes. null = use a placeholder.
   resolveTexture(ref: string): Promise<string | null> {
     const key = String(ref ?? '').trim()
     if (!key) return Promise.resolve(null)
+    // Custom textures: always read fresh (the library file can change); gen refs cache themselves.
+    if (isTexRef(key)) return this.deps.textures ? this.deps.textures.resolve(key).catch(() => null) : Promise.resolve(null)
     let p = this.textureCache.get(key)
     if (!p) {
       p = this.loadTexture(key).catch(() => null)

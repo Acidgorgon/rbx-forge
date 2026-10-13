@@ -1,0 +1,84 @@
+/* VFX Lab textures: generator, texture library grid, detail, picker in the params tab. Terminal tokens
+   only; texture images sit on near-black in both themes (they are drawn additively, like the scene). */
+.vfx-view { align-self: flex-start; margin-top: 14px; }
+.vfx-view button { flex: none; padding: 0 10px; }
+.tex-lab { display: flex; flex-direction: column; gap: 0; margin-top: 12px; }
+.tex-lab .vfx-body { margin-top: 12px; }
+
+/* Generator */
+.tex-gen { display: flex; flex-direction: column; gap: 10px; }
+.tex-gen-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.tex-gen-row .seg button { flex: none; padding: 0 8px; }
+.tex-gen-row .input { height: 28px; font-size: 12px; }
+.tex-gen-row select.input { width: auto; }
+.tex-gen-row .input.grow { min-width: 180px; }
+.tex-types button { font-family: var(--font-mono); }
+.tex-gen-body { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 14px; }
+.tex-live { flex: none; width: 160px; aspect-ratio: 1; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--r-md); background: #0c0c0e; overflow: hidden; }
+.tex-live img { width: 100%; height: 100%; object-fit: contain; display: block; image-rendering: auto; }
+.tex-opts { flex: 1; min-width: 240px; display: flex; flex-direction: column; gap: 6px; }
+.tex-param { display: grid; grid-template-columns: 96px minmax(60px, 1fr) 48px; align-items: center; gap: 8px; font-size: 11px; }
+.tex-param input[type='range'] { width: 100%; accent-color: var(--ember); }
+.tex-val { font-size: 11px; color: var(--fg-2); text-align: right; }
+.tex-seed { height: 22px; width: 100%; font-size: 11px; }
+.tex-opt-row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 11px; }
+.tex-opt-row > .faint { width: 52px; }
+.tex-opt-row .seg button { flex: none; padding: 0 8px; }
+.tex-tint-help { margin: 0; font-size: 11px; line-height: 1.5; max-width: 640px; }
+.tex-gen-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.tex-gen-foot select.input { height: 26px; width: auto; font-size: 11.5px; }
+.tex-gen-foot .note.err, .tex-hint.err { color: var(--err); }
+
+/* Library grid */
+.tex-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap: 10px; }
+.has-detail .tex-grid { grid-template-columns: repeat(auto-fill, minmax(104px, 1fr)); }
+.tex-card { display: flex; flex-direction: column; width: 100%; text-align: left; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-panel); overflow: hidden; transition: border-color var(--dur-fast); }
+.tex-card:hover { border-color: var(--line-strong); }
+.tex-card.on { border-color: var(--ember-lo); box-shadow: 0 0 0 1px var(--ember-lo); }
+.tex-card:focus-visible { outline: none; border-color: var(--line-focus); }
+.tex-thumb { aspect-ratio: 1; display: grid; place-items: center; background: #0c0c0e; border-bottom: 1px solid var(--line); overflow: hidden; }
+.tex-thumb img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.tex-cap { display: flex; align-items: center; gap: 6px; padding: 6px 8px 2px; min-width: 0; }
+.tex-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 11.5px var(--font-mono); color: var(--fg); }
+.tex-badges { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 6px; padding: 2px 8px 8px; font-size: 10.5px; }
+.tex-badges .tag, .tex-pick-meta .tag { font-size: 10px; }
+
+/* Detail */
+.tex-views { display: flex; flex-wrap: wrap; gap: 10px; }
+.tex-big { flex: 1 1 220px; max-width: 360px; aspect-ratio: 1; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--r-md); background: #0c0c0e; overflow: hidden; }
+.tex-big img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.tex-flip { position: relative; flex: 0 1 180px; aspect-ratio: 1; border: 1px solid var(--line); border-radius: var(--r-md); background: #0c0c0e; overflow: hidden; }
+.tex-flip-cell { position: absolute; inset: 0; background-repeat: no-repeat; }
+.tex-flip-n { position: absolute; left: 6px; bottom: 4px; font-size: 10px; color: rgba(255, 255, 255, .55); }
+.tex-hint { margin: 0; font-size: 11px; }
+.tex-detail .vfx-actions .btn .mono { font-size: 10.5px; }
+
+/* Texture field + picker (params tab) */
+.tex-field { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.tex-field-row { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.tex-field-row .input { flex: 1; min-width: 0; }
+.tex-field-row .btn.on { color: var(--ember-text); background: var(--ember-fill); border-color: var(--ember-lo); }
+.tex-field-thumb { flex: none; width: 24px; height: 24px; display: grid; place-items: center; border: 1px solid var(--line); border-radius: var(--r-sm); background: #0c0c0e; color: #555; overflow: hidden; }
+.tex-field-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.tex-pick { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-editor); }
+.tex-pick-sec { display: flex; flex-direction: column; gap: 5px; }
+.tex-pick-sec > .faint { font-size: 10.5px; }
+.tex-pick-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(78px, 1fr)); gap: 6px; }
+.tex-pick-tile { display: flex; flex-direction: column; gap: 3px; padding: 4px; text-align: left; border: 1px solid var(--line); border-radius: var(--r-sm); background: var(--bg-panel); min-width: 0; }
+.tex-pick-tile:hover { border-color: var(--line-strong); }
+.tex-pick-tile.on { border-color: var(--ember-lo); box-shadow: 0 0 0 1px var(--ember-lo); }
+.tex-pick-img { aspect-ratio: 1; display: grid; place-items: center; background: #0c0c0e; border-radius: var(--r-xs); overflow: hidden; }
+.tex-pick-img img { width: 100%; height: 100%; object-fit: contain; }
+.tex-pick-name { font: 10.5px var(--font-mono); color: var(--fg-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tex-pick-meta { display: flex; flex-wrap: wrap; gap: 3px; font-size: 10px; min-height: 14px; }
+.tex-pick-builtins { gap: 6px; }
+.tex-pick-builtins .badge-o { height: 20px; font-size: 11px; }
+.tex-pick > .note { margin: 0; font-size: 10.5px; }
+
+@container (max-width: 860px) {
+  .tex-gen-body { flex-direction: column; }
+  .tex-live { width: 140px; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .tex-card { transition: none; }
+}

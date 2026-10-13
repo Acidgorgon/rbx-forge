@@ -79,6 +79,17 @@ export async function readPluginTemplate(candidates = pluginTemplateCandidates()
   return null
 }
 
+type Fx = Parameters<VfxService['exportTextures']>[0]
+// Studio cannot load forgetex:// textures: swap them the way a project export does (uploaded
+// rbxassetid://, else a built-in fallback).
+async function studioFx(deps: StudioWireDeps, fx: Fx): Promise<Fx> {
+  const v = deps.labs().vfx
+  return v ? v.exportTextures(fx).catch(() => fx) : fx
+}
+async function studioFxAll(deps: StudioWireDeps, effects: Record<string, Fx>): Promise<Record<string, Fx>> {
+  return Object.fromEntries(await Promise.all(Object.entries(effects).map(async ([k, fx]) => [k, await studioFx(deps, fx)] as const)))
+}
+
 const changed = (deps: StudioWireDeps, event: 'vfx:changed' | 'anim:changed' | 'ability:changed') => deps.emit(event, { at: Date.now() })
 
 function prepend<T extends { thumbs: string[] }>(entry: T, file: string): T {
@@ -100,7 +111,7 @@ function vfxLab(deps: StudioWireDeps): StudioLab {
     prepare: async (id, jobId) => {
       const e = await lab().get(id)
       if (!e.effect) throw new Error(`"${e.name}" is a media reference; there is nothing to play in Studio`)
-      return { name: e.name, job: vfxJob(e.effect, { id: jobId }), stages: e.effect.stages }
+      return { name: e.name, job: vfxJob(await studioFx(deps, e.effect), { id: jobId }), stages: e.effect.stages }
     },
     writeFile: async (id, file, bytes) => (await hit(id)).store.writeFile(id, file, bytes),
     readFile: async (id, file) => (await hit(id)).store.readFile(id, file).catch(() => null),
@@ -184,7 +195,7 @@ function abilityLab(deps: StudioWireDeps): StudioLab {
       const e = await lab().get(id)
       const { effects } = await lab().context(e.ability)
       const clip = await abilityClip(deps, e.ability.animation?.clip)
-      return { name: e.name, job: abilityJob(e.ability, effects, clip, { id: jobId, times: keyBeats(e.ability) }) }
+      return { name: e.name, job: abilityJob(e.ability, await studioFxAll(deps, effects), clip, { id: jobId, times: keyBeats(e.ability) }) }
     },
     writeFile: async (id, file, bytes) => (await hit(id)).store.writeFile(id, file, bytes),
     readFile: async (id, file) => (await hit(id)).store.readFile(id, file).catch(() => null),
@@ -251,13 +262,13 @@ export function createStudioWiring(deps: StudioWireDeps): StudioWiring {
     handlers,
     tools: () => (tools ??= studioTools(svc, { chatImage: deps.chatImage })),
     wrap: {
-      vfx: (fn) => svc.wrapCapture('vfx', fn, (req, id) => vfxJob(req.effect, { id, times: req.times })),
+      vfx: (fn) => svc.wrapCapture('vfx', fn, async (req, id) => vfxJob(await studioFx(deps, req.effect), { id, times: req.times })),
       anim: (fn) => svc.wrapCapture('anim', fn, (req, id) => animJob(req.clip, { id, times: req.times })),
       ability: (fn) =>
         svc.wrapCapture('ability', fn, async (req, id) => {
           const beats = keyBeats(req.ability)
           const clip = await abilityClip(deps, req.ability.animation?.clip)
-          return abilityJob(req.ability, req.effects, clip, { id, times: req.times.map((t, i) => ({ t, label: labelFor(beats, t, i) })) })
+          return abilityJob(req.ability, await studioFxAll(deps, req.effects), clip, { id, times: req.times.map((t, i) => ({ t, label: labelFor(beats, t, i) })) })
         })
     },
     start: () => bridge.start(),

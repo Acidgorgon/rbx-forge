@@ -12,6 +12,8 @@ import { findExample, VFX_EXAMPLES } from '@shared/vfx/examples'
 import { RECORDED } from '@shared/vfx/examples.recorded'
 import { timelineSummary } from '@shared/vfx/timeline'
 import type { VfxScriptResult } from '@shared/types'
+import { mockResolveTexture } from './mockVfxTextures'
+import { genRef } from '@shared/vfx/tex/textures'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -108,6 +110,25 @@ function exampleEntry(key: string): VfxEntry {
 }
 add(exampleEntry('ground-slam'))
 add(exampleEntry('hollow-purple'))
+
+// Custom textures (mockVfxTextures): the ground slam with library / procedural textures.
+{
+  const e = exampleEntry('ground-slam')
+  const walk = (ns: NonNullable<VfxEntry['effect']>['roots']) => {
+    for (const n of ns) {
+      if (n.className === 'ParticleEmitter') {
+        if (/^Ring2|shock|wave/i.test(n.name)) Object.assign(n.props, { Texture: 'forgetex://shockwave-expand-d4', FlipbookLayout: 'Grid4x4', FlipbookMode: 'OneShot' })
+        else if (/debris/i.test(n.name)) n.props.Texture = 'forgetex://ground-crack-c3'
+        else if (/dust|smoke/i.test(n.name)) n.props.Texture = genRef('smoke', {}, { tint: 'grey', seed: 3 })
+        else if (/spark|ember/i.test(n.name)) n.props.Texture = genRef('spark')
+        else n.props.Texture = 'forgetex://soft-core-glow-a1'
+      }
+      walk(n.children)
+    }
+  }
+  walk(e.effect!.roots)
+  add({ ...e, id: 'ground-slam-tex', name: 'GroundSlamTextured', description: 'Ground slam with custom textures: a ring flipbook, procedural smoke and sparks.', tags: ['impact', 'shockwave', 'sequence', 'textures'], stats: effectStats(e.effect!), origin: 'textures demo' })
+}
 
 // The browser preview cannot run Luau: a script that matches a built-in example (ignoring
 // whitespace) compiles from its recording; an unknown fx method is reported like Lune would.
@@ -229,8 +250,8 @@ export function vfxMock(emit: Emit): VfxApi {
       e.thumbs = ['thumbs/0.png']
       return e
     },
-    async vfxResolveTexture() {
-      return null
+    async vfxResolveTexture(ref) {
+      return mockResolveTexture(String(ref ?? ''))
     },
     async vfxRunScript(script, opts) {
       await delay(250)

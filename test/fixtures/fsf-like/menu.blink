@@ -1,0 +1,16 @@
+option ClientOutput = "src/menu/shared/events/client.luau"
+option ServerOutput = "src/menu/shared/events/server.luau"
+
+event JoinQueue {
+    From: Client,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: (u8)
+}
+
+event QueueUpdated {
+    From: Server,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: (u8)
+}

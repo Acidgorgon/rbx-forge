@@ -25,6 +25,12 @@ asarUnpack:
   - "node_modules/@anthropic-ai/claude-agent-sdk-*/**"
 afterPack: build/afterPack.cjs
 
+# The Lune test runtime (Luau files) is read from disk by lune, so it ships outside the asar
+# (services/tests/lune.ts findRuntimeDir looks in process.resourcesPath/lune).
+extraResources:
+  - from: resources/lune
+    to: lune
+
 # No native node modules to rebuild.
 npmRebuild: false
 # Smaller dmg/zip/installer; most of the size is the ~250 MB Agent SDK CLI.

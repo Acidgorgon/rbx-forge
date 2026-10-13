@@ -2,6 +2,7 @@ import { watch, type Dirent, type FSWatcher } from 'node:fs'
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type {
+  PlaceInfo,
   ProjectInfo,
   ScriptCategory,
   ScriptEntry,
@@ -32,11 +33,16 @@ export const CATEGORY_ORDER: ScriptCategory[] = [
   'Configs',
   'Data',
   'Services',
+  'Handlers',
   'Controllers',
+  'Skills',
   'Modules',
+  'Protocols',
   'Events',
   'UI',
+  'Stories',
   'Entry points',
+  'Tests',
   'Other'
 ]
 
@@ -276,6 +282,12 @@ function featureOf(segments: string[]): string | undefined {
     const name = stripScriptExt(segments[features + 1])
     if (name && !name.startsWith('init')) return name
   }
+  // src/skills/Server/Moves/<Move>/...: one feature per move.
+  const moves = segments.indexOf('Moves')
+  if (moves >= 0 && moves + 1 < segments.length && segments.some((part) => part.toLowerCase() === 'skills')) {
+    const name = stripScriptExt(segments[moves + 1])
+    if (name && !name.startsWith('init')) return name
+  }
   const controllers = segments.indexOf('Controllers')
   if (controllers >= 0 && controllers + 1 < segments.length) {
     const name = stripScriptExt(segments[controllers + 1]).replace(/Controller$/, '')
@@ -288,7 +300,13 @@ export function categorize(entry: Omit<ScriptEntry, 'category' | 'feature'>): Sc
   const segments = entry.path.split('/')
   const fileName = segments[segments.length - 1]
   const lower = segments.map((segment) => segment.toLowerCase())
+  if (/\.spec\.(luau|lua)$/.test(fileName) || lower[0] === 'tests') return 'Tests'
+  if (/\.story(book)?\.(luau|lua)$/.test(fileName)) return 'Stories'
   if (/^init\.(server|client)\.(luau|lua)$/.test(fileName)) return 'Entry points'
+  if (/^Bootstrapper\.(server|client)\.(luau|lua)$/.test(fileName)) return 'Entry points'
+  if (lower.includes('skills') || (entry.instancePath ?? []).includes('Skills')) return 'Skills'
+  if (segments.includes('Handlers') || (entry.kind !== 'ModuleScript' && /Handler$/.test(entry.name))) return 'Handlers'
+  if (entry.kind === 'ModuleScript' && /Protocol$/.test(entry.name)) return 'Protocols'
   if (entry.realm === 'shared' && segments.includes('Features')) return 'Configs'
   if (/Data/.test(entry.path)) return 'Data'
   if (entry.realm === 'shared' && lower.includes('events')) return 'Events'
@@ -338,6 +356,73 @@ async function readJson<T>(file: string): Promise<T | null> {
   }
 }
 
+// ---------------------------------------------------------------- places
+
+export const DEFAULT_PLACE = 'default.project.json'
+const ROJO_DEFAULT_PORT = 34872
+const PLACE_FILE = /^(.+)\.project\.json$/
+
+// Repo-relative sourcemap path for a place. The dev loop writes sourcemap.json for the default
+// place; the supervisor writes the others under .studio-sync/ (gitignored by the template).
+export function sourcemapFor(file: string): string {
+  if (file === DEFAULT_PLACE) return 'sourcemap.json'
+  const stem = PLACE_FILE.exec(file)?.[1] ?? file
+  return `.studio-sync/sourcemap.${stem}.json`
+}
+
+// Every *.project.json at the root is a place. default.project.json first, then by file name.
+export async function discoverPlaces(root: string): Promise<PlaceInfo[]> {
+  let names: string[] = []
+  try {
+    names = (await readdir(root, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && PLACE_FILE.test(entry.name))
+      .map((entry) => entry.name)
+  } catch {
+    return []
+  }
+  names.sort((a, b) => (a === DEFAULT_PLACE ? -1 : b === DEFAULT_PLACE ? 1 : a.localeCompare(b)))
+  const raw: { file: string; stem: string; json: Record<string, unknown> | null }[] = []
+  for (const file of names) {
+    const json = await readJson<Record<string, unknown>>(join(root, file))
+    raw.push({ file, stem: PLACE_FILE.exec(file)![1], json: json && typeof json === 'object' ? json : null })
+  }
+  const nameCount = new Map<string, number>()
+  for (const place of raw) {
+    const name = typeof place.json?.name === 'string' ? place.json.name : ''
+    if (name) nameCount.set(name, (nameCount.get(name) ?? 0) + 1)
+  }
+  return raw.map(({ file, stem, json }) => {
+    const field = typeof json?.name === 'string' ? json.name : ''
+    const isDefault = file === DEFAULT_PLACE
+    // A shared "name" (menu.project.json often copies the game's) only labels the default place.
+    const name = field && (nameCount.get(field) === 1 || isDefault) ? field : stem
+    const port = Number(json?.servePort)
+    const ids = Array.isArray(json?.servePlaceIds) ? (json!.servePlaceIds as unknown[]) : []
+    return {
+      file,
+      name,
+      isDefault,
+      servePort: Number.isInteger(port) && port > 0 ? port : ROJO_DEFAULT_PORT,
+      servePlaceIds: ids.filter((id): id is number => typeof id === 'number'),
+      sourcemap: sourcemapFor(file)
+    }
+  })
+}
+
+// Picks the active place: the wanted file when it still exists, else the default place, else the first.
+export function pickPlace(places: PlaceInfo[], wanted?: string | null): PlaceInfo | null {
+  return places.find((p) => p.file === wanted) ?? places.find((p) => p.isDefault) ?? places[0] ?? null
+}
+
+// Repo-relative folders/files a project file maps ($path values).
+export function mappedPaths(tree: Record<string, unknown> | undefined): string[] {
+  return collectPaths(tree).map((path) => path.replace(/^\.\//, '').replace(/\/$/, ''))
+}
+
+function isMappedBy(paths: string[], file: string): boolean {
+  return paths.some((path) => file === path || file.startsWith(path + '/'))
+}
+
 export async function loadProjectInfo(root: string): Promise<ProjectInfo> {
   const project = await readJson<{ name?: string }>(join(root, 'default.project.json'))
   if (!project) throw new Error(`No readable default.project.json in ${root}`)
@@ -350,6 +435,13 @@ export interface ProjectChange {
   info: boolean
   tree: boolean
   scripts: boolean
+  // Places were added/removed/edited, or the active place changed.
+  places?: boolean
+}
+
+export interface ProjectOpenOptions {
+  // Place file to make active (e.g. remembered in settings); falls back to default.project.json.
+  activePlace?: string | null
 }
 
 export class Project {
@@ -357,6 +449,9 @@ export class Project {
   info: ProjectInfo
   tree: HarnessTreeNode[] = []
   scripts: ScriptGroup[] = []
+  places: PlaceInfo[] = []
+  // File name of the active place ("default.project.json", "menu.project.json"...).
+  activePlace: string = DEFAULT_PLACE
   // Instance roots where $path folders live, kept to know what to watch.
   private watchDirs: string[] = []
   private watchers: FSWatcher[] = []
@@ -372,20 +467,57 @@ export class Project {
     this.info = info
   }
 
-  static async open(root: string): Promise<Project> {
+  static async open(root: string, options: ProjectOpenOptions = {}): Promise<Project> {
     const full = resolve(root)
     const info = await loadProjectInfo(full)
     const project = new Project(full, info)
+    if (options.activePlace) project.activePlace = options.activePlace
     await project.refresh()
     return project
   }
 
+  // The active place, or null when the root has no project file at all.
+  getActivePlace(): PlaceInfo | null {
+    return this.places.find((place) => place.file === this.activePlace) ?? null
+  }
+
+  listPlaces(): PlaceInfo[] {
+    return this.places.map((place) => ({ ...place, servePlaceIds: [...place.servePlaceIds] }))
+  }
+
+  // Switches the explorer/scripts to another place and rebuilds. Throws for an unknown file.
+  async setActivePlace(file: string): Promise<ProjectChange> {
+    const places = await discoverPlaces(this.root)
+    if (!places.some((place) => place.file === file)) throw new Error(`No ${file} in ${this.root}`)
+    const changed = file !== this.activePlace
+    this.activePlace = file
+    const change = await this.refresh()
+    if (changed) {
+      change.places = true
+      // The watch set depends on the place's $path folders.
+      if (this.onChange) this.rewatch()
+    }
+    return change
+  }
+
   // Rebuilds everything from disk and reports what changed.
   async refresh(): Promise<ProjectChange> {
-    const info = await loadProjectInfo(this.root).catch(() => this.info)
-    const projectJson = (await readJson<{ tree?: Record<string, unknown> }>(join(this.root, 'default.project.json'))) ?? {}
-    this.watchDirs = collectPaths(projectJson.tree)
-    const sourcemap = await readJson<SourcemapNode>(join(this.root, 'sourcemap.json'))
+    const places = await discoverPlaces(this.root)
+    const active = pickPlace(places, this.activePlace)
+    const activeFile = active?.file ?? DEFAULT_PLACE
+    const placeTrees = new Map<string, Record<string, unknown> | undefined>()
+    for (const place of places) {
+      placeTrees.set(place.file, (await readJson<{ tree?: Record<string, unknown> }>(join(this.root, place.file)))?.tree)
+    }
+    const info: ProjectInfo = {
+      ...(await loadProjectInfo(this.root).catch(() => this.info)),
+      places,
+      activePlace: activeFile
+    }
+    const projectJson = { tree: placeTrees.get(activeFile) }
+    // Watch every place's folders so edits to files only another place maps still refresh.
+    this.watchDirs = [...new Set([...placeTrees.values()].flatMap((tree) => collectPaths(tree)))]
+    const sourcemap = await readJson<SourcemapNode>(join(this.root, sourcemapFor(activeFile)))
     let repoTree: TreeNode[]
     if (sourcemap && typeof sourcemap.name === 'string' && typeof sourcemap.className === 'string') {
       repoTree = treeFromSourcemap(this.root, sourcemap)
@@ -399,11 +531,22 @@ export class Project {
     else if (!(await stat(treeFile).catch(() => null))) this.studioTree = null
     const tree = mergeStudioTree(repoTree, this.studioTree)
     const scripts = buildScriptGroups(repoTree)
+    if (places.length > 1) {
+      const mapped = places.map((place) => ({ file: place.file, paths: mappedPaths(placeTrees.get(place.file)) }))
+      for (const group of scripts) {
+        for (const script of group.scripts) {
+          script.places = mapped.filter((place) => isMappedBy(place.paths, script.path)).map((place) => place.file)
+        }
+      }
+    }
     const change: ProjectChange = {
       info: JSON.stringify(info) !== JSON.stringify(this.info),
       tree: JSON.stringify(tree) !== JSON.stringify(this.tree),
-      scripts: JSON.stringify(scripts) !== JSON.stringify(this.scripts)
+      scripts: JSON.stringify(scripts) !== JSON.stringify(this.scripts),
+      places: JSON.stringify(places) !== JSON.stringify(this.places) || activeFile !== this.activePlace
     }
+    this.places = places
+    this.activePlace = activeFile
     this.info = info
     this.tree = tree
     this.scripts = scripts
@@ -432,13 +575,12 @@ export class Project {
         return false
       }
     }
-    const rootFiles = new Set(['default.project.json', 'sourcemap.json'])
     add(this.root, false, (file) => {
       if (file === '.studio-sync') {
         this.watchStudio()
         return true
       }
-      return rootFiles.has(file)
+      return file === 'sourcemap.json' || PLACE_FILE.test(file)
     })
     add(join(this.root, 'tools'), false, (file) => file === 'studio-sync.json')
     let recursiveOk = true
@@ -451,11 +593,26 @@ export class Project {
     if (!recursiveOk) this.pollTimer = setInterval(schedule, 5000)
   }
 
+  // Re-creates the folder watchers (after the active place, and so the mapped folders, changed).
+  private rewatch(): void {
+    const onChange = this.onChange
+    if (!onChange || this.closed) return
+    for (const watcher of this.watchers) watcher.close()
+    this.watchers = []
+    this.studioWatcher?.close()
+    this.studioWatcher = null
+    if (this.pollTimer) clearInterval(this.pollTimer)
+    this.pollTimer = null
+    this.watch(onChange)
+  }
+
   private watchStudio(): void {
     if (this.studioWatcher || this.closed) return
     try {
       this.studioWatcher = watch(join(this.root, '.studio-sync'), (_event, file) => {
-        if (!file || String(file).startsWith('tree.json')) this.schedule()
+        const name = file ? String(file) : ''
+        const sourcemap = sourcemapFor(this.activePlace)
+        if (!name || name.startsWith('tree.json') || sourcemap === `.studio-sync/${name}`) this.schedule()
       })
       this.studioWatcher.on('error', () => {
         this.studioWatcher?.close()
@@ -466,14 +623,39 @@ export class Project {
     }
   }
 
+  // Forge's own multi-step file operations (feature rename) pause the watcher reaction so the tree,
+  // scripts and LSP never see the half-done state; resume() refreshes once.
+  private pauses = 0
+  private missed = false
+
+  pause(): void {
+    this.pauses++
+  }
+
+  resume(): void {
+    if (this.pauses > 0) this.pauses--
+    if (this.pauses === 0 && this.missed) {
+      this.missed = false
+      this.schedule()
+    }
+  }
+
+  get paused(): boolean {
+    return this.pauses > 0
+  }
+
   private schedule(): void {
     if (this.closed) return
+    if (this.pauses > 0) {
+      this.missed = true
+      return
+    }
     if (this.debounce) clearTimeout(this.debounce)
     this.debounce = setTimeout(() => {
       this.debounce = null
       this.refresh()
         .then((change) => {
-          if (!this.closed && (change.info || change.tree || change.scripts)) this.onChange?.(change)
+          if (!this.closed && (change.info || change.tree || change.scripts || change.places)) this.onChange?.(change)
         })
         .catch(() => undefined)
     }, 300)

@@ -21,6 +21,11 @@
 // Bridge-made notifications sent to the renderer (not part of LSP):
 //   harness/lspRestarted { rootUri }  a new server process is up; initialize it again
 //   harness/lspStopped   {}           the server is gone (no project, or luau-lsp missing)
+//
+// Multi-place projects: setPlace(projectFile, sourcemap) points the server at the active place.
+// The bridge rewrites luau-lsp.sourcemap.{rojoProjectFile,sourcemapFile} in the client's
+// workspace/configuration answers, asks the server to re-pull its configuration
+// (workspace/didChangeConfiguration) when the place changes, and watches that sourcemap file.
 
 import type { ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
@@ -255,6 +260,7 @@ export class LspBridge {
   // Studio DataModel -> $/plugin/full. Ready once initialized, configured and a file is open.
   private dataModel: DataModelSync
   private configRequests = new Set<number | string>()
+  private place: { projectFile: string; sourcemap: string } | null = null
   private handshake = { initialized: false, configured: false, opened: false }
 
   constructor(options: LspBridgeOptions) {
@@ -267,6 +273,27 @@ export class LspBridge {
       log: (text) => this.logLine('info', text),
       debounceMs: options.dataModelDebounceMs
     })
+  }
+
+  // Active place: its project file and repo-relative sourcemap. null keeps the client's settings.
+  setPlace(projectFile: string | null, sourcemap?: string): void {
+    const next = projectFile ? { projectFile, sourcemap: sourcemap ?? 'sourcemap.json' } : null
+    if (JSON.stringify(next) === JSON.stringify(this.place)) return
+    this.place = next
+    // The server pulls its settings again; the answer goes through patchConfig.
+    if (this.handshake.configured) this.sendToServer({ jsonrpc: '2.0', method: 'workspace/didChangeConfiguration', params: { settings: null } })
+  }
+
+  private patchConfig(message: { result?: unknown }): unknown {
+    const place = this.place
+    if (!place || !Array.isArray(message.result)) return message
+    const result = message.result.map((item) => {
+      if (!item || typeof item !== 'object') return item
+      const settings = item as { sourcemap?: unknown }
+      if (!settings.sourcemap || typeof settings.sourcemap !== 'object') return item
+      return { ...settings, sourcemap: { ...settings.sourcemap, rojoProjectFile: place.projectFile, sourcemapFile: place.sourcemap } }
+    })
+    return { ...message, result }
   }
 
   // Forge's merged Rojo + live Studio tree (project.tree), or null when there is none.
@@ -318,8 +345,11 @@ export class LspBridge {
   }
 
   send(message: unknown): void {
-    if (!this.sendToServer(message)) return
     const m = message as { method?: unknown; id?: unknown }
+    if (m && m.method === undefined && (typeof m.id === 'number' || typeof m.id === 'string') && this.configRequests.has(m.id)) {
+      message = this.patchConfig(message as { result?: unknown })
+    }
+    if (!this.sendToServer(message)) return
     if (m?.method === 'initialize') this.initializeSent = true
     if (m?.method === 'initialized') {
       this.startWatching()
@@ -461,7 +491,7 @@ export class LspBridge {
       this.watcher = watch(root, { recursive: true }, (event, filename) => {
         if (!filename) return
         const rel = filename.toString()
-        if (!isWatched(rel)) return
+        if (!isWatched(rel) && rel.split(/[\\/]/).join('/') !== this.place?.sourcemap) return
         const full = join(root, rel)
         // 1 created, 2 changed, 3 deleted
         const type = event === 'change' ? 2 : existsSync(full) ? 1 : 3

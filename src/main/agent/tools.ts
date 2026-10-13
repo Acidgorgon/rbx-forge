@@ -19,8 +19,17 @@ export const WRITE_TOOLS = [
   'new_feature',
   'sync_collaborators',
   'resolve_studio_conflict',
-  'restart_service'
+  'restart_service',
+  // Service tools (agent/serviceTools.ts) that edit events.blink / wally.toml.
+  'add_blink_event',
+  'add_wally_package',
+  // main/integrations.ts: renames a feature's shared/server/client folders together.
+  'rename_feature'
 ] as const
+
+// Lune: create_spec writes one new *.spec.luau and never overwrites; test agents get it (not a
+// WRITE_TOOL), read-only guests/scouts do not.
+export const SPEC_TOOLS = ['create_spec'] as const
 
 const SERVICE_IDS = ['dev', 'rojo', 'lsp', 'studioSync'] as const
 const LOG_SOURCES = [...SERVICE_IDS, 'git', 'agent', 'harness'] as const
@@ -63,6 +72,8 @@ export interface GentreeToolOptions {
   // Only the read tools (no WRITE_TOOLS).
   readOnly?: boolean
   fs?: ToolFs
+  // With readOnly: also give create_spec (test agents). Ignored when not readOnly (always given).
+  specs?: boolean
 }
 
 export type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean }
@@ -404,7 +415,15 @@ export function gentreeTools(ctx: HarnessContext, opts: GentreeToolOptions = {})
     )
   ]
 
-  if (opts.readOnly) return read
+  // Integrated service tools (project_map/search_code/find_symbol, Blink, Wally, Lune, analytics),
+  // in a fixed order after the base read tools: the tool list is part of the cached prompt prefix.
+  const services = ctx.serviceTools?.() ?? { read: [], tests: [], write: [] }
+  const specNames = new Set<string>(SPEC_TOOLS)
+  const runTests = services.tests.filter((t) => !specNames.has(t.name))
+  const specs = services.tests.filter((t) => specNames.has(t.name))
+  const readAll = [...read, ...(services.read as GentreeTool<any>[]), ...(runTests as GentreeTool<any>[])]
+
+  if (opts.readOnly) return opts.specs ? [...readAll, ...(specs as GentreeTool<any>[])] : readAll
 
   const write = [
     tool(
@@ -497,7 +516,7 @@ export function gentreeTools(ctx: HarnessContext, opts: GentreeToolOptions = {})
     )
   ]
 
-  return [...read, ...write]
+  return [...readAll, ...(specs as GentreeTool<any>[]), ...write, ...(services.write as GentreeTool<any>[])]
 }
 
 // Wraps tools in a fresh in-process MCP server. Create one per query: an McpServer instance

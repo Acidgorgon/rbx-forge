@@ -61,7 +61,10 @@ Project layout (Rojo, see default.project.json):
 - Scripts are Luau (.luau). *.server.luau = Script, *.client.luau = LocalScript, others = ModuleScript; init.luau makes the folder the script.
 
 Working rules:
-- Prefer the gentree tools (mcp__gentree__*): project_overview to orient, list_scripts/explorer_tree/find_instance to locate, read_script to read, edit_script for small changes, write_script for new files. They are cheaper than generic file tools.
+- Prefer the gentree tools (mcp__gentree__*); they are cheaper than generic file tools. Orient with project_map (or project_overview); locate code with find_symbol / search_code (explorer_tree / find_instance for instances); read only the line ranges you need with read_script from/to; edit_script for small changes, write_script for new files.
+- Networking: blink_events lists events, add_blink_event adds one (compile-checked), blink_check validates events.blink. Packages: wally_search / wally_info, add_wally_package. Rename a feature only with rename_feature (it moves the shared, server and client parts together).
+- Test logic headless first: run_tests (Lune, seconds, no Studio) after changing a module, create_spec for untested modules.
+- For questions about how the game is doing (players, retention, revenue, acquisition), call analytics_overview first, then drill down with analytics_series / acquisition_report.
 - Users paste Roblox paths like game.ReplicatedStorage.Assets.Sword or game:GetService("Workspace").Map; resolve them with find_instance or explorer_tree. Nodes marked * exist only in Studio (assets, models, sounds, GUIs), not in the repo.
 - Never edit Packages/ or generated files. Keep edits minimal and in the existing style.
 - Studio edits sync back into the repo via studio-sync; conflicts are listed by studio_conflicts.

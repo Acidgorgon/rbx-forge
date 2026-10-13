@@ -6,7 +6,7 @@
 // Nothing here imports Electron, so it runs under node --test.
 
 import { watch, type FSWatcher } from 'node:fs'
-import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import type { BlinkDiagnostic, BlinkEvent, BlinkModel, BlinkTypeDecl, LogLine } from '@shared/types'
@@ -135,20 +135,61 @@ export async function loadBlinkModel(root: string, entry = BLINK_ENTRY, fs: Blin
   if (typesOut) outputs.types = toPosix(relative(root, isAbsolute(typesOut) ? typesOut : resolve(entryDir, typesOut)))
   model.outputs = outputs
 
-  // Require paths, from the Rojo project mapping.
-  try {
-    const project = JSON.parse(await fs.readFile(join(root, 'default.project.json'))) as { tree?: Record<string, unknown> }
+  // Require paths, from the Rojo project mapping: default.project.json, then the other places
+  // (a menu place's events live only in menu.project.json).
+  const projectFiles = ['default.project.json', ...(await rootFiles(root, /\.project\.json$/)).filter((f) => f !== 'default.project.json')]
+  const trees: (Record<string, unknown> | undefined)[] = []
+  for (const file of projectFiles) {
+    try {
+      trees.push((JSON.parse(await fs.readFile(join(root, file))) as { tree?: Record<string, unknown> }).tree)
+    } catch {
+      // missing or unreadable project file
+    }
+  }
+  if (trees.length) {
     const requires: NonNullable<BlinkModel['requirePaths']> = {}
     for (const side of ['client', 'server'] as const) {
       const file = outputs[side]
-      const path = file ? instancePathFor(project.tree, file) : null
-      if (path && path.length) requires[side] = requireExpression(path)
+      if (!file) continue
+      for (const tree of trees) {
+        const path = instancePathFor(tree, file)
+        if (path && path.length) {
+          requires[side] = requireExpression(path)
+          break
+        }
+      }
     }
     model.requirePaths = requires
-  } catch {
-    // no project file: no require paths
   }
   return loaded
+}
+
+async function rootFiles(root: string, pattern: RegExp): Promise<string[]> {
+  try {
+    return (await readdir(root, { withFileTypes: true }))
+      .filter((entry) => entry.isFile() && pattern.test(entry.name))
+      .map((entry) => entry.name)
+      .sort((a, b) => a.localeCompare(b))
+  } catch {
+    return []
+  }
+}
+
+// Root-level *.blink files, each its own Blink entry (events.blink first). Imported files live
+// in subfolders or are named by an entry; a root file imported by another entry is not an entry.
+export async function discoverBlinkFiles(root: string): Promise<string[]> {
+  const files = await rootFiles(root, /\.blink$/)
+  return files.sort((a, b) => (a === BLINK_ENTRY ? -1 : b === BLINK_ENTRY ? 1 : a.localeCompare(b)))
+}
+
+// Every root entry loaded, each with its own model, check context and output paths.
+export async function loadBlinkModels(root: string, fs: BlinkFs = nodeFs): Promise<LoadedBlink[]> {
+  const entries = await discoverBlinkFiles(root)
+  const loaded: LoadedBlink[] = []
+  for (const entry of entries) loaded.push(await loadBlinkModel(root, entry, fs))
+  // Drop entries that another entry imports (they are part of that model).
+  const imported = new Set(loaded.flatMap((l) => l.files.slice(1).map((f) => toPosix(relative(root, f)))))
+  return loaded.filter((l) => !imported.has(l.model.file ?? ''))
 }
 
 // Generated-API usage lives in shared/ so the renderer can use it too.
@@ -344,8 +385,12 @@ export async function checkBlink(root: string, options: CheckOptions = {}): Prom
 // ---------------------------------------------------------------- AI tool helpers
 
 // Compact list for tools/LLMs: one line per event/function.
-export async function listEvents(root: string, entry = BLINK_ENTRY): Promise<BlinkEvent[]> {
-  return (await loadBlinkModel(root, entry)).model.events
+// Without an entry: the events of every root *.blink file (each event names its file).
+export async function listEvents(root: string, entry?: string): Promise<BlinkEvent[]> {
+  if (entry) return (await loadBlinkModel(root, entry)).model.events
+  const all = await loadBlinkModels(root)
+  if (!all.length) return (await loadBlinkModel(root, BLINK_ENTRY)).model.events
+  return all.flatMap((l) => l.model.events)
 }
 
 export function describeEvent(ev: BlinkEvent): string {
@@ -374,19 +419,48 @@ export async function addEvent(
 
 export { checkBlink as check }
 
+// ---------------------------------------------------------------- generate (real outputs)
+
+export interface GenerateResult {
+  ok: boolean
+  skipped?: string
+  output?: string
+}
+
+// Compiles an entry in place, so Blink writes its configured ClientOutput/ServerOutput/TypesOutput.
+// The GenTree dev loop only does this for events.blink; other root *.blink files (menu.blink...)
+// are generated by Forge through this. Run only after checkBlink passed (a failed compile writes
+// nothing, but the check gives better diagnostics).
+export async function generateBlink(root: string, entry: string, options: { binary?: string | null; runner?: typeof run } = {}): Promise<GenerateResult> {
+  const binary = options.binary === undefined ? findBlink() : options.binary
+  if (!binary) return { ok: false, skipped: 'blink not found. Run rokit install.' }
+  const result = await (options.runner ?? run)(binary, [entry, '--yes'], root)
+  const output = `${result.stderr}\n${result.stdout}`.trim()
+  return { ok: result.code === 0 && !/\[E\d{4}\]/.test(output), output }
+}
+
 // ---------------------------------------------------------------- live service
 
 export interface BlinkWatcherOptions {
   root: string
+  // One fixed entry. Without it every root *.blink file is an entry (events.blink first), and new
+  // ones are picked up as they appear.
   entry?: string
   log: (line: Omit<LogLine, 'at'>) => void
   onChange: (model: BlinkModel) => void
   debounceMs?: number
   // For tests.
   check?: typeof checkBlink
+  // Entries Forge should compile to their real outputs after a passing check (the dev loop only
+  // generates events.blink). Default: none.
+  generate?: (entry: string) => boolean
+  // For tests.
+  generator?: typeof generateBlink
 }
 
-// Keeps a parsed model of events.blink (and imports), re-checks with the real compiler on change.
+// Keeps a parsed model of each Blink entry (and its imports), re-checks with the real compiler on
+// change. `model` is the primary entry (events.blink when there is one) with every entry's model
+// in `model.files`.
 export class BlinkWatcher {
   private options: BlinkWatcherOptions
   private watchers = new Map<string, FSWatcher>()
@@ -394,7 +468,8 @@ export class BlinkWatcher {
   private running: Promise<void> | null = null
   private again = false
   private closed = false
-  private lastReport = ''
+  private lastReport = new Map<string, string>()
+  private fileModels: BlinkModel[] = []
   model: BlinkModel = { file: null, events: [], types: [], options: {}, diagnostics: [] }
 
   constructor(options: BlinkWatcherOptions) {
@@ -433,48 +508,80 @@ export class BlinkWatcher {
     }
   }
 
-  private async once(): Promise<void> {
-    const { root } = this.options
-    const entry = this.options.entry ?? BLINK_ENTRY
-    const loaded = await loadBlinkModel(root, entry).catch(() => null)
-    if (this.closed) return
-    this.watchFiles([resolve(root, entry), ...(loaded?.files ?? [])])
-    if (!loaded) return
-    // Publish the parse right away; diagnostics follow from the compiler.
-    const previous = this.model
-    this.model = { ...loaded.model, diagnostics: previous.diagnostics, checking: true, checker: previous.checker }
-    this.options.onChange(this.model)
-    if (!loaded.model.file) {
-      this.model = { ...this.model, diagnostics: [], checking: false }
-      this.options.onChange(this.model)
-      return
-    }
-    const result = await (this.options.check ?? checkBlink)(root, { entry }).catch(
-      (error): CheckResult => ({ ok: false, diagnostics: [{ file: entry, line: 1, column: 1, message: String(error), severity: 'error' }] })
-    )
-    if (this.closed) return
-    this.model = {
-      ...this.model,
-      diagnostics: result.diagnostics,
-      checking: false,
-      checkedAt: Date.now(),
-      checker: result.skipped ? 'missing' : 'blink',
-      checkerDetail: result.skipped ?? (result.version ? `blink ${result.version}` : 'blink'),
-      blinkVersion: result.version
-    }
-    this.options.onChange(this.model)
-    this.report(result)
+  private async entries(): Promise<string[]> {
+    if (this.options.entry) return [this.options.entry]
+    const found = await discoverBlinkFiles(this.options.root)
+    return found.length ? found : [BLINK_ENTRY]
   }
 
-  private report(result: CheckResult): void {
+  private publish(): void {
+    const files = this.fileModels
+    const primary = files.find((m) => m.file === BLINK_ENTRY) ?? files.find((m) => m.file) ?? files[0]
+    const base: BlinkModel = primary ?? { file: null, events: [], types: [], options: {}, diagnostics: [] }
+    this.model = { ...base, files: files.filter((m) => m.file) }
+    this.options.onChange(this.model)
+  }
+
+  private async once(): Promise<void> {
+    const { root } = this.options
+    let entries = await this.entries()
+    const all = await Promise.all(entries.map((entry) => loadBlinkModel(root, entry).catch(() => null)))
+    if (this.closed) return
+    // An entry another entry imports is part of that model, not its own.
+    const imported = new Set(all.flatMap((l) => (l ? l.files.slice(1).map((f) => toPosix(relative(root, f))) : [])))
+    const keep = entries.map((entry, k) => ({ entry, loaded: all[k] })).filter(({ loaded }) => !imported.has(loaded?.model.file ?? ''))
+    entries = keep.map((k) => k.entry)
+    this.watchFiles([...entries.map((entry) => resolve(root, entry)), ...keep.flatMap((k) => k.loaded?.files ?? [])])
+    if (keep.every((k) => !k.loaded)) return
+    // Publish the parse right away; diagnostics follow from the compiler.
+    const previous = new Map(this.fileModels.map((m) => [m.file, m]))
+    this.fileModels = keep.map(({ loaded }) => {
+      const model = loaded?.model ?? { file: null, events: [], types: [], options: {}, diagnostics: [] }
+      const before = previous.get(model.file)
+      return { ...model, diagnostics: before?.diagnostics ?? [], checking: Boolean(model.file), checker: before?.checker }
+    })
+    this.publish()
+    for (const key of [...this.lastReport.keys()]) if (!entries.includes(key)) this.lastReport.delete(key)
+    for (let k = 0; k < keep.length; k++) {
+      const { entry, loaded } = keep[k]
+      if (!loaded?.model.file) continue
+      const result = await (this.options.check ?? checkBlink)(root, { entry }).catch(
+        (error): CheckResult => ({ ok: false, diagnostics: [{ file: entry, line: 1, column: 1, message: String(error), severity: 'error' }] })
+      )
+      if (this.closed) return
+      this.fileModels[k] = {
+        ...this.fileModels[k],
+        diagnostics: result.diagnostics,
+        checking: false,
+        checkedAt: Date.now(),
+        checker: result.skipped ? 'missing' : 'blink',
+        checkerDetail: result.skipped ?? (result.version ? `blink ${result.version}` : 'blink'),
+        blinkVersion: result.version
+      }
+      this.publish()
+      this.report(entry, this.fileModels[k], result)
+      if (result.ok && !result.skipped && this.options.generate?.(entry)) {
+        const gen = await (this.options.generator ?? generateBlink)(root, entry).catch((error): GenerateResult => ({ ok: false, output: String(error) }))
+        if (this.closed) return
+        this.options.log(
+          gen.ok
+            ? { service: 'dev', stream: 'info', text: `[blink] generated outputs of ${entry}` }
+            : { service: 'dev', stream: 'stderr', text: `[blink] generating ${entry} failed: ${gen.skipped ?? gen.output ?? 'unknown error'}` }
+        )
+      }
+    }
+  }
+
+  private report(entry: string, model: BlinkModel, result: CheckResult): void {
     const key = result.skipped ? `skip:${result.skipped}` : JSON.stringify(result.diagnostics)
-    if (key === this.lastReport) return
-    this.lastReport = key
-    const entry = this.options.entry ?? BLINK_ENTRY
+    if (key === this.lastReport.get(entry)) return
+    this.lastReport.set(entry, key)
     if (result.skipped) {
+      // The same reason (missing binary) for every entry: say it once.
+      if ([...this.lastReport.entries()].some(([other, value]) => other !== entry && value === key)) return
       this.options.log({ service: 'dev', stream: 'info', text: `[blink] check skipped: ${result.skipped}` })
     } else if (result.ok) {
-      const n = this.model.events.length
+      const n = model.events.length
       this.options.log({ service: 'dev', stream: 'info', text: `[blink] ${entry} OK (${n} event${n === 1 ? '' : 's'}/function${n === 1 ? '' : 's'})` })
     } else {
       for (const d of result.diagnostics) {
@@ -487,9 +594,12 @@ export class BlinkWatcher {
     }
   }
 
-  // Watches the folders of the entry and every import, filtered to those files.
+  // Watches the folders of each entry and every import, filtered to those files. Without a fixed
+  // entry the root folder also reacts to any *.blink file (a new entry).
   private watchFiles(files: string[]): void {
+    const root = resolve(this.options.root)
     const byDir = new Map<string, Set<string>>()
+    if (!this.options.entry) byDir.set(root, new Set())
     for (const file of files) {
       const dir = dirname(file)
       if (!byDir.has(dir)) byDir.set(dir, new Set())
@@ -507,7 +617,8 @@ export class BlinkWatcher {
       try {
         const watcher = watch(dir, (_event, name) => {
           const names = this.names.get(dir)
-          if (!name || names?.has(String(name))) this.schedule()
+          const file = name ? String(name) : ''
+          if (!file || names?.has(file) || (!this.options.entry && dir === root && file.endsWith('.blink'))) this.schedule()
         })
         watcher.on('error', () => {
           watcher.close()

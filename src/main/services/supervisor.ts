@@ -1,7 +1,7 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
-import { join } from 'node:path'
-import type { LogLine, ServiceId, ServiceStatus } from '@shared/types'
+import { existsSync, mkdirSync, readFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
+import type { LogLine, PlaceInfo, ServiceId, ServiceStatus } from '@shared/types'
 import { findBash, findPowerShell, findTool, run, spawnTool, toolEnv } from './tools.ts'
 
 const isWindows = process.platform === 'win32'
@@ -34,6 +34,58 @@ interface Proc {
 
 type Command = { file: string; args: string[] }
 
+const DEFAULT_PLACE = 'default.project.json'
+
+// One rojo process for the places setup: `rojo serve <file>` per served place, plus
+// `rojo sourcemap --watch` for a non-default active place (the dev loop only maps default.project.json).
+export interface RojoJob {
+  // Proc key: "rojo" for the active place's serve, "rojo:<file>" for the others, "sourcemap:<file>".
+  key: string
+  place: string
+  kind: 'serve' | 'sourcemap'
+  args: string[]
+  port?: number
+}
+
+// What rojo runs for the given places. The active place is always served; with serveAll the other
+// places are served too, except when their port is already taken (rojo would fail to bind).
+export function rojoJobs(places: PlaceInfo[], active: string | null, serveAll: boolean): { jobs: RojoJob[]; skipped: string[] } {
+  const current = places.find((p) => p.file === active) ?? places.find((p) => p.isDefault) ?? places[0]
+  if (!current) {
+    return { jobs: [{ key: 'rojo', place: DEFAULT_PLACE, kind: 'serve', args: ['serve', DEFAULT_PLACE] }], skipped: [] }
+  }
+  const serve = (place: PlaceInfo, key: string): RojoJob => ({
+    key,
+    place: place.file,
+    kind: 'serve',
+    args: ['serve', place.file, '--port', String(place.servePort)],
+    port: place.servePort
+  })
+  const jobs: RojoJob[] = [serve(current, 'rojo')]
+  const skipped: string[] = []
+  if (serveAll) {
+    const ports = new Set([current.servePort])
+    for (const place of places) {
+      if (place === current) continue
+      if (ports.has(place.servePort)) {
+        skipped.push(`${place.file}: port ${place.servePort} is already served by another place; set a servePort in it to serve both.`)
+        continue
+      }
+      ports.add(place.servePort)
+      jobs.push(serve(place, `rojo:${place.file}`))
+    }
+  }
+  if (!current.isDefault) {
+    jobs.push({
+      key: `sourcemap:${current.file}`,
+      place: current.file,
+      kind: 'sourcemap',
+      args: ['sourcemap', current.file, '--output', current.sourcemap, '--watch', '--include-non-scripts']
+    })
+  }
+  return { jobs, skipped }
+}
+
 export function isTemplateOrigin(url: string): boolean {
   return TEMPLATE_ORIGIN.test(url.trim())
 }
@@ -43,7 +95,11 @@ export class Supervisor {
   private options: SupervisorOptions
   private root: string | null = null
   private status: Record<ServiceId, ServiceStatus>
-  private procs: Partial<Record<'dev' | 'rojo', Proc>> = {}
+  // "dev", "rojo" (active place) and the extra rojo jobs ("rojo:<file>", "sourcemap:<file>").
+  private procs: Record<string, Proc | undefined> = {}
+  private places: PlaceInfo[] = []
+  private activePlace: string | null = null
+  private extraCommands = new Map<string, Command>()
   private probeTimer: ReturnType<typeof setInterval> | null = null
   private lspPath: string | null = null
 
@@ -75,9 +131,25 @@ export class Supervisor {
   async setRoot(root: string | null): Promise<void> {
     await this.stopAll()
     this.root = root
+    this.places = []
+    this.activePlace = null
     for (const id of Object.keys(this.status) as ServiceId[]) {
       this.update(id, { state: 'stopped', restarts: 0, pid: undefined, detail: undefined })
     }
+  }
+
+  // Places of the open project and the active one. rojo serves the active place (and, with the
+  // serveAllPlaces setting, every other place); a running rojo restarts when this changes it.
+  async setPlaces(places: PlaceInfo[], active: string | null): Promise<void> {
+    const before = JSON.stringify(this.rojoPlan())
+    this.places = places.map((place) => ({ ...place }))
+    this.activePlace = active
+    if (JSON.stringify(this.rojoPlan()) === before) return
+    if (this.procs.rojo?.wanted) await this.restart('rojo')
+  }
+
+  private rojoPlan(): ReturnType<typeof rojoJobs> {
+    return rojoJobs(this.places, this.activePlace, this.options.getSetting('serveAllPlaces', false))
   }
 
   async startAll(): Promise<void> {
@@ -105,7 +177,40 @@ export class Supervisor {
     next.failures = 0
     this.procs[id] = next
     this.update(id, { restarts: 0 })
-    this.spawnService(id, command)
+    this.spawnService(id, id, command)
+    if (id === 'rojo') this.startRojoExtras(command.file)
+  }
+
+  private startRojoExtras(rojo: string): void {
+    const { jobs, skipped } = this.rojoPlan()
+    for (const text of skipped) this.info('rojo', text)
+    for (const job of jobs) {
+      if (job.key === 'rojo') continue
+      const command = { file: rojo, args: job.args }
+      if (job.kind === 'sourcemap' && this.root) {
+        try {
+          mkdirSync(dirname(join(this.root, job.args[3])), { recursive: true })
+        } catch {
+          // rojo reports the write error
+        }
+      }
+      this.extraCommands.set(job.key, command)
+      this.procs[job.key] = { child: null, wanted: true, failures: 0, startedAt: 0, retry: null, healthy: null }
+      this.spawnService(job.key, 'rojo', command)
+    }
+  }
+
+  private async stopProc(key: string): Promise<void> {
+    const proc = this.procs[key]
+    if (!proc) return
+    proc.wanted = false
+    if (proc.retry) clearTimeout(proc.retry)
+    if (proc.healthy) clearTimeout(proc.healthy)
+    proc.retry = null
+    proc.healthy = null
+    const child = proc.child
+    if (child) await killTree(child)
+    proc.child = null
   }
 
   async stop(id: ServiceId): Promise<void> {
@@ -117,16 +222,14 @@ export class Supervisor {
       this.info('studioSync', 'Studio sync runs inside the dev loop; stop the dev loop to stop it.')
       return
     }
-    const proc = this.procs[id]
-    if (!proc) return
-    proc.wanted = false
-    if (proc.retry) clearTimeout(proc.retry)
-    if (proc.healthy) clearTimeout(proc.healthy)
-    proc.retry = null
-    proc.healthy = null
-    const child = proc.child
-    if (child) await killTree(child)
-    proc.child = null
+    if (id === 'rojo') {
+      const extras = Object.keys(this.procs).filter((key) => key !== 'rojo' && key !== 'dev')
+      await Promise.all(extras.map((key) => this.stopProc(key)))
+      for (const key of extras) delete this.procs[key]
+      this.extraCommands.clear()
+    }
+    if (!this.procs[id]) return
+    await this.stopProc(id)
     this.update(id, { state: 'stopped', pid: undefined, detail: undefined })
   }
 
@@ -194,7 +297,7 @@ export class Supervisor {
         this.update('rojo', { state: 'missing', detail: 'rojo not found. Run rokit install.' })
         return null
       }
-      return { file: rojo, args: ['serve', 'default.project.json'] }
+      return { file: rojo, args: this.rojoPlan().jobs[0].args }
     }
     const blocked = await this.templateGuard(root)
     if (blocked) {
@@ -228,9 +331,15 @@ export class Supervisor {
     )
   }
 
-  private spawnService(id: 'dev' | 'rojo', command: Command): void {
-    const proc = this.procs[id] as Proc
-    this.update(id, { state: 'starting', detail: undefined, pid: undefined })
+  // key is the proc ("dev", "rojo", or an extra rojo job); id is the service it reports under.
+  // Only the "dev" and "rojo" procs drive the service status; extra jobs just log and restart.
+  private spawnService(key: string, id: 'dev' | 'rojo', command: Command): void {
+    const proc = this.procs[key] as Proc
+    const primary = key === id
+    const update = (patch: Partial<ServiceStatus>) => {
+      if (primary) this.update(id, patch)
+    }
+    update({ state: 'starting', detail: undefined, pid: undefined })
     this.info(id, `$ ${[command.file, ...command.args].join(' ')}`)
     let child: ChildProcess
     try {
@@ -242,7 +351,8 @@ export class Supervisor {
         stdio: ['ignore', 'pipe', 'pipe']
       })
     } catch (error) {
-      this.update(id, { state: 'crashed', detail: String(error) })
+      update({ state: 'crashed', detail: String(error) })
+      if (!primary) this.info(id, `${key}: ${error}`)
       return
     }
     proc.child = child
@@ -258,15 +368,15 @@ export class Supervisor {
           const text = raw.replace(ANSI, '')
           if (!text.trim()) continue
           lastLine = text.trim()
-          this.options.log({ service: id, stream, text })
-          if (id === 'rojo') this.parseRojo(text)
+          this.options.log({ service: id, stream, text: primary ? text : `[${key.replace(/^rojo:/, '')}] ${text}` })
+          if (primary && id === 'rojo') this.parseRojo(text)
         }
       }
     }
     child.stdout?.on('data', onText('stdout'))
     child.stderr?.on('data', onText('stderr'))
     child.on('spawn', () => {
-      this.update(id, { state: 'running', pid: child.pid })
+      update({ state: 'running', pid: child.pid })
       proc.healthy = setTimeout(() => {
         proc.failures = 0
       }, HEALTHY_MS)
@@ -283,19 +393,21 @@ export class Supervisor {
       if (Date.now() - proc.startedAt >= HEALTHY_MS) proc.failures = 0
       const delay = Math.min(1000 * 2 ** proc.failures, MAX_BACKOFF_MS)
       proc.failures++
-      const restarts = this.status[id].restarts + 1
-      this.update(id, {
-        state: 'crashed',
-        pid: undefined,
-        restarts,
-        detail: `${reason}${lastLine ? `: ${lastLine}` : ''}. Restarting in ${Math.round(delay / 1000)}s`
-      })
-      this.options.log({ service: id, stream: 'info', text: `${reason}; restarting in ${Math.round(delay / 1000)}s` })
+      if (primary) {
+        const restarts = this.status[id].restarts + 1
+        this.update(id, {
+          state: 'crashed',
+          pid: undefined,
+          restarts,
+          detail: `${reason}${lastLine ? `: ${lastLine}` : ''}. Restarting in ${Math.round(delay / 1000)}s`
+        })
+      }
+      this.options.log({ service: id, stream: 'info', text: `${primary ? '' : `${key}: `}${reason}; restarting in ${Math.round(delay / 1000)}s` })
       proc.retry = setTimeout(async () => {
         proc.retry = null
         if (!proc.wanted || !this.root) return
-        const next = await this.command(id)
-        if (next && proc.wanted) this.spawnService(id, next)
+        const next = primary ? await this.command(id) : this.extraCommands.get(key) ?? null
+        if (next && proc.wanted) this.spawnService(key, id, next)
       }, delay)
     }
     child.on('error', (error) => onExit(null, null, error))
@@ -304,7 +416,11 @@ export class Supervisor {
 
   private parseRojo(text: string): void {
     const match = /Port:\s*(\d+)/i.exec(text) || /localhost:(\d+)/i.exec(text)
-    if (match) this.update('rojo', { detail: `rojo serve on :${match[1]}` })
+    if (!match) return
+    const place = this.places.find((p) => p.file === this.activePlace)
+    const extra = Object.keys(this.procs).filter((key) => key.startsWith('rojo:') && this.procs[key]?.wanted).length
+    const label = place && !place.isDefault ? ` (${place.name})` : ''
+    this.update('rojo', { detail: `rojo serve on :${match[1]}${label}${extra ? ` + ${extra} more place${extra === 1 ? '' : 's'}` : ''}` })
   }
 
   private studioSyncPort(): number {

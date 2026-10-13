@@ -7,6 +7,7 @@ import type {
   HarnessApi,
   HarnessEvents,
   LogLine,
+  PlaceInfo,
   ProjectInfo,
   ScriptEntry,
   ScriptGroup,
@@ -18,6 +19,7 @@ import type {
   TreeNode
 } from '@shared/types'
 import { packagesMock } from './mockPackages'
+import { integrationsMock } from './mockIntegrations'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { BLINK_OUTPUTS, eventsBlink, generatedClient, generatedServer, mockBlinkModel } from './mockBlink'
@@ -315,6 +317,13 @@ async function recheckBlink(): Promise<void> {
 // ---------------------------------------------------------------- project
 
 const project: ProjectInfo = { root: '/Users/dev/Games/GenTree', name: 'GenTree', placeIds: [123456789] }
+
+// Places: a match place and a menu place (multi-place projects).
+const mockPlaces: PlaceInfo[] = [
+  { file: 'default.project.json', name: 'GenTree', isDefault: true, servePort: 34872, servePlaceIds: [123456789], sourcemap: 'sourcemap.json' },
+  { file: 'menu.project.json', name: 'menu', isDefault: false, servePort: 34875, servePlaceIds: [987654321], sourcemap: '.studio-sync/sourcemap.menu.json' }
+]
+let mockActivePlace = 'default.project.json'
 
 function script(path: string, instancePath: string[], kind: ScriptEntry['kind'], category: ScriptEntry['category'], realm: ScriptEntry['realm'], feature?: string): ScriptEntry {
   return { path, instancePath, name: instancePath[instancePath.length - 1], kind, category, realm, feature }
@@ -675,6 +684,19 @@ const api: HarnessApi = {
   async getBlink() {
     return blinkModel
   },
+  async listPlaces() {
+    return mockPlaces
+  },
+  async getActivePlace() {
+    return mockPlaces.find((p) => p.file === mockActivePlace) ?? null
+  },
+  async setActivePlace(file) {
+    const place = mockPlaces.find((p) => p.file === file)
+    if (!place) throw new Error(`No ${file}`)
+    mockActivePlace = file
+    emit('places:changed', { places: mockPlaces, active: file })
+    return place
+  },
 
   async getServices() {
     return services
@@ -777,6 +799,9 @@ const api: HarnessApi = {
 
   // Wally deps and Rokit tools (mockPackages.ts).
   ...packagesMock(emit, (text) => log('harness', text, 'info')),
+
+  // Collab, release, Lune tests, analytics, usage, orchestrator, feature rename (mockIntegrations.ts).
+  ...integrationsMock(emit, (text) => log('harness', text, 'info')),
 
   on(event, handler) {
     let set = listeners.get(event)

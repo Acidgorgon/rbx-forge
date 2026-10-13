@@ -90,6 +90,11 @@ const CATEGORY_ABBR: Record<string, string> = {
   Events: 'evt',
   UI: 'ui',
   'Entry points': 'entry',
+  Handlers: 'hdl',
+  Skills: 'skill',
+  Protocols: 'proto',
+  Stories: 'story',
+  Tests: 'test',
   Other: 'other'
 }
 

@@ -1,6 +1,7 @@
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { z } from 'zod'
+import { ReleaseProjectFields } from '../release/config.ts'
 
 // .forge/project.json: settings the whole team shares by committing them with the game, as opposed
 // to per-user settings in the app's userData folder.
@@ -31,8 +32,13 @@ export const ProjectConfigSchema = z.object({
     .string()
     .max(60)
     .regex(/^[A-Za-z0-9._/-]*$/, 'Use letters, digits, ".", "_", "-" or "/"')
-    .optional()
+    .optional(),
+  // Release settings (release/config.ts): "version" and "publish". Kept in this schema so saving the
+  // collab settings never drops them.
+  ...ReleaseProjectFields
 })
+  // Keys written by other tools or newer Forge versions survive a save.
+  .loose()
 
 export type TestScenario = z.infer<typeof TestScenarioSchema>
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>
@@ -50,7 +56,26 @@ export interface ConfigIssue {
 
 export type ValidateResult = { ok: true; config: ProjectConfig } | { ok: false; issues: ConfigIssue[] }
 
+// .forge/ is committed: refuse anything that looks like a secret (Discord webhook URLs, Open Cloud
+// keys, provider API keys). Secrets live only in the app's safeStorage-encrypted store.
+const SECRET_PATTERNS: [RegExp, string][] = [
+  [/https?:\/\/(?:[a-z]+\.)?discord(?:app)?\.com\/api\/webhooks\//i, 'a Discord webhook URL'],
+  [/\bsk-(?:ant-|proj-|or-)?[A-Za-z0-9_-]{20,}/, 'an API key'],
+  [/\bAIza[0-9A-Za-z_-]{30,}/, 'a Google API key'],
+  [/[{,]"(?:openCloudApiKey|apiKey|api_key|webhook|webhookUrl|token|secret|password)":/i, 'a secret field']
+]
+
+export function findSecretInConfig(value: unknown): string | null {
+  const text = JSON.stringify(value ?? null)
+  for (const [re, what] of SECRET_PATTERNS) if (re.test(text)) return what
+  return null
+}
+
 export function validateProjectConfig(value: unknown): ValidateResult {
+  const secret = findSecretInConfig(value)
+  if (secret) {
+    return { ok: false, issues: [{ path: '(root)', message: `Looks like ${secret}. .forge/project.json is committed; store secrets in Forge's encrypted settings instead.` }] }
+  }
   const parsed = ProjectConfigSchema.safeParse(value)
   if (parsed.success) return { ok: true, config: parsed.data }
   return {
@@ -124,7 +149,9 @@ on the game; these are plain files you can edit by hand.
   "aiRules": "Extra rules for Forge's AI chat and test agents in this game.",
   "testScenarios": [{ "name": "Buy a sword", "steps": ["Join", "Open shop", "Buy Starter Sword"] }],
   "lint": { "selene": true, "stylua": false },
-  "branchPrefix": "feature/"
+  "branchPrefix": "feature/",
+  "version": "1.4.2",
+  "publish": { "mode": "studio", "placeId": 1234567, "universeId": 7654321, "versionType": "Published" }
 }
 \`\`\`
 
@@ -134,6 +161,12 @@ on the game; these are plain files you can edit by hand.
 - **lint**: which checks run before Forge syncs your work. Selene ships with the template;
   StyLua needs \`stylua\` in rokit.toml and a stylua.toml before turning it on.
 - **branchPrefix**: prefix for branches made with *Start feature branch* (default \`feature/\`).
+- **version** (optional): the game's release version. When present, each release made with Forge
+  commits the bump here; otherwise the version lives only in git tags (\`v1.4.2\`).
+- **publish** (optional): how releases are published: \`mode\` (\`studio\`, \`file\` or \`rojo\`),
+  \`placeId\`, \`universeId\`, \`versionType\` (\`Saved\` / \`Published\`), \`placeFile\`,
+  \`rojoProject\`, \`tagPrefix\`. **Never put API keys or webhook URLs here**: Forge stores those
+  encrypted on each person's computer.
 
 ## claims.json
 

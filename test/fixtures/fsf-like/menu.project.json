@@ -1,0 +1,28 @@
+{
+  "name": "FsfLike",
+  "servePort": 34875,
+  "servePlaceIds": [2000001, 2000002],
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedFirst": {
+      "First": { "$path": "src/menu/first" }
+    },
+    "ReplicatedStorage": {
+      "Packages": { "$path": "Packages" },
+      "Shared": {
+        "$className": "Folder",
+        "events": { "$path": "src/menu/shared/events" },
+        "Interface": { "$path": "src/menu/shared/Interface" },
+        "Modules": { "$path": "src/menu/shared/Modules" },
+        "Skills": { "$path": "src/skills/Definitions" }
+      }
+    },
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/menu/server",
+        "Data": { "$path": "src/server/Data" },
+        "Admins": { "$path": "src/server/Config/Admins.luau" }
+      }
+    }
+  }
+}

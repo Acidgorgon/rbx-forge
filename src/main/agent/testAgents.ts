@@ -35,6 +35,11 @@ import {
   toChatMessages,
   type QueryFn
 } from './sdk.ts'
+import { routeModel } from './budget/budget.ts'
+import { SdkUsageTracker } from './budget/usage.ts'
+import type { Meter } from './meter.ts'
+import { toSummary } from './meter.ts'
+import { withRules } from './projectRules.ts'
 import { defineTool, gentreeTools, mcpToolName, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
 
 const MAX_KEPT = 50
@@ -49,6 +54,9 @@ export interface TestAgentDeps {
   providers?: Providers
   fetchFn?: FetchFn
   toolFs?: ToolFs
+  // Project instructions block (.forge aiRules + AGENTS.md).
+  rules?: () => Promise<string>
+  meter?: Meter
 }
 
 interface Run {
@@ -58,9 +66,14 @@ interface Run {
   report?: { status: 'passed' | 'failed'; summary: string }
   usesStudio: boolean
   choice: ModelChoice
+  rules?: string
 }
 
-function agentPrompt(role: 'playtester' | 'reviewer', openai = false): string {
+// Headless-first testing (Lune), for test/QA agents.
+export const HEADLESS_FIRST =
+  'Test logic headless first: call run_tests (and create_spec for untested modules) before any Studio tool. Use Studio only for what needs the engine: physics, rendering/UI layout, replication between real clients, DataStores/HTTP against live services, and playtesting.'
+
+function agentPrompt(role: 'playtester' | 'reviewer', openai = false, rules = ''): string {
   const how =
     role === 'playtester'
       ? 'You have the live Roblox Studio tools (mcp__studio__*). Use them to run the game or Luau and observe behaviour, alongside reading the code.'
@@ -69,7 +82,8 @@ function agentPrompt(role: 'playtester' | 'reviewer', openai = false): string {
   return `${SYSTEM_PROMPT}${openai ? OPENAI_TOOLS_NOTE : ''}
 
 You are a test agent. You will be given one scenario to verify. You cannot edit files. ${how}
-Stay focused on the scenario and keep tool calls few. When done, call ${report} exactly once with status "passed" or "failed" and a short summary (what you checked, evidence, and the cause of any failure).`
+${HEADLESS_FIRST} create_spec only adds a new *.spec.luau next to a module; it never changes game code.
+Stay focused on the scenario and keep tool calls few. When done, call ${report} exactly once with status "passed" or "failed" and a short summary (what you checked, evidence, and the cause of any failure).${rules}`
 }
 
 export class TestAgentRunner {
@@ -86,7 +100,12 @@ export class TestAgentRunner {
   }
 
   list(): TestAgent[] {
-    return this.runs.map((r) => ({ ...r.agent }))
+    const meter = this.deps.meter
+    return this.runs.map((r) => {
+      if (!meter) return { ...r.agent }
+      const t = meter.ledger.agent(r.agent.id)
+      return t.requests ? { ...r.agent, usage: toSummary(t) } : { ...r.agent }
+    })
   }
 
   messages(id: string): ChatMessage[] | null {
@@ -98,7 +117,7 @@ export class TestAgentRunner {
     const pick: ModelChoice =
       choice && isProviderId(choice.provider) && typeof choice.model === 'string' && choice.model.trim()
         ? { provider: choice.provider, model: choice.model.trim() }
-        : (this.deps.providers?.defaultModel() ?? { provider: 'anthropic', model: model(this.ctx) })
+        : this.routed(scenarios.join('\n'))
     const created: Run[] = []
     for (const scenario of scenarios.map((s) => s.trim()).filter(Boolean)) {
       const run: Run = {
@@ -116,6 +135,17 @@ export class TestAgentRunner {
     this.changed()
     this.pump()
     return created.map((r) => ({ ...r.agent }))
+  }
+
+  // No explicit model: the default provider's cheap tier (budget/budget.ts routeModel, task 'agent').
+  private routed(text: string): ModelChoice {
+    const base = this.deps.providers?.defaultModel() ?? { provider: 'anthropic' as const, model: model(this.ctx) }
+    const r = routeModel({
+      task: 'agent',
+      text,
+      settings: { provider: base.provider, model: base.model, autoRoute: this.ctx.getSetting<boolean>('autoRoute', true) !== false, tiers: this.ctx.getSetting('modelTiers', undefined) }
+    })
+    return { provider: base.provider, model: r.model }
   }
 
   cancel(id: string): void {
@@ -168,7 +198,8 @@ export class TestAgentRunner {
         return { content: [{ type: 'text', text: 'recorded; stop now' }] }
       }
     )
-    return [...gentreeTools(this.ctx, { readOnly: true, ...(this.deps.toolFs ? { fs: this.deps.toolFs } : {}) }), reportTool]
+    // Read tools + run_tests + create_spec (one new spec file; never game code).
+    return [...gentreeTools(this.ctx, { readOnly: true, specs: true, ...(this.deps.toolFs ? { fs: this.deps.toolFs } : {}) }), reportTool]
   }
 
   private buildOptions(run: Run, root: string, env?: Record<string, string | undefined>): Options {
@@ -187,8 +218,9 @@ export class TestAgentRunner {
     return {
       cwd: root,
       model: run.choice.model,
-      systemPrompt: agentPrompt(run.usesStudio ? 'playtester' : 'reviewer'),
+      systemPrompt: agentPrompt(run.usesStudio ? 'playtester' : 'reviewer', false, run.rules ?? ''),
       ...(env ? { env } : {}),
+      ...(this.deps.meter?.guard.sdkOptions('agent') ?? {}),
       ...executableOption(),
       abortController: run.abort,
       mcpServers,
@@ -204,7 +236,7 @@ export class TestAgentRunner {
   }
 
   private maxTurns(): number {
-    return Number(this.ctx.getSetting('agentMaxTurns', 40)) || 40
+    return Number(this.ctx.getSetting('agentMaxTurns', 25)) || 25
   }
 
   private async execute(run: Run): Promise<void> {
@@ -213,6 +245,7 @@ export class TestAgentRunner {
     if (!root) return this.finish(run, 'error', 'No project open')
     run.agent.state = 'running'
     run.agent.startedAt = Date.now()
+    run.rules = (await this.deps.rules?.().catch(() => '')) ?? ''
     const prompt = `Scenario to verify:\n${run.agent.scenario}`
     if (run.choice.provider !== 'anthropic') {
       this.changed()
@@ -228,14 +261,36 @@ export class TestAgentRunner {
       const options = this.buildOptions(run, root, env)
       this.changed()
       const queryFn = this.deps.queryFn ?? sdkQuery
+      const meter = this.deps.meter
+      const tracker = new SdkUsageTracker(run.choice.model)
+      let budgetStop: string | undefined
       try {
         for await (const m of queryFn({ prompt, options })) {
           for (const cm of toChatMessages(m, run.agent.id)) this.push(run, cm)
-          if (m.type === 'result') break
+          if (meter) {
+            meter.ledger.recordAll(tracker.onMessage(m), { agentId: run.agent.id })
+            meter.setLive(run.agent.id, tracker.live())
+            const check = meter.checkAgent(run.agent.id)
+            if (check.level === 'stop' && !run.report) {
+              budgetStop = `budget cap reached: ${check.reason ?? ''}`.trim()
+              run.abort.abort()
+              break
+            }
+          }
+          if (m.type === 'result') {
+            if ((m as { subtype?: string }).subtype === 'error_max_budget_usd') budgetStop = 'budget cap reached (cost)'
+            break
+          }
         }
       } catch (e) {
         if (!run.abort.signal.aborted) return this.finish(run, 'error', (e as Error).message)
+      } finally {
+        if (meter) {
+          meter.ledger.recordAll(tracker.finish(), { agentId: run.agent.id })
+          meter.setLive(run.agent.id, null)
+        }
       }
+      if (budgetStop && !run.report) return this.finish(run, 'error', budgetStop)
     }
     if (run.abort.signal.aborted) return this.finish(run, 'cancelled', 'Cancelled')
     if (run.report) return this.finish(run, run.report.status, run.report.summary)
@@ -251,7 +306,7 @@ export class TestAgentRunner {
       baseUrl: ep.baseUrl,
       headers: ep.headers,
       model: modelId,
-      system: agentPrompt('reviewer', true),
+      system: agentPrompt('reviewer', true, run.rules ?? ''),
       history: [{ role: 'user', content: prompt }],
       tools: this.agentTools(run),
       maxTurns: this.maxTurns(),
@@ -259,8 +314,11 @@ export class TestAgentRunner {
       agentId: run.agent.id,
       emit: (m) => this.push(run, m),
       extraBody: extraBody(provider, modelId),
-      stop: () => !!run.report,
-      fetchFn: this.deps.fetchFn
+      stop: () => !!run.report || (this.deps.meter ? this.deps.meter.checkAgent(run.agent.id).level === 'stop' : false),
+      fetchFn: this.deps.fetchFn,
+      onUsage: (raw) => {
+        this.deps.meter?.ledger.recordOpenAi(raw, { provider, model: modelId, agentId: run.agent.id })
+      }
     })
     if (result.outcome === 'error') return result.error ?? 'request failed'
     if (result.outcome === 'max_turns') return 'Agent hit the turn limit without calling report_result'
@@ -275,6 +333,14 @@ export class TestAgentRunner {
     const last = run.messages[run.messages.length - 1]
     const repeated = last?.role === 'system' && last.text.includes(summary)
     if ((state === 'error' || state === 'cancelled') && !repeated) this.push(run, systemMessage(run.agent.id, summary))
+    // Team notification (Discord, when the person turned it on); fire-and-forget.
+    if (state === 'failed') {
+      try {
+        this.ctx.notifyTestFailure?.({ scenario: run.agent.scenario, summary })
+      } catch {
+        // never block the agent on a notification
+      }
+    }
     this.changed()
   }
 

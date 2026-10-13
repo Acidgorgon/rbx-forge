@@ -29,7 +29,7 @@ import { allowServer, executableOption, sdkQuery, toChatMessages, type QueryFn }
 import { defineTool, gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
 
 // Read tools a guest may use, when guest tools are on. Never any of WRITE_TOOLS.
-export const GUEST_TOOLS = ['project_overview', 'list_scripts', 'read_script', 'explorer_tree', 'find_instance', 'search_code'] as const
+export const GUEST_TOOLS = ['project_overview', 'list_scripts', 'read_script', 'explorer_tree', 'find_instance', 'search_code', 'project_map', 'find_symbol', 'blink_events'] as const
 // Lines per read_script call for guests (the host gets 400).
 export const GUEST_READ_LINES = 120
 
@@ -75,6 +75,8 @@ export interface GroupDeps {
   toolFs?: ToolFs
   // Extra read tools offered to guests (e.g. the budget layer's search_code), filtered by GUEST_TOOLS.
   extraReadTools?: (ctx: HarnessContext) => GentreeTool<any>[]
+  // Project instructions block (.forge aiRules + AGENTS.md), appended to the host's system prompt.
+  rules?: () => Promise<string>
 }
 
 export interface ContextPackInput {
@@ -289,7 +291,8 @@ export class GroupChat {
   async speak(room: Room, p: GroupParticipant, prompt: string, opts: { system?: string; tools?: boolean; card?: ChatMessage['card'] } = {}): Promise<string> {
     const speaker = speakerOf(p)
     const tools = opts.tools ?? room.guestTools
-    const system = opts.system ?? (p.role === 'host' ? HOST_SYSTEM(speaker) : GUEST_SYSTEM(speaker, room.host, tools))
+    const rules = p.role === 'host' && !opts.system ? ((await this.deps.rules?.().catch(() => '')) ?? '') : ''
+    const system = opts.system ?? (p.role === 'host' ? HOST_SYSTEM(speaker) + rules : GUEST_SYSTEM(speaker, room.host, tools))
     const texts = new Map<string, string>()
     const emit = (m: ChatMessage) => {
       if (m.role === 'assistant') texts.set(m.id, m.text)

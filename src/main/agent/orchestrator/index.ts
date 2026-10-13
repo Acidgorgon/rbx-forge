@@ -22,4 +22,4 @@ export {
   type Tier
 } from './roles.ts'
 export { guardWriteTool, defaultWriteTargets, type WriteTargets } from './agentTools.ts'
-export { sdkRunAgent, sdkToEvents, sdkOptionsFor, SdkUsageDelta, openAiRunAgent, channel, ORCH_SERVER, SDK_DISALLOWED } from './adapters.ts'
+export { sdkRunAgent, sdkToEvents, sdkOptionsFor, SdkUsageDelta, openAiRunAgent, loopFor, channel, ORCH_SERVER, SDK_DISALLOWED } from './adapters.ts'

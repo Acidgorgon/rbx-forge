@@ -1,6 +1,10 @@
 // Contract shared by the main process, the preload bridge and the renderer.
 // Every IPC channel the renderer can call is listed in HarnessApi.
 
+import type { IntegrationApi, IntegrationEvents, OrchestrateMode, UsageSummary } from './integrationTypes.ts'
+// Collab, release, tests, analytics, usage, orchestrator and feature-rename IPC types.
+export type * from './integrationTypes.ts'
+
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
 export type ServiceState = 'stopped' | 'starting' | 'running' | 'crashed' | 'missing'
@@ -49,11 +53,16 @@ export type ScriptCategory =
   | 'Configs'
   | 'Data'
   | 'Services'
+  | 'Handlers'
   | 'Controllers'
+  | 'Skills'
   | 'Modules'
+  | 'Protocols'
   | 'Events'
   | 'UI'
+  | 'Stories'
   | 'Entry points'
+  | 'Tests'
   | 'Other'
 
 export type ScriptKind = 'ModuleScript' | 'Script' | 'LocalScript'
@@ -69,6 +78,8 @@ export interface ScriptEntry {
   // Feature folder the script belongs to, when under a Features/ or Controllers/ folder.
   feature?: string
   realm: 'shared' | 'server' | 'client'
+  // Multi-place projects: project files (e.g. "default.project.json") whose mappings include this file.
+  places?: string[]
 }
 
 export interface ScriptGroup {
@@ -107,6 +118,29 @@ export interface ProjectInfo {
   root: string
   name: string
   placeIds: number[]
+  // Every *.project.json at the root (default.project.json first) and the active one's file.
+  places?: PlaceInfo[]
+  activePlace?: string
+}
+
+// One Rojo place: a *.project.json at the project root (main/services/project.ts).
+export interface PlaceInfo {
+  // File name at the root, e.g. "menu.project.json". Used as the place id.
+  file: string
+  // Display name: the file's "name" field, or the file stem when that is missing or not unique.
+  name: string
+  isDefault: boolean
+  // servePort from the project file (rojo's default 34872 when absent).
+  servePort: number
+  servePlaceIds: number[]
+  // Repo-relative sourcemap for this place: sourcemap.json for the default place (the dev loop
+  // writes it), .studio-sync/sourcemap.<stem>.json for the others (Forge runs rojo sourcemap).
+  sourcemap: string
+}
+
+export interface PlacesChanged {
+  places: PlaceInfo[]
+  active: string
 }
 
 export type ChatRole = 'user' | 'assistant' | 'tool' | 'system'
@@ -193,6 +227,14 @@ export interface ChatSession {
   guestTools?: boolean
   // Group chat: per-model token usage.
   usage?: GroupUsage[]
+  // Token/cost meter for the whole chat (all models), from the usage ledger.
+  meter?: UsageSummary
+  // Model routing of the last turn (budget/budget.ts routeModel): which model ran and why.
+  route?: { model: string; tier: 'cheap' | 'big' | 'chosen'; reason: string }
+  // Team (orchestrator) mode for this chat; default 'auto'.
+  orchestrate?: OrchestrateMode
+  // Orchestrator runs started from this chat, oldest first (see getOrchestration).
+  orchestrations?: string[]
 }
 
 export type TestAgentState = 'queued' | 'running' | 'passed' | 'failed' | 'error' | 'cancelled'
@@ -207,6 +249,8 @@ export interface TestAgent {
   model?: string
   startedAt?: number
   finishedAt?: number
+  // Tokens/cost of this agent run (usage ledger).
+  usage?: UsageSummary
 }
 
 // Packages: Wally dependencies (wally.toml) and Rokit tools (rokit.toml). See main/services/packages.ts.
@@ -351,7 +395,11 @@ export interface BlinkModel {
   // Repo-relative generated files (Blink appends .luau).
   outputs?: { client?: string; server?: string; types?: string }
   // Require expressions for the outputs from default.project.json, e.g. "ReplicatedStorage.Shared.events.client".
+  // (Other *.project.json files are tried when default.project.json does not map an output.)
   requirePaths?: { client?: string; server?: string }
+  // Every root *.blink file, each its own model (entry first, events.blink before the rest).
+  // The top-level fields above stay the primary entry's model for older callers.
+  files?: BlinkModel[]
   // A compile check is running.
   checking?: boolean
   checkedAt?: number
@@ -361,7 +409,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents {
+export interface HarnessEvents extends IntegrationEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -382,9 +430,11 @@ export interface HarnessEvents {
   'blink:changed': BlinkModel
   // Wally deps or Rokit tools changed, or an install started/finished.
   'packages:changed': PackagesChanged
+  // Places were added/removed or the active place changed.
+  'places:changed': PlacesChanged
 }
 
-export interface HarnessApi {
+export interface HarnessApi extends IntegrationApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>
@@ -478,6 +528,12 @@ export interface HarnessApi {
 
   // Blink: events.blink parsed (with imports) plus diagnostics from the last compile check.
   getBlink(): Promise<BlinkModel>
+
+  // Places (*.project.json at the root). The explorer, scripts, sourcemap, luau-lsp and rojo serve
+  // follow the active place; it is remembered per project.
+  listPlaces(): Promise<PlaceInfo[]>
+  getActivePlace(): Promise<PlaceInfo | null>
+  setActivePlace(file: string): Promise<PlaceInfo>
 
   on<K extends keyof HarnessEvents>(event: K, handler: (payload: HarnessEvents[K]) => void): () => void
 }

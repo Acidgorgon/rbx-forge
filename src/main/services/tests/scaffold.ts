@@ -89,15 +89,15 @@ export function specTemplate(instancePath: string[], moduleName: string, shape: 
 export class SpecError extends Error {}
 
 // Writes the spec unless it exists (then returns the existing one with created: false).
-export async function createSpec(root: string, modulePath: string, tree?: SourcemapNode): Promise<CreateSpecResult> {
+export async function createSpec(root: string, modulePath: string, tree?: SourcemapNode, projectFile = 'default.project.json'): Promise<CreateSpecResult> {
   const path = toRepoPath(modulePath).replace(/^\/+/, '')
   if (path.split('/').includes('..')) throw new SpecError(`Path is outside the project: ${modulePath}`)
   if (isSpecFile(path)) throw new SpecError(`${path} is already a spec`)
   if (!/\.(luau|lua)$/.test(path)) throw new SpecError(`${path} is not a .luau/.lua file`)
   if (/\.(server|client)\.(luau|lua)$/.test(path)) throw new SpecError(`${path} is a Script/LocalScript; only ModuleScripts can be required by a spec`)
-  const map = tree ?? (await buildSourcemap(root))
+  const map = tree ?? (await buildSourcemap(root, projectFile))
   const found = instancePathOf(map, path)
-  if (!found) throw new SpecError(`${path} is not mapped by default.project.json, so it has no instance path`)
+  if (!found) throw new SpecError(`${path} is not mapped by ${projectFile}, so it has no instance path`)
   if (found.className !== 'ModuleScript') throw new SpecError(`${path} maps to a ${found.className}, not a ModuleScript`)
   const specPath = specPathFor(path)
   const existing = await readFile(join(root, ...specPath.split('/')), 'utf8').catch(() => null)

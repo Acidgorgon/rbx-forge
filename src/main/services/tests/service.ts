@@ -2,7 +2,8 @@
 //
 //   lune run <resources/lune/runner.luau> -- --sourcemap <tmp> --format json [--spec f]... [--name n]
 //
-// cwd is the project root. The instance tree is rebuilt from default.project.json for each run and
+// cwd is the project root. The instance tree is rebuilt from the active place's project file
+// (default.project.json unless options.projectFile names another) for each run and
 // handed to the runner as a temp sourcemap, so a spec saved a moment ago is already mapped. Results
 // stream as TestProgress events; one run at a time (a new run cancels the one in flight).
 
@@ -32,6 +33,8 @@ export interface TestServiceOptions {
   lunePath?: () => string | null | undefined
   // resources/lune; else found next to the app (see lune.ts).
   runtimeDir?: string
+  // Project file of the active place (multi-place projects); default.project.json when unset.
+  projectFile?: () => string | null | undefined
 }
 
 interface ActiveRun {
@@ -87,6 +90,10 @@ export class TestService {
     this.options = options
   }
 
+  private projectFile(): string {
+    return this.options.projectFile?.() || 'default.project.json'
+  }
+
   setRoot(root: string | null): void {
     this.stopWatch()
     this.cancel()
@@ -108,12 +115,12 @@ export class TestService {
 
   async discover(): Promise<SpecFile[]> {
     if (!this.root) return []
-    return discoverSpecs(await buildSourcemap(this.root))
+    return discoverSpecs(await buildSourcemap(this.root, this.projectFile()))
   }
 
   async createSpec(modulePath: string): Promise<CreateSpecResult> {
     if (!this.root) throw new Error('No project open')
-    return createSpec(this.root, modulePath)
+    return createSpec(this.root, modulePath, undefined, this.projectFile())
   }
 
   // Kills the run in flight, if any. Its run() resolves with state 'cancelled'.
@@ -141,7 +148,7 @@ export class TestService {
 
     let tree: SourcemapNode
     try {
-      tree = await buildSourcemap(root)
+      tree = await buildSourcemap(root, this.projectFile())
     } catch (error) {
       return this.finish(base('error', (error as Error).message))
     }
@@ -313,7 +320,7 @@ export class TestService {
     const changed = [...this.pending]
     this.pending.clear()
     if (!root || changed.length === 0) return
-    const tree = await buildSourcemap(root).catch(() => null)
+    const tree = await buildSourcemap(root, this.projectFile()).catch(() => null)
     if (!tree) return
     const specs = discoverSpecs(tree)
     const sources = new Map<string, string>()

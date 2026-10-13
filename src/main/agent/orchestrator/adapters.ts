@@ -10,6 +10,9 @@
 import type { McpServerConfig, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatMessage } from '../../../shared/types.ts'
 import type { AgentEvent, AgentSpec, OrchTool, RunAgent, Usage } from './types.ts'
+import { runOpenAiLoop } from '../openaiLoop.ts'
+import { runResponsesLoop, usesResponsesApi } from '../responsesLoop.ts'
+import { fromOpenAiUsage } from '../budget/usage.ts'
 
 // ---------------------------------------------------------------------------------------------
 // A tiny async queue: turns callback-style producers into an AsyncIterable.
@@ -204,17 +207,34 @@ export interface OpenAiLoopLike {
     emit: (m: ChatMessage) => void
     extraBody?: Record<string, unknown>
     stop?: () => boolean
-    // Not in today's LoopOptions: the budget worker's loop reports per-request usage here. Loops
-    // that ignore it simply produce no usage events (budgets then only see time/turn limits).
-    onUsage?: (u: Usage) => void
+    // Per-request usage: the real loops pass the provider's raw usage object (normalized with
+    // normalizeUsage below); test loops may pass an already-normalized Usage.
+    onUsage?: (u: any) => void
   }): Promise<{ outcome: string; error?: string }>
 }
 
 export interface OpenAiAdapterDeps {
-  loop: OpenAiLoopLike
+  // Defaults to the provider's loop: runResponsesLoop when usesResponsesApi(provider, model)
+  // (OpenAI GPT-6 family), else runOpenAiLoop (Chat Completions).
+  loop?: OpenAiLoopLike
   endpoint: (spec: AgentSpec) => Promise<{ baseUrl: string; headers?: Record<string, string>; extraBody?: Record<string, unknown> } | { error: string }>
   // Appended to the role prompt (tools.ts OPENAI_TOOLS_NOTE). Constant, so caching still works.
   systemSuffix?: string
+  // Raw usage -> Usage (default: fromOpenAiUsage for raw provider objects, pass-through for
+  // objects already in the normalized shape).
+  normalizeUsage?: (raw: unknown) => Usage | null
+}
+
+function defaultNormalize(raw: unknown): Usage | null {
+  const o = raw as Partial<Usage> | null
+  if (o && typeof o === 'object' && typeof o.input === 'number' && typeof o.output === 'number' && typeof o.cacheRead === 'number') return o as Usage
+  return fromOpenAiUsage(raw)
+}
+
+// The loop for a spec's provider/model.
+export function loopFor(spec: Pick<AgentSpec, 'provider' | 'model'>): OpenAiLoopLike {
+  const responses = !!spec.provider && usesResponsesApi(spec.provider, spec.model)
+  return (responses ? runResponsesLoop : runOpenAiLoop) as unknown as OpenAiLoopLike
 }
 
 // Ends the loop right after submit_result / an accepted submit_plan, saving a model turn.
@@ -239,7 +259,9 @@ export function openAiRunAgent(deps: OpenAiAdapterDeps): RunAgent {
     void (async () => {
       const ep = await deps.endpoint(spec)
       if ('error' in ep) return ch.end(new Error(ep.error))
-      const res = await deps.loop({
+      const loop = deps.loop ?? loopFor(spec)
+      const normalize = deps.normalizeUsage ?? defaultNormalize
+      const res = await loop({
         baseUrl: ep.baseUrl,
         headers: ep.headers,
         model: spec.model,
@@ -256,7 +278,10 @@ export function openAiRunAgent(deps: OpenAiAdapterDeps): RunAgent {
         },
         ...(ep.extraBody ? { extraBody: ep.extraBody } : {}),
         stop: () => finished,
-        onUsage: (u) => ch.push({ type: 'usage', usage: u })
+        onUsage: (raw) => {
+          const u = normalize(raw)
+          if (u) ch.push({ type: 'usage', usage: u })
+        }
       })
       if (res.outcome === 'error') ch.push({ type: 'error', message: res.error ?? 'error' })
       else ch.push({ type: 'done' })

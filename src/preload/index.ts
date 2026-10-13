@@ -13,9 +13,36 @@ const methods = [
   'getAgents', 'runAgents', 'cancelAgent',
   'lspStart',
   'getBlink',
+  'listPlaces', 'getActivePlace', 'setActivePlace',
   'searchWally', 'wallyPackage', 'listWallyDeps', 'addWallyDep', 'removeWallyDep', 'updateWallyDep',
-  'listRokitTools', 'addRokitTool', 'updateRokitTool', 'curatedTools'
-] as const
+  'listRokitTools', 'addRokitTool', 'updateRokitTool', 'curatedTools',
+  // Collaboration
+  'joinProject', 'incomingChanges', 'activityFeed', 'blameFile', 'fileHistory',
+  'getForgeConfig', 'setForgeConfig', 'startFeatureBranch', 'openPullRequest', 'listOpenPRs',
+  'listClaims', 'claim', 'releaseClaim', 'runLint', 'formatFiles', 'preSyncCheck',
+  // Release
+  'releasePlan', 'releasePreflight', 'releaseRun', 'releaseMarkStudioPublished', 'releaseHistory',
+  'releaseSecretsStatus', 'releaseSetSecret', 'releaseClearSecret', 'releaseGetSettings', 'releaseSetSettings',
+  'releaseSetProjectPublish', 'releaseTestNotify', 'releaseChoosePlaceFile',
+  // Lune tests
+  'testsStatus', 'testsDiscover', 'testsRun', 'testsCancel', 'testsWatch', 'testsCreateSpec', 'testsLast',
+  // Analytics
+  'analyticsStatus', 'analyticsSetApiKey', 'analyticsClearApiKey', 'analyticsSetExperience', 'analyticsOverview',
+  'analyticsSeries', 'analyticsCompare', 'analyticsAcquisition', 'analyticsImportCsv', 'analyticsRemoveImport',
+  'analyticsPoller', 'analyticsPollNow', 'analyticsCatalog', 'analyticsSnippet',
+  // Usage and budgets
+  'getUsage', 'getUsageHistory', 'getBudget', 'setBudget',
+  // Orchestrator
+  'startOrchestration', 'getOrchestrations', 'getOrchestration', 'getTaskTranscript',
+  'cancelOrchestration', 'cancelOrchestrationTask', 'getOrchestrateMode', 'setOrchestrateMode',
+  // Feature folders
+  'renameFeature'
+] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]
+
+// Compile-time check: every HarnessApi method is exposed (tsc names any that is missing).
+type MissingMethods = Exclude<keyof HarnessApi, (typeof methods)[number] | 'on' | 'lspSend'>
+const everyMethodExposed: [MissingMethods] extends [never] ? true : MissingMethods = true
+void everyMethodExposed
 
 const api: Record<string, unknown> = {}
 for (const name of methods) {

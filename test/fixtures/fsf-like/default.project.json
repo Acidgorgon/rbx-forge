@@ -1,0 +1,42 @@
+{
+  "name": "FsfLike",
+  "servePort": 34872,
+  "servePlaceIds": [1000001],
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Packages": { "$path": "Packages" },
+      "Shared": {
+        "$className": "Folder",
+        "events": { "$path": "src/shared/events" },
+        "Modules": { "$path": "src/shared/Modules" },
+        "Interface": { "$path": "src/shared/Interface" },
+        "Skills": {
+          "$path": "src/skills/Definitions",
+          "MatchController": { "$path": "src/skills/Client" }
+        }
+      }
+    },
+    "ServerScriptService": {
+      "Server": {
+        "$className": "Folder",
+        "Admin": { "$path": "src/server/Admin" },
+        "Config": { "$path": "src/server/Config" },
+        "Data": { "$path": "src/server/Data" },
+        "events": { "$path": "src/server/events" },
+        "Handlers": { "$path": "src/server/Handlers" },
+        "Bootstrapper": { "$path": "src/server/Bootstrapper.server.luau" },
+        "Features": {
+          "$className": "Folder",
+          "$path": "src/server/Features",
+          "Skills": { "$path": "src/skills/Server" }
+        }
+      }
+    },
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "Client": { "$path": "src/client" }
+      }
+    }
+  }
+}

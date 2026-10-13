@@ -1,0 +1,9 @@
+option ClientOutput = "src/shared/events/client.luau"
+option ServerOutput = "src/server/events/server.luau"
+
+event Damage {
+    From: Server,
+    Type: Reliable,
+    Call: SingleSync,
+    Data: (u16)
+}

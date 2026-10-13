@@ -1,42 +1,245 @@
 // IPC entry point for the agent layer. main/index.ts calls registerAgentIpc once.
 
 import type { IpcMain } from 'electron'
-import type { ModelChoice, ProviderId } from '@shared/types'
+import type { ChatMessage, ModelChoice, OrchestrateMode, ProviderId } from '@shared/types'
 import { INVOKE_PREFIX } from '../../shared/types.ts'
 import type { HarnessContext } from '../context.ts'
-import { ChatManager } from './chat.ts'
+import { routeModel, tiersFor } from './budget/budget.ts'
+import { runOpenAiLoop } from './openaiLoop.ts'
+import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
+import { ChatManager, type TeamRunner } from './chat.ts'
 import { Credentials } from './credentials.ts'
+import { Meter } from './meter.ts'
 import type { FetchFn } from './openaiLoop.ts'
-import { isProviderId, Providers } from './providers.ts'
-import type { QueryFn } from './sdk.ts'
+import { capsBudget, classifyTool, defaultWriteTargets, openAiRunAgent, Orchestrator, sdkRunAgent, type RunAgent, type ToolClass, type WriteTargets } from './orchestrator/index.ts'
+import { projectRulesLoader, withRules } from './projectRules.ts'
+import { extraBody, isProviderId, Providers } from './providers.ts'
+import { executableOption, OPENAI_TOOLS_NOTE, sdkQuery, type QueryFn } from './sdk.ts'
+import { SERVICE_WRITE_TOOLS } from './serviceTools.ts'
 import { TestAgentRunner } from './testAgents.ts'
+import { gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type ToolFs } from './tools.ts'
 
 export interface AgentLayer {
   chats: ChatManager
   agents: TestAgentRunner
   credentials: Credentials
   providers: Providers
+  meter: Meter
+  orchestrator: Orchestrator
+  // Starts an orchestration for a chat message (also used by ChatManager's team mode).
+  team: TeamRunner
+  // One-shot, tool-less answer from the default provider's cheap tier (summaries).
+  oneShot(system: string, prompt: string): Promise<string>
   dispose(): void
+}
+
+// Orchestrator tool classes for tools the default classifier does not know: the service write
+// tools edit hot files (events.blink, wally.toml), so no orchestrated agent gets them ('admin');
+// tasks ask the lead with request_change instead.
+export function classifyForgeTool(name: string): ToolClass {
+  const bare = name.replace(/^mcp__[^_]+(?:_[^_]+)*__/, '')
+  if ((SERVICE_WRITE_TOOLS as readonly string[]).includes(bare)) return 'admin'
+  return classifyTool(bare)
+}
+
+// create_spec writes <Module>.spec.luau next to the module it is given: claim that file.
+export const forgeWriteTargets: WriteTargets = (name, args) => {
+  const bare = name.replace(/^mcp__[^_]+(?:_[^_]+)*__/, '')
+  if (bare === 'create_spec' && typeof args.path === 'string') {
+    const p = args.path.trim().replace(/\\/g, '/').replace(/^\.\//, '')
+    if (/\.spec\.(luau|lua)$/.test(p)) return [p]
+    const m = /^(.*\/)?([^/]+)\.(luau|lua)$/.exec(p)
+    if (!m) return null
+    const dir = m[1] ?? ''
+    const base = m[2] === 'init' ? (dir.replace(/\/$/, '').split('/').pop() ?? 'init') : m[2]
+    return [`${dir}${base}.spec.${m[3]}`]
+  }
+  return defaultWriteTargets(name, args)
 }
 
 // Builds the agent layer without Electron (tests pass a stub query function and fetch).
 export function createAgentLayer(
   ctx: HarnessContext,
-  opts: { queryFn?: QueryFn; credentials?: Credentials; fetchFn?: FetchFn } = {}
+  opts: { queryFn?: QueryFn; credentials?: Credentials; fetchFn?: FetchFn; toolFs?: ToolFs; meterSaveDelayMs?: number } = {}
 ): AgentLayer {
   const credentials = opts.credentials ?? new Credentials(ctx)
   const providers = new Providers(ctx, credentials, opts.fetchFn)
-  const chats = new ChatManager(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn })
-  const agents = new TestAgentRunner(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn })
+  const rules = projectRulesLoader(ctx)
+  const meter = new Meter(ctx, { saveDelayMs: opts.meterSaveDelayMs })
+  const orchestrator = createOrchestrator(ctx, { ...opts, credentials, providers, rules, meter })
+  const team = teamRunner(ctx, orchestrator)
+  const chats = new ChatManager(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team })
+  const agents = new TestAgentRunner(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter })
   return {
     chats,
     agents,
     credentials,
     providers,
+    meter,
+    orchestrator,
+    team,
+    oneShot: (system, prompt) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt),
     dispose() {
+      orchestrator.cancelAll()
       chats.dispose()
       agents.dispose()
+      meter.flush()
     }
+  }
+}
+
+async function oneShot(
+  ctx: HarnessContext,
+  w: { queryFn?: QueryFn; fetchFn?: FetchFn; credentials: Credentials; providers: Providers; meter: Meter },
+  system: string,
+  prompt: string
+): Promise<string> {
+  const base = w.providers.defaultModel()
+  const model = routeModel({ task: 'summary', text: prompt, settings: { provider: base.provider, model: base.model, tiers: ctx.getSetting('modelTiers', undefined) } }).model
+  if (base.provider === 'anthropic') {
+    const auth = await w.credentials.anthropicAuth()
+    if (!auth.ready) throw new Error(auth.error ?? 'Anthropic is not set up.')
+    let out = ''
+    for await (const m of (w.queryFn ?? sdkQuery)({
+      prompt,
+      options: {
+        cwd: ctx.project()?.root ?? process.cwd(),
+        model,
+        systemPrompt: system,
+        ...(auth.env ? { env: auth.env } : {}),
+        ...executableOption(),
+        mcpServers: {},
+        strictMcpConfig: true,
+        tools: [],
+        permissionMode: 'dontAsk',
+        settingSources: [],
+        persistSession: false,
+        maxTurns: 1
+      }
+    })) {
+      if (m.type === 'result') {
+        if (m.subtype === 'success' && !m.is_error) out = m.result
+        else throw new Error(m.subtype === 'success' ? m.result : m.errors?.join('; ') || m.subtype)
+      }
+    }
+    return out.trim()
+  }
+  const ep = await w.providers.endpoint(base.provider)
+  if ('error' in ep) throw new Error(ep.error)
+  let out = ''
+  const res = await (usesResponsesApi(base.provider, model) ? runResponsesLoop : runOpenAiLoop)({
+    baseUrl: ep.baseUrl,
+    headers: ep.headers,
+    model,
+    system,
+    history: [{ role: 'user', content: prompt }],
+    tools: [],
+    maxTurns: 1,
+    signal: new AbortController().signal,
+    agentId: 'summary',
+    emit: (m) => {
+      if (m.role === 'assistant') out = m.text
+    },
+    extraBody: extraBody(base.provider, model),
+    fetchFn: w.fetchFn,
+    onUsage: (raw) => {
+      w.meter.ledger.recordOpenAi(raw, { provider: base.provider, model })
+    }
+  })
+  if (res.outcome === 'error') throw new Error(res.error ?? 'request failed')
+  return out.trim()
+}
+
+interface OrchestratorWiring {
+  queryFn?: QueryFn
+  fetchFn?: FetchFn
+  toolFs?: ToolFs
+  credentials: Credentials
+  providers: Providers
+  rules: () => Promise<string>
+  meter: Meter
+}
+
+// The Orchestrator with Forge's tools, models, budgets and both provider adapters.
+function createOrchestrator(ctx: HarnessContext, w: OrchestratorWiring): Orchestrator {
+  // Adapters are built per spec: auth/endpoint are resolved when a task starts. The project rules
+  // block is appended to each role's constant prompt (constant per project, so still cacheable).
+  const runAgent: RunAgent = (spec) => ({
+    async *[Symbol.asyncIterator]() {
+      const rules = await w.rules().catch(() => '')
+      const withRulesSpec = { ...spec, system: withRules(spec.system, rules) }
+      const provider = spec.provider ?? 'anthropic'
+      if (provider === 'anthropic') {
+        const auth = await w.credentials.anthropicAuth()
+        if (!auth.ready) {
+          yield { type: 'error' as const, message: auth.error ?? 'Anthropic is not set up.' }
+          return
+        }
+        const root = ctx.project()?.root ?? process.cwd()
+        yield* sdkRunAgent({
+          query: w.queryFn ?? sdkQuery,
+          makeServer: (tools) => wrapInSdkServer(tools as any),
+          serverName: SERVER_NAME,
+          baseOptions: () => ({ cwd: root, ...(auth.env ? { env: auth.env } : {}), ...executableOption(), ...w.meter.guard.sdkOptions('agent'), persistSession: false })
+        })(withRulesSpec)
+        return
+      }
+      yield* openAiRunAgent({
+        endpoint: async (s) => {
+          const ep = await w.providers.endpoint(provider)
+          return 'error' in ep ? ep : { baseUrl: ep.baseUrl, headers: ep.headers, extraBody: extraBody(provider, s.model) }
+        },
+        systemSuffix: OPENAI_TOOLS_NOTE
+      })(withRulesSpec)
+    }
+  })
+
+  return new Orchestrator({
+    runAgent,
+    // Full gentree set (+ service tools). The engine filters by role and guards write tools.
+    tools: () => gentreeTools(ctx, { ...(w.toolFs ? { fs: w.toolFs } : {}) }),
+    classify: classifyForgeTool,
+    writeTargets: forgeWriteTargets,
+    budget: capsBudget(ctx.getSetting('orchestratorCaps', {})),
+    settings: () => ctx.getSetting('orchestrator', {}),
+    emit: (e) => {
+      ctx.emit('orchestrator:event', e)
+    }
+  })
+}
+
+// One orchestration for a chat message; resolves when the run ends.
+function teamRunner(ctx: HarnessContext, orchestrator: Orchestrator): TeamRunner {
+  return async ({ chatId, text, choice, signal, onStart }) => {
+    const handle = orchestrator.start({
+      request: text,
+      model: choice.model,
+      provider: choice.provider,
+      tiers: tiersFor({ provider: choice.provider, model: choice.model, tiers: ctx.getSetting('modelTiers', undefined) }),
+      projectContext: await projectContext(ctx)
+    })
+    onStart(handle.runId)
+    ctx.log({ service: 'agent', stream: 'info', text: `team run ${handle.runId} for chat ${chatId}` })
+    const onAbort = () => orchestrator.cancel(handle.runId)
+    signal.addEventListener('abort', onAbort, { once: true })
+    try {
+      const r = await handle.done
+      return { state: r.state, answer: r.answer, detail: r.detail }
+    } finally {
+      signal.removeEventListener('abort', onAbort)
+    }
+  }
+}
+
+// The lead's orientation: a compact project map when the project_map tool is available.
+async function projectContext(ctx: HarnessContext): Promise<string | undefined> {
+  const tool = ctx.serviceTools?.().read.find((t) => t.name === 'project_map')
+  if (!tool) return undefined
+  try {
+    const r = await runTool(tool as any, { maxTokens: 1500 })
+    return r.isError ? undefined : r.content.map((c) => c.text).join('')
+  } catch {
+    return undefined
   }
 }
 
@@ -51,9 +254,9 @@ function choice(c: unknown): ModelChoice | undefined {
   return isProviderId(p) && typeof model === 'string' && model.trim() ? { provider: p, model } : undefined
 }
 
-export function registerAgentIpc(ctx: HarnessContext, ipcMain: IpcMain): { dispose(): void } {
+export function registerAgentIpc(ctx: HarnessContext, ipcMain: IpcMain): { dispose(): void; summarize(prompt: string): Promise<string> } {
   const layer = createAgentLayer(ctx)
-  const { chats, agents, credentials, providers } = layer
+  const { chats, agents, credentials, providers, meter, orchestrator, team } = layer
 
   const providersChanged = async () => {
     providers.forgetReachability()
@@ -64,7 +267,11 @@ export function registerAgentIpc(ctx: HarnessContext, ipcMain: IpcMain): { dispo
     listChats: () => chats.list(),
     newChat: (c?: unknown) => chats.create(choice(c)),
     // Test agent ids work here too, so the UI can open an agent's transcript like a chat.
-    getChat: (id: string) => chats.messages(id) ?? agents.messages(id) ?? [],
+    getChat: (id: string) => {
+      const orch = /^orch:([^:]+):(.+)$/.exec(String(id ?? ''))
+      if (orch) return orchestrator.transcript(orch[1], orch[2]) ?? []
+      return chats.messages(id) ?? agents.messages(id) ?? []
+    },
     sendChat: (id: string, text: string) => chats.send(id, text),
     stopChat: (id: string) => chats.stop(id),
     // Group chat.
@@ -106,6 +313,49 @@ export function registerAgentIpc(ctx: HarnessContext, ipcMain: IpcMain): { dispo
       await providersChanged()
     },
 
+    // Token usage meter and budgets.
+    getUsage: (scope: unknown, id?: unknown) => {
+      const s = scope === 'agent' || scope === 'day' ? scope : 'chat'
+      return meter.snapshot(s, typeof id === 'string' ? id : undefined)
+    },
+    getUsageHistory: (days: unknown) => {
+      const n = Math.max(1, Math.min(120, Math.floor(Number(days) || 7)))
+      return meter.ledger.days(n).map((d) => ({ day: d.day, totals: { ...d.totals } }))
+    },
+    getBudget: () => meter.limits(),
+    setBudget: (limits: unknown) => meter.setLimits(limits && typeof limits === 'object' ? (limits as any) : {}),
+
+    // Orchestrator (team mode).
+    startOrchestration: async (chatId: unknown, text: unknown, c?: unknown) => {
+      const t = String(text ?? '').trim()
+      if (!t) throw new Error('empty request')
+      const pick = choice(c) ?? providers.defaultModel()
+      let runId = ''
+      const started = new Promise<string>((resolve) => {
+        void team({
+          chatId: String(chatId ?? ''),
+          text: t,
+          choice: pick,
+          signal: new AbortController().signal,
+          onStart: (id) => {
+            runId = id
+            resolve(id)
+          }
+        }).catch((e) => ctx.log({ service: 'agent', stream: 'stderr', text: `team run failed: ${(e as Error).message}` }))
+      })
+      await started
+      return orchestrator.board(runId)
+    },
+    getOrchestrations: () => orchestrator.list(),
+    getOrchestration: (runId: unknown) => orchestrator.board(String(runId ?? '')),
+    getTaskTranscript: (runId: unknown, taskId: unknown): ChatMessage[] => orchestrator.transcript(String(runId ?? ''), String(taskId ?? '')) ?? [],
+    cancelOrchestration: (runId: unknown) => orchestrator.cancel(String(runId ?? '')),
+    cancelOrchestrationTask: (runId: unknown, taskId: unknown) => orchestrator.cancelTask(String(runId ?? ''), String(taskId ?? '')),
+    getOrchestrateMode: (chatId: unknown) => chats.orchestrateMode(String(chatId ?? '')),
+    setOrchestrateMode: (chatId: unknown, mode: unknown) => {
+      chats.setOrchestrateMode(String(chatId ?? ''), (['auto', 'single', 'team'].includes(String(mode)) ? mode : 'auto') as OrchestrateMode)
+    },
+
     getAgents: () => agents.list(),
     runAgents: (scenarios: string[], c?: unknown) => agents.run(Array.isArray(scenarios) ? scenarios : [], choice(c)),
     cancelAgent: (id: string) => agents.cancel(id)
@@ -116,6 +366,8 @@ export function registerAgentIpc(ctx: HarnessContext, ipcMain: IpcMain): { dispo
   }
 
   return {
+    summarize: (prompt) =>
+      layer.oneShot('Summarize these incoming git changes for a teammate on a Roblox (Luau, Rojo) game: what changed, by whom, which features are touched and anything that may conflict with local work. Terse bullet points, at most 200 words.', prompt),
     dispose() {
       for (const name of Object.keys(handlers)) ipcMain.removeHandler(INVOKE_PREFIX + name)
       layer.dispose()

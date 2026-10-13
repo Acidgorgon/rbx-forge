@@ -165,12 +165,14 @@ function mapsFolder(tree: SourcemapNode, folder: string): boolean {
   return walk(tree)
 }
 
-// The project's instance tree in sourcemap form. Throws when default.project.json is unreadable.
-export async function buildSourcemap(root: string): Promise<SourcemapNode> {
-  const project = await readJson<{ name?: string; tree?: Record<string, unknown> }>(join(root, 'default.project.json'))
-  if (!project?.tree) throw new Error(`No readable default.project.json in ${root}`)
+// The project's instance tree in sourcemap form, from the active place's project file (multi-place
+// projects: e.g. menu.project.json; default.project.json otherwise). Throws when it is unreadable.
+export async function buildSourcemap(root: string, projectFile = 'default.project.json'): Promise<SourcemapNode> {
+  const file = /^[^/\\]+\.project\.json$/.test(projectFile) ? projectFile : 'default.project.json'
+  const project = await readJson<{ name?: string; tree?: Record<string, unknown> }>(join(root, file))
+  if (!project?.tree) throw new Error(`No readable ${file} in ${root}`)
   const tree = await fromProjectNode({ root, depth: 0 }, '', project.name || 'Game', project.tree)
-  tree.filePaths = ['default.project.json', ...(tree.filePaths ?? [])]
+  tree.filePaths = [file, ...(tree.filePaths ?? [])]
   const testsInfo = await stat(join(root, TESTS_FOLDER)).catch(() => null)
   if (testsInfo?.isDirectory() && !mapsFolder(tree, TESTS_FOLDER)) {
     const folder = await fromDirectory({ root, depth: 0 }, TESTS_FOLDER, TESTS_INSTANCE)

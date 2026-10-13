@@ -1,5 +1,6 @@
 // What the agent layer needs from the rest of the main process.
 // services/ implements it; agent/ only depends on this interface.
+import type { ZodRawShape } from 'zod'
 import type {
   GitStatus,
   HarnessEvents,
@@ -36,4 +37,30 @@ export interface HarnessContext {
 
   emit<K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]): void
   log(line: Omit<LogLine, 'at'>): void
+
+  // Optional: tools from the integrated services (project map/search, Blink, Wally, Lune tests,
+  // analytics), appended to the gentree tool list by gentreeTools(). main/integrations.ts provides
+  // it; tests usually leave it out.
+  serviceTools?(): ServiceToolSets
+  // Optional: fire-and-forget team notification (Discord) for a failed test agent.
+  notifyTestFailure?(event: { scenario: string; summary: string; details?: string }): void
+}
+
+// Tool shape shared with agent/tools.ts GentreeTool (structural; kept here so context.ts does not
+// import the agent layer).
+export interface ServiceTool {
+  name: string
+  description: string
+  inputSchema: ZodRawShape
+  handler: (args: any, extra: unknown) => Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }>
+}
+
+export interface ServiceToolSets {
+  // Read-only: every agent, including test agents, guests (filtered) and scouts.
+  read: ServiceTool[]
+  // Lune: run_tests (read-only, every agent) and create_spec (writes one new spec file: chat,
+  // test agents and orchestrator testers/builders).
+  tests: ServiceTool[]
+  // Change the project (Blink events, Wally deps): only agents that may write.
+  write: ServiceTool[]
 }

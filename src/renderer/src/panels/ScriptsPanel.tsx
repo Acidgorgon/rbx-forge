@@ -8,7 +8,7 @@ import { Menu, type MenuEntry } from '../components/Menu'
 import { copyPaths, pathMenu, type PathTarget } from '../components/pathActions'
 import { FilterBox, useCopyShortcut } from './common'
 
-const ORDER: ScriptCategory[] = ['Configs', 'Data', 'Services', 'Controllers', 'Modules', 'Events', 'UI', 'Entry points', 'Other']
+const ORDER: ScriptCategory[] = ['Configs', 'Data', 'Services', 'Handlers', 'Controllers', 'Skills', 'Modules', 'Protocols', 'Events', 'UI', 'Stories', 'Entry points', 'Tests', 'Other']
 
 const toTarget = (s: ScriptEntry): PathTarget => ({ name: s.name, className: s.kind, instancePath: s.instancePath, filePath: s.path })
 

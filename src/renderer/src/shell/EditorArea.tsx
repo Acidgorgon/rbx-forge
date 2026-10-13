@@ -15,13 +15,15 @@ import { ReleasePage } from '../pages/ReleasePage'
 import { AnalyticsPage } from '../pages/AnalyticsPage'
 import { ArtPage } from '../pages/art/ArtPage'
 import { VfxLabPage } from '../pages/vfx/VfxLabPage'
+import { AnimLabPage } from '../pages/anim/AnimLabPage'
+import { AbilityPage } from '../pages/ability/AbilityPage'
 import { UiPreviewPage } from '../pages/uipreview/UiPreviewPage'
 import { MemoryPage } from '../pages/memory/MemoryPage'
 import { GroupChatsPage } from '../assistant/GroupChatsPage'
 import { ConflictPage } from '../pages/ConflictPage'
 import { TranscriptPage } from '../pages/TranscriptPage'
 
-const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', art: 'image', vfx: 'sparkle', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', transcript: 'bot' }
+const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', art: 'image', vfx: 'sparkle', anim: 'figure', ability: 'bolt', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', transcript: 'bot' }
 
 function TabGlyph({ tab }: { tab: Tab }) {
   if (tab.kind === 'file' && tab.path) {
@@ -253,6 +255,12 @@ export function EditorArea() {
         break
       case 'vfx':
         page = <VfxLabPage />
+        break
+      case 'anim':
+        page = <AnimLabPage />
+        break
+      case 'ability':
+        page = <AbilityPage />
         break
       case 'uipreview':
         page = <UiPreviewPage />

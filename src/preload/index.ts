@@ -60,6 +60,13 @@ const methods = [
   'vfxStatus', 'vfxList', 'vfxGet', 'vfxSearch', 'vfxImport', 'vfxChooseImport', 'vfxUpdate', 'vfxDelete', 'vfxRate',
   'vfxLearn', 'vfxRecipes', 'vfxMake', 'vfxRefine', 'vfxCancel', 'vfxCreate', 'vfxFile', 'vfxSaveThumb', 'vfxResolveTexture', 'vfxTestInStudio',
   'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample',
+  // Animation Lab (services/anim) + Labs model tiers
+  'animStatus', 'animList', 'animGet', 'animImport', 'animPreviewImport', 'animChooseImport', 'animUpdate', 'animDelete', 'animRate',
+  'animLearn', 'animStyle', 'animCoverage', 'animCompose', 'animRunScript', 'animRefine', 'animCancel', 'animChecks', 'animExamples',
+  'animAddExample', 'animFile', 'animSaveThumb', 'animExport', 'animUpload', 'listAnimClips', 'getAnimPose', 'getLabModels', 'setLabModels',
+  // Ability Composer (moves: animation + VFX + shake / screen / hit-stop / movement)
+  'abilityStatus', 'abilityList', 'abilityGet', 'abilitySave', 'abilityDelete', 'abilityRate', 'abilityCompose', 'abilityCritique',
+  'abilityExport', 'abilityExamples', 'abilityAddExample', 'abilityFile', 'abilitySaveThumb', 'abilityChooseSounds', 'abilitySoundUrl',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

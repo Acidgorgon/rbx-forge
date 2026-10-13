@@ -44,6 +44,12 @@ import { createVfxWiring } from './services/vfx/wire.ts'
 import { vfxElectronDeps } from './services/vfx/electron.ts'
 import { uiPreviewCapture } from './services/uiPreview/electron.ts'
 import { withVfxTools } from './services/vfx/tools.ts'
+import { createAnimWiring } from './services/anim/wire.ts'
+import { animElectronDeps } from './services/anim/electron.ts'
+import { withAnimTools } from './services/anim/tools.ts'
+import { createAbilityWiring } from './services/ability/wire.ts'
+import { abilityElectronDeps } from './services/ability/electron.ts'
+import { withAbilityTools } from './services/ability/tools.ts'
 import { defaultChatImage } from './services/art/wire.ts'
 
 // Name and data folder. The data folder stays "rbx-forge" (what development builds have always
@@ -346,7 +352,7 @@ const ctx: HarnessContext = {
   emit,
   log: (line) => logs.push(line),
 
-  serviceTools: () => ({ ...withVfxTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), vfx.tools()), chat: terminal.chatTools() }),
+  serviceTools: () => ({ ...withAbilityTools(withAnimTools(withVfxTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), vfx.tools()), anim.tools()), ability.tools()), chat: terminal.chatTools() }),
   notifyTestFailure: (event) => integrations.notifyTestFailure(event)
 }
 
@@ -409,7 +415,7 @@ const vfx = createVfxWiring({
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[vfx] ${text}` }),
   memory,
-  vision: () => (system, prompt, images) => agentIpc.vision(system, prompt, images),
+  vision: (tier) => (system, prompt, images) => agentIpc.vision(system, prompt, images, { tier }),
   rojo: {
     running: () => supervisor.statuses().some((s) => s.id === 'rojo' && (s.state === 'running' || s.state === 'starting')),
     start: () => supervisor.start('rojo')
@@ -419,6 +425,42 @@ const vfx = createVfxWiring({
 })
 // The user VFX library rides along in .forgepack export/import and device sync (one folder per entry).
 registerPackSection({ id: 'vfx', label: 'VFX library', dir: () => vfx.service.userLibraryDir })
+
+// Animation Lab (services/anim): clip library, style profiles as memory skills, timeline scripts and
+// the render / critique / refine loop. Models per Labs tier (Settings > Labs) through the agent layer.
+const anim = createAnimWiring({
+  userDataDir: app.getPath('userData'),
+  root: () => project?.info.root ?? null,
+  settings,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[anim] ${text}` }),
+  memory,
+  model: (tier) => (system, prompt, images) => agentIpc.vision(system, prompt, images, { tier }),
+  openCloud: integrations.openCloud,
+  ...animElectronDeps(preloadPath())
+})
+// The user animation library rides along in .forgepack export/import and device sync.
+registerPackSection({ id: 'anim', label: 'Animation library', dir: () => anim.service.userLibraryDir })
+
+// Ability Composer (services/ability): moves that reference VFX Lab effects and Animation Lab clips by
+// id; compose uses vfx_compose / anim_compose from the tool registry when they exist.
+const ability = createAbilityWiring({
+  userDataDir: app.getPath('userData'),
+  root: () => project?.info.root ?? null,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[ability] ${text}` }),
+  memory,
+  model: (tier) => (system, prompt, images) => agentIpc.vision(system, prompt, images, { tier }),
+  vfx: { get: (id) => vfx.service.get(id), list: () => vfx.service.list(), search: (q, o) => vfx.service.search(q, o), addExample: (k) => vfx.service.addExample(k), writeProjectFiles: (e) => vfx.service.writeProjectFiles(e) },
+  anim: () => anim.service.listAnimClips(),
+  tools: () => {
+    const sets = ctx.serviceTools?.()
+    return sets ? [...sets.read, ...sets.write] : []
+  },
+  lune: async () => (await vfx.service.status()).lune.available,
+  ...abilityElectronDeps(preloadPath())
+})
+registerPackSection({ id: 'abilities', label: 'Ability library', dir: () => ability.service.userLibraryDir })
 
 const handlers: Record<string, (...args: any[]) => unknown> = {
   openProject: (root?: string) => openProject(root),
@@ -482,7 +524,11 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 for (const [name, handler] of Object.entries(handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers })) {
+  if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
+  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
+}
+for (const [name, handler] of Object.entries(ability.handlers)) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
@@ -576,6 +622,7 @@ app.on('before-quit', (event) => {
   brainSync.dispose()
   updater.dispose()
   vfx.service.dispose()
+  anim.service.dispose()
   lsp.dispose()
   closeProject()
     .catch(() => undefined)

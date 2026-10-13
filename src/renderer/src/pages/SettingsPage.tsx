@@ -10,6 +10,7 @@ import { errorText, fmtTokens, fmtUsd } from '../lib/format'
 import { ToolchainSection } from '../setup/Toolchain'
 import { DefaultEffortSetting } from '../assistant/EffortPicker'
 import { UpdatesSection } from '../updates/UpdatesSection'
+import { LabsSettings } from './LabsSettings'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -27,6 +28,7 @@ const SECTIONS = [
   ['model', 'Default model'],
   ['providers', 'Providers'],
   ['budgets', 'Budgets'],
+  ['labs', 'Labs'],
   ['places', 'Places'],
   ['sync', 'Sync'],
   ['toolchain', 'Toolchain'],
@@ -347,6 +349,11 @@ export function SettingsPage() {
           )}
           <h3 className="set-sub">Spend, last 14 days</h3>
           <UsageHistory />
+        </section>
+
+        <section className="set-sec" id="set-labs">
+          <h2>Labs</h2>
+          <LabsSettings />
         </section>
 
         <section className="set-sec" id="set-places">

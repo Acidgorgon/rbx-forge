@@ -15,6 +15,9 @@
 //    Get Operation scope asset:read, 300/min with a 100 per 60 s throttle per key.
 //    Operation { path: "operations/{id}", done: bool, error?: { code, message }, response?: Asset }.
 //    creationContext.expectedPrice (Robux) fails the operation with 400 when the fee is higher.
+//  - Animation assets (Animation Lab): the same Create Asset call with assetType "Animation" and a
+//    .rbxm / .rbxmx file holding a KeyframeSequence, content type model/x-rbxm, up to 20 MB
+//    (usage-assets "Supported asset types and limits" table).
 
 import { randomUUID } from 'node:crypto'
 import { defaultSleep, globalArtFetch, mimeOf, parseRetryAfter, type ArtFetch, type Sleep } from './openaiImages.ts'
@@ -43,7 +46,9 @@ export interface UploadInput {
   fileName: string
   displayName: string
   description?: string
-  assetType: 'Image' | 'Decal'
+  assetType: 'Image' | 'Decal' | 'Animation'
+  // Defaults to the image type sniffed from the bytes (contentTypeFor).
+  contentType?: string
   creator: Creator
   fetch?: ArtFetch
   sleep?: Sleep
@@ -172,7 +177,7 @@ export async function uploadImageAsset(input: UploadInput): Promise<UploadResult
   const now = input.now ?? Date.now
   const { body, contentType } = multipartBody([
     { name: 'request', value: assetRequestJson(input) },
-    { name: 'fileContent', value: input.bytes, fileName: input.fileName, contentType: contentTypeFor(input.bytes) }
+    { name: 'fileContent', value: input.bytes, fileName: input.fileName, contentType: input.contentType ?? contentTypeFor(input.bytes) }
   ])
   input.onProgress?.('uploading')
   const created = await send(fetch, sleep, `${ASSETS_BASE}/assets`, { method: 'POST', headers: { 'x-api-key': apiKey, 'content-type': contentType, accept: 'application/json' }, body })
@@ -206,4 +211,14 @@ export async function uploadImageAsset(input: UploadInput): Promise<UploadResult
   if (!assetId) throw new AssetUploadError('Roblox finished the upload but returned no asset id')
   const moderation = op.response?.moderationResult?.moderationState
   return { assetId, uri: `rbxassetid://${assetId}`, operationId: operationId ?? '', ...(moderation ? { moderation } : {}) }
+}
+
+export const ANIMATION_CONTENT_TYPE = 'model/x-rbxm'
+
+// A KeyframeSequence (.rbxm / .rbxmx bytes) as an Animation asset (Animation Lab upload).
+export function uploadAnimationAsset(input: Omit<UploadInput, 'assetType' | 'contentType'>): Promise<UploadResult> {
+  if (!/\.rbxmx?$/i.test(input.fileName)) throw new AssetUploadError('Animation uploads must be .rbxm or .rbxmx files')
+  if (!input.bytes.byteLength) throw new AssetUploadError('The animation file is empty')
+  if (input.bytes.byteLength > MAX_UPLOAD_BYTES) throw new AssetUploadError('Roblox accepts animation files up to 20 MB')
+  return uploadImageAsset({ ...input, assetType: 'Animation', contentType: ANIMATION_CONTENT_TYPE })
 }

@@ -1,6 +1,7 @@
 // IPC handlers (VfxApi) and agent tools for the VFX Lab, built from app pieces passed in by
 // main/index.ts. No electron imports: capture, dialogs and the vision model come in as functions.
 
+import type { LabTier } from '../../../shared/labModels.ts'
 import { join } from 'node:path'
 import { findRuntimeDir, luneStatus } from '../tests/lune.ts'
 import type { VfxEffect, VfxRefineOptions, VfxScope } from '../../../shared/vfx/types.ts'
@@ -15,7 +16,7 @@ export interface VfxWireDeps {
   emit: (event: 'vfx:changed' | 'vfx:progress', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   memory?: MemoryLike
-  vision?: () => VisionFn | null
+  vision?: (tier?: LabTier) => VisionFn | null
   capture?: (req: CaptureRequest) => Promise<Buffer[]>
   chooseImport?: () => Promise<string[]>
   rojo?: { running(): boolean; start(): Promise<void> }

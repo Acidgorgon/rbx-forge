@@ -22,6 +22,18 @@ async function boot(): Promise<void> {
     createRoot(document.getElementById('root')!).render(<VfxCapture />)
     return
   }
+  // Offscreen capture window for the Animation Lab critic: only the R15 preview.
+  if (new URLSearchParams(location.search).has('anim-capture')) {
+    const { AnimCapture } = await import('./pages/anim/AnimCapture')
+    createRoot(document.getElementById('root')!).render(<AnimCapture />)
+    return
+  }
+  // Offscreen capture window for the Ability Composer critic: only the ability preview.
+  if (new URLSearchParams(location.search).has('ability-capture')) {
+    const { AbilityCapture } = await import('./pages/ability/AbilityCapture')
+    createRoot(document.getElementById('root')!).render(<AbilityCapture />)
+    return
+  }
   const { App } = await import('./App')
   createRoot(document.getElementById('root')!).render(
     <StrictMode>

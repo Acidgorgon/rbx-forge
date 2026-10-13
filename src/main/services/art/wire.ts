@@ -32,6 +32,8 @@ export interface ArtWiring {
   service: ArtService
   handlers: Record<string, (...args: any[]) => unknown>
   tools: () => ArtTool[]
+  // The Open Cloud key (Art page, else the release key) for other uploads (Animation Lab).
+  robloxKey: () => Promise<{ key: string; source: 'art' | 'release' } | null>
 }
 
 // Generated images go into the chat image store; the tool result carries its marker so the chat
@@ -109,6 +111,7 @@ export function createArtWiring(deps: ArtWireDeps): ArtWiring {
   return {
     service,
     handlers,
+    robloxKey,
     tools: () => (tools ??= artTools({ service, chatImage: deps.chatImage ?? defaultChatImage }))
   }
 }

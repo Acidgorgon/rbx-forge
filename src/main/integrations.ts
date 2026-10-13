@@ -88,6 +88,8 @@ export interface Integrations {
   analytics: analyticsSvc.AnalyticsService
   releases: release.ReleaseService
   secrets: release.SecretStore
+  // Open Cloud asset uploads outside the Art page (Animation Lab): the key and creator set there.
+  openCloud: { key(): Promise<string | null>; creator(): { userId?: number; groupId?: number } }
 }
 
 const SECRET_KINDS: ReleaseSecretKind[] = ['openCloudApiKey', 'discordWebhook']
@@ -456,6 +458,13 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
   return {
     handlers,
     serviceTools,
+    openCloud: {
+      key: async () => (await art.robloxKey().catch(() => null))?.key ?? null,
+      creator: () => {
+        const s = art.service.settings()
+        return { ...(s.creatorUserId ? { userId: s.creatorUserId } : {}), ...(s.creatorGroupId ? { groupId: s.creatorGroupId } : {}) }
+      }
+    },
     notifyTestFailure: (event) => {
       const r = deps.root()
       if (!r) return

@@ -6,6 +6,7 @@
 // references and recipes, and a vision model critiques rendered frames against them.
 // No electron imports: rendering (capture), the vision model and Rojo come in as functions.
 
+import type { LabTier } from '../../../shared/labModels.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
@@ -52,7 +53,8 @@ export interface VfxServiceDeps {
   runtimeDir: () => string | null
   luneRun?: LuneRun
   capture?: (req: CaptureRequest) => Promise<Buffer[]>
-  vision?: () => VisionFn | null
+  // Per-task tier (shared/labModels.ts): 'critic' for frame critique, 'default' for drafting/compose.
+  vision?: (tier?: LabTier) => VisionFn | null
   memory?: MemoryLike
   rojo?: { running(): boolean; start(): Promise<void> }
   fetch?: typeof fetch
@@ -633,7 +635,7 @@ export class VfxService {
     const refs = await this.references(tags, entry.origin, entry.id)
     const recipe = await this.recipeFor(tags)
     const refNames = refs.map((r) => r.name)
-    const vision = this.deps.vision?.()
+    const vision = this.deps.vision?.('critic')
     if (!vision) return heuristicCritique(effect, recipe, refNames)
     const prompt = critiquePrompt({ prompt: entry.origin, effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })
     const images: ImagePayload[] = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...(await this.referenceImages(refs, tags))]
@@ -734,7 +736,7 @@ export class VfxService {
     const recipe = await this.recipeFor(tags.length ? tags : prompt.toLowerCase().split(/\W+/))
     const entries = await this.list()
     const fallback = draftSpec(prompt, { recipe, textures: libraryTextures(entries) })
-    const vision = this.deps.vision?.()
+    const vision = this.deps.vision?.('default')
     if (!vision) return { spec: fallback, source: 'draft' }
     const refs = await this.references(tags, prompt)
     const lines = [
@@ -813,7 +815,7 @@ export class VfxService {
     let source: VfxScriptResult['source'] = 'draft'
     let result: VfxScriptResult | null = null
     let script = opts.script?.trim() ? opts.script : ''
-    const vision = this.deps.vision?.()
+    const vision = this.deps.vision?.('default')
     if (!script && vision) {
       const tags = promptTags(text)
       const liked = (await this.list()).filter((e) => e.rating === 'up' && e.effect?.script && e.tags.some((t) => tags.includes(t))).slice(0, 1)

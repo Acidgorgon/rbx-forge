@@ -10,6 +10,7 @@ import { isEffortChoice } from '../../shared/modelCaps.ts'
 import { ChatImageStore, chatImageStore, setChatImageStore } from './chatImages.ts'
 import type { HarnessContext } from '../context.ts'
 import { routeModel, tiersFor } from './budget/budget.ts'
+import { LAB_MODELS_SETTING, resolveLabModel, type LabTier } from '../../shared/labModels.ts'
 import { runOpenAiLoop } from './openaiLoop.ts'
 import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
 import { ChatManager, type TeamRunner } from './chat.ts'
@@ -36,9 +37,10 @@ export interface AgentLayer {
   // Starts an orchestration for a chat message (also used by ChatManager's team mode).
   team: TeamRunner
   // One-shot, tool-less answer from the default provider's cheap tier (summaries).
-  oneShot(system: string, prompt: string): Promise<string>
+  oneShot(system: string, prompt: string, opts?: { tier?: LabTier }): Promise<string>
   // One-shot answer about images (VFX critique) on the default model, which should see images.
-  visionShot(system: string, prompt: string, images: ImagePayload[]): Promise<string>
+  // opts.tier picks a Labs model tier instead (shared/labModels.ts: cheap / default / critic).
+  visionShot(system: string, prompt: string, images: ImagePayload[], opts?: { tier?: LabTier }): Promise<string>
   dispose(): void
 }
 
@@ -93,8 +95,8 @@ export function createAgentLayer(
     meter,
     orchestrator,
     team,
-    oneShot: (system, prompt) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt),
-    visionShot: (system, prompt, images) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt, images),
+    oneShot: (system, prompt, o) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt, [], o?.tier),
+    visionShot: (system, prompt, images, o) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt, images, o?.tier),
     dispose() {
       orchestrator.cancelAll()
       chats.dispose()
@@ -127,10 +129,17 @@ async function oneShot(
   system: string,
   prompt: string,
   // With images: the default model (not the cheap tier), images sent inline.
-  images: ImagePayload[] = []
+  images: ImagePayload[] = [],
+  // A Labs tier (cheap / default / critic) overrides the rule above.
+  tier?: LabTier
 ): Promise<string> {
   const base = w.providers.defaultModel()
-  const model = images.length ? base.model : routeModel({ task: 'summary', text: prompt, settings: { provider: base.provider, model: base.model, tiers: ctx.getSetting('modelTiers', undefined) } }).model
+  const tiers = ctx.getSetting('modelTiers', undefined)
+  const model = tier
+    ? resolveLabModel(tier, ctx.getSetting(LAB_MODELS_SETTING, {}), base.model, tiersFor({ provider: base.provider, model: base.model, tiers }))
+    : images.length
+      ? base.model
+      : routeModel({ task: 'summary', text: prompt, settings: { provider: base.provider, model: base.model, tiers } }).model
   if (base.provider === 'anthropic') {
     const auth = await w.credentials.anthropicAuth()
     if (!auth.ready) throw new Error(auth.error ?? 'Anthropic is not set up.')
@@ -303,7 +312,7 @@ export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
   opts: { memory?: MemoryHooks; userDataDir?: string } = {}
-): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[]): Promise<string> } {
+): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: { tier?: LabTier }): Promise<string> } {
   const layer = createAgentLayer(ctx, { memory: opts.memory })
   // Chat images live under userData/chat-images (history keeps only references).
   setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))
@@ -435,7 +444,7 @@ export function registerAgentIpc(
   }
 
   return {
-    vision: (system, prompt, images) => layer.visionShot(system, prompt, images),
+    vision: (system, prompt, images, o) => layer.visionShot(system, prompt, images, o),
     summarize: (prompt) =>
       layer.oneShot('Summarize these incoming git changes for a teammate on a Roblox (Luau, Rojo) game: what changed, by whom, which features are touched and anything that may conflict with local work. Terse bullet points, at most 200 words.', prompt),
     dispose() {

@@ -29,6 +29,8 @@ import { updatesMock } from './mockUpdates'
 import { brainSyncMock } from './mockBrainSync'
 import { uiPreviewMock, uiPreviewMockSources } from './mockUiPreview'
 import { vfxMock } from './mockVfx'
+import { animMock } from './mockAnim'
+import { abilityMock } from './mockAbility'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -867,6 +869,9 @@ const api: HarnessApi = {
   ...uiPreviewMock(emit, (text) => log('harness', text, 'info')),
   // VFX Lab (mockVfx.ts): a small effect library built with the shared VFX code.
   ...vfxMock(emit),
+  // Animation Lab (mockAnim.ts): built-in examples and imported-looking clips from the shared code.
+  ...animMock(emit),
+  ...abilityMock(emit),
 
   on(event, handler) {
     let set = listeners.get(event)

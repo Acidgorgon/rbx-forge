@@ -4,9 +4,9 @@
 
 import { existsSync } from 'node:fs'
 import { userInfo } from 'node:os'
-import { join } from 'node:path'
+import { join, posix, win32 } from 'node:path'
 import type { LogLine } from '@shared/types'
-import { rokitBin, setLoginShellPath, loadLoginShellPath } from './services/tools.ts'
+import { defaultContext, rokitBin, setLoginShellPath, loadLoginShellPath } from './services/tools.ts'
 import {
   checkProjectTools,
   defaultToolchainEnv,
@@ -68,9 +68,10 @@ const OS_KEY: Record<string, string> = { darwin: 'mac', win32: 'win', linux: 'li
 // `npm run rokit-binaries`.
 export function findBundledRokit(resourcesPath: string | null, devRoot: string, platform: NodeJS.Platform = process.platform, arch: string = process.arch, exists: (file: string) => boolean = existsSync): string | null {
   const file = platform === 'win32' ? 'rokit.exe' : 'rokit'
+  const p = platform === 'win32' ? win32 : posix
   const candidates = [
-    ...(resourcesPath ? [join(resourcesPath, 'rokit', file)] : []),
-    join(devRoot, 'resources', 'rokit', `${OS_KEY[platform] ?? platform}-${arch}`, file)
+    ...(resourcesPath ? [p.join(resourcesPath, 'rokit', file)] : []),
+    p.join(devRoot, 'resources', 'rokit', `${OS_KEY[platform] ?? platform}-${arch}`, file)
   ]
   return candidates.find((candidate) => exists(candidate)) ?? null
 }
@@ -78,8 +79,11 @@ export function findBundledRokit(resourcesPath: string | null, devRoot: string, 
 // PATH for this process after rokit landed in ~/.rokit/bin: Forge's own lookups (tools.ts) always
 // search there, but anything that reads process.env.PATH (the agent's shell, child processes
 // started without toolEnv) should see it too, without restarting Forge.
-export function refreshProcessPath(env: NodeJS.ProcessEnv = process.env, platform: NodeJS.Platform = process.platform): boolean {
-  const bin = rokitBin()
+export function refreshProcessPath(
+  env: NodeJS.ProcessEnv = process.env,
+  platform: NodeJS.Platform = process.platform,
+  bin: string = rokitBin({ ...defaultContext(), env, platform })
+): boolean {
   const key = Object.keys(env).find((k) => k.toUpperCase() === 'PATH') ?? 'PATH'
   const delimiter = platform === 'win32' ? ';' : ':'
   const parts = (env[key] ?? '').split(delimiter).filter(Boolean)

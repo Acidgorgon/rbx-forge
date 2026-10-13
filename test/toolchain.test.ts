@@ -306,14 +306,19 @@ test('per-project tools: missing known tools install with --no-trust-check; unkn
 test('bundled rokit is found in resources when packaged and in resources/rokit/<os>-<arch> in development', () => {
   const have = new Set(['/app/Contents/Resources/rokit/rokit', '/repo/resources/rokit/win-arm64/rokit.exe'])
   assert.equal(findBundledRokit('/app/Contents/Resources', '/repo', 'darwin', 'arm64', (f) => have.has(f)), '/app/Contents/Resources/rokit/rokit')
-  assert.equal(findBundledRokit(null, '/repo', 'win32', 'arm64', (f) => have.has(f.replace(/\\/g, '/'))), '/repo/resources/rokit/win-arm64/rokit.exe'.replace(/\//g, process.platform === 'win32' ? '\\' : '/'))
+  // Paths follow the target platform, not the host running the test.
+  assert.equal(findBundledRokit(null, '/repo', 'win32', 'arm64', (f) => have.has(f.replace(/\\/g, '/'))), '\\repo\\resources\\rokit\\win-arm64\\rokit.exe')
   assert.equal(findBundledRokit(null, '/repo', 'darwin', 'x64', (f) => have.has(f)), null)
 })
 
 test('refreshProcessPath puts ~/.rokit/bin on this process PATH once', () => {
+  // An explicit bin: the host's own home (C:\Users\... on Windows) has a ':' that splits a POSIX PATH.
   const env: NodeJS.ProcessEnv = { PATH: '/usr/bin' }
-  assert.equal(refreshProcessPath(env, 'linux'), true)
-  assert.ok(env.PATH!.endsWith(':/usr/bin'))
-  assert.match(env.PATH!, /\.rokit[\\/]bin:/)
-  assert.equal(refreshProcessPath(env, 'linux'), false)
+  assert.equal(refreshProcessPath(env, 'linux', '/home/me/.rokit/bin'), true)
+  assert.equal(env.PATH, '/home/me/.rokit/bin:/usr/bin')
+  assert.equal(refreshProcessPath(env, 'linux', '/home/me/.rokit/bin'), false)
+  const win: NodeJS.ProcessEnv = { Path: 'C:\\Windows', USERPROFILE: 'D:\\Me' }
+  assert.equal(refreshProcessPath(win, 'win32'), true)
+  assert.equal(win.Path, 'D:\\Me\\.rokit\\bin;C:\\Windows')
+  assert.equal(refreshProcessPath(win, 'win32'), false)
 })

@@ -295,7 +295,9 @@ test('reflection with a fake model: ask mode proposes, accept saves; auto mode s
 test('reflection is debounced after a chat goes idle and held while busy', async () => {
   const { svc } = service(await tmp('user2'), null)
   let n = 0
-  svc.setModel(async () => (n++, '{"items":[]}'))
+  let called!: () => void
+  const firstCall = new Promise<void>((r) => (called = r))
+  svc.setModel(async () => (n++, called(), '{"items":[]}'))
   const msgs = () => [{ role: 'user' as const, text: 'I prefer tabs, always tabs, and short answers please.' }]
   svc.onChatIdle('c', msgs)
   svc.onChatBusy('c')
@@ -303,6 +305,14 @@ test('reflection is debounced after a chat goes idle and held while busy', async
   assert.equal(n, 0)
   svc.onChatIdle('c', msgs)
   svc.onChatIdle('c', msgs)
+  // The model is reached only after reflect() has listed the memory folders on disk, which can take
+  // longer than the 5 ms debounce on a slow runner (Windows), so wait for the call itself.
+  // (A ref'd timer: the service's own debounce timer is unref'd and would not keep the test alive.)
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const timeout = new Promise<'timeout'>((r) => (timer = setTimeout(() => r('timeout'), 10_000)))
+  assert.notEqual(await Promise.race([firstCall, timeout]), 'timeout')
+  clearTimeout(timer)
+  // Two idles in a row are one reflection: no second call follows the first.
   await new Promise((r) => setTimeout(r, 30))
   assert.equal(n, 1)
   svc.dispose()

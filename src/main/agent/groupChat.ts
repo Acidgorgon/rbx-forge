@@ -17,7 +17,7 @@
 
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import type { ChatMessage, GroupParticipant, GroupUsage, ModelChoice, ProviderId, Speaker } from '@shared/types'
+import type { ChatImage, ChatMessage, GroupParticipant, GroupUsage, ModelChoice, ProviderId, Speaker } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import { fromAnthropicUsage, fromOpenAiUsage } from './budget/usage.ts'
 import type { Credentials } from './credentials.ts'
@@ -26,10 +26,13 @@ import { runOpenAiLoop, type FetchFn } from './openaiLoop.ts'
 import { extraBody, type Providers } from './providers.ts'
 import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
 import { allowServer, executableOption, sdkQuery, toChatMessages, type QueryFn } from './sdk.ts'
+import { chatImageStore, hasChatImageStore } from './chatImages.ts'
+import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './imageParts.ts'
+import { supportsVision } from '../../shared/modelCaps.ts'
 import { defineTool, gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
 
 // Read tools a guest may use, when guest tools are on. Never any of WRITE_TOOLS.
-export const GUEST_TOOLS = ['project_overview', 'list_scripts', 'read_script', 'explorer_tree', 'find_instance', 'search_code', 'project_map', 'find_symbol', 'blink_events'] as const
+export const GUEST_TOOLS = ['project_overview', 'list_scripts', 'read_script', 'explorer_tree', 'find_instance', 'search_code', 'project_map', 'find_symbol', 'blink_events', 'recall', 'use_skill'] as const
 // Lines per read_script call for guests (the host gets 400).
 export const GUEST_READ_LINES = 120
 
@@ -65,6 +68,8 @@ export interface Room {
   recordUsage(speaker: Speaker, usage: { input: number; output: number }): void
   // Something the host did not see (direct answers, roundtable turns): shown on its next turn.
   note(text: string): void
+  // Images of the latest user message; guests that read images get them with an ask.
+  images?: ChatImage[]
 }
 
 export interface GroupDeps {
@@ -288,7 +293,22 @@ export class GroupChat {
 
   // Runs one participant on a prompt; its messages stream into the room under its speaker.
   // Returns the participant's final text.
-  async speak(room: Room, p: GroupParticipant, prompt: string, opts: { system?: string; tools?: boolean; card?: ChatMessage['card'] } = {}): Promise<string> {
+  // Image bytes for a participant: only when its model reads images.
+  async imagesFor(p: GroupParticipant, images: ChatImage[] | undefined): Promise<ImagePayload[]> {
+    if (!images?.length || !hasChatImageStore()) return []
+    const meta = await this.deps.providers?.modelMeta(p.provider, p.model).catch(() => undefined)
+    if (!supportsVision(p.provider, p.model, meta)) return []
+    const out: ImagePayload[] = []
+    for (const i of images) {
+      const b = await chatImageStore()
+        .base64(i.id)
+        .catch(() => null)
+      if (b) out.push(b)
+    }
+    return out
+  }
+
+  async speak(room: Room, p: GroupParticipant, prompt: string, opts: { system?: string; tools?: boolean; card?: ChatMessage['card']; images?: ChatImage[] } = {}): Promise<string> {
     const speaker = speakerOf(p)
     const tools = opts.tools ?? room.guestTools
     const rules = p.role === 'host' && !opts.system ? ((await this.deps.rules?.().catch(() => '')) ?? '') : ''
@@ -304,6 +324,7 @@ export class GroupChat {
     const toolList = tools ? this.guestTools() : []
     const maxTokens = this.setting<number>('guestMaxTokens')
     const maxTurns = tools ? this.setting<number>('guestMaxTurns') : 1
+    const images = await this.imagesFor(p, opts.images)
 
     if (p.provider === 'anthropic') {
       const auth = await this.deps.credentials.anthropicAuth()
@@ -318,7 +339,7 @@ export class GroupChat {
       try {
         const queryFn = this.deps.queryFn ?? sdkQuery
         for await (const m of queryFn({
-          prompt,
+          prompt: images.length ? anthropicPrompt(prompt, images) : prompt,
           options: {
             cwd: root,
             model: p.model,
@@ -361,7 +382,7 @@ export class GroupChat {
       headers: ep.headers,
       model: p.model,
       system,
-      history: [{ role: 'user', content: prompt }],
+      history: [{ role: 'user', content: chatCompletionsContent(prompt, images) }],
       tools: toolList,
       maxTurns,
       signal: room.signal,
@@ -379,7 +400,7 @@ export class GroupChat {
   async ask(room: Room, guest: GroupParticipant, message: string, mode: 'ask' | 'debate' | 'direct', from = room.host.label): Promise<string> {
     const pack = await this.contextPack(room, message)
     const prompt = `${pack}\n\n---\n${modeInstruction(mode, from, message)}`
-    const text = await this.speak(room, guest, prompt)
+    const text = await this.speak(room, guest, prompt, { images: room.images })
     if (mode === 'direct' && text) room.note(`${guest.label} (to the user): ${clip(text, 1200)}`)
     return text
   }

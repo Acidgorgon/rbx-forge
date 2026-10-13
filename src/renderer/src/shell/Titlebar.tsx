@@ -28,6 +28,7 @@ export function Titlebar() {
   const projectMenu = (el: HTMLElement) => {
     const items: MenuEntry[] = [
       { header: state.project?.root ?? 'No project open', mono: true },
+      { label: 'New project…', icon: <Icon name="folderPlus" />, sub: 'GenTree or empty Rojo project', onSelect: () => actions.openDialog({ kind: 'newProject' }) },
       { label: 'Open folder…', icon: <Icon name="folder" />, hint: keyHint('mod+o'), onSelect: () => void actions.openProject() },
       { label: 'Join a project…', icon: <Icon name="team" />, sub: 'clone · rokit install · wally install', onSelect: () => actions.openDialog({ kind: 'joinProject' }) },
       'separator',

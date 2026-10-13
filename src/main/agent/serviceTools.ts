@@ -20,7 +20,15 @@ const fail = (text: string): ToolResult => ({ content: [{ type: 'text', text }],
 // Mutating service tools. Not in the orchestrator's write set: they edit hot files (events.blink,
 // wally.toml) or move whole feature folders, which no claimed-file task may do, so orchestrated
 // agents use request_change instead.
-export const SERVICE_WRITE_TOOLS = ['add_blink_event', 'add_wally_package', 'rename_feature'] as const
+export const SERVICE_WRITE_TOOLS = [
+  'add_blink_event',
+  'add_wally_package',
+  'rename_feature',
+  // services/art/tools.ts: spend money (OpenAI images), upload to Roblox and edit Images.luau.
+  'generate_image',
+  'import_image_to_roblox',
+  'list_art'
+] as const
 
 // ---------------------------------------------------------------- Blink
 
@@ -170,4 +178,17 @@ export function packageTools(packages: PackagesLike): { read: ServiceTool[]; wri
     }
   ]
   return { read, write }
+}
+
+// ---------------------------------------------------------------- Memory and skills (agent/memory)
+
+export { memoryTools, MEMORY_READ_TOOLS, MEMORY_WRITE_TOOLS } from './memory/tools.ts'
+
+// Appends the memory tools to a service tool set, after the others (fixed order: the tool list is
+// part of the cached prompt prefix). recall/use_skill are read tools (every agent; guests through
+// GUEST_TOOLS); remember/forget/save_skill go with the write tools. They write memory files, not
+// project source, so they are not SERVICE_WRITE_TOOLS (the orchestrator does not treat them as admin).
+export function withMemoryTools<T extends { read: ServiceTool[]; write: ServiceTool[] }>(sets: T, memory: { read: ServiceTool[]; write: ServiceTool[] } | null): T {
+  if (!memory) return sets
+  return { ...sets, read: [...sets.read, ...memory.read], write: [...sets.write, ...memory.write] }
 }

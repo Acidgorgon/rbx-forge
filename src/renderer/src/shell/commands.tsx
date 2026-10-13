@@ -5,6 +5,7 @@ import { Icon } from '../components/Icons'
 import { setMotionMode, setThemeMode } from '../theme'
 import { instancePathOfFile, featuresOf, scriptsFlat, realmOfFile } from '../lib/roblox'
 import { sparks } from '../lib/sparks'
+import { newTerminal, requestFocus, runTask, startTerminals, termStore } from '../terminal/session'
 
 export interface Command {
   id: string
@@ -43,6 +44,25 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Services', 'output.show', 'Show Output', () => actions.showBottom('output', []), { icon: <Icon name="terminal" /> })
   add('Services', 'problems.show', 'Show Problems', () => actions.showBottom('problems'), { icon: <Icon name="warn" /> })
 
+  // Terminal (terminal/session.ts)
+  startTerminals()
+  add('Terminal', 'terminal.toggle', 'Toggle terminal', () => {
+    const open = state.layout.bottomOpen && state.layout.bottomTab === 'shell'
+    actions.toggleBottom('shell')
+    if (!open) requestFocus()
+  }, { keys: 'ctrl+`', icon: <Icon name="terminal" /> })
+  add('Terminal', 'terminal.new', 'New terminal', () => {
+    actions.showBottom('shell')
+    void newTerminal()
+  }, { keys: 'ctrl+shift+`', icon: <Icon name="plus" />, detail: 'project root · Rokit tools on PATH' })
+  add('Terminal', 'terminal.task', 'Run task…', () => actions.openPalette('>Run task: '), { icon: <Icon name="play" />, detail: './dev · ./check · rojo · wally · lune' })
+  for (const t of termStore.get().tasks) {
+    add('Terminal', `terminal.task.${t.id}`, `Run task: ${t.label}`, () => {
+      actions.showBottom('shell')
+      void runTask(t.id)
+    }, { icon: <Icon name="play" />, detail: t.command === t.label ? t.detail : t.command })
+  }
+
   // Places
   for (const p of state.places) {
     if (p.file === state.activePlace) continue
@@ -61,6 +81,7 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Sync', 'branch.start', 'Start feature branch…', () => actions.openDialog({ kind: 'featureBranch' }), { icon: <Icon name="branch" /> })
   add('Sync', 'pr.open', 'Open pull request…', () => actions.openDialog({ kind: 'pullRequest' }), { icon: <Icon name="pr" /> })
   add('Sync', 'join', 'Join a project…', () => actions.openDialog({ kind: 'joinProject' }), { icon: <Icon name="team" />, detail: 'clone · rokit · wally' })
+  add('Sync', 'project.new', 'New project…', () => actions.openDialog({ kind: 'newProject' }), { icon: <Icon name="folderPlus" />, detail: 'GenTree or empty Rojo · git · rokit' })
   add('Sync', 'project.open', 'Open folder…', () => void actions.openProject(), { keys: 'mod+o', icon: <Icon name="folder" /> })
 
   // Navigate
@@ -68,10 +89,13 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Navigate', 'go.instance', 'Go to instance…', () => actions.openPalette('#'), { icon: <Icon name="tree" /> })
   add('Navigate', 'go.line', 'Go to line…', () => actions.openPalette(':'), { keys: 'ctrl+g', icon: <Icon name="arrowRight" /> })
   add('Navigate', 'forge', 'Open Forge tab', () => actions.openPage('forge'), { keys: 'mod+shift+h', icon: <Icon name="hammer" /> })
+  add('Navigate', 'toolchain', 'Toolchain: install or repair tools', () => (actions.openPage('settings'), setTimeout(() => document.getElementById('set-toolchain')?.scrollIntoView({ block: 'start' }), 80)), { icon: <Icon name="tool" />, detail: 'rokit · rojo · wally · lune · luau-lsp…' })
   add('Navigate', 'settings', 'Open Settings', () => actions.openPage('settings'), { keys: 'mod+comma', icon: <Icon name="gear" /> })
   add('Navigate', 'packages', 'Open Packages (Wally, Rokit)', () => actions.openPage('packages'), { icon: <Icon name="package" /> })
   add('Navigate', 'release', 'Open Release', () => actions.openPage('release'), { icon: <Icon name="rocket" /> })
   add('Navigate', 'analytics', 'Open Analytics', () => actions.openPage('analytics'), { icon: <Icon name="chart" /> })
+  add('Navigate', 'art', 'Open Art (image concepts)', () => actions.openPage('art'), { icon: <Icon name="image" /> })
+  add('Navigate', 'memory', 'Open Memory & skills', () => actions.openPage('memory'), { icon: <Icon name="memory" /> })
   if (active) {
     add('Navigate', 'reveal', 'Reveal active file in tree', () => {
       const ip = instancePathOfFile(state.tree, active)
@@ -137,6 +161,7 @@ export function keySpec(e: KeyboardEvent): string {
   else if (e.code.startsWith('Digit')) key = e.code.slice(5)
   else if (key === ',') key = 'comma'
   else if (key === '\\') key = 'backslash'
+  else if (e.code === 'Backquote') key = '`'
   // Normalise ordering to match specs: mod, alt, shift (specs may be written alt+mod).
   return [...parts, key].join('+')
 }

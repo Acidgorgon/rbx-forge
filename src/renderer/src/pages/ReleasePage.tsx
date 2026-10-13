@@ -338,6 +338,9 @@ export function ReleasePage() {
 
         <section className="set-sec">
           <h2>Keys and notifications</h2>
+          <p className="note">
+            Open Cloud scopes: <span className="mono">universe-places:write</span> to publish; add <span className="mono">asset:read</span> + <span className="mono">asset:write</span> (Assets API) so the Art page can import images with the same key.
+          </p>
           {secrets && (
             <>
               <SecretRow kind="openCloudApiKey" label="Open Cloud API key" set={secrets.openCloudApiKey} onChange={setSecrets} />

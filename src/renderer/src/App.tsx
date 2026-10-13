@@ -17,6 +17,8 @@ import { SyncView } from './views/SyncView'
 import { TestsView } from './views/TestsView'
 import { TeamView } from './views/TeamView'
 import { AssistantPanel } from './assistant/AssistantPanel'
+import { ToolchainGate } from './setup/Toolchain'
+import { terminalOwnsKey } from './terminal/session'
 import './shell/workbench.css'
 import './views/views.css'
 import './pages/pages.css'
@@ -87,6 +89,8 @@ function useShortcuts() {
     const onKey = (e: KeyboardEvent) => {
       if (e.isComposing || ref.current.state.dialog) return
       const spec = keySpec(e)
+      // Focus in the integrated terminal: shell keys (Ctrl+R, Ctrl+K...) go to the shell.
+      if (terminalOwnsKey(e, spec)) return
       const { state: s, actions: a } = ref.current
       // Palette entry points.
       if (spec === 'mod+k' || spec === 'mod+shift+p') {
@@ -186,6 +190,7 @@ function Shell() {
       <Palette />
       <Dialogs />
       <Toasts />
+      <ToolchainGate />
     </div>
   )
 }

@@ -7,6 +7,8 @@ import { Icon } from '../components/Icons'
 import { ModelPicker, ProviderMark } from '../components/ModelPicker'
 import { setMotionMode, setThemeMode, useAppearance, type MotionMode, type ThemeMode } from '../theme'
 import { errorText, fmtTokens, fmtUsd } from '../lib/format'
+import { ToolchainSection } from '../setup/Toolchain'
+import { DefaultEffortSetting } from '../assistant/EffortPicker'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -25,7 +27,8 @@ const SECTIONS = [
   ['providers', 'Providers'],
   ['budgets', 'Budgets'],
   ['places', 'Places'],
-  ['sync', 'Sync']
+  ['sync', 'Sync'],
+  ['toolchain', 'Toolchain']
 ] as const
 
 function Row({ title, desc, children, id }: { title: ReactNode; desc?: ReactNode; children?: ReactNode; id?: string }) {
@@ -320,6 +323,7 @@ export function SettingsPage() {
           <Row title="Auto-route simple turns" desc="Send short, simple chat turns to a cheaper model tier. Off = always use the chosen model.">
             <input type="checkbox" className="switch" checked={!!state.appSettings?.autoRoute} disabled={!state.appSettings} onChange={(e) => void actions.setAppSettings({ autoRoute: e.target.checked })} aria-label="Auto-route simple turns" />
           </Row>
+          <DefaultEffortSetting />
         </section>
 
         <section className="set-sec" id="set-providers">
@@ -387,6 +391,11 @@ export function SettingsPage() {
           <Row title="Team settings" desc="Shared project rules live in .forge/project.json and are edited from the Team view.">
             <button className="btn small" onClick={() => actions.showSide('team')}><Icon name="team" size={12} /> Team</button>
           </Row>
+        </section>
+
+        <section className="set-sec" id="set-toolchain">
+          <h2>Toolchain</h2>
+          <ToolchainSection />
         </section>
       </div>
     </div>

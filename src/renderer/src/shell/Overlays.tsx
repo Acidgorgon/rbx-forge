@@ -7,6 +7,7 @@ import { Icon } from '../components/Icons'
 import { featuresOf, scriptsFlat } from '../lib/roblox'
 import { errorText, keyHint } from '../lib/format'
 import { sparks } from '../lib/sparks'
+import { NewProjectDialog } from '../setup/NewProjectDialog'
 
 // ---------------------------------------------------------------- toasts
 
@@ -86,7 +87,7 @@ export function Toasts() {
 
 // ---------------------------------------------------------------- dialog frame
 
-function Dialog({ title, children, onClose, width }: { title: string; children: ReactNode; onClose: () => void; width?: number }) {
+export function Dialog({ title, children, onClose, width }: { title: string; children: ReactNode; onClose: () => void; width?: number }) {
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       if (e.key === 'Escape') {
@@ -513,6 +514,8 @@ export function Dialogs() {
       return <BlinkEventDialog onClose={close} />
     case 'joinProject':
       return <JoinProjectDialog onClose={close} />
+    case 'newProject':
+      return <NewProjectDialog onClose={close} />
     case 'featureBranch':
       return <FeatureBranchDialog onClose={close} />
     case 'pullRequest':

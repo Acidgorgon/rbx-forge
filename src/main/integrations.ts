@@ -37,6 +37,8 @@ import * as collab from './services/collab/index.ts'
 import { git as runGit } from './services/collab/git.ts'
 import { renameFeature, FEATURE_NAME } from './services/featureOps.ts'
 import * as release from './services/release/index.ts'
+import { createArtWiring, type ArtWireDeps } from './services/art/wire.ts'
+import { Credentials } from './agent/credentials.ts'
 import { TestService, testTools } from './services/tests/index.ts'
 
 export interface IntegrationDeps {
@@ -65,6 +67,8 @@ export interface IntegrationDeps {
   choosePlaceFile: () => Promise<string | null>
   // One-shot model call for "summarize incoming changes" (agent layer); optional.
   summarize?: (prompt: string) => Promise<string>
+  // Art page: Electron nativeImage thumbnailer, image file picker, chat image bridge (optional).
+  art?: Pick<ArtWireDeps, 'thumbnail' | 'chooseImages' | 'chatImage' | 'resolveReference'>
 }
 
 export interface Integrations {
@@ -101,6 +105,18 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
 
   // ---------------------------------------------------------------- secrets (one encrypted store)
   const secrets = release.createEncryptedSecretStore(deps.safeStorage, settings)
+
+  // ---------------------------------------------------------------- art (OpenAI images, Roblox import)
+  let credentials: Credentials | null = null
+  const art = createArtWiring({
+    root: deps.root,
+    settings,
+    secrets,
+    userDataDir: deps.userDataDir,
+    openAiKey: () => (credentials ??= new Credentials(deps.ctx)).getKey('openai'),
+    emit,
+    ...(deps.art ?? {})
+  })
 
   // ---------------------------------------------------------------- Lune tests
   const tests = new TestService({
@@ -235,7 +251,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
       // Fixed order: the tool list is part of the cached prompt prefix.
       read: [...budget, ...blink.read, ...pkgs.read, ...(analyticsSvc.createAnalyticsTools(analytics) as ServiceTool[])],
       tests: testTools(tests) as ServiceTool[],
-      write: [...blink.write, ...pkgs.write, renameTool]
+      write: [...blink.write, ...pkgs.write, renameTool, ...(art.tools() as ServiceTool[])]
     }
     return toolSets
   }
@@ -415,7 +431,10 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     },
 
     // Feature folders
-    renameFeature: (from: string, to: string) => doRename(String(from ?? ''), String(to ?? ''))
+    renameFeature: (from: string, to: string) => doRename(String(from ?? ''), String(to ?? '')),
+
+    // Art concepts
+    ...art.handlers
   }
 
   return {

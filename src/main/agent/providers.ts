@@ -12,6 +12,7 @@ import type { ModelChoice, ProviderId, ProviderInfo } from '@shared/types'
 import { PROVIDER_IDS } from '../../shared/types.ts'
 import type { HarnessContext } from '../context.ts'
 import { maskKey, type Credentials } from './credentials.ts'
+import { clampEffort, effortSupport, type EffortLevel, type ModelMeta } from '../../shared/modelCaps.ts'
 import { DEFAULT_MODEL } from './sdk.ts'
 
 export type FetchFn = typeof fetch
@@ -56,15 +57,30 @@ export function isProviderId(v: unknown): v is ProviderId {
 // Model ids from GET /models that are not chat models.
 const NON_CHAT = /embed|tts|whisper|transcri|dall-e|image|moderation|realtime|audio|search|davinci|babbage|sora|veo|imagen|aqa|computer-use|-live|lyria/i
 
-// Extra request fields per model, from the providers' docs.
-export function extraBody(provider: ProviderId, model: string): Record<string, unknown> {
+// Extra request fields per model, from the providers' docs. `effort` is the reasoning effort for
+// this request (explicit or routed); it is clamped to what the model takes and dropped when the
+// model takes none (see shared/modelCaps.ts).
+//   openai      reasoning_effort (Chat Completions); responsesLoop.ts turns it into reasoning.effort
+//   gemini      reasoning_effort low|medium|high (OpenAI compatibility -> thinking_level/budget)
+//   openrouter  reasoning: { effort }
+export function extraBody(provider: ProviderId, model: string, effort?: EffortLevel, meta?: ModelMeta): Record<string, unknown> {
+  const level = clampEffort(effort, effortSupport(provider, model, meta).levels)
   // OpenAI: "Chat Completions supports function calling only with reasoning_effort set to none" (GPT-6 Luna).
   // gpt-6.1-sol runs on the Responses API (responsesLoop.ts), which drops these Chat Completions
   // fields; sol rejects reasoning_effort "none" anyway.
   // Chat Completions only reports usage when asked (stream_options.include_usage).
   if (provider === 'openai' && /^gpt-6-luna/.test(model)) return { reasoning_effort: 'none', stream_options: { include_usage: true } }
-  if (provider === 'openai') return { stream_options: { include_usage: true } }
+  if (provider === 'openai') return { stream_options: { include_usage: true }, ...(level ? { reasoning_effort: level } : {}) }
+  if (provider === 'gemini' && level) return { reasoning_effort: level }
+  if (provider === 'openrouter' && level) return { reasoning: { effort: level } }
   return {}
+}
+
+// Agent SDK options for an effort (Options.effort in @anthropic-ai/claude-agent-sdk 0.3.296:
+// 'low' | 'medium' | 'high' | 'xhigh' | 'max', "works with adaptive thinking to guide thinking depth").
+export function sdkEffortOptions(model: string, effort?: EffortLevel): { effort?: EffortLevel } {
+  const level = clampEffort(effort, effortSupport('anthropic', model).levels)
+  return level ? { effort: level } : {}
 }
 
 export interface Endpoint {
@@ -79,6 +95,8 @@ export class Providers {
   private fetchFn: FetchFn
   private modelCache = new Map<ProviderId, { at: number; models: string[] }>()
   private reach = new Map<string, { at: number; ok: boolean }>()
+  // Runtime model metadata (OpenRouter /models, Ollama /api/show), by provider then model id.
+  private meta = new Map<ProviderId, Map<string, ModelMeta>>()
 
   constructor(ctx: HarnessContext, credentials: Credentials, fetchFn: FetchFn = (...a) => fetch(...a)) {
     this.ctx = ctx
@@ -142,6 +160,8 @@ export class Providers {
       needsKey: def.needsKey,
       models: this.cachedModels(provider)
     }
+    const known = this.meta.get(provider)
+    if (known?.size) info.meta = Object.fromEntries(known)
     const source = await this.credentials.keySource(provider)
     if (source) {
       const key = await this.credentials.getKey(provider)
@@ -201,12 +221,14 @@ export class Providers {
       const res = await this.fetchFn(`${ep.baseUrl}/models${query}`, { headers: ep.headers, signal: AbortSignal.timeout(8000) })
       if (!res.ok) throw new Error(`HTTP ${res.status}`)
       const body = (await res.json()) as { data?: { id?: string }[]; models?: { name?: string }[] }
+      if (provider === 'openrouter') this.readOpenRouterMeta(body.data ?? [])
       let ids = (body.data ?? []).map((m) => m.id).filter((x): x is string => typeof x === 'string')
       // Gemini lists ids as "models/gemini-..."; chat/completions takes the bare name.
       ids = ids.map((id) => id.replace(/^models\//, '')).filter((id) => !NON_CHAT.test(id))
       if (provider === 'gemini') ids = ids.filter((id) => id.startsWith('gemini'))
       ids.sort()
       this.modelCache.set(provider, { at: Date.now(), models: ids })
+      if (provider === 'ollama') await this.probeOllama(ep.baseUrl, ids)
       return this.cachedModels(provider)
     } catch (e) {
       this.ctx.log({ service: 'agent', stream: 'info', text: `${provider}: could not list models (${(e as Error).message})` })
@@ -232,6 +254,53 @@ export class Providers {
     }
     this.reach.set(baseUrl, { at: Date.now(), ok })
     return ok
+  }
+
+  // Metadata for one model (runtime when known; Ollama is probed on first use).
+  async modelMeta(provider: ProviderId, model: string): Promise<ModelMeta | undefined> {
+    if (provider === 'ollama' && !this.meta.get('ollama')?.has(model)) {
+      const base = this.baseUrl('ollama')
+      if (base) await this.probeOllama(base, [model])
+    }
+    return this.meta.get(provider)?.get(model)
+  }
+
+  // OpenRouter /models entries: architecture.input_modalities (vision) and
+  // reasoning.supported_efforts (null = every effort; absent = no effort selection).
+  readOpenRouterMeta(entries: any[]): void {
+    const map = this.meta.get('openrouter') ?? new Map<string, ModelMeta>()
+    for (const e of entries) {
+      if (typeof e?.id !== 'string') continue
+      const m: ModelMeta = {}
+      const mods = e.architecture?.input_modalities
+      if (Array.isArray(mods)) m.vision = mods.includes('image')
+      if (e.reasoning && typeof e.reasoning === 'object' && 'supported_efforts' in e.reasoning) {
+        const se = e.reasoning.supported_efforts
+        m.efforts = Array.isArray(se) ? se.filter((x: unknown): x is string => typeof x === 'string') : null
+      } else m.efforts = undefined
+      map.set(e.id, m)
+    }
+    this.meta.set('openrouter', map)
+  }
+
+  // Ollama: POST {native base}/api/show {"model"} lists "vision" in capabilities for vision models.
+  private async probeOllama(baseUrl: string, models: string[]): Promise<void> {
+    const native = baseUrl.replace(/\/v1\/?$/, '')
+    const map = this.meta.get('ollama') ?? new Map<string, ModelMeta>()
+    this.meta.set('ollama', map)
+    await Promise.all(
+      models.slice(0, 40).map(async (model) => {
+        if (map.has(model)) return
+        try {
+          const res = await this.fetchFn(`${native}/api/show`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ model }), signal: AbortSignal.timeout(2000) })
+          if (!res.ok) return
+          const body = (await res.json()) as { capabilities?: unknown }
+          if (Array.isArray(body.capabilities)) map.set(model, { vision: body.capabilities.includes('vision') })
+        } catch {
+          // Unknown: the name heuristic applies.
+        }
+      })
+    )
   }
 
   forgetReachability(): void {

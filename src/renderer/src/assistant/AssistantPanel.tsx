@@ -1,7 +1,7 @@
 // Assistant panel (SPEC §7.5) in the terminal style: model / mode pills, usage meter, compact
 // messages (no avatars), group chat, orchestrator task board, and the "> Type a message" composer.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type KeyboardEvent } from 'react'
-import type { BoardView, ChatMessage, OrchestrateMode, TaskView } from '@shared/types'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
+import type { BoardView, ChatImage, ChatMessage, OrchestrateMode, TaskView } from '@shared/types'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
@@ -11,10 +11,16 @@ import { ChecklistCard, GroupTokens, isGroup, MentionMenu, mentionQuery, Partici
 import { useProblems } from '../shell/problems'
 import { ago, fmtTokens, fmtUsd, keyHint, errorText } from '../lib/format'
 import { basename, scriptsFlat } from '../lib/roblox'
+import { MemoryProposals } from '../pages/memory/MemoryProposals'
+import { addImageFile, MAX_IMAGES_PER_MESSAGE, onAttachRequest } from './attachments'
+import { AttachGlyph, ImageThumb, MessageImages } from './ChatImages'
+import { EffortPicker, RouteSummary, useVision } from './EffortPicker'
+import { acceptedImageType } from './imageScale'
+import './chatextras.css'
 
 type Item = { kind: 'msg'; m: ChatMessage } | { kind: 'tools'; ms: ChatMessage[]; id: string }
 
-function groupMessages(messages: ChatMessage[]): Item[] {
+export function groupMessages(messages: ChatMessage[]): Item[] {
   const out: Item[] = []
   for (const m of messages) {
     if (m.role === 'tool') {
@@ -42,7 +48,7 @@ function ToolRow({ m, running }: { m: ChatMessage; running?: boolean }) {
   )
 }
 
-function ToolGroup({ ms, last, busy }: { ms: ChatMessage[]; last: boolean; busy: boolean }) {
+export function ToolGroup({ ms, last, busy }: { ms: ChatMessage[]; last: boolean; busy: boolean }) {
   const [expanded, setExpanded] = useState(false)
   const shown = ms.length > 4 && !expanded ? ms.slice(-2) : ms
   return (
@@ -70,13 +76,16 @@ function AgentTag({ id }: { id: string }) {
   )
 }
 
-function Message({ m }: { m: ChatMessage }) {
+export function Message({ m }: { m: ChatMessage }) {
   const chat = useActiveChat()
   if (m.role === 'user') {
     return (
       <div className="m-user">
         <span className="m-who">you</span>
-        <div className="m-text selectable">{m.text}</div>
+        <div className="m-body">
+          {m.text && <div className="m-text selectable">{m.text}</div>}
+          {m.images?.length ? <MessageImages images={m.images} size="sm" /> : null}
+        </div>
       </div>
     )
   }
@@ -89,7 +98,8 @@ function Message({ m }: { m: ChatMessage }) {
     <div className="m-assistant selectable">
       {fromAgent && <AgentTag id={m.agentId} />}
       {m.speaker && isGroup(chat) && <SpeakerHead s={m.speaker} host={host} chat={chat} />}
-      <Markdown text={m.text} />
+      {m.text && <Markdown text={m.text} />}
+      {m.images?.length ? <MessageImages images={m.images} /> : null}
     </div>
   )
 }
@@ -179,10 +189,75 @@ const SLASH: { cmd: string; desc: string }[] = [
 
 let handledInsert = 0
 
-function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m: OrchestrateMode) => void }) {
+export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m: OrchestrateMode) => void }) {
   const { state, actions } = useStore()
   const id = state.activeChatId
   const busy = id ? !!state.busy[id] : false
+  const activeChat = useActiveChat()
+  const vision = useVision(activeChat ? { provider: activeChat.provider, model: activeChat.model } : state.pendingModel ?? state.defaultModel)
+  const [images, setImages] = useState<ChatImage[]>([])
+  const [adding, setAdding] = useState(0)
+  const [dragging, setDragging] = useState(false)
+  const fileInput = useRef<HTMLInputElement>(null)
+  const visionHint = 'This model cannot read images; pick a vision model to attach one'
+
+  const addFiles = async (files: File[]) => {
+    const list = files.filter((f) => acceptedImageType(f.type))
+    if (!list.length) {
+      if (files.length) actions.toast({ text: 'Only PNG, JPEG, WebP and GIF images can be attached', kind: 'err' })
+      return
+    }
+    if (!vision) {
+      actions.toast({ text: visionHint, kind: 'err' })
+      return
+    }
+    const room = MAX_IMAGES_PER_MESSAGE - images.length
+    if (room <= 0) {
+      actions.toast({ text: `At most ${MAX_IMAGES_PER_MESSAGE} images per message`, kind: 'err' })
+      return
+    }
+    setAdding((n) => n + Math.min(room, list.length))
+    for (const f of list.slice(0, room)) {
+      try {
+        const ref = await addImageFile(f)
+        setImages((cur) => (cur.length < MAX_IMAGES_PER_MESSAGE ? [...cur, ref] : cur))
+      } catch (e) {
+        actions.toast({ text: 'Could not attach the image', detail: errorText(e), kind: 'err' })
+      } finally {
+        setAdding((n) => Math.max(0, n - 1))
+      }
+    }
+  }
+
+  // Images attached from elsewhere (the Art page's "Send to chat").
+  useEffect(
+    () =>
+      onAttachRequest((ref) => {
+        actions.toggleRight(true)
+        setImages((cur) => (cur.some((i) => i.id === ref.id) || cur.length >= MAX_IMAGES_PER_MESSAGE ? cur : [...cur, ref]))
+      }),
+    []
+  )
+
+  const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
+    const files = [...e.clipboardData.items].filter((i) => i.kind === 'file').map((i) => i.getAsFile()).filter((f): f is File => !!f)
+    if (!files.length) return
+    e.preventDefault()
+    void addFiles(files)
+  }
+  const hasFiles = (e: DragEvent) => [...e.dataTransfer.types].includes('Files')
+  const onDragOver = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasFiles(e)) return
+    e.preventDefault()
+    e.dataTransfer.dropEffect = vision ? 'copy' : 'none'
+    setDragging(true)
+  }
+  const onDrop = (e: DragEvent<HTMLDivElement>) => {
+    if (!hasFiles(e)) return
+    e.preventDefault()
+    setDragging(false)
+    void addFiles([...e.dataTransfer.files])
+  }
   const problems = useProblems()
   const [text, setText] = useState('')
   const [caret, setCaret] = useState(0)
@@ -256,7 +331,12 @@ function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m: Orche
 
   const submit = () => {
     let t = text.trim()
-    if (!t || busy) return
+    if ((!t && !images.length) || busy || adding) return
+    if (!t) {
+      const sent = images
+      setImages([])
+      return void actions.send('', vision ? sent : [])
+    }
     const [cmd, ...rest] = t.split(/\s+/)
     const arg = rest.join(' ')
     switch (cmd.toLowerCase()) {
@@ -291,8 +371,10 @@ function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m: Orche
     if (extras.length) t += `\n\n${extras.join('\n')}`
     setText('')
     setProbChip(false)
-    if (mode === 'team' && !id) void actions.startOrchestration(t)
-    else void actions.send(t)
+    const sent = vision ? images : []
+    setImages([])
+    if (mode === 'team' && !id && !sent.length) void actions.startOrchestration(t)
+    else void actions.send(t, sent)
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -364,7 +446,18 @@ function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m: Orche
             )}
         </div>
       )}
-      <div className="cmp-box" onClick={() => ref.current?.focus()}>
+      <div className={`cmp-box${dragging ? ' drop' : ''}`} onClick={() => ref.current?.focus()} onDragOver={onDragOver} onDragLeave={() => setDragging(false)} onDrop={onDrop}>
+        {(images.length > 0 || adding > 0) && (
+          <div className="cmp-images">
+            {images.map((img) => (
+              <ImageThumb key={img.id} img={img} size="sm" onRemove={() => setImages((cur) => cur.filter((i) => i.id !== img.id))} />
+            ))}
+            {Array.from({ length: adding }, (_, i) => (
+              <span key={`adding-${i}`} className="ci-thumb ci-sm"><span className="ci-loading" /></span>
+            ))}
+            {!vision && images.length > 0 && <span className="cmp-img-warn">{visionHint}</span>}
+          </div>
+        )}
         {(state.activeFile || problems.length > 0) && (
           <div className="cmp-chips">
             {state.activeFile && fileChip && (
@@ -399,14 +492,41 @@ function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m: Orche
             }}
             onSelect={(e) => setCaret(e.currentTarget.selectionStart ?? 0)}
             onKeyDown={onKey}
+            onPaste={onPaste}
             spellCheck={false}
           />
+          <input
+            ref={fileInput}
+            type="file"
+            accept="image/png,image/jpeg,image/webp,image/gif"
+            multiple
+            hidden
+            onChange={(e) => {
+              const files = [...(e.target.files ?? [])]
+              e.target.value = ''
+              void addFiles(files)
+            }}
+          />
+          <span className="cmp-attach-wrap" title={vision ? 'Attach images (or paste / drop them)' : visionHint}>
+            <button
+              type="button"
+              className="cmp-attach"
+              aria-label="Attach images"
+              disabled={!vision || busy || images.length >= MAX_IMAGES_PER_MESSAGE}
+              onClick={(e) => {
+                e.stopPropagation()
+                fileInput.current?.click()
+              }}
+            >
+              <AttachGlyph size={14} />
+            </button>
+          </span>
           {busy ? (
             <button className="cmp-send" onClick={() => void actions.stop()} title="Stop">
               <Icon name="stop" size={14} />
             </button>
           ) : (
-            <button className="cmp-send" onClick={submit} disabled={!text.trim()} title={`Send (${keyHint('mod+enter')})`}>
+            <button className="cmp-send" onClick={submit} disabled={(!text.trim() && !images.length) || adding > 0} title={`Send (${keyHint('mod+enter')})`}>
               <Icon name="upload" size={15} />
             </button>
           )}
@@ -441,7 +561,7 @@ function Meter() {
       <span>budget</span>
       <span className="meter-bar"><span style={{ width: `${Math.round(fraction * 100)}%` }} /></span>
       <span>{fmtTokens(tokens)} · {fmtUsd(cost)}{t?.unpricedRequests ? '+' : ''}</span>
-      {route && route.tier !== 'chosen' && <span className="tag">{route.tier}</span>}
+      {chat.route ? <RouteSummary chat={chat} /> : route && route.tier !== 'chosen' && <span className="tag">{route.tier}</span>}
       <GroupTokens />
     </div>
   )
@@ -518,6 +638,7 @@ export function AssistantPanel() {
         </div>
         <div className="as-pills">
           <ModelPicker value={choice} providers={state.providers} onChange={(c) => void actions.chooseModel(c)} onAddKey={(p) => actions.openSettings(p)} direction="down" />
+          <EffortPicker chat={chat} choice={choice} />
           <button className="pill" onClick={(e) => modeMenu(e.currentTarget)} title="Single agent, team, or automatic">
             {mode === 'team' ? 'team' : mode === 'single' ? 'single' : 'auto'} <span className="caret">▼</span>
           </button>
@@ -567,6 +688,7 @@ export function AssistantPanel() {
               <span /><span /><span />
             </div>
           )}
+          <MemoryProposals sessionId={id} />
         </div>
         <Composer mode={mode} setMode={setMode} />
       </div>

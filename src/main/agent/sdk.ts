@@ -2,16 +2,18 @@
 // and mapping SDK messages to ChatMessages.
 
 import { randomUUID } from 'node:crypto'
-import type { McpStdioServerConfig, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
+import type { McpStdioServerConfig, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatMessage } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import { bundledClaudeExecutable } from '../services/sdkBinary.ts'
+import { extractImageMarkers, imageMarker } from './chatImages.ts'
 
 export const DEFAULT_MODEL = 'claude-opus-5-5'
 export const STUDIO_SERVER = 'studio'
 
 // The query function, injectable for tests. Defaults to the SDK's query(), loaded lazily.
-export type QueryFn = (params: { prompt: string; options: Options }) => AsyncIterable<SDKMessage>
+// A prompt with images uses the SDK's streaming input (an iterable of SDKUserMessage).
+export type QueryFn = (params: { prompt: string | AsyncIterable<SDKUserMessage>; options: Options }) => AsyncIterable<SDKMessage>
 
 export const sdkQuery: QueryFn = (params) => {
   // Lazy import keeps the SDK out of module load for code paths that never query.
@@ -117,6 +119,16 @@ export function toChatMessages(m: SDKMessage, agentId: string): ChatMessage[] {
     }
     if (text.length && !m.error) out.push(msg(agentId, 'assistant', text.join('\n')))
     return out
+  }
+  // Tool results are not shown, except images a tool produced (forge-image markers).
+  if (m.type === 'user' && !m.parent_tool_use_id && Array.isArray((m.message as any)?.content)) {
+    const ids: { id: string; name?: string }[] = []
+    for (const block of (m.message as any).content as any[]) {
+      if (block?.type !== 'tool_result') continue
+      const parts = typeof block.content === 'string' ? [block.content] : Array.isArray(block.content) ? block.content.map((c: any) => (c?.type === 'text' ? c.text : '')) : []
+      for (const t of parts) for (const x of extractImageMarkers(String(t ?? '')).ids) if (!ids.some((y) => y.id === x.id)) ids.push(x)
+    }
+    return ids.length ? [msg(agentId, 'assistant', ids.map((x) => imageMarker(x)).join('\n'))] : []
   }
   if (m.type === 'result' && (m.is_error || m.subtype !== 'success')) {
     const detail = m.subtype === 'success' ? m.result : m.errors?.join('; ') || m.subtype

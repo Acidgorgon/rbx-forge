@@ -13,9 +13,9 @@
 .mpick-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .mpick-caret { font-size: 8px; color: var(--fg-faint); flex: none; }
 .mpick-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--warn); flex: none; }
-.mpick.field .mpick-btn { height: 28px; width: 100%; justify-content: flex-start; background: var(--bg-editor); }
-.mpick.field .mpick-name { flex: 1; text-align: left; }
-.mpick.field .mpick-pop { width: 100%; min-width: 300px; }
+.mpick.mpick-field .mpick-btn { height: 28px; width: 100%; justify-content: flex-start; background: var(--bg-editor); }
+.mpick.mpick-field .mpick-name { flex: 1; text-align: left; }
+.mpick.mpick-field .mpick-pop { width: 100%; min-width: 300px; }
 .mpick-pop { position: absolute; z-index: 50; left: 0; width: 300px; max-height: 380px; display: flex; flex-direction: column; background: var(--bg-overlay); border-radius: var(--r-lg); box-shadow: var(--sh-3); animation: rf-menu-in var(--dur-fast) var(--ease-out); overflow: hidden; }
 .mpick-pop.up { bottom: calc(100% + 6px); }
 .mpick-pop.down { top: calc(100% + 6px); }

@@ -39,6 +39,7 @@ import {
   type OaiToolCall
 } from './openaiLoop.ts'
 import { summarizeInput } from './sdk.ts'
+import { resolveHistoryImages, responsesContent } from './imageParts.ts'
 import { runTool, toolJsonSchema, type GentreeTool } from './tools.ts'
 
 // Models that need the Responses API for tools. OpenAI only (OpenRouter and others normalize
@@ -60,7 +61,7 @@ export function toResponsesInput(history: OaiMessage[]): ResponsesItem[] {
   const out: ResponsesItem[] = []
   for (const m of history) {
     if (m.role === 'system') out.push({ role: 'developer', content: m.content })
-    else if (m.role === 'user') out.push({ role: 'user', content: m.content })
+    else if (m.role === 'user') out.push({ role: 'user', content: responsesContent(m.content) })
     else if (m.role === 'assistant') {
       if (m.content) out.push({ role: 'assistant', content: m.content })
       for (const c of m.tool_calls ?? []) out.push({ type: 'function_call', call_id: c.id, name: c.function.name, arguments: c.function.arguments || '{}' })
@@ -73,7 +74,7 @@ const TOOL_RESULT_PREVIEW = 4000
 
 export async function runResponsesLoop(opts: LoopOptions): Promise<LoopResult> {
   const history = opts.history.slice()
-  const input = toResponsesInput(opts.history)
+  const input = toResponsesInput(await resolveHistoryImages(opts.history, opts.resolveImage))
   const fetchFn = opts.fetchFn ?? ((...a: Parameters<FetchFn>) => fetch(...a))
   const tools = new Map(opts.tools.map((t) => [t.name, t]))
   const specs = responsesToolSpecs(opts.tools)

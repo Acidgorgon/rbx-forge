@@ -6,6 +6,17 @@
 # npm ci installs only the runner's own one, so build/sdk-binaries.mjs fetches the target's package
 # when it differs (Windows arm64 is cross-built on an x64 runner), and build/afterPack.cjs fails the
 # build if the target's binary did not make it into the app.
+#
+# The integrated terminal's node-pty is native too, but needs no per-target fetch or rebuild:
+# node-pty 1.1.0 is an N-API addon whose npm package carries prebuilds for all four targets
+# (prebuilds/darwin-arm64, darwin-x64, win32-x64, win32-arm64), so npm ci on any runner installs the
+# target's binary (npmRebuild stays false in electron-builder.yml). afterPack keeps only the
+# target's prebuild and fails the build if it is missing. On ubuntu (test job) npm ci compiles it
+# from source, and test/terminal.pty.test.ts runs it for real on every runner.
+#
+# The app also ships the rokit binary for its target: build/rokit-binaries.mjs downloads the pinned
+# rokit release asset (SHA-256 checked) into resources/rokit/<os>-<arch>, electron-builder copies it
+# to <resources>/rokit, and afterPack fails the build if it is missing.
 name: Build
 
 on:
@@ -65,7 +76,7 @@ jobs:
             builder: --win
             arch: x64
           - name: Windows arm64
-            os: windows-latest # cross-built; no native node modules to rebuild
+            os: windows-latest # cross-built; node-pty's win32-arm64 prebuild ships in its npm package
             platform: win32
             builder: --win
             arch: arm64
@@ -80,6 +91,11 @@ jobs:
       - run: npm run typecheck
       - name: Fetch the Agent SDK CLI for ${{ matrix.platform }}-${{ matrix.arch }}
         run: node build/sdk-binaries.mjs --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+      - name: Fetch rokit for ${{ matrix.platform }}-${{ matrix.arch }}
+        run: node build/rokit-binaries.mjs --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+      - name: Check the node-pty prebuild for ${{ matrix.platform }}-${{ matrix.arch }}
+        shell: bash
+        run: ls -l node_modules/node-pty/prebuilds/${{ matrix.platform }}-${{ matrix.arch }}/pty.node
       - run: npm run build
       - name: electron-builder
         run: npx electron-builder ${{ matrix.builder }} --${{ matrix.arch }} --publish never

@@ -5,8 +5,10 @@ import type {
   AppSettings,
   BlinkModel,
   BoardView,
+  ChatImage,
   ChatMessage,
   ChatSession,
+  EffortChoice,
   ClaimView,
   GitStatus,
   LogLine,
@@ -33,8 +35,8 @@ import { basename, instanceNameOfFile } from './lib/roblox'
 // ---------------------------------------------------------------- types
 
 export type SideView = 'explorer' | 'scripts' | 'events' | 'sync' | 'tests' | 'team'
-export type BottomTab = 'output' | 'problems' | 'terminal'
-export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics'
+export type BottomTab = 'output' | 'problems' | 'terminal' | 'shell'
+export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics' | 'memory' | 'groups' | 'art'
 export type TabKind = PageKind | 'file' | 'conflict' | 'transcript'
 
 export interface Tab {
@@ -123,6 +125,8 @@ export interface State {
   providers: ProviderInfo[] | null
   defaultModel: ModelChoice | null
   pendingModel: ModelChoice | null
+  // Effort picked before the chat exists (applied by newChat).
+  pendingEffort: EffortChoice | null
   settingsFocus: ProviderId | null
   blink: BlinkModel | null
   usage: { chat: UsageSnapshot | null; day: UsageSnapshot | null; agents: Record<string, UsageSnapshot> }
@@ -157,6 +161,7 @@ export interface State {
 export type DialogRequest =
   | { kind: 'renameFeature'; from?: string }
   | { kind: 'joinProject' }
+  | { kind: 'newProject' }
   | { kind: 'blinkEvent' }
   | { kind: 'featureBranch' }
   | { kind: 'pullRequest' }
@@ -211,6 +216,7 @@ const initial: State = {
   providers: null,
   defaultModel: null,
   pendingModel: null,
+  pendingEffort: null,
   settingsFocus: null,
   blink: null,
   usage: { chat: null, day: null, agents: {} },
@@ -445,7 +451,7 @@ export interface Actions {
   // Chat
   selectChat(id: string): Promise<void>
   newChat(): Promise<void>
-  send(text: string): Promise<void>
+  send(text: string, images?: ChatImage[]): Promise<void>
   stop(): Promise<void>
   chooseModel(choice: ModelChoice): Promise<void>
   openSettings(focus?: ProviderId): void
@@ -507,9 +513,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     const ensureChat = async (): Promise<string> => {
       let id = stateRef.current.activeChatId
       if (id) return id
-      const chat = await h.newChat(stateRef.current.pendingModel ?? undefined)
+      const pe = stateRef.current.pendingEffort
+      const chat = await h.newChat(stateRef.current.pendingModel ?? undefined, pe ? { effort: pe } : undefined)
       id = chat.id
-      dispatch({ type: 'set', patch: { activeChatId: id, pendingModel: null, chats: [chat, ...stateRef.current.chats.filter((c) => c.id !== chat.id)] } })
+      dispatch({ type: 'set', patch: { activeChatId: id, pendingModel: null, pendingEffort: null, chats: [chat, ...stateRef.current.chats.filter((c) => c.id !== chat.id)] } })
       dispatch({ type: 'chatMessages', sessionId: id, messages: [] })
       return id
     }
@@ -541,7 +548,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await self.openFile(path)
       },
       openPage(kind) {
-        const titles: Record<PageKind, string> = { forge: 'Forge', settings: 'Settings', packages: 'Packages', release: 'Release', analytics: 'Analytics' }
+        const titles: Record<PageKind, string> = { forge: 'Forge', settings: 'Settings', packages: 'Packages', release: 'Release', analytics: 'Analytics', memory: 'Memory', groups: 'Group chats', art: 'Art' }
         dispatch({ type: 'openTab', tab: { id: kind, kind, title: titles[kind] } })
       },
       openConflict(path) {
@@ -639,9 +646,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'set', patch: { usage: { ...stateRef.current.usage, chat: usage } } })
       },
       async newChat() {
-        dispatch({ type: 'set', patch: { activeChatId: null, pendingModel: null, usage: { ...stateRef.current.usage, chat: null } } })
+        dispatch({ type: 'set', patch: { activeChatId: null, pendingModel: null, pendingEffort: null, usage: { ...stateRef.current.usage, chat: null } } })
       },
-      async send(text) {
+      async send(text, images = []) {
         let id: string
         try {
           id = await ensureChat()
@@ -649,11 +656,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           toast({ text: 'Could not start a chat', detail: (e as Error).message, kind: 'err' })
           return
         }
-        const local: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text, at: Date.now(), agentId: 'main', sessionId: id }
+        const local: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text, at: Date.now(), agentId: 'main', sessionId: id, ...(images.length ? { images } : {}) }
         dispatch({ type: 'chatMessage', message: local })
         dispatch({ type: 'busy', sessionId: id, busy: true })
         try {
-          await h.sendChat(id, text)
+          await h.sendChat(id, text, images.length ? images.map((i) => i.id) : undefined)
         } catch (e) {
           dispatch({ type: 'busy', sessionId: id, busy: false })
           dispatch({ type: 'chatMessage', message: { id: `err-${Date.now()}`, role: 'system', text: `Could not send: ${(e as Error).message}`, at: Date.now(), agentId: 'main', sessionId: id } })

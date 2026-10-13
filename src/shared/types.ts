@@ -2,8 +2,18 @@
 // Every IPC channel the renderer can call is listed in HarnessApi.
 
 import type { IntegrationApi, IntegrationEvents, OrchestrateMode, UsageSummary } from './integrationTypes.ts'
+import type { TerminalApi, TerminalEvents } from './terminalTypes.ts'
+import type { ArtApi, ArtEvents } from './artTypes.ts'
+export type * from './artTypes.ts'
+import type { SetupApi, SetupEvents } from './setupTypes.ts'
+import type { ChatExtrasApi, ChatImage, EffortChoice, ModelMeta, NewChatOptions } from './chatTypes.ts'
 // Collab, release, tests, analytics, usage, orchestrator and feature-rename IPC types.
 export type * from './integrationTypes.ts'
+import type { MemoryApi, MemoryEvents } from './memoryTypes.ts'
+export type * from './memoryTypes.ts'
+export type * from './terminalTypes.ts'
+export type * from './setupTypes.ts'
+export type * from './chatTypes.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -168,6 +178,8 @@ export interface ChatMessage {
   speaker?: Speaker
   // Group chats: 'plan' = the host's roundtable synthesis, 'checklist' = a plan turned into a task list.
   card?: 'plan' | 'checklist'
+  // Attached (user) or produced (assistant/tool) images, as store references.
+  images?: ChatImage[]
 }
 
 // A model taking part in a group chat. label is for display ("GPT-6.1 Sol"), alias is the
@@ -216,6 +228,8 @@ export interface ProviderInfo {
   keySource?: 'stored' | 'env'
   // Short reason when not ready, e.g. "No API key" or "Ollama is not running at http://localhost:11434/v1".
   detail?: string
+  // Runtime model metadata (vision, effort levels) by model id, when the provider reports it.
+  meta?: Record<string, ModelMeta>
 }
 
 export interface ModelChoice {
@@ -238,7 +252,11 @@ export interface ChatSession {
   // Token/cost meter for the whole chat (all models), from the usage ledger.
   meter?: UsageSummary
   // Model routing of the last turn (budget/budget.ts routeModel): which model ran and why.
-  route?: { model: string; tier: 'cheap' | 'big' | 'chosen'; reason: string }
+  route?: { model: string; tier: 'cheap' | 'big' | 'chosen'; reason: string; effort?: string }
+  // Reasoning effort picked for this chat; unset = 'auto'.
+  effort?: EffortChoice
+  // Time of the last message (for lists sorted by activity).
+  lastAt?: number
   // Team (orchestrator) mode for this chat; default 'auto'.
   orchestrate?: OrchestrateMode
   // Orchestrator runs started from this chat, oldest first (see getOrchestration).
@@ -417,7 +435,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -442,7 +460,7 @@ export interface HarnessEvents extends IntegrationEvents {
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>
@@ -470,9 +488,10 @@ export interface HarnessApi extends IntegrationApi {
   // Chat
   listChats(): Promise<ChatSession[]>
   // Uses the default model unless a choice is given.
-  newChat(choice?: ModelChoice): Promise<ChatSession>
+  newChat(choice?: ModelChoice, options?: NewChatOptions): Promise<ChatSession>
   getChat(sessionId: string): Promise<ChatMessage[]>
-  sendChat(sessionId: string, text: string): Promise<void>
+  // images: ids from addChatImage.
+  sendChat(sessionId: string, text: string, images?: string[]): Promise<void>
   stopChat(sessionId: string): Promise<void>
   // Group chat (main/agent/groupChat.ts). Guests are read-only advisers; only the host edits.
   // Message text can also @mention a guest ("@sol what do you think?") to have it answer directly.

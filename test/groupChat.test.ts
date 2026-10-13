@@ -349,7 +349,7 @@ test('roundtable: turn order host then guests per round, then a plan card from t
   const prompts: string[] = []
   const queryFn: QueryFn = ({ prompt }) => {
     order.push('opus')
-    prompts.push(prompt)
+    prompts.push(prompt as string)
     return (async function* () {
       yield { type: 'assistant', parent_tool_use_id: null, session_id: 's', message: { content: [{ type: 'text', text: `Opus turn ${order.length}` }] } } as any
       yield { type: 'result', subtype: 'success', is_error: false, result: '', session_id: 's', usage: { input_tokens: 10, output_tokens: 5 } } as any

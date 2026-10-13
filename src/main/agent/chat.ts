@@ -7,7 +7,7 @@
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { CanUseTool, McpServerConfig, Options } from '@anthropic-ai/claude-agent-sdk'
-import type { ChatMessage, ChatSession, GroupParticipant, ModelChoice, ProviderId, Speaker } from '@shared/types'
+import type { ChatImage, ChatMessage, ChatSession, EffortChoice, GroupParticipant, ModelChoice, NewChatOptions, ProviderId, Speaker } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import type { Credentials } from './credentials.ts'
 import { fromAnthropicUsage, fromOpenAiUsage, SdkUsageTracker, type Usage } from './budget/usage.ts'
@@ -21,7 +21,10 @@ import { GroupChat, planChecklist, type Room } from './groupChat.ts'
 import { consultPhrase, makeParticipant, modelLabel, parseMentions, sameModel } from '../../shared/modelResolve.ts'
 import { runOpenAiLoop, trimHistory, type FetchFn, type OaiMessage } from './openaiLoop.ts'
 import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
-import { extraBody, isProviderId, PROVIDERS, type Providers } from './providers.ts'
+import { extraBody, isProviderId, PROVIDERS, sdkEffortOptions, type Providers } from './providers.ts'
+import { autoEffort, clampEffort, effortSupport, isEffortChoice, MAX_IMAGES_PER_MESSAGE, supportsVision, type EffortLevel } from '../../shared/modelCaps.ts'
+import { chatImageStore, extractImageMarkers, hasChatImageStore } from './chatImages.ts'
+import { anthropicPrompt, contentText, type ImagePayload, type ImageResolver, userContentWithRefs } from './imageParts.ts'
 import {
   allowServer,
   model,
@@ -60,7 +63,9 @@ interface StoredChat extends Omit<ChatSession, 'provider' | 'model'> {
   lastModel?: string
   // The person picked this chat's model explicitly: no automatic routing.
   modelPinned?: boolean
-  route?: { model: string; tier: Route['tier']; reason: string }
+  route?: { model: string; tier: Route['tier']; reason: string; effort?: EffortLevel }
+  // Reasoning effort picked for this chat; unset = 'auto' (the router decides).
+  effort?: Exclude<EffortChoice, 'auto'>
   orchestrate?: OrchestrateMode
   orchestrations?: string[]
   // Last budget warning shown, so it is not repeated every turn.
@@ -147,22 +152,53 @@ export class ChatManager {
     return this.chats.map((c) => this.session(c))
   }
 
-  create(choice?: ModelChoice): ChatSession {
+  create(choice?: ModelChoice, options: NewChatOptions = {}): ChatSession {
     const pick = choice && isProviderId(choice.provider) && choice.model?.trim() ? choice : this.defaultChoice()
+    const effort = isEffortChoice(options.effort) ? options.effort : this.defaultEffort()
     const chat: StoredChat = {
       id: randomUUID(),
-      title: 'New chat',
+      title: options.title?.trim().slice(0, 80) || 'New chat',
       createdAt: Date.now(),
       provider: pick.provider,
       model: pick.model.trim(),
       messages: [],
       // A model picked for this chat is an explicit choice: routing keeps it. Chats on the default
       // model are routed (cheap tier for simple asks, big tier for large tasks).
-      ...(pick === choice ? { modelPinned: true } : {})
+      ...(pick === choice ? { modelPinned: true } : {}),
+      ...(effort !== 'auto' ? { effort } : {})
     }
     this.chats.unshift(chat)
     if (this.chats.length > MAX_CHATS) this.chats.length = MAX_CHATS
+    // Group chat created up front: guests join now.
+    if (options.guests?.length) {
+      const room = this.room(chat, new AbortController().signal)
+      for (const g of options.guests) {
+        if (!g || !isProviderId(g.provider) || !g.model?.trim()) continue
+        this.group.ensureGuest(room, { provider: g.provider, model: g.model.trim() })
+      }
+    }
     this.save()
+    return this.session(chat)
+  }
+
+  // Default effort for new chats (Settings); 'auto' unless the person picked one.
+  defaultEffort(): EffortChoice {
+    const v = this.ctx.getSetting<unknown>('defaultEffort', 'auto')
+    return isEffortChoice(v) ? v : 'auto'
+  }
+
+  setDefaultEffort(effort: EffortChoice): void {
+    if (!isEffortChoice(effort)) throw new Error(`invalid effort ${String(effort)}`)
+    this.ctx.setSetting('defaultEffort', effort)
+  }
+
+  // An explicit effort overrides the router's effort and tier (like an explicit model).
+  setEffort(id: string, effort: EffortChoice): ChatSession {
+    const chat = this.find(id)
+    if (!chat) throw new Error(`unknown chat ${id}`)
+    if (!isEffortChoice(effort)) throw new Error(`invalid effort ${String(effort)}`)
+    chat.effort = effort === 'auto' ? undefined : effort
+    this.updated(chat)
     return this.session(chat)
   }
 
@@ -198,6 +234,9 @@ export class ChatManager {
       if (t.requests) s.meter = toSummary(t)
     }
     if (c.route) s.route = c.route
+    if (c.effort) s.effort = c.effort
+    const last = c.messages[c.messages.length - 1]
+    if (last) s.lastAt = last.at
     if (c.orchestrate && c.orchestrate !== 'auto') s.orchestrate = c.orchestrate
     if (c.orchestrations?.length) s.orchestrations = c.orchestrations
     return s
@@ -212,12 +251,15 @@ export class ChatManager {
   }
 
   // Starts a turn and returns once it is underway; progress arrives as chat:message events.
-  async send(id: string, text: string): Promise<void> {
+  async send(id: string, text: string, imageIds: string[] = []): Promise<void> {
     const chat = this.find(id)
     if (!chat) throw new Error(`unknown chat ${id}`)
     if (this.running.has(id)) throw new Error('chat is busy')
     const root = this.ctx.project()?.root
-    this.push(chat, userMessage('main', text))
+    const images = await this.imageRefs(imageIds)
+    const user = userMessage('main', text)
+    if (images.length) user.images = images
+    this.push(chat, user)
     if (chat.title === 'New chat') chat.title = text.replace(/\s+/g, ' ').trim().slice(0, 48) || 'Chat'
     if (!root) {
       this.push(chat, systemMessage('main', 'Open a project first.'))
@@ -240,7 +282,13 @@ export class ChatManager {
 
     const picked = this.choice(chat)
     const { provider } = picked
-    const modelId = this.routeTurn(chat, text)
+    const { model: modelId, effort } = this.routeTurn(chat, text)
+    // Images only go to a model that reads them.
+    let sendImages = images
+    if (images.length && !supportsVision(provider, modelId, await this.deps.providers?.modelMeta(provider, modelId).catch(() => undefined))) {
+      sendImages = []
+      this.push(chat, systemMessage('main', `${modelLabel(modelId)} cannot read images; sent the text only.`))
+    }
     let start: () => Promise<void>
     const abort = new AbortController()
     const rules = (await this.deps.rules?.().catch(() => '')) ?? ''
@@ -294,14 +342,14 @@ export class ChatManager {
         this.push(chat, systemMessage('main', auth.error ?? 'Anthropic is not set up.'))
         return
       }
-      start = () => this.runSdk(chat, text, root, abort, modelId, auth.env, rules)
+      start = () => this.runSdk(chat, text, root, abort, modelId, auth.env, rules, effort, sendImages)
     } else {
       const ep = this.deps.providers ? await this.deps.providers.endpoint(provider) : { error: 'Providers are not available.' }
       if ('error' in ep) {
         this.push(chat, systemMessage('main', ep.error))
         return
       }
-      start = () => this.runOpenAi(chat, text, abort, ep.baseUrl, ep.headers, provider, modelId, rules)
+      start = () => this.runOpenAi(chat, text, abort, ep.baseUrl, ep.headers, provider, modelId, rules, effort, sendImages)
     }
 
     this.running.set(id, abort)
@@ -328,17 +376,24 @@ export class ChatManager {
 
   // Model for this turn: the chat's model, or a cheaper/bigger tier picked by routeModel when the
   // person did not pin one. Never downgrades mid-chat (the prompt cache is per model).
-  private routeTurn(chat: StoredChat, text: string): string {
+  // An explicit effort works like a pinned model: no tier routing, and that effort is sent.
+  // With effort 'auto' the router also picks the effort (cheap -> low, big -> high, otherwise the
+  // model's default).
+  routeTurn(chat: StoredChat, text: string): { model: string; effort?: EffortLevel } {
     const { provider, model: chosen } = this.choice(chat)
+    const explicit = chat.effort
     const r = routeModel({
       task: 'chat',
       text,
       settings: { provider, model: chosen, autoRoute: this.ctx.getSetting<boolean>('autoRoute', true) !== false, tiers: this.ctx.getSetting('modelTiers', undefined) },
-      override: chat.modelPinned ? chosen : undefined,
+      override: chat.modelPinned || explicit ? chosen : undefined,
       previousModel: chat.lastProvider === provider ? chat.lastModel : undefined
     })
-    chat.route = { model: r.model, tier: r.tier, reason: r.reason }
-    return r.model
+    const support = effortSupport(provider, r.model)
+    const effort = explicit ? clampEffort(explicit, support.levels) : autoEffort(r.tier, support)
+    const reason = explicit && !chat.modelPinned ? `effort set to ${explicit}` : r.reason
+    chat.route = { model: r.model, tier: r.tier, reason, ...(effort ? { effort } : {}) }
+    return { model: r.model, ...(effort ? { effort } : {}) }
   }
 
   setOrchestrateMode(id: string, mode: OrchestrateMode): ChatSession {
@@ -356,10 +411,10 @@ export class ChatManager {
     return chat.orchestrate ?? 'auto'
   }
 
-  buildOptions(chat: StoredChat, root: string, abort: AbortController, modelId = this.choice(chat).model, env?: Record<string, string | undefined>, rules = ''): Options {
+  buildOptions(chat: StoredChat, root: string, abort: AbortController, modelId = this.choice(chat).model, env?: Record<string, string | undefined>, rules = '', effort?: EffortLevel): Options {
     const allowBash = this.ctx.getSetting('allowBash', false)
     const mcpServers: Record<string, McpServerConfig> = {
-      [SERVER_NAME]: (this.deps.makeServer ?? ((c) => createGentreeServer(c, { extraTools: this.group.hostTools(() => this.rooms.get(chat.id) ?? null) })))(this.ctx)
+      [SERVER_NAME]: (this.deps.makeServer ?? ((c) => createGentreeServer(c, { extraTools: [...this.group.hostTools(() => this.rooms.get(chat.id) ?? null), ...this.chatServiceTools()] })))(this.ctx)
     }
     const allowedTools = [...allowServer(SERVER_NAME), 'Read', 'Glob', 'Grep']
     const studio = studioMcp(this.ctx)
@@ -370,6 +425,7 @@ export class ChatManager {
     return {
       cwd: root,
       model: modelId,
+      ...sdkEffortOptions(modelId, effort),
       systemPrompt: withRules(SYSTEM_PROMPT, rules),
       ...(env ? { env } : {}),
       ...(this.deps.meter?.guard.sdkOptions('chat') ?? {}),
@@ -397,7 +453,9 @@ export class ChatManager {
     abort: AbortController,
     modelId: string,
     env?: Record<string, string | undefined>,
-    rules = ''
+    rules = '',
+    effort?: EffortLevel,
+    images: ChatImage[] = []
   ): Promise<void> {
     const queryFn = this.deps.queryFn ?? sdkQuery
     const meter = this.deps.meter
@@ -412,7 +470,10 @@ export class ChatManager {
     // Ledger: per-model deltas of the SDK's cumulative modelUsage (baseline per SDK session).
     const tracker = new SdkUsageTracker(modelId, chat.sdkSessionId && meter ? meter.ledger.sdkBaseline(chat.sdkSessionId) : {})
     try {
-      for await (const m of queryFn({ prompt, options: this.buildOptions(chat, root, abort, modelId, env, rules) })) {
+      // Images: the SDK's streaming input with image content blocks.
+      const payloads = await this.payloads(images)
+      const input = payloads.length ? anthropicPrompt(prompt, payloads) : prompt
+      for await (const m of queryFn({ prompt: input, options: this.buildOptions(chat, root, abort, modelId, env, rules, effort) })) {
         if ('session_id' in m && m.session_id && chat.sdkSessionId !== m.session_id) chat.sdkSessionId = m.session_id
         for (const cm of toChatMessages(m, 'main')) this.push(chat, cm)
         if (m.type === 'result' && m.usage) this.recordUsage(chat, this.hostSpeaker(chat), fromAnthropicUsage(m.usage as any))
@@ -444,14 +505,16 @@ export class ChatManager {
     headers: Record<string, string>,
     provider: ProviderId,
     modelId: string,
-    rules = ''
+    rules = '',
+    effort?: EffortLevel,
+    images: ChatImage[] = []
   ): Promise<void> {
     // Same provider as last turn: continue its history (tool calls and all). Otherwise seed with the
     // visible transcript; tool-call history is provider-specific (e.g. Gemini thought signatures).
     let history: OaiMessage[] = chat.lastProvider === provider && chat.oaiHistory ? chat.oaiHistory : transcriptHistory(chat.messages.slice(0, -1), this.choice(chat))
     // Long histories: summarize the older turns with the cheap model (80% -> 40% of the window).
     history = await this.compact(history, baseUrl, headers, provider, modelId, abort.signal)
-    history = [...history, { role: 'user', content: text }]
+    history = [...history, { role: 'user', content: userContentWithRefs(text, images.map((i) => i.id)) }]
     const meter = this.deps.meter
     const maxTurns = Number(this.ctx.getSetting('chatMaxTurns', 50)) || 50
     const result = await (usesResponsesApi(provider, modelId) ? runResponsesLoop : runOpenAiLoop)({
@@ -460,13 +523,14 @@ export class ChatManager {
       model: modelId,
       system: withRules(SYSTEM_PROMPT + OPENAI_TOOLS_NOTE, rules),
       history,
-      tools: [...gentreeTools(this.ctx, this.deps.toolFs ? { fs: this.deps.toolFs } : {}), ...this.group.hostTools(() => this.rooms.get(chat.id) ?? null)],
+      tools: [...gentreeTools(this.ctx, this.deps.toolFs ? { fs: this.deps.toolFs } : {}), ...this.group.hostTools(() => this.rooms.get(chat.id) ?? null), ...this.chatServiceTools()],
       maxTurns,
       signal: abort.signal,
       agentId: 'main',
       emit: (m) => this.push(chat, m),
-      extraBody: extraBody(provider, modelId),
+      extraBody: extraBody(provider, modelId, effort, await this.deps.providers?.modelMeta(provider, modelId).catch(() => undefined)),
       fetchFn: this.deps.fetchFn,
+      resolveImage: this.imageResolver(),
       onUsage: (raw) => {
         const u = fromOpenAiUsage(raw)
         if (u) this.recordUsage(chat, this.hostSpeaker(chat), u)
@@ -483,7 +547,10 @@ export class ChatManager {
   // Summarizes old turns when the history nears the window. Errors keep the history as is.
   private async compact(history: OaiMessage[], baseUrl: string, headers: Record<string, string>, provider: ProviderId, modelId: string, signal: AbortSignal): Promise<OaiMessage[]> {
     const window = Number(this.ctx.getSetting('compactWindowTokens', COMPACT_WINDOW)) || COMPACT_WINDOW
-    if (!needsCompaction(history as any, 0.8 * window)) return history
+    // Older images become "[N images]" text when the history is summarized.
+    const flat = history.map((m) => (m.role === 'user' && Array.isArray(m.content) ? { ...m, content: contentText(m.content) } : m))
+    if (!needsCompaction(flat as any, 0.8 * window)) return history
+    history = flat
     const cheap = routeModel({ task: 'summary', text: '', settings: { provider, model: modelId, tiers: this.ctx.getSetting('modelTiers', undefined) } }).model
     try {
       const r = await compactHistory(history as any, {
@@ -545,6 +612,14 @@ export class ChatManager {
         this.updated(chat)
       },
       recordUsage: (speaker, u) => this.recordUsage(chat, speaker, u),
+      // Images of the latest user message, for guests that read images.
+      get images() {
+        for (let i = chat.messages.length - 1; i >= 0; i--) {
+          const m = chat.messages[i]
+          if (m.role === 'user') return m.images ?? []
+        }
+        return []
+      },
       note: (t) => {
         const notes = (chat.groupNotes ??= [])
         notes.push(t)
@@ -685,12 +760,52 @@ export class ChatManager {
     return m
   }
 
+  // Main-chat-only service tools (run_in_terminal), never guests or the team.
+  private chatServiceTools(): any[] {
+    return (this.ctx.serviceTools?.().chat ?? []) as any[]
+  }
+
+  private imageResolver(): ImageResolver | undefined {
+    if (!hasChatImageStore()) return undefined
+    return (id) => chatImageStore().base64(id)
+  }
+
+  private async imageRefs(ids: string[]): Promise<ChatImage[]> {
+    if (!Array.isArray(ids) || !ids.length || !hasChatImageStore()) return []
+    const out: ChatImage[] = []
+    for (const id of ids.slice(0, MAX_IMAGES_PER_MESSAGE)) {
+      const ref = typeof id === 'string' ? await chatImageStore().ref(id) : null
+      if (ref) out.push(ref)
+    }
+    return out
+  }
+
+  private async payloads(images: ChatImage[]): Promise<ImagePayload[]> {
+    const resolve = this.imageResolver()
+    if (!resolve || !images.length) return []
+    const out: ImagePayload[] = []
+    for (const i of images) {
+      const p = await resolve(i.id)
+      if (p) out.push(p)
+    }
+    return out
+  }
+
   private find(id: string): StoredChat | undefined {
     return this.chats.find((c) => c.id === id)
   }
 
   // Adds a message, or replaces one with the same id (streamed assistant text, tool results).
   private push(chat: StoredChat, m: ChatMessage): void {
+    // Images a tool produced arrive as forge-image markers in text: show them as message images.
+    if (m.role !== 'user' && m.text.includes('forge-image://')) {
+      const x = extractImageMarkers(m.text)
+      if (x.ids.length) {
+        const store = hasChatImageStore() ? chatImageStore() : null
+        const images: ChatImage[] = x.ids.map(({ id, name }) => store?.peek(id) ?? { id, mime: 'image/png', ...(name ? { name } : {}) })
+        m = { ...m, text: x.text, images: [...(m.images ?? []), ...images.filter((i) => !m.images?.some((j) => j.id === i.id))] }
+      }
+    }
     // In a group chat the host's own messages carry its name too.
     if (chat.guests?.length && !m.speaker && m.agentId === 'main' && (m.role === 'assistant' || m.role === 'tool')) m = { ...m, speaker: this.hostSpeaker(chat) }
     const i = chat.messages.findIndex((x) => x.id === m.id)
@@ -728,7 +843,8 @@ function transcriptHistory(messages: ChatMessage[], host?: ModelChoice): OaiMess
     const m = messages[i]
     if (m.agentId !== 'main' || (m.role !== 'user' && m.role !== 'assistant') || !m.text.trim()) continue
     // Group chat: other models' messages are labelled with their name.
-    const text = m.speaker && !(host && sameModel(m.speaker, host)) ? `[${m.speaker.label}] ${m.text}` : m.text
+    const base = m.images?.length ? `${m.text}\n[${m.images.length} image${m.images.length > 1 ? 's' : ''} attached]` : m.text
+    const text = m.speaker && !(host && sameModel(m.speaker, host)) ? `[${m.speaker.label}] ${base}` : base
     size += text.length
     if (size > MAX_TRANSCRIPT_CHARS) break
     const prev = out[0]

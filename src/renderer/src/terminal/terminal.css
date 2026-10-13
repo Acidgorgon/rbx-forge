@@ -1,0 +1,43 @@
+/* Integrated terminal (bottom panel "Terminal" tab). Chips and buttons reuse workbench.css. */
+.term-panel { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.term-tools { gap: 4px; }
+.term-tools .chips { flex: 0 1 auto; }
+.term-chip { cursor: pointer; max-width: 220px; padding-right: 3px; }
+.term-chip .i { flex: none; color: var(--fg-faint); }
+.term-chip.on .i { color: var(--fg-muted); }
+.term-chip.exited { color: var(--fg-faint); }
+.term-chip:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.term-x { width: 16px; height: 16px; display: inline-grid; place-items: center; border-radius: var(--r-xs); color: var(--fg-faint); opacity: 0; flex: none; transition: opacity var(--dur-fast), background var(--dur-fast), color var(--dur-fast); }
+.term-chip:hover .term-x, .term-chip.on .term-x, .term-x:focus-visible { opacity: 1; }
+.term-x:hover { background: var(--bg-hover); color: var(--fg); }
+.term-rename { width: 120px; height: 16px; border: 0; padding: 0 2px; background: var(--bg-active); color: var(--fg); font: inherit; border-radius: var(--r-xs); }
+.term-meta { font-size: 10.5px; max-width: 220px; }
+.term-tools .icon-btn:disabled { opacity: .4; }
+
+.term-body { flex: 1; min-height: 0; position: relative; display: flex; flex-direction: column; }
+.term-view { flex: 1; min-height: 0; padding: 2px 4px 4px 10px; background: var(--bg-panel); }
+.term-host { width: 100%; height: 100%; }
+.term-view .xterm { height: 100%; padding: 0; }
+.term-view .xterm-viewport { background: transparent !important; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+.term-view .xterm .xterm-screen canvas, .term-view .xterm .xterm-rows { font-variant-ligatures: none; }
+.term-view .xterm:focus-within { outline: none; }
+.term-error { color: var(--err); font-size: 11.5px; max-width: 560px; }
+
+/* Find: floats over the top-right of the terminal. */
+.term-find { position: absolute; top: 4px; right: 14px; z-index: 5; display: flex; align-items: center; gap: 2px; height: 28px; padding: 0 4px 0 8px; border-radius: var(--r-md); background: var(--bg-overlay); box-shadow: var(--sh-2); color: var(--fg-faint); animation: rf-pop-in var(--dur-fast) var(--ease-out); }
+.term-find input { width: 180px; border: 0; background: none; color: var(--fg); font-size: 11.5px; margin-left: 4px; }
+.term-find input:focus-visible { box-shadow: none; }
+.term-find.miss input { color: var(--err); }
+.term-opt { height: 20px; min-width: 22px; padding: 0 4px; border-radius: var(--r-xs); font: 500 10.5px/1 var(--font-mono); color: var(--fg-faint); border: 1px solid transparent; }
+.term-opt:hover { color: var(--fg); }
+.term-opt.on { color: var(--fg); border-color: var(--line-strong); background: var(--bg-active); }
+
+/* Assistant run_in_terminal confirmation: outlined, warn-tinted strip. */
+.term-confirm { display: flex; align-items: center; gap: 8px; margin: 0 8px 6px; padding: 6px 8px; border: 1px solid var(--warn-line); background: var(--warn-fill); border-radius: var(--r-md); font-size: 11.5px; color: var(--fg-2); flex: none; min-width: 0; animation: rf-pop-in var(--dur-base) var(--ease-out); }
+.term-confirm-tag { display: inline-flex; align-items: center; gap: 4px; height: 18px; padding: 0 6px; border-radius: var(--r-pill); border: 1px solid var(--warn-line); color: var(--warn); font-size: 10.5px; flex: none; }
+.term-confirm-text { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.term-confirm code { font: 11.5px var(--font-mono); color: var(--fg); background: var(--bg-active); padding: 1px 5px; border-radius: var(--r-xs); }
+
+:root[data-motion="reduced"] .term-find, :root[data-motion="off"] .term-find,
+:root[data-motion="reduced"] .term-confirm, :root[data-motion="off"] .term-confirm { animation: none; }
+@media (prefers-reduced-motion: reduce) { .term-find, .term-confirm { animation: none; } }

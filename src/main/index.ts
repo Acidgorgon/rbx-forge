@@ -27,9 +27,16 @@ import { Supervisor } from './services/supervisor.ts'
 import { Packages } from './services/packages.ts'
 import { BLINK_ENTRY, BlinkWatcher } from './services/blink.ts'
 import { createIntegrations } from './integrations.ts'
+import { artElectronDeps } from './services/art/electron.ts'
 import { findTool, loadLoginShellPath, run } from './services/tools.ts'
 import iconPath from '../../build/icon.png?asset'
 import { PRODUCTION_CSP } from './csp.ts'
+import { TerminalService } from './services/terminal/index.ts'
+import { loadPtyBackend } from './services/terminal/backend.ts'
+import { createSetup } from './setup.ts'
+import { MemoryService } from './agent/memory/service.ts'
+import { memoryHandlers } from './agent/memory/ipc.ts'
+import { memoryTools, withMemoryTools } from './agent/serviceTools.ts'
 
 // Name and data folder. The data folder stays "rbx-forge" (what development builds have always
 // used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
@@ -90,6 +97,49 @@ const lsp = new LspBridge({
 
 let project: Project | null = null
 
+// Integrated terminal (node-pty), bottom panel + the main chat's run_in_terminal.
+const terminal = new TerminalService({
+  backend: loadPtyBackend,
+  root: () => project?.info.root ?? null,
+  emit,
+  getSetting: (key, fallback) => settings.get(key, fallback),
+  setSetting: (key, value) => settings.set(key, value),
+  log: (text) => logs.push({ service: 'harness', stream: 'info', text })
+})
+
+// First-run toolchain (bundled rokit + global tools), per-project rokit install, New project.
+const setup = createSetup({
+  settings,
+  emit,
+  log: (line) => logs.push(line),
+  resourcesPath: app.isPackaged ? process.resourcesPath : null,
+  devRoot: app.getAppPath(),
+  homeDir: app.getPath('home'),
+  chooseFolder: async (title, defaultPath) => {
+    const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const options: Electron.OpenDialogOptions = { title, defaultPath, properties: ['openDirectory', 'createDirectory'] }
+    const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+    return picked.canceled ? null : (picked.filePaths[0] ?? null)
+  },
+  // Freshly installed tools are found on the next lookup (tools.ts searches ~/.rokit/bin first);
+  // services that gave up as "missing" start again.
+  onToolsInstalled: () => {
+    for (const s of supervisor.statuses()) if (s.state === 'missing') void supervisor.start(s.id).catch(() => undefined)
+  }
+})
+
+// Adaptive memory + skills for the agents (user memory in userData/memory, project memory in
+// .forge/memory), the Memory page and reflection proposals (agent/memory).
+const memory = new MemoryService({
+  userDir: join(app.getPath('userData'), 'memory'),
+  projectRoot: () => project?.info.root ?? null,
+  getSetting: (key, fallback) => settings.get(key, fallback),
+  setSetting: (key, value) => settings.set(key, value),
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'agent', stream, text })
+})
+const memoryToolSets = memoryTools(memory)
+
 // Wally deps and Rokit tools of the open project (Packages drawer).
 const packages = new Packages({
   root: () => project?.info.root ?? null,
@@ -124,6 +174,7 @@ function requireProject(): Project {
 }
 
 async function closeProject(): Promise<void> {
+  terminal.onProjectClose()
   integrations.onProjectClose()
   project?.close()
   conflicts?.close()
@@ -242,6 +293,8 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   void lsp.setRoot(full).catch((error) => harnessLog(`luau-lsp: ${error}`, 'stderr'))
   void supervisor.startAll().catch((error) => harnessLog(`start services: ${error}`, 'stderr'))
   await integrations.onProjectOpen(full).catch((error) => harnessLog(`integrations: ${error}`, 'stderr'))
+  setup.onProjectOpen(full)
+  void memory.onProjectOpen()
   return opened.info
 }
 
@@ -272,7 +325,7 @@ const ctx: HarnessContext = {
   emit,
   log: (line) => logs.push(line),
 
-  serviceTools: () => integrations.serviceTools(),
+  serviceTools: () => ({ ...withMemoryTools(integrations.serviceTools(), memoryToolSets), chat: terminal.chatTools() }),
   notifyTestFailure: (event) => integrations.notifyTestFailure(event)
 }
 
@@ -297,6 +350,7 @@ const integrations = createIntegrations({
   stopService: (id) => supervisor.stop(id),
   openExternal: (url) => void shell.openExternal(url),
   summarize: (prompt) => agentIpc.summarize(prompt),
+  art: artElectronDeps(),
   choosePlaceFile: async () => {
     const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
     const options: Electron.OpenDialogOptions = {
@@ -371,7 +425,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 for (const [name, handler] of Object.entries(handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries(integrations.handlers)) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory) })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
@@ -384,7 +438,7 @@ ipcMain.on('forge:titlebarTheme', (event, theme: unknown) => {
   win?.setTitleBarOverlay?.({ color: light ? '#e4e7eb' : '#0c0e11', symbolColor: light ? '#3c434d' : '#b0b7c2', height: 38 })
   win?.setBackgroundColor(light ? '#e4e7eb' : '#0c0e11')
 })
-const agentIpc = registerAgentIpc(ctx, ipcMain)
+const agentIpc = registerAgentIpc(ctx, ipcMain, { memory, userDataDir: app.getPath('userData') })
 
 function preloadPath(): string {
   const dir = join(__dirname, '../preload')
@@ -457,6 +511,9 @@ app.on('before-quit', (event) => {
   event.preventDefault()
   agentIpc.dispose()
   integrations.dispose()
+  terminal.dispose()
+  setup.dispose()
+  memory.dispose()
   lsp.dispose()
   closeProject()
     .catch(() => undefined)
@@ -464,6 +521,7 @@ app.on('before-quit', (event) => {
 })
 
 process.on('exit', () => {
+  terminal.dispose()
   lsp.dispose()
   supervisor.killAllSync()
 })

@@ -3,6 +3,11 @@
 import type { IpcMain } from 'electron'
 import type { ChatMessage, ModelChoice, OrchestrateMode, ProviderId } from '@shared/types'
 import { INVOKE_PREFIX } from '../../shared/types.ts'
+import type { NewChatOptions } from '@shared/types'
+import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { isEffortChoice } from '../../shared/modelCaps.ts'
+import { ChatImageStore, chatImageStore, setChatImageStore } from './chatImages.ts'
 import type { HarnessContext } from '../context.ts'
 import { routeModel, tiersFor } from './budget/budget.ts'
 import { runOpenAiLoop } from './openaiLoop.ts'
@@ -13,6 +18,7 @@ import { Meter } from './meter.ts'
 import type { FetchFn } from './openaiLoop.ts'
 import { capsBudget, classifyTool, defaultWriteTargets, openAiRunAgent, Orchestrator, sdkRunAgent, type RunAgent, type ToolClass, type WriteTargets } from './orchestrator/index.ts'
 import { projectRulesLoader, withRules } from './projectRules.ts'
+import { withMemoryLoader, type MemoryHooks } from './memory/hooks.ts'
 import { extraBody, isProviderId, Providers } from './providers.ts'
 import { executableOption, OPENAI_TOOLS_NOTE, sdkQuery, type QueryFn } from './sdk.ts'
 import { SERVICE_WRITE_TOOLS } from './serviceTools.ts'
@@ -60,17 +66,23 @@ export const forgeWriteTargets: WriteTargets = (name, args) => {
 // Builds the agent layer without Electron (tests pass a stub query function and fetch).
 export function createAgentLayer(
   ctx: HarnessContext,
-  opts: { queryFn?: QueryFn; credentials?: Credentials; fetchFn?: FetchFn; toolFs?: ToolFs; meterSaveDelayMs?: number } = {}
+  opts: { queryFn?: QueryFn; credentials?: Credentials; fetchFn?: FetchFn; toolFs?: ToolFs; meterSaveDelayMs?: number; memory?: MemoryHooks } = {}
 ): AgentLayer {
   const credentials = opts.credentials ?? new Credentials(ctx)
   const providers = new Providers(ctx, credentials, opts.fetchFn)
-  const rules = projectRulesLoader(ctx)
+  // Base prompt + project rules + memory index (agent/memory/prompt.ts): the memory block comes last,
+  // after the stable prefix, so prompt caching keeps working for chat, the group host, test agents
+  // and orchestrator roles alike.
+  const rules = withMemoryLoader(projectRulesLoader(ctx), opts.memory)
   const meter = new Meter(ctx, { saveDelayMs: opts.meterSaveDelayMs })
   const orchestrator = createOrchestrator(ctx, { ...opts, credentials, providers, rules, meter })
   const team = teamRunner(ctx, orchestrator)
-  const chats = new ChatManager(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team })
+  let chats: ChatManager
+  // Background reflection: a chat that goes idle is reviewed by the memory layer (debounced there).
+  const chatCtx = opts.memory ? tapChatBusy(ctx, opts.memory, (id) => chats.messages(id) ?? null) : ctx
+  chats = new ChatManager(chatCtx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team })
   const agents = new TestAgentRunner(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter })
-  return {
+  const layer: AgentLayer = {
     chats,
     agents,
     credentials,
@@ -84,8 +96,25 @@ export function createAgentLayer(
       chats.dispose()
       agents.dispose()
       meter.flush()
+      opts.memory?.setModel(null)
     }
   }
+  // Reflection and the style pass run on the cheap tier through oneShot.
+  opts.memory?.setModel((system, prompt) => layer.oneShot(system, prompt))
+  return layer
+}
+
+// A HarnessContext whose emit also tells the memory layer when a chat starts or stops a turn.
+function tapChatBusy(ctx: HarnessContext, memory: MemoryHooks, messages: (id: string) => ChatMessage[] | null): HarnessContext {
+  const tapped = Object.create(ctx) as HarnessContext
+  tapped.emit = (event, payload) => {
+    ctx.emit(event, payload)
+    if (event !== 'chat:busy') return
+    const p = payload as { sessionId: string; busy: boolean }
+    if (p.busy) memory.onChatBusy(p.sessionId)
+    else memory.onChatIdle(p.sessionId, () => messages(p.sessionId))
+  }
+  return tapped
 }
 
 async function oneShot(
@@ -248,14 +277,30 @@ function provider(p: unknown): ProviderId {
   return p
 }
 
+function newChatOptions(o: unknown): NewChatOptions {
+  if (!o || typeof o !== 'object') return {}
+  const v = o as Record<string, unknown>
+  const out: NewChatOptions = {}
+  if (isEffortChoice(v.effort)) out.effort = v.effort
+  if (Array.isArray(v.guests)) out.guests = v.guests.map(choice).filter((x): x is ModelChoice => !!x)
+  if (typeof v.title === 'string') out.title = v.title
+  return out
+}
+
 function choice(c: unknown): ModelChoice | undefined {
   if (!c || typeof c !== 'object') return undefined
   const { provider: p, model } = c as Partial<ModelChoice>
   return isProviderId(p) && typeof model === 'string' && model.trim() ? { provider: p, model } : undefined
 }
 
-export function registerAgentIpc(ctx: HarnessContext, ipcMain: IpcMain): { dispose(): void; summarize(prompt: string): Promise<string> } {
-  const layer = createAgentLayer(ctx)
+export function registerAgentIpc(
+  ctx: HarnessContext,
+  ipcMain: IpcMain,
+  opts: { memory?: MemoryHooks; userDataDir?: string } = {}
+): { dispose(): void; summarize(prompt: string): Promise<string> } {
+  const layer = createAgentLayer(ctx, { memory: opts.memory })
+  // Chat images live under userData/chat-images (history keeps only references).
+  setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))
   const { chats, agents, credentials, providers, meter, orchestrator, team } = layer
 
   const providersChanged = async () => {
@@ -265,14 +310,32 @@ export function registerAgentIpc(ctx: HarnessContext, ipcMain: IpcMain): { dispo
 
   const handlers: Record<string, (...args: any[]) => unknown> = {
     listChats: () => chats.list(),
-    newChat: (c?: unknown) => chats.create(choice(c)),
+    newChat: (c?: unknown, o?: unknown) => chats.create(choice(c), newChatOptions(o)),
     // Test agent ids work here too, so the UI can open an agent's transcript like a chat.
     getChat: (id: string) => {
       const orch = /^orch:([^:]+):(.+)$/.exec(String(id ?? ''))
       if (orch) return orchestrator.transcript(orch[1], orch[2]) ?? []
       return chats.messages(id) ?? agents.messages(id) ?? []
     },
-    sendChat: (id: string, text: string) => chats.send(id, text),
+    sendChat: (id: string, text: string, images?: unknown) => chats.send(id, String(text ?? ''), Array.isArray(images) ? images.filter((x): x is string => typeof x === 'string') : []),
+    setChatEffort: (id: unknown, effort: unknown) => {
+      if (!isEffortChoice(effort)) throw new Error(`invalid effort ${String(effort)}`)
+      return chats.setEffort(String(id ?? ''), effort)
+    },
+    getDefaultEffort: () => chats.defaultEffort(),
+    setDefaultEffort: (effort: unknown) => {
+      if (!isEffortChoice(effort)) throw new Error(`invalid effort ${String(effort)}`)
+      chats.setDefaultEffort(effort)
+    },
+    addChatImage: (input: unknown) => {
+      const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+      return chatImageStore().add({
+        dataUrl: typeof i.dataUrl === 'string' ? i.dataUrl : undefined,
+        path: typeof i.path === 'string' ? i.path : undefined,
+        name: typeof i.name === 'string' ? i.name : undefined
+      })
+    },
+    getChatImage: (id: unknown) => chatImageStore().dataUrl(String(id ?? '')),
     stopChat: (id: string) => chats.stop(id),
     // Group chat.
     addGuest: (id: string, c: unknown) => {

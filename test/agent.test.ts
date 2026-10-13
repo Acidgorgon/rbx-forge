@@ -252,7 +252,7 @@ function agentHarness(fake: Fake, behaviour: (scenario: string) => 'passed' | 'f
           if (options.abortController?.signal.aborted) throw new Error('aborted')
           yield { type: 'assistant', parent_tool_use_id: null, session_id: 's', message: { content: [{ type: 'text', text: `step ${i}` }] } } as any
         }
-        const b = behaviour(prompt)
+        const b = behaviour(prompt as string)
         if (b === 'throw') throw new Error('boom')
         if (b !== 'none') await tools.find((t: any) => t.name === 'report_result').handler({ status: b, summary: `${b} ok` }, {})
         yield { type: 'result', subtype: 'success', is_error: false, result: '', session_id: 's' } as any

@@ -74,7 +74,9 @@ const PATHS = {
   user: <><circle cx="8" cy="5.5" r="2.5" /><path d="M3 14c.6-2.8 2.6-4.2 5-4.2s4.4 1.4 5 4.2" /></>,
   eye: <><path d="M1.8 8S4 3.8 8 3.8 14.2 8 14.2 8 12 12.2 8 12.2 1.8 8 1.8 8z" /><circle cx="8" cy="8" r="1.8" /></>,
   diff: <><path d="M4.5 2v7M1.5 5.5h6M9 11.5h5.5" /><rect x="8.5" y="2.5" width="5.5" height="6" rx="1" /></>,
-  pin: <><path d="M6 2.5h4l-.6 3.8 2.1 2.2H4.5l2.1-2.2z" /><path d="M8 8.5v5" /></>
+  pin: <><path d="M6 2.5h4l-.6 3.8 2.1 2.2H4.5l2.1-2.2z" /><path d="M8 8.5v5" /></>,
+  image: <><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><circle cx="5.8" cy="6" r="1.2" /><path d="m2.5 12 3.8-3.6 2.6 2.4 2.2-2 2.4 2.2" /></>,
+  memory: <><path d="M4 2.5h8v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z" /><path d="M5.8 2.5v11M8.2 5.8h2M8.2 8.2h2" /></>
 } satisfies Record<string, ReactNode>
 
 export type IconName = keyof typeof PATHS

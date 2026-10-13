@@ -63,4 +63,7 @@ export interface ServiceToolSets {
   tests: ServiceTool[]
   // Change the project (Blink events, Wally deps): only agents that may write.
   write: ServiceTool[]
+  // Main chat only, never guests, test agents or the orchestrator team (run_in_terminal, which the
+  // user confirms in the UI before it runs).
+  chat?: ServiceTool[]
 }

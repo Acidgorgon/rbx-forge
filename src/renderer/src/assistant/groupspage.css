@@ -1,0 +1,90 @@
+/* Group chats page: list of group chats, the new-group form, and the three-column room
+   (participants rail · conversation · roundtable/plan). Terminal style, existing tokens only. */
+
+/* ---------------------------------------------------------------- list */
+.gp-table { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-panel); overflow: hidden; }
+.gp-row { display: grid; grid-template-columns: minmax(160px, 1.1fr) minmax(0, 2fr) auto; align-items: center; gap: 16px; padding: 10px 14px; text-align: left; color: var(--fg-2); font-size: 12px; min-width: 0; transition: background var(--dur-fast); }
+.gp-row + .gp-row { border-top: 1px solid var(--line); }
+.gp-row:hover { background: var(--bg-hover); }
+.gp-row.on { background: var(--bg-selected); }
+.gp-row-title { display: flex; align-items: center; gap: 8px; color: var(--fg); min-width: 0; }
+.gp-row-title svg { color: var(--fg-faint); flex: none; }
+.gp-row-people { display: flex; flex-wrap: wrap; gap: 4px 12px; min-width: 0; }
+.gp-person { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--fg-muted); white-space: nowrap; }
+.gp-person.host { color: var(--fg-2); }
+.gp-row-meta { display: flex; gap: 12px; font-size: 11px; color: var(--fg-faint); white-space: nowrap; font-variant-numeric: tabular-nums; }
+
+/* ---------------------------------------------------------------- new group chat */
+.gp-new-grid { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 12px 16px; align-items: start; }
+.gp-lbl { font-size: 11.5px; color: var(--fg-muted); padding-top: 6px; }
+.gp-new-ctl { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.gp-new-ctl .mpick-field { max-width: 360px; }
+.gp-guests { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.gp-chip { display: inline-flex; align-items: center; gap: 6px; height: 22px; padding: 0 4px 0 6px; border: 1px solid var(--line-strong); border-radius: var(--r-md); font-size: 11.5px; color: var(--fg-2); }
+.gp-chip button { width: 16px; height: 16px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--fg-faint); }
+.gp-chip button:hover { color: var(--fg); background: var(--bg-active); }
+.gp-new-actions { display: flex; align-items: center; gap: 10px; margin-top: 14px; padding-top: 12px; border-top: 1px solid var(--line); }
+
+/* ---------------------------------------------------------------- room */
+.gp-wrap { flex: 1; min-height: 0; min-width: 0; display: flex; container-type: inline-size; container-name: gproom; }
+.gp-room { flex: 1; min-height: 0; min-width: 0; display: grid; grid-template-columns: 228px minmax(0, 1fr) 300px; background: var(--bg-editor); }
+.gp-rail, .gp-side { min-height: 0; overflow: auto; padding: 12px; display: flex; flex-direction: column; gap: 10px; background: var(--bg-panel); }
+.gp-rail { border-right: 1px solid var(--line); }
+.gp-side { border-left: 1px solid var(--line); }
+.gp-back { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--fg-muted); height: 22px; align-self: flex-start; }
+.gp-back:hover { color: var(--fg); }
+.gp-sec-label { display: flex; align-items: center; gap: 8px; font: 500 10.5px/1 var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--fg-muted); }
+.gp-sec-label .faint { text-transform: none; letter-spacing: var(--track); font-weight: 400; }
+.gp-people { display: flex; flex-direction: column; gap: 6px; }
+.gp-pcard { display: flex; align-items: flex-start; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-raised); min-width: 0; }
+.gp-pmark { flex: none; padding-top: 1px; }
+.gp-pinfo { display: flex; flex-direction: column; gap: 2px; min-width: 0; flex: 1; }
+.gp-pname { display: flex; align-items: center; gap: 6px; font-size: 12px; min-width: 0; }
+.gp-pname > span:first-child { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.gp-psub { font-size: 10.5px; color: var(--fg-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.gp-premove { width: 20px; height: 20px; opacity: .6; }
+.gp-pcard:hover .gp-premove { opacity: 1; }
+.gp-rail .mpick { align-self: flex-start; }
+.gp-rail .mpick-btn { border-style: dashed; }
+.gp-rail-foot { margin-top: auto; font-size: 10.5px; line-height: 1.5; }
+
+.gp-conv { display: flex; flex-direction: column; min-height: 0; min-width: 0; }
+.gp-conv-head { display: flex; align-items: center; gap: 8px; height: 40px; padding: 0 16px; border-bottom: 1px solid var(--line); flex: none; min-width: 0; }
+.gp-conv-title { flex: 0 1 auto; font-size: 12.5px; color: var(--fg); margin-right: 4px; }
+.gp-scroll { flex: 1; min-height: 0; padding: 16px 0 20px; }
+.gp-thread { width: 100%; max-width: 760px; margin: 0 auto; padding: 0 20px; display: flex; flex-direction: column; gap: 12px; }
+.gp-composer { flex: none; width: 100%; max-width: 800px; margin: 0 auto; padding: 0 10px 6px; }
+
+.gp-box { display: flex; flex-direction: column; gap: 8px; padding: 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-raised); min-width: 0; }
+.gp-topic { width: 100%; resize: vertical; min-height: 56px; }
+.gp-line { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.gp-line .btn { justify-content: center; }
+.gp-k { font-size: 11.5px; color: var(--fg-muted); }
+.gp-toggle { cursor: pointer; }
+.gp-usage { display: flex; flex-direction: column; gap: 6px; }
+.gp-urow { display: grid; grid-template-columns: minmax(0, 1fr) 70px 42px; align-items: center; gap: 8px; font-size: 11px; color: var(--fg-2); }
+.gp-uname { display: flex; align-items: center; gap: 6px; }
+.gp-ubar { height: 3px; border-radius: 2px; background: var(--bg-active); overflow: hidden; }
+.gp-ubar span { display: block; height: 100%; background: var(--gc, var(--fg-muted)); }
+.gp-unum { text-align: right; color: var(--fg-faint); font-variant-numeric: tabular-nums; }
+.gp-plan-body { max-height: 320px; overflow: auto; font-size: 11.5px; line-height: 1.55; color: var(--fg-2); padding-right: 4px; }
+.gp-plan-body h2 { font-size: 11.5px; margin: 10px 0 4px; color: var(--fg); }
+.gp-plan .gc-card { margin: 0; }
+
+/* Narrow editor area: rail on top, plan panel under the conversation, page scrolls. */
+@container gproom (max-width: 1020px) {
+  .gp-room { grid-template-columns: 200px minmax(0, 1fr); grid-template-rows: minmax(0, 1fr) auto; overflow: auto; }
+  .gp-side { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--line); flex-direction: row; flex-wrap: wrap; align-items: flex-start; overflow: visible; }
+  .gp-side .gp-box { flex: 1 1 240px; }
+  .gp-conv { min-height: 520px; }
+}
+@container gproom (max-width: 700px) {
+  .gp-room { grid-template-columns: minmax(0, 1fr); }
+  .gp-rail { border-right: 0; border-bottom: 1px solid var(--line); flex-direction: row; flex-wrap: wrap; align-items: center; }
+  .gp-people { flex-direction: row; flex-wrap: wrap; }
+  .gp-rail-foot { display: none; }
+}
+.gp-list-page { container-type: inline-size; }
+@container (max-width: 640px) {
+  .gp-row { grid-template-columns: minmax(0, 1fr); gap: 6px; }
+}

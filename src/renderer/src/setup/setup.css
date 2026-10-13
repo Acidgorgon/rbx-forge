@@ -1,0 +1,58 @@
+/* Toolchain first-run screen, Settings > Toolchain, New project dialog. */
+
+.tc-screen {
+  position: fixed; inset: 0; z-index: 60; display: grid; place-items: center; padding: 16px; overflow: auto;
+  background-color: var(--bg-chrome); background-image: radial-gradient(var(--dots) 1px, transparent 1.3px); background-size: 24px 24px; background-position: 12px 12px;
+  animation: rf-scrim-in var(--dur-base) var(--ease-out);
+}
+.tc-card { width: min(640px, 100%); background: var(--bg-panel); border: 1px solid var(--line); border-radius: var(--r-lg); padding: 20px; display: flex; flex-direction: column; gap: 14px; }
+.tc-head { display: flex; gap: 14px; align-items: flex-start; }
+.tc-head h1 { margin: 2px 0 4px; font: 500 15px var(--font-ui); letter-spacing: .02em; color: var(--fg); }
+.tc-head p { margin: 0; }
+.tc-mark { width: 44px; height: 44px; flex: none; border: 1px solid var(--line-strong); border-radius: var(--r-lg); display: grid; place-items: center; }
+.tc-progress { height: 2px; background: var(--line); border-radius: 2px; overflow: hidden; }
+.tc-progress span { display: block; height: 100%; background: var(--ember); transition: width var(--dur-slow) var(--ease-out); }
+
+.tc-list { display: flex; flex-direction: column; border: 1px solid var(--line); border-radius: var(--r-md); padding: 4px 0; }
+.tc-row { display: flex; align-items: center; gap: 10px; min-height: 28px; padding: 2px 10px; font-size: 12px; color: var(--fg-muted); min-width: 0; }
+.tc-row + .tc-row { border-top: 1px dashed var(--line); }
+.tc-row.running { color: var(--fg); }
+.tc-row.done .tc-ic svg { color: var(--ok); }
+.tc-row.failed .tc-ic svg { color: var(--err); }
+.tc-row.failed .tc-msg { color: var(--err); }
+.tc-row.skipped .tc-ic svg { color: var(--fg-faint); }
+.tc-git.failed .tc-ic svg { color: var(--warn); }
+.tc-git.failed .tc-msg { color: var(--fg-2); }
+.tc-ic { width: 14px; flex: none; display: inline-grid; place-items: center; }
+.tc-name { width: 150px; flex: none; color: var(--fg); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.tc-ver { width: 56px; flex: none; font-size: 11.5px; }
+.tc-msg { flex: 1; min-width: 0; font-size: 11.5px; }
+.tc-banner { display: flex; gap: 6px; align-items: center; }
+.tc-actions { display: flex; align-items: center; gap: 8px; }
+.tc-settings { display: flex; flex-direction: column; gap: 10px; }
+.tc-settings > .note { margin: 0; }
+.tc-buttons { gap: 8px; align-items: center; }
+
+@media (max-width: 560px) {
+  .tc-name { width: 110px; }
+  .tc-ver { display: none; }
+}
+
+/* New project dialog */
+.np-templates { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+.np-template { display: flex; flex-direction: column; gap: 3px; text-align: left; padding: 9px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); background: transparent; color: var(--fg-2); cursor: pointer; transition: border-color var(--dur-fast), background var(--dur-fast); }
+.np-template:hover:not(:disabled) { border-color: var(--fg-faint); }
+.np-template.on { border-color: var(--ember-lo); background: var(--ember-fill); color: var(--fg); }
+.np-template .np-t { display: flex; align-items: center; gap: 6px; font-size: 12px; font-weight: 500; }
+.np-template .np-d { font-size: 11px; color: var(--fg-muted); line-height: 1.45; }
+.np-pick { display: flex; gap: 6px; }
+.np-pick .input { flex: 1; min-width: 0; }
+.np-opts { display: flex; flex-direction: column; gap: 6px; }
+.np-opts label { display: flex; gap: 8px; align-items: center; font-size: 12px; color: var(--fg-2); }
+.np-opts .note { margin-left: 22px; margin-top: -4px; }
+.np-path { font-size: 11px; color: var(--fg-faint); overflow-wrap: anywhere; }
+.np-pct { font-size: 10.5px; color: var(--fg-faint); width: 34px; text-align: right; flex: none; }
+
+@media (max-width: 520px) {
+  .np-templates { grid-template-columns: 1fr; }
+}

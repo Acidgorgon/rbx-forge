@@ -19,9 +19,10 @@ function Welcome() {
       <div className="page-inner welcome">
         <div className="welcome-mark"><AnvilMark size={40} /></div>
         <h1>RBX Forge</h1>
-        <p className="note">An editor for Roblox games built with Rojo. Open a project folder, or join your team's game from a git URL.</p>
+        <p className="note">An editor for Roblox games built with Rojo. Start a new game, open a project folder, or join your team's game from a git URL.</p>
         <div className="row" style={{ justifyContent: 'center' }}>
-          <button className="btn primary" onClick={() => void actions.openProject()}><Icon name="folder" size={13} /> Open folder...</button>
+          <button className="btn primary" onClick={() => actions.openDialog({ kind: 'newProject' })}><Icon name="folderPlus" size={13} /> New project...</button>
+          <button className="btn" onClick={() => void actions.openProject()}><Icon name="folder" size={13} /> Open folder...</button>
           <button className="btn" onClick={() => actions.openDialog({ kind: 'joinProject' })}><Icon name="download" size={13} /> Join a project...</button>
         </div>
         <div className="welcome-keys">

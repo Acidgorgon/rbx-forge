@@ -8,6 +8,7 @@ const methods = [
   'getStudioConflicts', 'resolveStudioConflict',
   'listChats', 'newChat', 'getChat', 'sendChat', 'stopChat', 'hasApiKey', 'setApiKey',
   'addGuest', 'removeGuest', 'setGuestTools', 'startRoundtable', 'planToChecklist',
+  'setChatEffort', 'getDefaultEffort', 'setDefaultEffort', 'addChatImage', 'getChatImage',
   'listProviders', 'setProviderKey', 'setProviderConfig', 'listModels', 'setChatModel',
   'getDefaultModel', 'setDefaultModel', 'getAnthropicUseClaudeLogin', 'setAnthropicUseClaudeLogin',
   'getAgents', 'runAgents', 'cancelAgent',
@@ -36,7 +37,20 @@ const methods = [
   'startOrchestration', 'getOrchestrations', 'getOrchestration', 'getTaskTranscript',
   'cancelOrchestration', 'cancelOrchestrationTask', 'getOrchestrateMode', 'setOrchestrateMode',
   // Feature folders
-  'renameFeature'
+  'renameFeature',
+  // Integrated terminal
+  'terminalShells', 'terminalSetDefaultShell', 'terminalList', 'terminalCreate', 'terminalWrite', 'terminalResize',
+  'terminalKill', 'terminalRename', 'terminalBuffer', 'terminalTasks', 'terminalRunTask', 'terminalPendingRuns',
+  'terminalConfirmRun',
+  // Toolchain setup and New project
+  'toolchainStatus', 'toolchainSetup', 'toolchainCancel', 'toolchainSkip',
+  'newProjectDefaults', 'chooseFolder', 'createProject',
+  // Memory and skills
+  'memoryList', 'memorySearch', 'memorySave', 'memoryDelete', 'memoryPin', 'memoryPromote', 'memoryFeed',
+  'memoryGetSettings', 'memorySetSettings', 'memoryProposals', 'memoryAcceptProposal', 'memoryDismissProposal', 'memoryAnalyzeStyle',
+  // Art concepts (OpenAI images, Roblox import)
+  'artStatus', 'artSetSettings', 'artSetRobloxKey', 'artClearRobloxKey', 'artList', 'artEstimate', 'artGenerate',
+  'artThumbnail', 'artDelete', 'artUndoDelete', 'artImportToRoblox', 'artSaveToProject', 'artRegistry', 'artChooseReferences'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]
 
 // Compile-time check: every HarnessApi method is exposed (tsc names any that is missing).

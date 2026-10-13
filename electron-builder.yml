@@ -16,6 +16,16 @@ files:
   - "!out/**/*.map"
   - "!**/node_modules/**/{README,CHANGELOG,HISTORY}.md"
   - "!**/node_modules/**/*.{d.ts,d.mts,d.cts,map}"
+  # node-pty: ship lib/ and the native binaries only (not its C++ sources, winpty/conpty sources,
+  # build intermediates or Windows debug symbols).
+  - "!node_modules/node-pty/{deps,src,third_party,scripts,typings}/**"
+  - "!node_modules/node-pty/build/{deps,node_gyp_bins}/**"
+  - "!node_modules/node-pty/build/Release/{obj,obj.target,.deps}/**"
+  - "!node_modules/node-pty/**/*.{pdb,gyp,gypi,mk}"
+  - "!node_modules/node-pty/build/Makefile"
+  - "!node_modules/node-pty/{node-addon-api,build/node-addon-api}/**"
+  - "!node_modules/node-pty/lib/**/*.test.js"
+  - "!node_modules/node-addon-api/**"
 
 # The Agent SDK runs a native CLI from @anthropic-ai/claude-agent-sdk-<platform>-<arch>. Executables
 # cannot run from inside app.asar, so those packages are unpacked; the app passes the unpacked path
@@ -23,6 +33,9 @@ files:
 asar: true
 asarUnpack:
   - "node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+  # Integrated terminal: pty.node / conpty.node, the macOS spawn-helper and the Windows conpty
+  # worker script must be real files (src/main/services/terminal/backend.ts).
+  - "node_modules/node-pty/**"
 afterPack: build/afterPack.cjs
 
 # The Lune test runtime (Luau files) is read from disk by lune, so it ships outside the asar
@@ -30,8 +43,19 @@ afterPack: build/afterPack.cjs
 extraResources:
   - from: resources/lune
     to: lune
+  # The target's rokit binary (build/rokit-binaries.mjs downloads it; ${os} is mac|win|linux).
+  # First launch runs `rokit self-install` from it (src/main/services/setup/toolchain.ts), and
+  # build/afterPack.cjs fails the build if it is missing.
+  - from: resources/rokit/${os}-${arch}
+    to: rokit
+    filter: ["rokit", "rokit.exe"]
 
-# No native node modules to rebuild.
+# No rebuild for Electron: the only native module, node-pty 1.1.0, is an N-API addon (ABI-stable
+# across Node and Electron) that ships prebuilds for darwin-arm64/x64 and win32-x64/arm64 in
+# node_modules/node-pty/prebuilds/<platform>-<arch>, all of which npm ci installs on any host. A
+# rebuild would compile it from source for the runner's toolchain, which breaks the win32-arm64
+# cross-build on the x64 runner. build/afterPack.cjs keeps only the target's prebuild and fails the
+# build if it is missing. (Linux has no prebuild; npm install compiles build/Release/pty.node.)
 npmRebuild: false
 # Smaller dmg/zip/installer; most of the size is the ~250 MB Agent SDK CLI.
 compression: maximum

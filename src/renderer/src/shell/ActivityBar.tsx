@@ -65,10 +65,14 @@ export function ActivityBar() {
     { icon: 'flask', label: 'Tests & agents', keys: 'mod+shift+a', view: 'tests', dot: agentsRunning, badge: !agentsRunning && testFails ? { n: testFails, err: true } : null },
     { icon: 'team', label: 'Team', view: 'team', badge: contested ? { n: contested } : null }
   ]
+  const groupBusy = state.chats.some((c) => c.guests?.length && state.busy[c.id])
   const bottom: Item[] = [
+    { icon: 'round', label: 'Group chats', page: 'groups', dot: groupBusy },
     { icon: 'package', label: 'Packages (Wally, Rokit)', page: 'packages', badge: outdated ? { n: outdated } : null },
     { icon: 'rocket', label: 'Release', page: 'release' },
     { icon: 'chart', label: 'Analytics', page: 'analytics' },
+    { icon: 'image', label: 'Art (image concepts)', page: 'art' },
+    { icon: 'memory', label: 'Memory & skills', page: 'memory' },
     { icon: 'gear', label: 'Settings', keys: 'mod+comma', page: 'settings' }
   ]
 

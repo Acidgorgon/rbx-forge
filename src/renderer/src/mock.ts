@@ -21,8 +21,13 @@ import type {
 } from '@shared/types'
 import { packagesMock } from './mockPackages'
 import { integrationsMock } from './mockIntegrations'
+import { terminalMock } from './mockTerminal'
+import { setupMock } from './mockSetup'
+import { memoryMock } from './mockMemory'
+import { artMock } from './mockArt'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
+import { chatExtrasMock } from './mockChatExtras'
 import { BLINK_OUTPUTS, eventsBlink, generatedClient, generatedServer, mockBlinkModel } from './mockBlink'
 
 type Handler = (payload: never) => void
@@ -545,6 +550,7 @@ const groupDeps = {
 }
 seedGroupChat(groupDeps)
 const group = groupMock(groupDeps)
+const extras = chatExtrasMock({ emit, chats, messages: chatMessages, addGuest: (id, c) => group.api.addGuest(id, c) })
 
 function chatReply(text: string): { tools: [string, string][]; answer: string } {
   const t = text.toLowerCase()
@@ -787,23 +793,27 @@ const api: HarnessApi = {
   async listChats() {
     return chats
   },
-  async newChat(choice) {
+  async newChat(choice, options) {
     const c: ChatSession = { id: uid('chat'), title: 'New chat', createdAt: now(), ...(choice ?? providers.defaultModel()) }
     chats.unshift(c)
     chatMessages[c.id] = []
-    return c
+    await extras.applyOptions(c, options)
+    return { ...c }
   },
   async getChat(sessionId) {
     return chatMessages[sessionId] ?? agentTranscripts[sessionId] ?? []
   },
-  async sendChat(sessionId, text) {
+  async sendChat(sessionId, text, images) {
     chatMessages[sessionId] ??= []
-    chatMessages[sessionId].push({ id: uid('u'), role: 'user', text, at: now(), agentId: 'main', sessionId })
+    const refs = extras.refs(images)
+    chatMessages[sessionId].push({ id: uid('u'), role: 'user', text, at: now(), agentId: 'main', sessionId, ...(refs.length ? { images: refs } : {}) })
     const c = chats.find((x) => x.id === sessionId)
+    if (c) extras.route(c, text)
     if (c && c.title === 'New chat') c.title = text.length > 42 ? text.slice(0, 40) + '…' : text
     void group.handleSend(sessionId, text).then((handled) => (handled ? undefined : streamReply(sessionId, text)))
   },
   ...group.api,
+  ...extras.api,
   async stopChat(sessionId) {
     running.delete(sessionId)
     emit('chat:busy', { sessionId, busy: false })
@@ -838,6 +848,11 @@ const api: HarnessApi = {
 
   // Collab, release, Lune tests, analytics, usage, orchestrator, feature rename (mockIntegrations.ts).
   ...integrationsMock(emit, (text) => log('harness', text, 'info')),
+  ...terminalMock(emit),
+  ...setupMock(emit, (text) => log('harness', text, 'info')),
+  ...memoryMock(emit),
+  // Art concepts (mockArt.ts): placeholder SVG images.
+  ...artMock(emit),
 
   on(event, handler) {
     let set = listeners.get(event)

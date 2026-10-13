@@ -18,6 +18,7 @@ import { randomUUID } from 'node:crypto'
 import type { ChatMessage } from '@shared/types'
 import { runTool, toFunctionSpecs, type GentreeTool } from './tools.ts'
 import { summarizeInput } from './sdk.ts'
+import { memoResolver, resolveHistoryImages, type ImageResolver, type OaiUserPart } from './imageParts.ts'
 
 export type FetchFn = typeof fetch
 
@@ -30,7 +31,8 @@ export interface OaiToolCall {
 
 export type OaiMessage =
   | { role: 'system'; content: string }
-  | { role: 'user'; content: string }
+  // Array content carries images (image_url parts; forge-image:// urls in stored history).
+  | { role: 'user'; content: string | OaiUserPart[] }
   | { role: 'assistant'; content: string | null; tool_calls?: OaiToolCall[]; [extra: string]: unknown }
   | { role: 'tool'; tool_call_id: string; content: string }
 
@@ -57,6 +59,8 @@ export interface LoopOptions {
   // Raw provider usage object, once per request that reports one (chunk.usage on Chat Completions,
   // response.usage on the Responses API). Normalize with budget/usage.ts fromOpenAiUsage.
   onUsage?: (raw: unknown) => void
+  // Loads the bytes of forge-image:// references in user messages (chatImages.ts).
+  resolveImage?: ImageResolver
 }
 
 export interface LoopResult {
@@ -78,6 +82,7 @@ export async function runOpenAiLoop(opts: LoopOptions): Promise<LoopResult> {
   const fetchFn = opts.fetchFn ?? ((...a: Parameters<FetchFn>) => fetch(...a))
   const tools = new Map(opts.tools.map((t) => [t.name, t]))
   const specs = toFunctionSpecs(opts.tools)
+  const resolveImage = memoResolver(opts.resolveImage)
   let turns = 0
 
   try {
@@ -90,7 +95,7 @@ export async function runOpenAiLoop(opts: LoopOptions): Promise<LoopResult> {
       turns++
       const body = {
         model: opts.model,
-        messages: [{ role: 'system', content: opts.system }, ...history],
+        messages: [{ role: 'system', content: opts.system }, ...(await resolveHistoryImages(history, resolveImage))],
         ...(specs.length ? { tools: specs } : {}),
         stream: true,
         ...(opts.extraBody ?? {})

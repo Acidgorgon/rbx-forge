@@ -8,6 +8,7 @@ import { useProblems } from './problems'
 import { ledOf } from './StatusBar'
 import { fmtTime, keyHint, ago } from '../lib/format'
 import { basename } from '../lib/roblox'
+import { TerminalPanel } from '../terminal/TerminalPanel'
 
 const SOURCE_LABEL: Record<LogLine['service'], string> = { rojo: 'rojo', dev: 'watcher', lsp: 'luau-lsp', studioSync: 'studio', git: 'git', agent: 'agent', harness: 'forge' }
 const SOURCE_COLOR: Record<LogLine['service'], string> = {
@@ -252,6 +253,8 @@ export function BottomPanel() {
   const tabs: { id: BottomTab; label: string; badge?: React.ReactNode }[] = [
     { id: 'output', label: 'Output' },
     { id: 'problems', label: 'Problems', badge: problems.length ? <span className={`bp-badge${errors ? ' err' : ' warn'}`}>{problems.length}</span> : null },
+    // Integrated terminal (terminal/TerminalPanel.tsx).
+    { id: 'shell', label: 'Terminal' },
     { id: 'terminal', label: 'Dev · Rojo' }
   ]
   // Crashes open Output filtered to the crashed service (unless the panel was closed recently).
@@ -283,7 +286,7 @@ export function BottomPanel() {
             <Icon name="x" size={14} />
           </button>
         </div>
-        <div className="bp-body">{tab === 'output' ? <Output /> : tab === 'problems' ? <Problems /> : <Terminal />}</div>
+        <div className="bp-body">{tab === 'output' ? <Output /> : tab === 'problems' ? <Problems /> : tab === 'shell' ? <TerminalPanel /> : <Terminal />}</div>
       </div>
     </section>
   )

@@ -118,7 +118,7 @@ export function ModelPicker({
   }
 
   return (
-    <div className={`mpick ${variant}${open ? ' open' : ''}`} ref={root}>
+    <div className={`mpick mpick-${variant}${open ? ' open' : ''}`} ref={root}>
       <button
         type="button"
         className={`mpick-btn${notReady ? ' warn' : ''}`}

@@ -32,7 +32,9 @@ export const ENUMS: Record<string, Record<string, number>> = {
   TextureMode: { Stretch: 0, Wrap: 1, Static: 2 },
   HighlightDepthMode: { AlwaysOnTop: 0, Occluded: 1 },
   MeshType: { Head: 0, Torso: 1, Wedge: 2, Sphere: 3, Cylinder: 4, FileMesh: 5, Brick: 6, Prism: 7, Pyramid: 8, ParallelRamp: 9, RightAngleRamp: 10, CornerWedge: 11 },
-  PartType: { Ball: 0, Block: 1, Cylinder: 2, Wedge: 3, CornerWedge: 4 }
+  PartType: { Ball: 0, Block: 1, Cylinder: 2, Wedge: 3, CornerWedge: 4 },
+  // Enum.Material (the few the Lab draws: Neon glows, ForceField is a rim-lit shell).
+  Material: { Plastic: 256, SmoothPlastic: 272, Neon: 288, Glass: 1568, ForceField: 1584 }
 }
 
 export function enumName(enumType: string, value: number): string | undefined {
@@ -155,7 +157,9 @@ export const SCHEMA: Record<string, Record<string, PropSpec>> = {
     Transparency: { kind: 'number', default: 0, min: 0, max: 1, step: 0.05, main: true },
     Anchored: { kind: 'bool', default: false },
     CanCollide: { kind: 'bool', default: true },
-    Shape: { kind: 'enum:PartType', default: 'Block' }
+    Shape: { kind: 'enum:PartType', default: 'Block' },
+    Material: { kind: 'enum:Material', default: 'Plastic', main: true },
+    CastShadow: { kind: 'bool', default: true }
   },
   MeshPart: {
     CFrame: { kind: 'cframe', default: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] },
@@ -164,6 +168,7 @@ export const SCHEMA: Record<string, Record<string, PropSpec>> = {
     Transparency: { kind: 'number', default: 0, min: 0, max: 1, step: 0.05, main: true },
     MeshId: { kind: 'content', default: '' },
     TextureID: { kind: 'content', default: '', main: true },
+    Material: { kind: 'enum:Material', default: 'Plastic', main: true },
     Anchored: { kind: 'bool', default: false },
     CanCollide: { kind: 'bool', default: true }
   },

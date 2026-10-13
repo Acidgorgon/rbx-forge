@@ -1,9 +1,11 @@
 // Live 3D preview of an effect (three.js, preview/scene.ts) with transport controls: play / pause,
-// scrub, loop, slow motion, "Emit burst", dark / grey background. An approximation of Roblox.
+// scrub (a timeline strip with stages and cues for scripted effects), loop, slow motion, "Emit burst",
+// front / side / wide camera, dark / grey background. An approximation of Roblox.
 import { useEffect, useRef, useState } from 'react'
 import type { VfxCue, VfxEffect } from '@shared/types'
 import { Icon } from '../../components/Icons'
-import { VfxScene, type Background } from './preview/scene'
+import { VfxScene, type Background, type View } from './preview/scene'
+import { hasTimeline, TimelineStrip } from './TimelineStrip'
 import { prefersReducedMotion } from './motion'
 
 const SPEEDS = [1, 0.5, 0.25, 0.1]
@@ -18,6 +20,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEf
   const [loop, setLoop] = useState(true)
   const [speed, setSpeed] = useState(1)
   const [bg, setBg] = useState<Background>('dark')
+  const [view, setView] = useState<View>('front')
   const [t, setT] = useState(0)
   const [stats, setStats] = useState({ particles: 0 })
   const [error, setError] = useState<string | null>(null)
@@ -101,6 +104,9 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEf
   }, [effect])
 
   useEffect(() => sceneRef.current?.setBackground(bg), [bg])
+  useEffect(() => sceneRef.current?.setView(view), [view])
+  const timeline = hasTimeline(effect)
+  const stage = timeline ? [...(effect.stages ?? [])].filter((s) => s.at <= t + 1e-6).pop()?.label : undefined
 
   const burst = () => {
     const now = tRef.current
@@ -126,9 +132,10 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEf
         <canvas ref={canvasRef} aria-label={`3D preview of ${effect.name}`} />
         {error && <div className="vfx-canvas-err note">{error}</div>}
         <div className="vfx-hud mono" aria-live="off">
-          {t.toFixed(2)}s / {effect.duration.toFixed(2)}s · {stats.particles} particles{speed !== 1 ? ` · ${speed}×` : ''}
+          {t.toFixed(2)}s / {effect.duration.toFixed(2)}s{stage ? ` · ${stage}` : ''} · {stats.particles} particles{speed !== 1 ? ` · ${speed}×` : ''}
         </div>
       </div>
+      {timeline && <TimelineStrip effect={effect} t={Math.min(t, effect.duration)} onScrub={(v) => (setPlaying(false), scrub(v))} />}
       <div className="vfx-transport">
         <button className="btn small ghost" onClick={() => setPlaying((p) => !p)} aria-label={playing ? 'Pause' : 'Play'} title={playing ? 'Pause' : 'Play'}>
           <Icon name={playing ? 'stop' : 'play'} size={11} />
@@ -136,7 +143,8 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEf
         <button className="btn small ghost" onClick={() => scrub(0)} aria-label="Restart" title="Restart">
           <Icon name="restart" size={11} />
         </button>
-        <input className="vfx-scrub grow" type="range" min={0} max={effect.duration} step={0.01} value={Math.min(t, effect.duration)} onChange={(e) => (setPlaying(false), scrub(Number(e.target.value)))} aria-label="Scrub" />
+        {!timeline && <input className="vfx-scrub grow" type="range" min={0} max={effect.duration} step={0.01} value={Math.min(t, effect.duration)} onChange={(e) => (setPlaying(false), scrub(Number(e.target.value)))} aria-label="Scrub" />}
+        {timeline && <span className="grow" />}
         <button className={`btn small${loop ? ' primary' : ''}`} onClick={() => setLoop((l) => !l)} aria-pressed={loop} title="Loop">
           loop
         </button>
@@ -150,6 +158,13 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEf
         <button className="btn small" onClick={burst} title="Emit a burst from every emitter now">
           <Icon name="bolt" size={11} /> Emit burst
         </button>
+        <div className="seg" role="group" aria-label="Camera">
+          {(['front', 'side', 'wide'] as View[]).map((v) => (
+            <button key={v} className={view === v ? 'on' : ''} onClick={() => setView(v)} aria-pressed={view === v}>
+              {v}
+            </button>
+          ))}
+        </div>
         <div className="seg" role="group" aria-label="Background">
           {(['dark', 'grey'] as Background[]).map((b) => (
             <button key={b} className={bg === b ? 'on' : ''} onClick={() => setBg(b)} aria-pressed={bg === b}>

@@ -11,10 +11,17 @@ import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { VfxPreview } from './VfxPreview'
 import { ParamEditor } from './ParamEditor'
+import { ScriptPanel } from './ScriptPanel'
 import './vfx.css'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg/gif · mp4/webm'
 const SUGGESTIONS = ['sword slash', 'fire aura', 'lightning impact', 'heal burst', 'dash trail', 'energy beam']
+const SEQ_SUGGESTIONS = ['fireball that charges and explodes', 'charged lightning slash', 'ground slam shockwave', 'teleport blink', 'dragon breath sweep']
+const EXAMPLES = [
+  { key: 'hollow-purple', label: 'Hollow Purple' },
+  { key: 'charge-slash', label: 'Charge slash' },
+  { key: 'ground-slam', label: 'Ground slam' }
+]
 
 // Entry files as data URLs, cached per entry + file + update time.
 const fileCache = new Map<string, string | null>()
@@ -145,7 +152,7 @@ function Media({ entry }: { entry: VfxEntry }) {
 function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progress?: VfxRefineProgress; recipes: VfxRecipe[]; onClose: () => void }) {
   const { actions } = useStore()
   const h = window.harness
-  const [tab, setTab] = useState<'params' | 'iterations' | 'info'>(entry.effect ? 'params' : 'info')
+  const [tab, setTab] = useState<'params' | 'script' | 'iterations' | 'info'>(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info')
   const [draft, setDraft] = useState<VfxEffect | undefined>(entry.effect)
   const [saving, setSaving] = useState(false)
   const [tags, setTags] = useState(entry.tags.join(', '))
@@ -157,7 +164,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
     if (!pendingRef.current) setDraft(entry.effect)
     setTags(entry.tags.join(', '))
   }, [entry.id, entry.updatedAt])
-  useEffect(() => setTab(entry.effect ? 'params' : 'info'), [entry.id])
+  useEffect(() => setTab(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info'), [entry.id])
 
   const flush = useCallback(async () => {
     const next = pendingRef.current
@@ -291,6 +298,11 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
           </button>
         )}
         {draft && (
+          <button role="tab" aria-selected={tab === 'script'} className={tab === 'script' ? 'on' : ''} onClick={() => setTab('script')} title="Luau timeline: stages, kit rigs, tweens">
+            script{draft.stages?.length ? ` · ${draft.stages.length}` : ''}
+          </button>
+        )}
+        {draft && (
           <button role="tab" aria-selected={tab === 'iterations'} className={tab === 'iterations' ? 'on' : ''} onClick={() => setTab('iterations')}>
             iterations{entry.iterations?.length ? ` · ${entry.iterations.length}` : ''}
           </button>
@@ -301,6 +313,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
       </div>
 
       {tab === 'params' && draft && <ParamEditor effect={draft} onChange={edit} />}
+      {tab === 'script' && draft && <ScriptPanel entry={entry} effect={draft} onPreview={setDraft} />}
       {tab === 'iterations' && draft && <Iterations entry={entry} onRestore={(e, n) => (edit(e), actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'info' && (
         <div className="vfx-info">
@@ -366,6 +379,8 @@ export function VfxLabPage() {
   const [iters, setIters] = useState(4)
   const [threshold, setThreshold] = useState(7.5)
   const [making, setMaking] = useState(false)
+  // single: one burst of layers (draft spec); sequence: multi-stage timeline script with the kit.
+  const [mode, setMode] = useState<'single' | 'sequence'>('sequence')
   const [busy, setBusy] = useState<string | null>(null)
   const [drag, setDrag] = useState(false)
   const [progress, setProgress] = useState<Record<string, VfxRefineProgress>>({})
@@ -448,14 +463,32 @@ export function VfxLabPage() {
     if (!what || making) return
     setMaking(true)
     try {
-      const entry = await h.vfxMake(what, { maxIterations: iters, threshold })
-      await load()
-      setSelected(entry.id)
+      if (mode === 'sequence') {
+        const r = await h.vfxCompose(what, { maxIterations: iters, threshold })
+        if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the timeline did not compile')
+        await load()
+        setSelected(r.entry.id)
+        if (r.warnings.length) actions.toast({ text: `${r.entry.name}: ${r.warnings.length} timeline warning${r.warnings.length === 1 ? '' : 's'}`, detail: r.warnings.slice(0, 2).join(' · '), kind: 'info', ms: 4000 })
+      } else {
+        const entry = await h.vfxMake(what, { maxIterations: iters, threshold })
+        await load()
+        setSelected(entry.id)
+      }
       setPrompt('')
     } catch (e) {
       actions.toast({ text: 'Could not make the effect', detail: errorText(e), kind: 'err' })
     } finally {
       setMaking(false)
+    }
+  }
+
+  const addExample = async (key: string) => {
+    try {
+      const entry = await h.vfxAddExample(key)
+      await load()
+      setSelected(entry.id)
+    } catch (e) {
+      actions.toast({ text: 'Could not add the example', detail: errorText(e), kind: 'err' })
     }
   }
 
@@ -490,7 +523,7 @@ export function VfxLabPage() {
           <div className="callout row">
             <Icon name="info" size={12} />
             <span className="grow note">
-              {!status.lune.available && <>Lune not found: .rbxmx imports still work, .rbxm needs Lune (Settings → Toolchain). </>}
+              {!status.lune.available && <>Lune not found: .rbxmx imports still work; .rbxm imports and timeline scripts (sequences) need Lune (Settings → Toolchain). </>}
               {!status.vision && <>No vision model: critiques use parameter heuristics only. </>}
             </span>
           </div>
@@ -509,6 +542,14 @@ export function VfxLabPage() {
             </span>
             <input className="input grow" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="purple sword slash with sparks" aria-label="Effect to make" spellCheck />
             <span className="vfx-make-lead mono">effect</span>
+            <div className="seg vfx-mode" role="group" aria-label="Kind of effect">
+              <button type="button" className={mode === 'single' ? 'on' : ''} aria-pressed={mode === 'single'} onClick={() => setMode('single')} title="One burst of layers (emitters, beams, lights)">
+                single
+              </button>
+              <button type="button" className={mode === 'sequence' ? 'on' : ''} aria-pressed={mode === 'sequence'} onClick={() => setMode('sequence')} title="Multi-stage: a timeline script that spawns kit rigs and tweens them (anticipation, charge, release, impact, dissipate)">
+                sequence
+              </button>
+            </div>
             <button className="btn primary" disabled={!prompt.trim() || making}>
               {making ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
             </button>
@@ -530,9 +571,17 @@ export function VfxLabPage() {
               <span className="faint">/10</span>
             </label>
             <span className="vfx-sugg">
-              {SUGGESTIONS.map((s) => (
+              {(mode === 'sequence' ? SEQ_SUGGESTIONS : SUGGESTIONS).map((s) => (
                 <button key={s} type="button" className="badge-o" onClick={() => setPrompt(s)}>
                   {s}
+                </button>
+              ))}
+            </span>
+            <span className="vfx-examples">
+              <span className="faint mono">examples</span>
+              {EXAMPLES.map((x) => (
+                <button key={x.key} type="button" className="badge-o" onClick={() => void addExample(x.key)} title="Add this built-in scripted example to the library and open it">
+                  {x.label}
                 </button>
               ))}
             </span>

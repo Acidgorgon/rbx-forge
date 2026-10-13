@@ -4,11 +4,17 @@
 //   vfx_create          write  spec -> library entry + src/shared/VFX/<Name>/init.luau + Effect.rbxmx
 //   vfx_render          write  PNG frames from the offscreen preview (shown inline) + a critique
 //   vfx_refine          write  render / critique / adjust loop until the score passes the threshold
+//   vfx_kit             read   timeline API, the building-block kit and the choreography guide
+//   vfx_compose         write  request -> scripted multi-stage effect (script + rigs) in one step
+//   vfx_run_script      write  record a timeline script (Lune) -> errors with lines + cue summary
+//   vfx_set_script      write  same, and save it on the entry (project files, preview, Script tab)
 
 import { z } from 'zod'
 import { perfWarnings } from '../../../shared/vfx/analyze.ts'
 import { compactEffect, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
-import type { VfxEntry } from '../../../shared/vfx/types.ts'
+import type { VfxEntry, VfxScriptResult } from '../../../shared/vfx/types.ts'
+import { CHOREOGRAPHY_GUIDE, kitReference } from '../../../shared/vfx/choreo.ts'
+import { VFX_EXAMPLES } from '../../../shared/vfx/examples.ts'
 import type { VfxService } from './service.ts'
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean }
@@ -20,8 +26,8 @@ export interface VfxTool {
   handler: (args: any, extra: unknown) => Promise<ToolResult>
 }
 
-export const VFX_READ_TOOLS = ['vfx_search_library'] as const
-export const VFX_WRITE_TOOLS = ['vfx_create', 'vfx_render', 'vfx_refine'] as const
+export const VFX_READ_TOOLS = ['vfx_search_library', 'vfx_kit'] as const
+export const VFX_WRITE_TOOLS = ['vfx_create', 'vfx_render', 'vfx_refine', 'vfx_compose', 'vfx_run_script', 'vfx_set_script'] as const
 
 const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }] })
 const fail = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true })
@@ -44,6 +50,22 @@ const SPEC_DOC = `spec = {"name","description","tags":[...],"duration":s,"motion
 "width":studs (Trail attachment spacing),"from":[x,y,z],"to":[x,y,z] (Beam ends)}]}
 Values: ranges [min,max]; NumberSequence [[t,v],[t,v,envelope]]; ColorSequence ["#hex",...] or [[t,"#hex"],...]; vectors [x,y,z]; enums by name ("Top","VelocityParallel","Grid4x4","OneShot"); Texture "rbxassetid://<id>" (reuse ids from library references, never invent ids).`
 
+// What the assistant reads back after a script run: the error with its line, or stages + cues.
+export function scriptReport(r: VfxScriptResult, script?: string): string {
+  const out: string[] = []
+  if (!r.ok) {
+    const src = r.error?.line && script ? script.split('\n')[r.error.line - 1] : undefined
+    out.push(`script error${r.error?.line ? ` at line ${r.error.line}` : ''}: ${r.error?.message ?? 'failed'}${src !== undefined ? `\n  ${r.error!.line} | ${src.trim()}` : ''}`)
+  } else {
+    if (r.entry) out.push(`${r.entry.id}: ${r.entry.name}${r.entry.written ? ` (wrote ${r.entry.written.module} + Timeline.luau)` : ''}${r.source ? `, script by ${r.source}` : ''}`)
+    if (r.effect) out.push(`duration ${r.effect.duration.toFixed(2)} s, ${r.effect.cues.length} cues`)
+    out.push(r.summary)
+  }
+  if (r.warnings.length) out.push(`warnings:\n${r.warnings.map((w) => `- ${w}`).join('\n')}`)
+  if (r.prints.length) out.push(`print output:\n${r.prints.slice(0, 20).join('\n')}`)
+  return out.join('\n').slice(0, 12000)
+}
+
 export function vfxTools(service: VfxService, opts: { chatImage?: (absPath: string, name: string) => Promise<string | null> } = {}): { read: VfxTool[]; write: VfxTool[] } {
   const read: VfxTool[] = [
     {
@@ -62,12 +84,27 @@ export function vfxTools(service: VfxService, opts: { chatImage?: (absPath: stri
           if (recipe) parts.push(`## Learned recipe "${recipe.tag}" (${recipe.samples} refs)\n${JSON.stringify({ layers: recipe.layers, ranges: recipe.ranges, notes: recipe.notes, avoid: recipe.avoid })}`)
           return parts.join('\n\n').slice(0, 14000)
         })
+    },
+    {
+      name: 'vfx_kit',
+      description:
+        'Reference for multi-stage (scripted) VFX: the Luau timeline API (fx:spawn / tween / emit / wait / stage...), every building block in the kit (orb, glow, sparks, smoke, shockwave, flash, beam, trail, debris, aura, charge, impact, slash, dust, light) with its layers and options, the choreography guide (anticipation, charge, release, impact, dissipate; timing and easing rules), and the built-in example scripts. Read it before writing or editing a timeline script.',
+      inputSchema: { example: z.string().max(40).optional() },
+      handler: (args: { example?: string }) =>
+        guard(async () => {
+          const ex = args.example ? VFX_EXAMPLES.find((e) => e.key === args.example || e.name.toLowerCase() === args.example!.toLowerCase()) : null
+          return [
+            kitReference(),
+            CHOREOGRAPHY_GUIDE,
+            ex ? `## Example: ${ex.name}\n\`\`\`lua\n${ex.script}\`\`\`` : `## Examples (pass example to read one)\n${VFX_EXAMPLES.map((e) => `- ${e.key}: ${e.description}`).join('\n')}`
+          ].join('\n\n')
+        })
     }
   ]
   const write: VfxTool[] = [
     {
       name: 'vfx_create',
-      description: `Create (or with id, replace) a Roblox VFX from a spec. Writes the effect into the project as src/shared/VFX/<Name>/init.luau (a module: require(...).play(target)) plus Effect.rbxmx (the instances; Rojo syncs both), and adds it to the VFX Lab library. Returns the entry id and performance warnings. Then vfx_render to look at it, or vfx_refine to iterate.\n${SPEC_DOC}`,
+      description: `Create (or with id, replace) a Roblox VFX from a spec. Writes the effect into the project as src/shared/VFX/<Name>/init.luau (a module: require(...).play(target)) plus Effect.rbxmx (the instances; Rojo syncs both), and adds it to the VFX Lab library. Returns the entry id and performance warnings. Then vfx_render to look at it, or vfx_refine to iterate. For an effect with several beats over time (charge then release, projectiles that move, merges), use vfx_compose instead.\n${SPEC_DOC}`,
       inputSchema: { spec: z.record(z.string(), z.any()), id: z.string().optional(), prompt: z.string().max(500).optional() },
       handler: (args: { spec: VfxSpec; id?: string; prompt?: string }) =>
         guard(async () => {
@@ -120,6 +157,33 @@ export function vfxTools(service: VfxService, opts: { chatImage?: (absPath: stri
         })
     }
   ]
+  write.push(
+    {
+      name: 'vfx_compose',
+      description:
+        "Make a multi-stage Roblox VFX (any request: a beam merge, a charged slash, a ground slam, a teleport...) in one step: writes a Luau timeline script with the kit (anticipation -> charge -> release -> impact -> dissipate), records it, saves the effect to the VFX library and the project (src/shared/VFX/<Name>/init.luau + Timeline.luau + Effect.rbxmx, and the ForgeFX runtime), then refines it in the background (render + critique at each stage). Pass script to use your own timeline script instead of drafting one. Returns the entry id, the stages and cues. Iterate with vfx_set_script and vfx_refine.",
+      inputSchema: { request: z.string().min(3).max(500), script: z.string().max(60000).optional(), refine: z.boolean().optional() },
+      handler: (args: { request: string; script?: string; refine?: boolean }) =>
+        guard(async () => {
+          const r = await service.compose(args.request, { script: args.script, refine: args.refine })
+          return scriptReport(r, args.script) + (r.ok && r.refined ? '\nrefining in the background (watch the VFX Lab, or call vfx_refine to wait for it)' : '')
+        })
+    },
+    {
+      name: 'vfx_run_script',
+      description:
+        'Dry-run a Luau timeline script (return function(fx) ... end; see vfx_kit) without saving: records it with Lune and compiles the cues. Returns the error with its line number, or the stages and every cue (time, action, target, goals), plus warnings and print output. With id, runs against that entry (keeps its non-kit layers).',
+      inputSchema: { script: z.string().min(1).max(60000), id: z.string().optional() },
+      handler: (args: { script: string; id?: string }) => guard(async () => scriptReport(await service.runScript(args.script, { id: args.id }), args.script))
+    },
+    {
+      name: 'vfx_set_script',
+      description:
+        "Set an effect's timeline script (by id; without id, creates a new scripted effect) and save it: the library entry, the VFX Lab preview and Script tab, and the project files (Timeline.luau next to init.luau; the module plays it with the ForgeFX runtime via TweenService). Parameter edits made by vfx_refine or the editor on kit layers are re-applied. Returns errors with line numbers or the stages and cues.",
+      inputSchema: { script: z.string().min(1).max(60000), id: z.string().optional(), prompt: z.string().max(500).optional() },
+      handler: (args: { script: string; id?: string; prompt?: string }) => guard(async () => scriptReport(await service.runScript(args.script, { id: args.id, save: true, prompt: args.prompt }), args.script))
+    }
+  )
   return { read, write }
 }
 

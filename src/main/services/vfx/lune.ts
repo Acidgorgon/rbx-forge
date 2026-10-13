@@ -1,14 +1,19 @@
 // Reading .rbxm / .rbxmx through Lune (resources/lune/vfx_extract.luau, @lune/roblox
 // deserializeModel). .rbxmx also has a no-Lune fallback (shared/vfx/rbxmx.ts).
 
+import { execFile } from 'node:child_process'
 import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SCHEMA } from '../../../shared/vfx/schema.ts'
 import type { ColorKey, NumKey, PropValue, VfxNode } from '../../../shared/vfx/types.ts'
-import { run } from '../tools.ts'
+import { parseLuauError, type RecordResult } from '../../../shared/vfx/compile.ts'
+import { planSpawn, run, toolEnv } from '../tools.ts'
 
 export const EXTRACT_SCRIPT = 'vfx_extract.luau'
+export const TIMELINE_SCRIPT = 'vfx_timeline.luau'
+// A timeline script records instantly; anything longer is a runaway loop.
+export const TIMELINE_TIMEOUT_MS = 8000
 const BATCH = 8
 
 export type LuneRun = (lune: string, args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>
@@ -85,4 +90,40 @@ export async function luneExtract(files: string[], opts: { lune: string; runtime
     await rm(tmp, { recursive: true, force: true })
   }
   return out
+}
+
+// run() with a time limit (the process is killed when it runs out).
+export function runWithTimeout(file: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
+  const plan = planSpawn(file, args)
+  return new Promise((resolve) => {
+    execFile(plan.file, plan.args, { cwd, env: toolEnv(), maxBuffer: 16 * 1024 * 1024, windowsHide: true, timeout: timeoutMs, killSignal: 'SIGKILL', windowsVerbatimArguments: plan.windowsVerbatimArguments }, (error, stdout, stderr) => {
+      const timedOut = !!error && ((error as NodeJS.ErrnoException & { killed?: boolean }).killed === true || /ETIMEDOUT/.test(String(error.message)))
+      let code = 0
+      if (error) code = typeof error.code === 'number' ? error.code : 1
+      resolve({ code, stdout: String(stdout), stderr: String(stderr || (error && !timedOut ? error.message : '')), timedOut })
+    })
+  })
+}
+
+// Runs a timeline script in the recorder sandbox (resources/lune/vfx_timeline.luau).
+export async function luneTimeline(script: string, opts: { lune: string; runtimeDir: string; run?: LuneRun; timeoutMs?: number }): Promise<RecordResult> {
+  const tmp = await mkdtemp(join(tmpdir(), 'forge-fx-'))
+  const file = join(tmp, 'timeline.luau')
+  try {
+    await writeFile(file, String(script ?? ''), 'utf8')
+    const args = ['run', join(opts.runtimeDir, TIMELINE_SCRIPT), file]
+    const res = opts.run
+      ? { ...(await opts.run(opts.lune, args, opts.runtimeDir)), timedOut: false }
+      : await runWithTimeout(opts.lune, args, opts.runtimeDir, opts.timeoutMs ?? TIMELINE_TIMEOUT_MS)
+    if (res.timedOut) return { ok: false, ops: [], prints: [], error: { message: `the script ran for more than ${Math.round((opts.timeoutMs ?? TIMELINE_TIMEOUT_MS) / 1000)} s (an endless loop?). Timelines run instantly: use fx:wait, not busy loops.` } }
+    const line = res.stdout.split('\n').map((l) => l.trim()).reverse().find((l) => l.startsWith('{'))
+    if (!line) return { ok: false, ops: [], prints: [], error: parseLuauError(res.stderr || `lune exited with code ${res.code}`) }
+    const j = JSON.parse(line) as { ok?: boolean; ops?: unknown; prints?: unknown; error?: { message?: string } }
+    const ops = Array.isArray(j.ops) ? (j.ops as RecordResult['ops']) : []
+    const prints = Array.isArray(j.prints) ? j.prints.map(String) : []
+    if (!j.ok || j.error) return { ok: false, ops, prints, error: parseLuauError(String(j.error?.message ?? 'the script failed')) }
+    return { ok: true, ops, prints }
+  } finally {
+    await rm(tmp, { recursive: true, force: true })
+  }
 }

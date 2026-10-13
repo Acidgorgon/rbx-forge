@@ -7,6 +7,7 @@ import type { ColorKey, NumKey, PropValue, VfxCue, VfxEffect, VfxMotion, VfxNode
 import { ENUMS, SCHEMA, type PropSpec } from '@shared/vfx/schema'
 import { evalNumberSequence, fromHex, hex } from '@shared/vfx/sequence'
 import { nodeRole } from '@shared/vfx/analyze'
+import { editProp } from '@shared/vfx/spec'
 import { Icon } from '../../components/Icons'
 
 const LAYER = new Set(['ParticleEmitter', 'Beam', 'Trail', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight', 'Part', 'MeshPart', 'SpecialMesh', 'Attachment'])
@@ -16,23 +17,22 @@ function layers(effect: VfxEffect): VfxNode[] {
   const out: VfxNode[] = []
   const walk = (n: VfxNode) => {
     if (LAYER.has(n.className) && (n.className !== 'Attachment' || n.children.length === 0) && n.className !== 'Part' && n.className !== 'Attachment') out.push(n)
+    // Scripted effects: the visible kit parts (orb spheres, shockwave shells) are layers too.
+    else if (n.kit === 'rig' && n.className === 'Part' && Number(n.props.Transparency ?? 0) < 1) out.push(n)
     n.children.forEach(walk)
   }
   effect.roots.forEach(walk)
   return out
 }
 
-function cloneWith(effect: VfxEffect, id: string, fn: (n: VfxNode) => void): VfxEffect {
-  const next: VfxEffect = JSON.parse(JSON.stringify(effect))
-  const walk = (n: VfxNode): boolean => {
-    if (n.id === id) {
-      fn(n)
-      return true
-    }
-    return n.children.some(walk)
+// A cue as one line for the read-only timeline of scripted layers.
+function cueText(c: VfxCue): string {
+  if (c.action === 'emit') return `Emit ${c.count ?? 16}`
+  if (c.action === 'tween' || c.action === 'set') {
+    const goals = Object.entries(c.props ?? {}).map(([k, v]) => `${k} ${typeof v === 'number' ? Math.round(v * 100) / 100 : Array.isArray(v) && v.length <= 3 ? `[${(v as number[]).map((x) => Math.round(Number(x) * 100) / 100).join(', ')}]` : '…'}`).join(', ')
+    return c.action === 'set' ? `set ${goals}` : `tween ${goals} · ${c.duration ?? 0}s ${c.style ?? 'Quad'} ${c.direction ?? 'Out'}`
   }
-  next.roots.some(walk)
-  return next
+  return c.action
 }
 
 const num = (v: string, fallback: number) => {
@@ -201,6 +201,7 @@ export function ParamEditor({ effect, onChange }: { effect: VfxEffect; onChange:
   const schema = node ? SCHEMA[node.className] ?? {} : {}
   const entries = Object.entries(schema).filter(([, s]) => s.kind !== 'ref' && s.kind !== 'cframe' && (advanced || s.main))
   const cues = node ? effect.cues.filter((c) => c.target === node.id) : []
+  const scripted = !!effect.script
   const setCues = (next: VfxCue[]) => onChange({ ...effect, cues: [...effect.cues.filter((c) => c.target !== node!.id), ...next].sort((a, b) => a.at - b.at) })
 
   return (
@@ -208,11 +209,11 @@ export function ParamEditor({ effect, onChange }: { effect: VfxEffect; onChange:
       <div className="vfx-effect-row">
         <label>
           <span className="faint">duration</span>
-          <input className="input mono" type="number" min={0.2} max={10} step={0.1} value={effect.duration} onChange={(e) => onChange({ ...effect, duration: Math.max(0.2, Math.min(10, num(e.target.value, effect.duration))) })} aria-label="Effect duration" />
+          <input className="input mono" type="number" min={0.2} max={10} step={0.1} value={Math.round(effect.duration * 100) / 100} disabled={scripted} title={scripted ? 'Set by the timeline script (fx:duration, or the last cue)' : undefined} onChange={(e) => onChange({ ...effect, duration: Math.max(0.2, Math.min(10, num(e.target.value, effect.duration))) })} aria-label="Effect duration" />
         </label>
         <label>
           <span className="faint">motion</span>
-          <select className="input" value={effect.motion ?? 'static'} onChange={(e) => onChange({ ...effect, motion: e.target.value as VfxMotion })} aria-label="Preview motion">
+          <select className="input" value={effect.motion ?? 'static'} disabled={scripted} title={scripted ? 'The timeline script moves the rigs itself' : undefined} onChange={(e) => onChange({ ...effect, motion: e.target.value as VfxMotion })} aria-label="Preview motion">
             {MOTIONS.map((m) => (
               <option key={m}>{m}</option>
             ))}
@@ -235,10 +236,24 @@ export function ParamEditor({ effect, onChange }: { effect: VfxEffect; onChange:
           {entries.map(([name, spec]) => (
             <div key={name} className={`vfx-prop${spec.kind === 'nseq' || spec.kind === 'cseq' ? ' wide' : ''}`}>
               <span className="vfx-prop-name mono">{name}</span>
-              <Field name={name} spec={spec} value={node.props[name]} onChange={(v) => onChange(cloneWith(effect, node.id, (n) => (n.props[name] = v)))} />
+              <Field name={name} spec={spec} value={node.props[name]} onChange={(v) => onChange(editProp(effect, node.id, name, v))} />
             </div>
           ))}
-          {(node.className === 'ParticleEmitter' || cues.length > 0) && (
+          {scripted && (
+            <div className="vfx-prop wide">
+              <span className="vfx-prop-name mono">Timeline</span>
+              <div className="vfx-seq">
+                {cues.length === 0 && <span className="note">No cues on this layer; its rig's cues apply.</span>}
+                {cues.map((c, i) => (
+                  <div key={i} className="vfx-cue-ro mono">
+                    <span className="faint">{c.at.toFixed(2)}s</span> {cueText(c)}
+                  </div>
+                ))}
+                <span className="note">Cues come from the timeline script (Script tab). Property edits here are kept when the script runs again.</span>
+              </div>
+            </div>
+          )}
+          {!scripted && (node.className === 'ParticleEmitter' || cues.length > 0) && (
             <div className="vfx-prop wide">
               <span className="vfx-prop-name mono">Timeline</span>
               <div className="vfx-seq">

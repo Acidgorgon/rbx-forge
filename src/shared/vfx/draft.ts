@@ -22,7 +22,7 @@ const PALETTES: Record<string, Palette> = {
   magic: { hot: '#ffffff', mid: '#c77dff', cool: '#5a2dff', smoke: '#2a1745' }
 }
 
-function paletteFor(words: string): Palette {
+export function paletteFor(words: string): Palette {
   for (const [k, p] of Object.entries(PALETTES)) if (words.includes(k)) return p
   if (/red|flame|burn|lava/.test(words)) return PALETTES.fire
   if (/blue|frost|cold/.test(words)) return PALETTES.ice

@@ -251,8 +251,15 @@ export function effectFromSpec(spec: VfxSpec): VfxEffect {
 
 // Changes from the critic or the editor: node (name or id) + property + raw value. Returns a new
 // effect; unknown nodes / properties throw so the loop can report them.
-export function applyChanges(effect: VfxEffect, changes: VfxChange[]): VfxEffect {
+// Scripted effects also keep each change in effect.patches (re-applied when the script runs again),
+// unless record is false (that re-application itself).
+export function applyChanges(effect: VfxEffect, changes: VfxChange[], opts: { record?: boolean } = {}): VfxEffect {
   const next: VfxEffect = JSON.parse(JSON.stringify(effect))
+  const record = (ch: VfxChange) => {
+    if (!next.script || opts.record === false || ch.node === '$effect') return
+    const key = (c: VfxChange) => `${c.node.toLowerCase()}|${c.prop.toLowerCase()}`
+    next.patches = [...(next.patches ?? []).filter((p) => key(p) !== key(ch)), { node: ch.node, prop: ch.prop, value: ch.value }].slice(-60)
+  }
   for (const ch of changes) {
     if (ch.node === '$effect') {
       if (ch.prop === 'duration') next.duration = Math.max(0.2, Math.min(10, finite(ch.value, 'duration')))
@@ -269,11 +276,27 @@ export function applyChanges(effect: VfxEffect, changes: VfxChange[]): VfxEffect
         next.cues.push({ at: Math.max(0, finite(e.at, 'emit.at')), target: node.id, action: 'emit', count: Math.max(1, Math.round(finite(e.count, 'emit.count'))) })
       }
       next.cues.sort((a, b) => a.at - b.at)
+      record(ch)
       continue
     }
     const spec = SCHEMA[node.className]?.[ch.prop]
     if (!spec) throw new SpecError(`${node.className} "${node.name}" has no property "${ch.prop}"`)
     node.props[ch.prop] = normalizeValue(spec.kind, ch.value, `${node.name}.${ch.prop}`)
+    record(ch)
+  }
+  return next
+}
+
+// A direct property edit (parameter editor): the new effect, recorded as a patch when scripted.
+export function editProp(effect: VfxEffect, nodeId: string, propName: string, value: PropValue): VfxEffect {
+  const next: VfxEffect = JSON.parse(JSON.stringify(effect))
+  const node = allNodes(next.roots).find((n) => n.id === nodeId)
+  if (!node) return next
+  node.props[propName] = value
+  if (next.script) {
+    const key = `${node.name.toLowerCase()}|${propName.toLowerCase()}`
+    const raw = compactValue(SCHEMA[node.className]?.[propName]?.kind ?? 'number', value)
+    next.patches = [...(next.patches ?? []).filter((p) => `${p.node.toLowerCase()}|${p.prop.toLowerCase()}` !== key), { node: node.name, prop: propName, value: raw }].slice(-60)
   }
   return next
 }
@@ -282,7 +305,8 @@ export function applyChanges(effect: VfxEffect, changes: VfxChange[]): VfxEffect
 export function compactEffect(effect: VfxEffect): Record<string, unknown> {
   const layers: Record<string, unknown>[] = []
   for (const n of allNodes(effect.roots)) {
-    if (!LAYER_CLASSES.has(n.className)) continue
+    // Scripted effects: visible kit parts (orb spheres, shockwave shells) are layers too.
+    if (!LAYER_CLASSES.has(n.className) && !(n.kit === 'rig' && n.className === 'Part' && Number(n.props.Transparency ?? 0) < 1)) continue
     const props: Record<string, unknown> = {}
     const schema = SCHEMA[n.className] ?? {}
     for (const [k, v] of Object.entries(n.props)) {
@@ -294,12 +318,17 @@ export function compactEffect(effect: VfxEffect): Record<string, unknown> {
     const layer: Record<string, unknown> = { name: n.name, class: n.className, props }
     const emits = effect.cues.filter((c) => c.target === n.id && c.action === 'emit').map((c) => ({ at: c.at, count: c.count }))
     if (emits.length) layer.emit = emits
-    const en = effect.cues.filter((c) => c.target === n.id && c.action !== 'emit')
+    const en = effect.cues.filter((c) => c.target === n.id && (c.action === 'enable' || c.action === 'disable'))
     if (en.length) layer.toggles = en.map((c) => `${c.action}@${c.at}`)
+    const tw = effect.cues.filter((c) => c.target === n.id && (c.action === 'tween' || c.action === 'set'))
+    if (tw.length) layer.tweens = tw.map((c) => `${c.action}@${c.at}${c.duration ? `+${c.duration}` : ''} ${Object.keys(c.props ?? {}).join(',')}`)
     if (n.props.Enabled === false && !emits.length && !en.length) layer.enabled = false
     layers.push(layer)
   }
-  return { name: effect.name, duration: effect.duration, motion: effect.motion ?? 'static', layers }
+  const out: Record<string, unknown> = { name: effect.name, duration: effect.duration, motion: effect.motion ?? 'static', layers }
+  if (effect.stages?.length) out.stages = effect.stages.map((s) => `${s.label}@${s.at}`)
+  if (effect.script) out.scripted = true
+  return out
 }
 
 function compactValue(kind: PropKind, v: PropValue): unknown {

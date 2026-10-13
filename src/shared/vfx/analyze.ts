@@ -3,7 +3,7 @@
 
 import { CONTAINER_CLASSES, prop, SCRIPT_CLASSES, VFX_CLASSES } from './schema.ts'
 import { curveShape, evalColorSequence, hex, sequenceMax, type CurveShape } from './sequence.ts'
-import { emitterBudget, flipbookFrames, MAX_RATE } from './simulate.ts'
+import { emitterBudget, flipbookFrames, MAX_RATE, prepareEffect, simulate } from './simulate.ts'
 import type { ColorSequence, NumberRange, NumberSequence, Rgb, VfxCue, VfxEffect, VfxNode, VfxStats } from './types.ts'
 
 // Keeps VFX instances, their containers and scripts; drops everything else (terrain, UI, sounds...).
@@ -110,15 +110,37 @@ export function effectFromNodes(name: string, nodes: VfxNode[]): VfxEffect {
   return { name, roots, cues, duration: effectDuration(roots, cues), motion: hasTrail ? 'swing' : 'static' }
 }
 
+export function isSequence(effect: VfxEffect): boolean {
+  return !!effect.script || effect.cues.some((c) => c.action === 'tween' || c.action === 'set')
+}
+
+// Most particles alive at once, sampled over one play (deterministic).
+export function peakParticles(effect: VfxEffect, samples = 32): number {
+  try {
+    const p = prepareEffect(effect, 1)
+    let peak = 0
+    for (let i = 0; i < samples; i++) {
+      const f = simulate(p, (effect.duration * (i + 0.5)) / samples)
+      peak = Math.max(peak, f.emitters.reduce((a, e) => a + e.particles.length, 0))
+    }
+    return peak
+  } catch {
+    return 0
+  }
+}
+
 export function effectStats(effect: VfxEffect): VfxStats {
   const nodes = allNodes(effect.roots)
   const stats: VfxStats = { emitters: 0, beams: 0, trails: 0, lights: 0, meshes: 0, scripts: 0, particles: 0, overdraw: 0, textures: [], flipbooks: 0 }
   const tex = new Set<string>()
+  const seq = isSequence(effect)
+  // In a sequence most emitters start disabled and are switched on by cues: budget them as running.
+  const cued = new Set(seq ? effect.cues.filter((c) => c.action === 'enable').map((c) => c.target) : [])
   for (const n of nodes) {
     if (n.className === 'ParticleEmitter') {
       stats.emitters++
       const b = emitterBudget(
-        n,
+        cued.has(n.id) ? { ...n, props: { ...n.props, Enabled: true } } : n,
         effect.cues.filter((c) => c.target === n.id && c.action === 'emit').map((c) => c.count ?? 16)
       )
       stats.particles += b.live
@@ -133,6 +155,13 @@ export function effectStats(effect: VfxEffect): VfxStats {
       const v = n.props[k]
       if (typeof v === 'string' && v) tex.add(v)
     }
+  }
+  // Sequences turn layers on and off: measure the peak live count over a play instead of assuming
+  // every emitter runs at once.
+  if (seq && stats.particles > 0) {
+    const peak = peakParticles(effect)
+    stats.overdraw *= Math.min(1, peak / stats.particles)
+    stats.particles = peak
   }
   stats.particles = Math.round(stats.particles)
   stats.overdraw = Math.round(stats.overdraw * 10) / 10
@@ -329,7 +358,8 @@ export function perfWarnings(effect: VfxEffect): PerfWarning[] {
   else if (stats.particles > PERF.particlesWarn) out.push({ level: 'warn', message: `About ${stats.particles} live particles: fine alone, heavy if several play at once.` })
   if (stats.overdraw > PERF.overdrawError) out.push({ level: 'error', message: `Overdraw estimate ${stats.overdraw}: large overlapping quads will cost fill rate on mobile.` })
   else if (stats.overdraw > PERF.overdrawWarn) out.push({ level: 'warn', message: `Overdraw estimate ${stats.overdraw}: consider smaller or fewer large particles.` })
-  if (stats.emitters > PERF.emittersWarn) out.push({ level: 'info', message: `${stats.emitters} emitters; most good effects use 3 to 6 layers.` })
+  if (stats.emitters > PERF.emittersWarn && !isSequence(effect)) out.push({ level: 'info', message: `${stats.emitters} emitters; most good effects use 3 to 6 layers.` })
+  if (isSequence(effect) && stats.emitters > 40) out.push({ level: 'info', message: `${stats.emitters} emitters across the sequence; reuse rigs (tween them) instead of spawning new ones per beat.` })
   return out
 }
 

@@ -25,6 +25,7 @@ export const CRITIC_SYSTEM = `You are a senior Roblox VFX artist reviewing an ef
 You get frames from an approximate WebGL preview (dark background, a grey R15 dummy for scale, a 1-stud floor grid), the effect's parameters as JSON, numbers from the closest reference effects in the user's library, and sometimes reference images.
 ${RUBRIC_TEXT}
 Then propose at most 6 concrete parameter changes that would raise the lowest scores. Use only layer names and Roblox property names that exist in the parameters (Rate, Lifetime, Speed, SpreadAngle, Acceleration, Drag, Size, Transparency, Squash, Color, LightEmission, Brightness, Rotation, RotSpeed, ZOffset, Orientation, FlipbookLayout, FlipbookMode, Texture, Width0, Width1, WidthScale, CurveSize0, ...). Values use the same JSON shapes as the parameters: sequences [[t, v], ...] or [[t, v, envelope], ...], colour sequences [[t, "#hex"], ...], ranges [min, max]. To change bursts use prop "emit" with [{"at": seconds, "count": n}].
+For a multi-stage sequence (it has stages: anticipation, charge, release, impact, dissipate...), frames come from inside each stage: judge timing as the beats (readable anticipation, a fast release, the biggest silhouette on impact, a clean dissipate) and name rigs and their layers as they appear in the parameters (e.g. "BlueGlow"); a change to a layer's props is kept when the timeline script is re-run.
 Answer with JSON only:
 {"scores":{"readability":n,"layering":n,"timing":n,"color":n,"silhouette":n,"performance":n},"summary":"two sentences","changes":[{"node":"LayerName","prop":"Property","value":...,"why":"short"}]}`
 
@@ -42,7 +43,8 @@ export function critiquePrompt(input: CritiqueInput): string {
   const warnings = perfWarnings(input.effect)
   const parts = [
     `Request: ${input.prompt}`,
-    `Iteration ${input.iteration}. Frames attached in order at t = ${input.frameTimes.map((t) => t.toFixed(2)).join(', ')} s (one play lasts ${input.effect.duration} s).`,
+    `Iteration ${input.iteration}. Frames attached in order at t = ${input.frameTimes.map((t) => `${t.toFixed(2)}${stageAt(input.effect, t) ? ` (${stageAt(input.effect, t)})` : ''}`).join(', ')} s (one play lasts ${input.effect.duration} s).`,
+    ...(input.effect.stages?.length ? [`Stages: ${input.effect.stages.map((s) => `${s.label} @ ${s.at.toFixed(2)} s`).join(', ')}. Choreographed by a timeline script; check each beat reads on its own frame.`] : []),
     '',
     'Effect parameters:',
     JSON.stringify(compactEffect(input.effect)),
@@ -62,6 +64,24 @@ export function critiquePrompt(input: CritiqueInput): string {
   }
   if (input.previous) parts.push('', `Previous critique (${input.previous.overall}/10): ${input.previous.summary}`)
   return parts.join('\n')
+}
+
+// The stage a time falls in (the last stage that started at or before t).
+export function stageAt(effect: Pick<VfxEffect, 'stages'>, t: number): string | null {
+  let label: string | null = null
+  for (const s of effect.stages ?? []) if (s.at <= t + 1e-6) label = s.label
+  return label
+}
+
+// Frame times for a sequence: one inside each stage (40% of the way in, past the transition), so
+// the critic sees every beat; capped at `max` (longest stages win), sorted by time.
+export function stageFrameTimes(effect: Pick<VfxEffect, 'stages' | 'duration'>, max = 6): number[] {
+  const stages = [...(effect.stages ?? [])].sort((a, b) => a.at - b.at)
+  if (!stages.length) return []
+  const spans = stages.map((s, i) => ({ start: s.at, end: i + 1 < stages.length ? stages[i + 1].at : effect.duration }))
+    .filter((s) => s.end - s.start > 0.02)
+  const pick = [...spans].sort((a, b) => b.end - b.start - (a.end - a.start)).slice(0, max)
+  return pick.map((s) => Math.round((s.start + (s.end - s.start) * 0.4) * 100) / 100).sort((a, b) => a - b)
 }
 
 function extractJson(raw: string): unknown {

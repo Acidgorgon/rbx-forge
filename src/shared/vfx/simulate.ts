@@ -29,10 +29,16 @@
 //               Width1 linearly; Color / Transparency across the length; TextureSpeed cycles/s.
 //   Trail       records both attachments' positions every frame; each segment fades over Lifetime
 //               (Color / Transparency / WidthScale by segment age); MaxLength truncates.
+//   Tweens      (timeline.ts) move Parts / Attachments (CFrame, Position) and drive Rate, LightEmission,
+//               Brightness, light Range / Colour, Beam widths and the virtual SizeScale / Fade / Color
+//               tint. Size, Transparency and Color sequences are read every frame for live particles,
+//               so their tweens apply to particles already alive; Rate changes the emission schedule.
+//               Speed, Drag and Acceleration keep their authored values in the closed-form motion.
 
 import { add, alignY, cf, IDENTITY, isCFrame, mul, norm, NORMALS, point, pos, rotate, scale, fromEuler } from './cframe.ts'
 import { prop } from './schema.ts'
 import { envelopeOffsets, evalColorSequence, evalNumberSequence, hashSeed, rng, sequenceMax, sequenceMean } from './sequence.ts'
+import { applyTint, Timeline, type Tint } from './timeline.ts'
 import type { CFrameArr, ColorSequence, NumberRange, NumberSequence, Rgb, Vec2, Vec3, VfxCue, VfxEffect, VfxNode } from './types.ts'
 
 export const MAX_RATE = 400
@@ -67,6 +73,19 @@ export interface PreparedEmitter {
   partSize: Vec3 | null
   windows: [number, number][]
   bursts: { at: number; count: number }[]
+  // Spawn times per window when Rate is tweened (the closed-form schedule needs a constant Rate).
+  spawnTimes?: number[][]
+  look?: (t: number) => EmitterLook
+}
+
+// Per-frame look of an emitter under the timeline (virtual SizeScale / Fade / tint, tweened props).
+export interface EmitterLook {
+  sizeScale: number
+  fade: number
+  tint: Tint | null
+  brightness: number
+  lightEmission: number
+  zOffset: number
 }
 
 export interface PreparedLink {
@@ -76,6 +95,7 @@ export interface PreparedLink {
   a0: ((t: number) => CFrameArr) | null
   a1: ((t: number) => CFrameArr) | null
   windows: [number, number][]
+  timeline?: Timeline
 }
 
 export interface PreparedLight {
@@ -84,6 +104,7 @@ export interface PreparedLight {
   node: VfxNode
   at: (t: number) => CFrameArr
   windows: [number, number][]
+  timeline?: Timeline
 }
 
 export interface PreparedMesh {
@@ -92,6 +113,8 @@ export interface PreparedMesh {
   node: VfxNode
   at: (t: number) => CFrameArr
   size: Vec3
+  // Size, transparency and colour at time t (tweens, SizeScale, Fade).
+  look: (t: number) => { size: Vec3; transparency: number; color: Rgb }
 }
 
 export interface PreparedEffect {
@@ -104,6 +127,7 @@ export interface PreparedEffect {
   highlights: VfxNode[]
   meshes: PreparedMesh[]
   root: (t: number) => CFrameArr
+  timeline: Timeline
 }
 
 const ATTACH_CLASSES = new Set(['Attachment'])
@@ -159,28 +183,48 @@ export function enableWindows(node: VfxNode, cues: VfxCue[], duration: number): 
 // Builds transforms and schedules for every node of the effect.
 export function prepareEffect(effect: VfxEffect, seed = 1): PreparedEffect {
   const root = (t: number) => motionAt(effect, t)
-  // Imported models sit anywhere in their place: re-centre on the mean of their parts.
+  // Imported models sit anywhere in their place: re-centre on the mean of their parts. Scripted
+  // effects ('local' space) place parts relative to the root.
   const parts: Vec3[] = []
   const collect = (n: VfxNode) => {
     if (PART_CLASSES.has(n.className) && isCFrame(n.props.CFrame)) parts.push(pos(n.props.CFrame as CFrameArr))
     n.children.forEach(collect)
   }
-  effect.roots.forEach(collect)
+  if (effect.space !== 'local') effect.roots.forEach(collect)
   const centre: Vec3 = parts.length ? scale(parts.reduce((a, b) => add(a, b), [0, 0, 0] as Vec3), 1 / parts.length) : [0, 0, 0]
   const recentre = cf(-centre[0], -centre[1], -centre[2])
+  const tl = new Timeline(effect)
+  // A node's own CFrame (parent space) at t: tweened CFrame, then a tweened Position on top.
+  const localAt = (n: VfxNode, pre: CFrameArr = IDENTITY): ((t: number) => CFrameArr) => {
+    const base = isCFrame(n.props.CFrame) ? (n.props.CFrame as CFrameArr) : IDENTITY
+    const hasCf = tl.has(n.id, 'CFrame')
+    const hasPos = tl.has(n.id, 'Position')
+    if (!hasCf && !hasPos) {
+      const fixed = mul(pre, base)
+      return () => fixed
+    }
+    return (t) => {
+      let c = hasCf ? tl.value<CFrameArr>(n.id, 'CFrame', base, t) : base
+      if (hasPos) {
+        const p = tl.value<number[]>(n.id, 'Position', base.slice(0, 3), t)
+        c = [p[0], p[1], p[2], ...c.slice(3)]
+      }
+      return mul(pre, c)
+    }
+  }
 
-  const out: PreparedEffect = { effect, seed, emitters: [], beams: [], trails: [], lights: [], highlights: [], meshes: [], root }
+  const out: PreparedEffect = { effect, seed, emitters: [], beams: [], trails: [], lights: [], highlights: [], meshes: [], root, timeline: tl }
   const byId = new Map<string, (t: number) => CFrameArr>()
   const pending: { node: VfxNode; at: (t: number) => CFrameArr; parentPart: VfxNode | null; parentIsAttachment: boolean }[] = []
 
   const walk = (n: VfxNode, parentAt: (t: number) => CFrameArr, parentPart: VfxNode | null, parentIsAttachment: boolean) => {
     let here = parentAt
     if (PART_CLASSES.has(n.className)) {
-      const local = mul(recentre, isCFrame(n.props.CFrame) ? (n.props.CFrame as CFrameArr) : IDENTITY)
-      here = (t) => mul(root(t), local)
+      const local = localAt(n, recentre)
+      here = (t) => mul(root(t), local(t))
     } else if (ATTACH_CLASSES.has(n.className)) {
-      const local = isCFrame(n.props.CFrame) ? (n.props.CFrame as CFrameArr) : IDENTITY
-      here = (t) => mul(parentAt(t), local)
+      const local = localAt(n)
+      here = (t) => mul(parentAt(t), local(t))
     }
     byId.set(n.id, here)
     pending.push({ node: n, at: here, parentPart, parentIsAttachment })
@@ -195,20 +239,75 @@ export function prepareEffect(effect: VfxEffect, seed = 1): PreparedEffect {
     if (n.className === 'ParticleEmitter') {
       const bursts = effect.cues.filter((c) => c.target === n.id && c.action === 'emit').map((c) => ({ at: c.at, count: Math.max(0, Math.round(c.count ?? 16)) }))
       const size = parentPart && !parentIsAttachment ? (prop<number[]>(parentPart, 'Size') as Vec3) : null
-      out.emitters.push({ id: n.id, name: n.name, node: n, parentAt: at, partSize: size ?? null, windows, bursts })
+      const em: PreparedEmitter = { id: n.id, name: n.name, node: n, parentAt: at, partSize: size ?? null, windows, bursts, look: emitterLook(n, tl) }
+      if (tl.has(n.id, 'Rate')) em.spawnTimes = rateSchedule(n, tl, windows)
+      out.emitters.push(em)
     } else if (n.className === 'Beam' || n.className === 'Trail') {
       const a0 = typeof n.props.Attachment0 === 'string' ? byId.get(n.props.Attachment0) ?? null : null
       const a1 = typeof n.props.Attachment1 === 'string' ? byId.get(n.props.Attachment1) ?? null : null
-      ;(n.className === 'Beam' ? out.beams : out.trails).push({ id: n.id, name: n.name, node: n, a0, a1, windows })
+      ;(n.className === 'Beam' ? out.beams : out.trails).push({ id: n.id, name: n.name, node: n, a0, a1, windows, timeline: tl })
     } else if (LIGHT_CLASSES.has(n.className)) {
-      out.lights.push({ id: n.id, name: n.name, node: n, at, windows })
+      out.lights.push({ id: n.id, name: n.name, node: n, at, windows, timeline: tl })
     } else if (n.className === 'Highlight') {
       out.highlights.push(n)
-    } else if ((n.className === 'Part' || n.className === 'MeshPart') && prop<number>(n, 'Transparency') < 1) {
-      out.meshes.push({ id: n.id, name: n.name, node: n, at, size: prop<number[]>(n, 'Size') as Vec3 })
+    } else if ((n.className === 'Part' || n.className === 'MeshPart') && (prop<number>(n, 'Transparency') < 1 || tl.has(n.id, 'Transparency'))) {
+      const size = prop<number[]>(n, 'Size') as Vec3
+      const color = prop<Rgb>(n, 'Color')
+      const tr = prop<number>(n, 'Transparency')
+      const animated = tl.animated(n.id)
+      const fixed = { size, transparency: tr, color }
+      const look = animated
+        ? (t: number) => {
+            const k = tl.sizeScale(n.id, t)
+            const s = tl.value<number[]>(n.id, 'Size', size, t)
+            const f = tl.fade(n.id, t)
+            const base = tl.value<number>(n.id, 'Transparency', tr, t)
+            return { size: [s[0] * k, s[1] * k, s[2] * k] as Vec3, transparency: 1 - (1 - Math.max(0, Math.min(1, base))) * (1 - f), color: tl.value<Rgb>(n.id, 'Color', color, t) }
+          }
+        : () => fixed
+      out.meshes.push({ id: n.id, name: n.name, node: n, at, size, look })
     }
   }
   return out
+}
+
+function emitterLook(n: VfxNode, tl: Timeline): (t: number) => EmitterLook {
+  const brightness = prop<number>(n, 'Brightness')
+  const le = prop<number>(n, 'LightEmission')
+  const z = prop<number>(n, 'ZOffset') || 0
+  const fixed: EmitterLook = { sizeScale: 1, fade: 0, tint: null, brightness, lightEmission: le, zOffset: z }
+  if (!tl.animated(n.id)) return () => fixed
+  return (t) => ({
+    sizeScale: tl.sizeScale(n.id, t),
+    fade: tl.fade(n.id, t),
+    tint: tl.tint(n.id, t),
+    brightness: tl.value(n.id, 'Brightness', brightness, t),
+    lightEmission: Math.max(0, Math.min(1, tl.value(n.id, 'LightEmission', le, t))),
+    zOffset: tl.value(n.id, 'ZOffset', z, t)
+  })
+}
+
+// Emission times with a tweened Rate: integrate Rate x TimeScale over each window at 240 Hz.
+export function rateSchedule(n: VfxNode, tl: Timeline, windows: [number, number][]): number[][] {
+  const base = prop<number>(n, 'Rate') || 0
+  const ts = Math.max(0, Math.min(1, n.props.TimeScale === undefined ? 1 : Number(n.props.TimeScale)))
+  const dt = 1 / 240
+  return windows.map(([from, to]) => {
+    const out: number[] = []
+    let acc = 0.999999
+    const end = Math.min(to, 60)
+    for (let t = from; t < end && out.length < 20000; t += dt) {
+      const r = Math.min(MAX_RATE, Math.max(0, tl.value(n.id, 'Rate', base, t))) * ts
+      acc += r * dt
+      while (acc >= 1 && out.length < 20000) {
+        // Spawn inside this step, where the accumulated count crossed the integer.
+        const over = acc - 1
+        out.push(Math.max(from, t + dt - (r > 0 ? over / r : 0)))
+        acc -= 1
+      }
+    }
+    return out
+  })
 }
 
 function lerp(a: number, b: number, t: number): number {
@@ -396,7 +495,7 @@ function flipFrame(p: ReturnType<typeof emitterParams>, r: () => number, key: nu
 }
 
 // One particle at time t, spawned at ts with key (seed source); null when dead.
-function particleAt(em: PreparedEmitter, p: ReturnType<typeof emitterParams>, key: string, seedKey: number, ts: number, t: number): Particle | null {
+function particleAt(em: PreparedEmitter, p: ReturnType<typeof emitterParams>, key: string, seedKey: number, ts: number, t: number, look: EmitterLook): Particle | null {
   const r = rng(seedKey)
   const life = lerp(p.life[0], p.life[1], r())
   if (life <= 0) return null
@@ -430,13 +529,14 @@ function particleAt(em: PreparedEmitter, p: ReturnType<typeof emitterParams>, ke
     vel = velocityAt(v0, p.accel, p.drag, age)
   }
   const tn = age / life
-  const size = Math.max(0, evalNumberSequence(p.size, tn, sizeOff))
+  const size = Math.max(0, evalNumberSequence(p.size, tn, sizeOff)) * look.sizeScale
   const sq = evalNumberSequence(p.squash, tn, squashOff)
-  const transparency = Math.max(0, Math.min(1, evalNumberSequence(p.transp, tn, transOff)))
-  const c = evalColorSequence(p.color, tn)
+  const base = Math.max(0, Math.min(1, evalNumberSequence(p.transp, tn, transOff)))
+  const transparency = look.fade > 0 ? 1 - (1 - base) * (1 - look.fade) : base
+  const c = applyTint(evalColorSequence(p.color, tn), look.tint)
   // Brightness scales emitted light when LightInfluence is 0 (Brightness docs); the preview's
   // lighting is neutral, so influence just blends the scale back toward 1.
-  const b = lerp(p.brightness, 1, Math.max(0, Math.min(1, p.lightInfluence)))
+  const b = lerp(look.brightness, 1, Math.max(0, Math.min(1, p.lightInfluence)))
   return {
     key,
     pos: position,
@@ -465,9 +565,21 @@ export function simulateEmitter(em: PreparedEmitter, t: number, seed = 1): Parti
   const out: Particle[] = []
   const ts = p.timeScale
   if (ts <= 0) return out
+  const look = em.look ? em.look(t) : { sizeScale: 1, fade: 0, tint: null, brightness: p.brightness, lightEmission: 0, zOffset: 0 }
   const maxAge = p.life[1] / ts
-  // Continuous emission windows.
-  if (p.rate > 0) {
+  if (em.spawnTimes) {
+    // Tweened Rate: precomputed schedule.
+    em.spawnTimes.forEach((times, w) => {
+      for (let k = 0; k < times.length; k++) {
+        const at = times[k]
+        if (at > t) break
+        if (at < t - maxAge) continue
+        const q = particleAt(em, p, `c${w}:${k}`, hashSeed(seed, em.id, 'c', w, k), at, t, look)
+        if (q) out.push(q)
+      }
+    })
+  } else if (p.rate > 0) {
+    // Continuous emission windows.
     const step = 1 / (p.rate * ts)
     em.windows.forEach(([from, to], w) => {
       const lo = Math.max(from, t - maxAge)
@@ -478,7 +590,7 @@ export function simulateEmitter(em: PreparedEmitter, t: number, seed = 1): Parti
       for (let k = k0; k <= k1 && k - k0 < 20000; k++) {
         const at = from + k * step
         if (at >= to) break
-        const q = particleAt(em, p, `c${w}:${k}`, hashSeed(seed, em.id, 'c', w, k), at, t)
+        const q = particleAt(em, p, `c${w}:${k}`, hashSeed(seed, em.id, 'c', w, k), at, t, look)
         if (q) out.push(q)
       }
     })
@@ -486,7 +598,7 @@ export function simulateEmitter(em: PreparedEmitter, t: number, seed = 1): Parti
   em.bursts.forEach((b, i) => {
     if (b.at > t || b.at < t - maxAge) return
     for (let j = 0; j < Math.min(b.count, 5000); j++) {
-      const q = particleAt(em, p, `b${i}:${j}`, hashSeed(seed, em.id, 'b', i, j), b.at, t)
+      const q = particleAt(em, p, `b${i}:${j}`, hashSeed(seed, em.id, 'b', i, j), b.at, t, look)
       if (q) out.push(q)
     }
   })
@@ -495,6 +607,7 @@ export function simulateEmitter(em: PreparedEmitter, t: number, seed = 1): Parti
 
 export interface BeamFrame {
   id: string
+  lightEmission: number
   points: Vec3[]
   // Width direction per point (used when FaceCamera is false).
   sides: Vec3[]
@@ -518,19 +631,24 @@ export function simulateBeam(b: PreparedLink, t: number): BeamFrame | null {
   const p3 = pos(A1)
   const x0 = rotate(A0, [1, 0, 0])
   const x1 = rotate(A1, [1, 0, 0])
-  const p1 = add(p0, scale(x0, prop<number>(n, 'CurveSize0')))
-  const p2 = add(p3, scale(x1, -prop<number>(n, 'CurveSize1')))
+  const tl = b.timeline
+  const v = (name: string): number => (tl ? tl.value(n.id, name, prop<number>(n, name), t) : prop<number>(n, name))
+  const widthK = tl ? tl.sizeScale(n.id, t) : 1
+  const fade = tl ? tl.fade(n.id, t) : 0
+  const tint = tl ? tl.tint(n.id, t) : null
+  const p1 = add(p0, scale(x0, v('CurveSize0')))
+  const p2 = add(p3, scale(x1, -v('CurveSize1')))
   const segs = Math.max(1, Math.min(200, Math.round(prop<number>(n, 'Segments') || 10)))
-  const w0 = prop<number>(n, 'Width0')
-  const w1 = prop<number>(n, 'Width1')
+  const w0 = v('Width0') * widthK
+  const w1 = v('Width1') * widthK
   const color = prop<ColorSequence>(n, 'Color')
   const transp = prop<NumberSequence>(n, 'Transparency')
   const z0 = rotate(A0, [0, 0, 1])
   const z1 = rotate(A1, [0, 0, 1])
-  const frame: BeamFrame = { id: b.id, points: [], sides: [], widths: [], colors: [], alphas: [], us: [] }
+  const frame: BeamFrame = { id: b.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), points: [], sides: [], widths: [], colors: [], alphas: [], us: [] }
   let length = 0
   let prev: Vec3 | null = null
-  const bright = prop<number>(n, 'Brightness')
+  const bright = v('Brightness')
   for (let i = 0; i <= segs; i++) {
     const s = i / segs
     const m = 1 - s
@@ -540,20 +658,21 @@ export function simulateBeam(b: PreparedLink, t: number): BeamFrame | null {
     frame.points.push(q)
     frame.sides.push(norm(add(scale(z0, 1 - s), scale(z1, s))))
     frame.widths.push(lerp(w0, w1, s))
-    const c = evalColorSequence(color, s)
+    const c = applyTint(evalColorSequence(color, s), tint)
     frame.colors.push([c[0] * bright, c[1] * bright, c[2] * bright])
-    frame.alphas.push(1 - Math.max(0, Math.min(1, evalNumberSequence(transp, s))))
+    frame.alphas.push((1 - Math.max(0, Math.min(1, evalNumberSequence(transp, s)))) * (1 - fade))
   }
   const mode = prop<string>(n, 'TextureMode')
-  const texLen = Math.max(0.01, prop<number>(n, 'TextureLength') || 1)
+  const texLen = Math.max(0.01, v('TextureLength') || 1)
   const cycles = mode === 'Stretch' ? texLen : length / texLen
-  const scroll = -prop<number>(n, 'TextureSpeed') * t
+  const scroll = -v('TextureSpeed') * t
   for (let i = 0; i <= segs; i++) frame.us.push((i / segs) * cycles + scroll)
   return frame
 }
 
 export interface TrailFrame {
   id: string
+  lightEmission: number
   // Pairs of edge points (attachment 0 side, attachment 1 side), newest first.
   left: Vec3[]
   right: Vec3[]
@@ -571,10 +690,15 @@ export function simulateTrail(tr: PreparedLink, t: number): TrailFrame | null {
   const color = prop<ColorSequence>(n, 'Color')
   const transp = prop<NumberSequence>(n, 'Transparency')
   const width = prop<NumberSequence>(n, 'WidthScale')
-  const maxLen = prop<number>(n, 'MaxLength') || 0
-  const minLen = Math.max(0, prop<number>(n, 'MinLength'))
-  const bright = prop<number>(n, 'Brightness')
-  const frame: TrailFrame = { id: tr.id, left: [], right: [], colors: [], alphas: [], us: [] }
+  const tl = tr.timeline
+  const v = (name: string): number => (tl ? tl.value(n.id, name, prop<number>(n, name), t) : prop<number>(n, name))
+  const widthK = tl ? tl.sizeScale(n.id, t) : 1
+  const fade = tl ? tl.fade(n.id, t) : 0
+  const tint = tl ? tl.tint(n.id, t) : null
+  const maxLen = v('MaxLength') || 0
+  const minLen = Math.max(0, v('MinLength'))
+  const bright = v('Brightness')
+  const frame: TrailFrame = { id: tr.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), left: [], right: [], colors: [], alphas: [], us: [] }
   let length = 0
   let last: Vec3 | null = null
   // Segments are recorded at a fixed 60 Hz grid so scrubbing gives the same trail.
@@ -592,12 +716,12 @@ export function simulateTrail(tr: PreparedLink, t: number): TrailFrame | null {
     if (maxLen > 0 && length > maxLen) break
     last = mid
     const tn = age / life
-    const ws = Math.max(0, evalNumberSequence(width, tn))
+    const ws = Math.max(0, evalNumberSequence(width, tn)) * widthK
     frame.left.push(add(mid, scale(add(a, scale(mid, -1)), ws)))
     frame.right.push(add(mid, scale(add(b, scale(mid, -1)), ws)))
-    const c = evalColorSequence(color, tn)
+    const c = applyTint(evalColorSequence(color, tn), tint)
     frame.colors.push([c[0] * bright, c[1] * bright, c[2] * bright])
-    frame.alphas.push(1 - Math.max(0, Math.min(1, evalNumberSequence(transp, tn))))
+    frame.alphas.push((1 - Math.max(0, Math.min(1, evalNumberSequence(transp, tn)))) * (1 - fade))
     frame.us.push(tn)
   }
   return frame.left.length >= 2 ? frame : null
@@ -618,21 +742,24 @@ export function simulateLight(l: PreparedLight, t: number): LightFrame | null {
   if (!inWindows(l.windows, t)) return null
   const c = l.at(t)
   const face = NORMALS[prop<string>(l.node, 'Face') ?? 'Front'] ?? NORMALS.Front
+  const tl = l.timeline
+  const id = l.node.id
+  const v = <T extends number | Rgb>(name: string): T => (tl ? tl.value<T>(id, name, prop<T>(l.node, name), t) : prop<T>(l.node, name))
   return {
     id: l.id,
     className: l.node.className,
     pos: pos(c),
     dir: rotate(c, face),
-    color: prop<Rgb>(l.node, 'Color'),
-    brightness: prop<number>(l.node, 'Brightness'),
-    range: prop<number>(l.node, 'Range'),
-    angle: prop<number>(l.node, 'Angle') ?? 90
+    color: v<Rgb>('Color'),
+    brightness: v<number>('Brightness') * (tl ? 1 - tl.fade(id, t) : 1),
+    range: v<number>('Range') * (tl ? tl.sizeScale(id, t) : 1),
+    angle: v<number>('Angle') ?? 90
   }
 }
 
 export interface SimFrame {
   t: number
-  emitters: { id: string; name: string; node: VfxNode; particles: Particle[] }[]
+  emitters: { id: string; name: string; node: VfxNode; particles: Particle[]; lightEmission: number; zOffset: number }[]
   beams: BeamFrame[]
   trails: TrailFrame[]
   lights: LightFrame[]
@@ -642,7 +769,10 @@ export interface SimFrame {
 export function simulate(prepared: PreparedEffect, t: number): SimFrame {
   return {
     t,
-    emitters: prepared.emitters.map((e) => ({ id: e.id, name: e.name, node: e.node, particles: simulateEmitter(e, t, prepared.seed) })),
+    emitters: prepared.emitters.map((e) => {
+      const look = e.look?.(t)
+      return { id: e.id, name: e.name, node: e.node, particles: simulateEmitter(e, t, prepared.seed), lightEmission: look ? look.lightEmission : prop<number>(e.node, 'LightEmission'), zOffset: look ? look.zOffset : prop<number>(e.node, 'ZOffset') || 0 }
+    }),
     beams: prepared.beams.map((b) => simulateBeam(b, t)).filter((x): x is BeamFrame => !!x),
     trails: prepared.trails.map((b) => simulateTrail(b, t)).filter((x): x is TrailFrame => !!x),
     lights: prepared.lights.map((l) => simulateLight(l, t)).filter((x): x is LightFrame => !!x),

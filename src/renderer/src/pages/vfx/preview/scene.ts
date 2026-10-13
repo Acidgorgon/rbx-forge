@@ -2,7 +2,8 @@
 // shared/vfx/simulate.ts the way Roblox draws ParticleEmitters, Beams and Trails, closely enough to
 // judge an effect. It approximates Roblox; it does not match it exactly (no engine lighting model,
 // no bloom or post-processing, placeholder textures when an asset cannot be fetched, MeshParts drawn
-// as boxes, scripts' tweens not run).
+// as boxes). Timeline tweens (shared/vfx/timeline.ts) move parts and attachments and drive emitter,
+// beam, light and part properties every frame; Neon parts glow and ForceField parts are rim-lit.
 //
 // Blending: Roblox says LightEmission 0 is normal blending and 1 is additive (Creator Hub,
 // ParticleEmitter.LightEmission). We output premultiplied colour with alpha * (1 - LightEmission) and
@@ -17,6 +18,50 @@ import type { Rgb, Vec3, VfxEffect, VfxNode } from '@shared/vfx/types'
 import { placeholderTexture, type PlaceholderKind } from './textures'
 
 export type Background = 'dark' | 'grey'
+// Camera presets: the default three-quarter view, a side view for things that travel forward, and a
+// wide view that fits long sequences.
+export type View = 'front' | 'side' | 'wide'
+
+const VIEWS: Record<View, { pos: [number, number, number]; target: [number, number, number] }> = {
+  front: { pos: [5.5, 5.2, -9.5], target: [0, 3.2, -1] },
+  side: { pos: [26, 9, -13], target: [0, 3, -13] },
+  wide: { pos: [16, 12, -26], target: [0, 3, -10] }
+}
+
+const PART_VS = /* glsl */ `
+varying vec3 vN;
+varying vec3 vV;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vN = normalize(normalMatrix * normal);
+  vV = normalize(-mv.xyz);
+  gl_Position = projectionMatrix * mv;
+}
+`
+
+// Neon: flat bright core with a soft edge; ForceField: transparent centre, bright rim.
+const PART_FS = /* glsl */ `
+uniform vec3 color;
+uniform float opacity;
+uniform float rim;
+varying vec3 vN;
+varying vec3 vV;
+void main() {
+  float facing = clamp(abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0);
+  float a;
+  vec3 c;
+  if (rim > 0.5) {
+    float r = pow(1.0 - facing, 2.2);
+    a = clamp(r * 1.4, 0.0, 1.0) * opacity;
+    c = color * (0.6 + 1.2 * r);
+  } else {
+    a = opacity * (0.6 + 0.4 * smoothstep(0.0, 0.5, facing));
+    c = mix(color * 0.85, vec3(1.0), 0.5 * pow(facing, 4.0));
+  }
+  if (a < 0.003) discard;
+  gl_FragColor = vec4(c * a, a * (rim > 0.5 ? 0.0 : 0.7));
+}
+`
 export type TextureResolver = (ref: string) => Promise<string | null>
 
 const BG: Record<Background, number> = { dark: 0x0b0d10, grey: 0x585d64 }
@@ -213,7 +258,7 @@ export class VfxScene {
   private emitters: EmitterView[] = []
   private strips: StripView[] = []
   private lights: THREE.PointLight[] = []
-  private meshes: { id: string; mesh: THREE.Mesh }[] = []
+  private meshes: { id: string; mesh: THREE.Mesh; base: [number, number, number]; glow: boolean }[] = []
   private prepared: PreparedEffect | null = null
   private effect: VfxEffect | null = null
   private textures = new Map<string, Promise<THREE.Texture>>()
@@ -254,6 +299,15 @@ export class VfxScene {
     this.scene.add(this.fx)
   }
 
+  setView(view: View): void {
+    const v = VIEWS[view] ?? VIEWS.front
+    this.camera.position.set(...v.pos)
+    if (this.controls) {
+      this.controls.target.set(...v.target)
+      this.controls.update()
+    } else this.camera.lookAt(...v.target)
+  }
+
   setBackground(bg: Background): void {
     this.scene.background = new THREE.Color(BG[bg] ?? BG.dark)
   }
@@ -282,8 +336,17 @@ export class VfxScene {
     }
     for (const m of this.prepared.meshes) {
       const c = prop<Rgb>(m.node, 'Color')
-      const mesh = new THREE.Mesh(new THREE.BoxGeometry(m.size[0], m.size[1], m.size[2]), new THREE.MeshStandardMaterial({ color: new THREE.Color(c[0], c[1], c[2]), transparent: true, opacity: 1 - prop<number>(m.node, 'Transparency'), depthWrite: false }))
-      this.meshes.push({ id: m.id, mesh })
+      const shape = prop<string>(m.node, 'Shape')
+      const material = prop<string>(m.node, 'Material')
+      // Unit geometry scaled by the (possibly tweened) size every frame. Roblox cylinders run along X.
+      const geo = shape === 'Ball' ? new THREE.SphereGeometry(0.5, 40, 24) : shape === 'Cylinder' ? new THREE.CylinderGeometry(0.5, 0.5, 1, 40).rotateZ(Math.PI / 2) : new THREE.BoxGeometry(1, 1, 1)
+      const glow = material === 'Neon' || material === 'ForceField'
+      const mat = glow
+        ? blendMaterial(PART_VS, PART_FS, { color: { value: new THREE.Color(c[0], c[1], c[2]) }, opacity: { value: 1 - prop<number>(m.node, 'Transparency') }, rim: { value: material === 'ForceField' ? 1 : 0 } })
+        : new THREE.MeshStandardMaterial({ color: new THREE.Color(c[0], c[1], c[2]), transparent: true, opacity: 1 - prop<number>(m.node, 'Transparency'), depthWrite: false })
+      const mesh = new THREE.Mesh(geo, mat)
+      mesh.renderOrder = glow ? 4 : 0
+      this.meshes.push({ id: m.id, mesh, base: [1, 1, 1], glow })
       this.fx.add(mesh)
     }
     this.applyHighlight()
@@ -438,6 +501,8 @@ export class VfxScene {
       })
       for (const a of Object.values(A)) a.needsUpdate = true
       view.geo.instanceCount = ps.length
+      view.mat.uniforms.lightEmission.value = Math.max(0, Math.min(1, em.lightEmission))
+      view.mat.uniforms.zOffset.value = em.zOffset
       const mean = sorted.length ? sorted.reduce((s, x) => s + Math.sqrt(x.d), 0) / sorted.length : 0
       order.push({ view, depth: mean - (prop<number>(view.node, 'ZOffset') || 0) })
     }
@@ -450,6 +515,8 @@ export class VfxScene {
       if (beam) this.fillBeam(s, beam)
       else if (trail) this.fillTrail(s, trail)
       else s.geo.setDrawRange(0, 0)
+      const le = beam?.lightEmission ?? trail?.lightEmission
+      if (le !== undefined) s.mat.uniforms.lightEmission.value = Math.max(0, Math.min(1, le))
       s.mesh.renderOrder = 5
     }
     for (const light of this.lights) {
@@ -470,6 +537,19 @@ export class VfxScene {
       const c = pm.at(t)
       m.mesh.position.set(c[0], c[1], c[2])
       m.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(c[3], c[4], c[5], 0, c[6], c[7], c[8], 0, c[9], c[10], c[11], 0, 0, 0, 0, 1))
+      const look = pm.look(t)
+      m.mesh.scale.set(Math.max(1e-3, look.size[0]), Math.max(1e-3, look.size[1]), Math.max(1e-3, look.size[2]))
+      const opacity = 1 - Math.max(0, Math.min(1, look.transparency))
+      m.mesh.visible = opacity > 0.003
+      const mat = m.mesh.material as THREE.ShaderMaterial | THREE.MeshStandardMaterial
+      if (m.glow) {
+        const u = (mat as THREE.ShaderMaterial).uniforms
+        u.opacity.value = opacity
+        ;(u.color.value as THREE.Color).setRGB(look.color[0], look.color[1], look.color[2])
+      } else {
+        ;(mat as THREE.MeshStandardMaterial).opacity = opacity
+        ;(mat as THREE.MeshStandardMaterial).color.setRGB(look.color[0], look.color[1], look.color[2])
+      }
     }
     return { particles, emitters: f.emitters.length, drawCalls: this.emitters.length + this.strips.length }
   }

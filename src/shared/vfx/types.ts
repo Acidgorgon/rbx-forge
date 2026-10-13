@@ -40,17 +40,43 @@ export interface VfxNode {
   children: VfxNode[]
   // Script / LocalScript / ModuleScript source (kept for reference; not executed).
   source?: string
+  // Made by a timeline script's fx:spawn (kit preset name); rebuilt each time the script runs.
+  kit?: string
 }
+
+// Roblox Enum.EasingStyle / Enum.EasingDirection item names (TweenInfo).
+export type EasingStyle = 'Linear' | 'Sine' | 'Back' | 'Quad' | 'Quart' | 'Quint' | 'Bounce' | 'Elastic' | 'Exponential' | 'Circular' | 'Cubic'
+export type EasingDirection = 'In' | 'Out' | 'InOut'
 
 // When things happen while an effect plays (from scripts or from a generated spec).
 export interface VfxCue {
   // Seconds from the start of the effect.
   at: number
-  // Node id of a ParticleEmitter / Beam / Trail / light.
+  // Node id of a ParticleEmitter / Beam / Trail / light / Part / Attachment.
   target: string
-  // emit: ParticleEmitter:Emit(count); enable / disable: toggles Enabled.
-  action: 'emit' | 'enable' | 'disable'
+  // emit: ParticleEmitter:Emit(count); enable / disable: toggles Enabled;
+  // tween: TweenService over [at, at + duration] to `props`; set: `props` instantly.
+  action: 'emit' | 'enable' | 'disable' | 'tween' | 'set'
   count?: number
+  // tween / set: goal values (normalised like node props; see timeline.ts for tweenable props,
+  // including the virtual SizeScale and Fade).
+  props?: Record<string, PropValue>
+  duration?: number
+  style?: EasingStyle
+  direction?: EasingDirection
+  // Made by the timeline script (replaced when it runs again).
+  script?: boolean
+  // Kit cues: the state before a rig appears (prelude, applied before the model is parented), or
+  // what fx:spawn(name) does at spawnAt (the runtime replays these when the script spawns it).
+  prelude?: boolean
+  spawn?: string
+  spawnAt?: number
+}
+
+// A labelled moment on the timeline (fx:stage), e.g. charge / merge / release / dissipate.
+export interface VfxStage {
+  at: number
+  label: string
 }
 
 // How the preview moves the effect's root (trails need motion to draw anything).
@@ -65,6 +91,13 @@ export interface VfxEffect {
   motion?: VfxMotion
   // Studs: where the root sits relative to the dummy's feet (default: chest height in front).
   anchor?: Vec3
+  // Timeline script (Luau, the ForgeFX API): run with Lune to produce kit nodes, cues and stages.
+  script?: string
+  stages?: VfxStage[]
+  // 'local': part CFrames are relative to the root (scripted effects); default re-centres imports.
+  space?: 'local'
+  // Parameter edits on scripted effects, re-applied after the script rebuilds its nodes.
+  patches?: VfxChange[]
 }
 
 export type VfxScope = 'user' | 'project'
@@ -108,6 +141,22 @@ export interface VfxEntry {
   // Generated effects: where they were written in the project.
   written?: { module: string; model: string }
   iterations?: VfxIteration[]
+}
+
+// Result of running a timeline script (vfx_run_script, the Script tab, vfx_compose).
+export interface VfxScriptResult {
+  ok: boolean
+  // Luau or timeline error; line is the script line when known.
+  error?: { message: string; line?: number }
+  prints: string[]
+  warnings: string[]
+  // Stages and cues, one per line (what the assistant reads back).
+  summary: string
+  effect?: VfxEffect
+  // Saved entry (when the run was saved / composed).
+  entry?: VfxEntry
+  // vfx_compose: who wrote the script.
+  source?: 'model' | 'draft' | 'example'
 }
 
 // One round of the render, critique and refine loop.

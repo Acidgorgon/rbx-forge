@@ -68,7 +68,16 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     vfxFile: (id: string, file: string) => service.file(String(id ?? ''), String(file ?? '')),
     vfxSaveThumb: (id: string, url: string) => service.saveThumb(String(id ?? ''), String(url ?? '')),
     vfxResolveTexture: (ref: string) => service.resolveTexture(String(ref ?? '')),
-    vfxTestInStudio: (id: string) => service.testInStudio(String(id ?? ''))
+    vfxTestInStudio: (id: string) => service.testInStudio(String(id ?? '')),
+    vfxRunScript: (script: string, opts?: { id?: string; save?: boolean; prompt?: string }) =>
+      service.runScript(String(script ?? ''), { id: opts?.id ? String(opts.id) : undefined, save: !!opts?.save, prompt: opts?.prompt ? String(opts.prompt) : undefined }),
+    // The background refinement promise stays in main (not serialisable).
+    vfxCompose: async (request: string, opts?: VfxRefineOptions & { refine?: boolean }) => {
+      const { refined: _refined, ...r } = await service.compose(String(request ?? ''), { ...(opts ?? {}), wait: false })
+      return r
+    },
+    vfxExamples: async () => service.examples(),
+    vfxAddExample: (key: string) => service.addExample(String(key ?? ''))
   }
   let tools: { read: VfxTool[]; write: VfxTool[] } | null = null
   return { service, handlers, tools: () => (tools ??= vfxTools(service, { chatImage: deps.chatImage })) }

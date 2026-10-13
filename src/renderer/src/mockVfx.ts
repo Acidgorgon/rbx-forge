@@ -7,6 +7,11 @@ import { effectFromSpec, applyChanges } from '@shared/vfx/spec'
 import { autoTags, describeEffect, effectColors, effectStats, perfWarnings } from '@shared/vfx/analyze'
 import { extractRecipes } from '@shared/vfx/recipes'
 import { heuristicCritique } from '@shared/vfx/critique'
+import { compileTimeline } from '@shared/vfx/compile'
+import { findExample, VFX_EXAMPLES } from '@shared/vfx/examples'
+import { RECORDED } from '@shared/vfx/examples.recorded'
+import { timelineSummary } from '@shared/vfx/timeline'
+import type { VfxScriptResult } from '@shared/types'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -94,6 +99,31 @@ add({
 files.set('ref-clip-slash-0/media/slash-ref.gif', glow(['#bfe3ff', '#4f8dff', '#ffffff'], 3, 'slash-ref.gif'))
 const made = add(entryFor('purple sword slash with sparks', { kind: 'generated', scope: 'project', quality: 'good', rating: 'up', origin: 'Make: purple sword slash with sparks', written: { module: 'src/shared/VFX/PurpleSwordSlash/init.luau', model: 'src/shared/VFX/PurpleSwordSlash/Effect.rbxmx' } }))
 made.iterations = iterations(made, 3)
+
+// Built-in scripted examples compile from their recorded timelines (no Lune in the browser).
+function exampleEntry(key: string): VfxEntry {
+  const ex = findExample(key)!
+  const { effect } = compileTimeline({ name: ex.name, roots: [], cues: [], duration: 2 }, RECORDED[ex.key], ex.script)
+  return entryFor(ex.name, { id: `${ex.key}-ex`, kind: 'generated', scope: 'project', quality: undefined, name: ex.name, description: ex.description, tags: [...ex.tags, 'sequence', 'example'], origin: `example:${ex.key}`, effect, stats: effectStats(effect), written: { module: `src/shared/VFX/${ex.name}/init.luau`, model: `src/shared/VFX/${ex.name}/Effect.rbxmx` } })
+}
+add(exampleEntry('ground-slam'))
+add(exampleEntry('hollow-purple'))
+
+// The browser preview cannot run Luau: a script that matches a built-in example (ignoring
+// whitespace) compiles from its recording; an unknown fx method is reported like Lune would.
+const FX_METHODS = new Set(['spawn', 'emit', 'enable', 'disable', 'tween', 'set', 'wait', 'at', 'after', 'now', 'stage', 'duration', 'anchor', 'forward', 'right', 'up'])
+function mockRun(script: string, base: VfxEffect): VfxScriptResult {
+  const lines = script.split('\n')
+  for (const [i, l] of lines.entries()) {
+    const m = /\bfx:(\w+)/.exec(l.replace(/--.*$/, ''))
+    if (m && !FX_METHODS.has(m[1])) return { ok: false, error: { message: `attempt to call a nil value (method '${m[1]}')`, line: i + 1 }, prints: [], warnings: [], summary: '' }
+  }
+  const norm = (x: string) => x.replace(/\s+/g, ' ').trim()
+  const ex = VFX_EXAMPLES.find((e) => norm(e.script) === norm(script))
+  if (!ex) return { ok: true, effect: { ...base, script }, prints: [], warnings: ['browser preview: the script was not executed (Lune runs it in the desktop app)'], summary: timelineSummary(base) }
+  const { effect, warnings } = compileTimeline({ ...base, name: base.name || ex.name }, RECORDED[ex.key], script)
+  return { ok: true, effect, prints: [], warnings, summary: timelineSummary(effect) }
+}
 
 let recipes: VfxRecipe[] = extractRecipes(entries)
 
@@ -201,6 +231,35 @@ export function vfxMock(emit: Emit): VfxApi {
     },
     async vfxResolveTexture() {
       return null
+    },
+    async vfxRunScript(script, opts) {
+      await delay(250)
+      const e = opts?.id ? find(opts.id) : null
+      const r = mockRun(script, e?.effect ?? { name: 'Sequence', roots: [], cues: [], duration: 2 })
+      if (!r.ok || !opts?.save || !r.effect) return r
+      const entry = e ? Object.assign(e, { effect: r.effect, stats: effectStats(r.effect), updatedAt: Date.now() }) : add(entryFor('sequence', { kind: 'generated', effect: r.effect, name: r.effect.name }))
+      changed()
+      return { ...r, entry }
+    },
+    async vfxCompose(request, opts) {
+      emit('vfx:progress', { entryId: 'pending', iteration: 0, phase: 'create' })
+      await delay(600)
+      const ex = /purple|gojo/i.test(request) ? 'hollow-purple' : /slash|sword/i.test(request) ? 'charge-slash' : 'ground-slam'
+      const e = add({ ...exampleEntry(ex), id: `composed-${(seq++).toString(36)}`, origin: request, description: request, rating: undefined })
+      if (e.effect) e.effect = { ...e.effect, script: findExample(ex)!.script }
+      changed()
+      if (opts?.refine !== false) void refine(e, opts?.maxIterations ?? 2)
+      return { ok: true, entry: e, effect: e.effect, prints: [], warnings: [], summary: timelineSummary(e.effect!), source: 'model' }
+    },
+    async vfxExamples() {
+      return VFX_EXAMPLES.map(({ key, name, description, tags }) => ({ key, name, description, tags }))
+    },
+    async vfxAddExample(key) {
+      const prev = entries.find((e) => e.origin === `example:${key}`)
+      if (prev) return prev
+      const e = add(exampleEntry(key))
+      changed()
+      return e
     },
     async vfxTestInStudio(id) {
       const e = find(id)

@@ -59,6 +59,7 @@ const methods = [
   // VFX Lab (library, recipes, render / critique / refine)
   'vfxStatus', 'vfxList', 'vfxGet', 'vfxSearch', 'vfxImport', 'vfxChooseImport', 'vfxUpdate', 'vfxDelete', 'vfxRate',
   'vfxLearn', 'vfxRecipes', 'vfxMake', 'vfxRefine', 'vfxCancel', 'vfxCreate', 'vfxFile', 'vfxSaveThumb', 'vfxResolveTexture', 'vfxTestInStudio',
+  'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

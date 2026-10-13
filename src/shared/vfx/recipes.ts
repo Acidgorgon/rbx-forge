@@ -163,10 +163,15 @@ export function recipeSkill(recipe: VfxRecipe, examples: string[] = []): { name:
     '## Steps',
     `1. vfx_search_library {"query":"${recipe.tag}"} and read the closest references' layers.`,
     '2. vfx_create a spec with one layer per role above, numbers inside the ranges; additive core/glow/sparks, near-0 LightEmission smoke.',
-    '3. vfx_render, compare with the references, then vfx_refine (or adjust and re-create) until the critique passes.'
+    '3. vfx_render, compare with the references, then vfx_refine (or adjust and re-create) until the critique passes.',
+    '4. For a multi-stage effect (anticipation, charge, release, impact, dissipate) use vfx_compose / vfx_set_script with the kit (vfx_kit), using these ranges for the layers.'
   ]
     .filter((l, i, a) => l !== '' || a[i - 1] !== '')
     .join('\n')
   const description = `Roblox ${recipe.tag} VFX: layer roles and parameter ranges from ${recipe.samples} reference${recipe.samples === 1 ? '' : 's'}; use when making a ${recipe.tag} effect`
   return { name: `${RECIPE_PREFIX}${recipe.tag}`, description: description.slice(0, 200), body: body.slice(0, 7900) }
 }
+
+// Built-in scripted recipes (multi-stage timeline examples: Hollow Purple, charge-and-slash,
+// ground slam) live in examples.ts; re-exported here so recipe consumers find them in one place.
+export { VFX_EXAMPLES, findExample, type VfxExample } from './examples.ts'

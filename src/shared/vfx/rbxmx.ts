@@ -297,7 +297,8 @@ export function writeRbxmx(roots: VfxNode[]): string {
         lines.push(`${pad}\t\t<Vector3 name="size"><X>${n(a[0])}</X><Y>${n(a[1])}</Y><Z>${n(a[2])}</Z></Vector3>`)
         continue
       }
-      const l = writeProp(key, spec.kind, value, refs, `${pad}\t\t`)
+      // Part.Shape serialises as "shape".
+      const l = writeProp(nd.className === 'Part' && key === 'Shape' ? 'shape' : key, spec.kind, value, refs, `${pad}\t\t`)
       if (l) lines.push(l)
     }
     if (nd.source !== undefined) lines.push(`${pad}\t\t<ProtectedString name="Source"><![CDATA[${nd.source.replace(/\]\]>/g, ']]]]><![CDATA[>')}]]></ProtectedString>`)

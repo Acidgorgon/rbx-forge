@@ -9,15 +9,21 @@
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
-import { CRITIC_SYSTEM, critiquePrompt, DEFAULT_MAX_ITERATIONS, DEFAULT_THRESHOLD, heuristicCritique, parseCritique, refineLoop, type RefineResult } from '../../../shared/vfx/critique.ts'
+import { CRITIC_SYSTEM, critiquePrompt, DEFAULT_MAX_ITERATIONS, DEFAULT_THRESHOLD, heuristicCritique, parseCritique, refineLoop, stageFrameTimes, type RefineResult } from '../../../shared/vfx/critique.ts'
+import { CHOREOGRAPHY_GUIDE, draftScript, kitReference, TIMELINE_API } from '../../../shared/vfx/choreo.ts'
+import { compileTimeline, finishRun } from '../../../shared/vfx/compile.ts'
+import { findExample, VFX_EXAMPLES, CHARGE_SLASH } from '../../../shared/vfx/examples.ts'
+import { RECORDED } from '../../../shared/vfx/examples.recorded.ts'
+import { FORGEFX_SOURCE, isOwnRuntime, RUNTIME_MODULE } from '../../../shared/vfx/runtime.ts'
+import { timelineSummary } from '../../../shared/vfx/timeline.ts'
 import { draftSpec, libraryTextures, promptTags } from '../../../shared/vfx/draft.ts'
-import { luauModule } from '../../../shared/vfx/luau.ts'
+import { luauModule, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
 import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeSkill } from '../../../shared/vfx/recipes.ts'
-import { compactEffect, effectFromSpec, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
-import type { VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope } from '../../../shared/vfx/types.ts'
+import { compactEffect, effectFromSpec, safeName, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
+import type { VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
 import { entryId, PROJECT_VFX_DIR, safeFileName, VfxLibraryError, VfxStore } from './library.ts'
-import { luneExtract, type LuneRun } from './lune.ts'
+import { luneExtract, luneTimeline, type LuneRun } from './lune.ts'
 
 export interface ImagePayload {
   mime: string
@@ -74,6 +80,35 @@ Spec: {"name","description","tags":[...],"duration":seconds,"motion":"static|swi
 "layers":[{"name","class":"ParticleEmitter|Beam|Trail|PointLight|SpotLight|Highlight","props":{Roblox property: value},"emit":[{"at":s,"count":n}],"enable":[[from,to]],"shape":{"size":[x,y,z]},"width":studs (Trail),"from":[x,y,z],"to":[x,y,z] (Beam)}]}
 Values: numbers; ranges [min,max]; vectors [x,y,z]; NumberSequence [[t,v],[t,v,envelope]]; ColorSequence ["#hex",...] or [[t,"#hex"],...]; enums by item name ("Top", "VelocityParallel", "Grid4x4", "OneShot"); Texture "rbxassetid://<id>".
 Good Roblox VFX are layered (bright additive core, soft glow, fast sparks with VelocityParallel + Squash, low-LightEmission smoke, a ring), sizes swell fast then decay, transparency fades to 1, bursts are emitters with emit cues, and stay under ~400 live particles.`
+
+// System prompt for vfx_compose: the model writes a whole multi-stage effect as a timeline script.
+export const COMPOSE_SYSTEM = `You are a senior Roblox VFX artist. You choreograph multi-stage effects for the RBX Forge VFX Lab by writing a Luau timeline script that spawns building blocks from the kit and tweens them over time.
+Answer with exactly one \`\`\`lua code block holding the whole script (return function(fx) ... end), no prose outside it. Name the effect on the first line as a comment: -- Name: <PascalCase>
+${'$'}{API}
+
+${'$'}{GUIDE}
+
+A complete example (a charge-and-slash):
+\`\`\`lua
+${'$'}{EXAMPLE}\`\`\``
+  .replace('${API}', kitReference())
+  .replace('${GUIDE}', CHOREOGRAPHY_GUIDE)
+  .replace('${EXAMPLE}', CHARGE_SLASH)
+
+const EMPTY_BASE = (name: string): VfxEffect => ({ name, roots: [], cues: [], duration: 2 })
+
+// The script in a model answer: the first lua / luau fence, else the text from "return function".
+export function extractScript(raw: string): string | null {
+  const fence = /```(?:lua|luau)?\s*\n([\s\S]*?)```/i.exec(raw)
+  const code = (fence ? fence[1] : raw.slice(Math.max(0, raw.indexOf('return function')))).trim()
+  return /return\s+function\s*\(/.test(code) ? code + '\n' : null
+}
+
+// "-- Name: HollowPurple" on the first lines of a script, else a name from the request.
+export function scriptName(script: string, request: string): string {
+  const m = /^\s*--\s*Name:\s*([A-Za-z][\w ]{0,40})/m.exec(script.split('\n').slice(0, 3).join('\n'))
+  return safeName(m?.[1] ?? request.replace(/\b(make|a|an|the|effect|vfx|please|with|and|of)\b/gi, ' ')).slice(0, 40) || 'Sequence'
+}
 
 export class VfxService {
   readonly user: VfxStore
@@ -409,11 +444,30 @@ export class VfxService {
     if (e.kind === 'generated') e.quality = rating === 'up' ? 'good' : rating === 'down' ? 'avoid' : undefined
     if (!e.quality) delete e.quality
     const saved = await hit.store.save(e)
+    if (rating === 'up' && this.deps.memory && saved.effect?.script) await this.saveSequenceSkill(saved).catch((err) => this.deps.log?.(`vfx: sequence skill: ${(err as Error).message}`, 'stderr'))
     if (rating === 'down' && this.deps.memory) await this.saveAvoidNotes(saved).catch((err) => this.deps.log?.(`vfx: avoid note: ${(err as Error).message}`, 'stderr'))
     // Liked or disliked results change the recipes for their tags.
     if (rating && this.deps.memory && saved.effect) await this.relearn(saved.tags).catch(() => undefined)
     this.changed()
     return saved
+  }
+
+  // A liked scripted effect becomes a skill: the request, its beats and the script, so the assistant
+  // can reuse the choreography for similar requests.
+  private async saveSequenceSkill(e: VfxEntry): Promise<void> {
+    const fx = e.effect!
+    const stages = (fx.stages ?? []).map((s) => `${s.label} @ ${s.at.toFixed(2)} s`).join(', ')
+    const critic = e.iterations?.[e.iterations.length - 1]?.critique
+    const body = [
+      `A multi-stage VFX the user liked in the VFX Lab: "${e.origin}" (${fx.duration.toFixed(2)} s; tags ${e.tags.join(', ')}).`,
+      stages ? `Beats: ${stages}.` : '',
+      critic ? `Critic (${critic.overall}/10): ${critic.summary.slice(0, 300)}` : '',
+      'To make something similar: vfx_compose with this script as the starting point, or vfx_set_script on a new entry, then vfx_refine.',
+      '```lua',
+      fx.script!.slice(0, 6000),
+      '```'
+    ].filter(Boolean).join('\n')
+    await this.deps.memory!.remember({ scope: 'user', kind: 'skill', name: `vfx-sequence-${e.name}`.slice(0, 60), description: `Liked multi-stage VFX timeline: ${e.description}`.slice(0, 200), body: body.slice(0, 7900) }, 'user')
   }
 
   private async saveAvoidNotes(e: VfxEntry): Promise<void> {
@@ -456,7 +510,12 @@ export class VfxService {
 
   // Creates (or replaces, with `id`) a generated entry from a spec and writes it into the project.
   async create(spec: VfxSpec, opts: { id?: string; prompt?: string } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
-    const effect = effectFromSpec(spec)
+    return this.saveEffect(effectFromSpec(spec), { ...opts, description: spec.description, tags: spec.tags })
+  }
+
+  // Saves an effect as a generated entry (new, or replacing `id`) and writes it into the project.
+  async saveEffect(effect: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[] } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+    const spec = { name: effect.name, description: opts.description, tags: opts.tags }
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new VfxError(`no VFX entry "${opts.id}"`)
     const store = prev?.store ?? this.project() ?? this.user
@@ -468,10 +527,10 @@ export class VfxService {
       scope: store.scope,
       kind: 'generated',
       name: effect.name,
-      description: spec.description?.slice(0, 600) || describeEffect(effect),
+      description: spec.description?.slice(0, 600) || (prev && effect.script ? prev.entry.description : '') || describeEffect(effect),
       tags,
       updatedAt: now,
-      origin: opts.prompt ?? prev?.entry.origin ?? spec.name,
+      origin: opts.prompt ?? prev?.entry.origin ?? effect.name,
       effect,
       stats: effectStats(effect)
     } as VfxEntry
@@ -497,9 +556,24 @@ export class VfxService {
     await mkdir(abs, { recursive: true })
     await writeFile(join(abs, 'init.luau'), luauModule(entry.effect, { description: entry.description }), 'utf8')
     await writeFile(join(abs, 'Effect.rbxmx'), writeRbxmx(entry.effect.roots), 'utf8')
+    const timelineFile = join(abs, 'Timeline.luau')
+    if (entry.effect.script) await writeFile(timelineFile, timelineModule(entry.effect.script), 'utf8')
+    else if (await exists(timelineFile)) await writeFile(timelineFile, '-- No timeline script (the effect plays its compiled cues).\nreturn nil\n', 'utf8')
+    if (needsRuntime(entry.effect)) await this.writeRuntime(root)
     const written = { module: `${dir}/init.luau`, model: `${dir}/Effect.rbxmx` }
     if (entry.written?.module === written.module) return entry
     return store.save({ ...entry, written })
+  }
+
+  // src/shared/VFX/ForgeFX.luau, the runtime scripted effects require. Rewritten when it is ours (starts
+  // with the runtime header), left alone when someone replaced it with their own.
+  private async writeRuntime(root: string): Promise<void> {
+    const file = join(root, ...VFX_SRC_DIR.split('/'), `${RUNTIME_MODULE}.luau`)
+    const cur = await readFile(file, 'utf8').catch(() => null)
+    if (cur !== null && !isOwnRuntime(cur)) return
+    if (cur === FORGEFX_SOURCE) return
+    await mkdir(join(root, ...VFX_SRC_DIR.split('/')), { recursive: true })
+    await writeFile(file, FORGEFX_SOURCE, 'utf8')
   }
 
   // ------------------------------------------------------------ render
@@ -511,7 +585,9 @@ export class VfxService {
   async renderEffect(effect: VfxEffect, n = 4, background: 'dark' | 'grey' = 'dark'): Promise<{ times: number[]; frames: Buffer[] }> {
     if (!this.deps.capture) throw new VfxError('Rendering needs the desktop app (offscreen WebGL capture).')
     const count = Math.max(1, Math.min(12, Math.floor(n)))
-    const times = frameTimes(effect.duration, count)
+    // Sequences: one frame inside each stage so every beat gets rendered (and critiqued).
+    const staged = effect.stages?.length ? stageFrameTimes(effect, Math.max(count, Math.min(8, effect.stages.length))) : []
+    const times = staged.length ? staged : frameTimes(effect.duration, count)
     const frames = await this.deps.capture({ effect, times, ...FRAME_SIZE, background })
     return { times, frames }
   }
@@ -591,7 +667,8 @@ export class VfxService {
     if (this.running.has(id)) throw new VfxError('already refining this effect')
     const token = { cancelled: false }
     this.running.set(id, token)
-    const nFrames = Math.max(2, Math.min(8, opts.frames ?? 4))
+    const stages = hit.entry.effect.stages?.length ?? 0
+    const nFrames = Math.max(2, Math.min(8, opts.frames ?? (stages ? Math.min(6, stages) : 4)))
     const base = hit.entry.iterations?.length ?? 0
     const timesByIt = new Map<number, number[]>()
     const pngs = new Map<number, Buffer[]>()
@@ -690,6 +767,132 @@ export class VfxService {
     const refined = this.refine(entry.id, opts).catch((e) => this.deps.log?.(`vfx: refine failed: ${(e as Error).message}`, 'stderr'))
     if (opts.wait) await refined
     return { entry, refined }
+  }
+
+  // ------------------------------------------------------------ scripted sequences
+
+  private async lunePaths(): Promise<{ lune: string; runtimeDir: string }> {
+    const lune = await this.deps.lune().catch((e) => ({ error: (e as Error).message }))
+    if ('error' in lune) throw new VfxError(`Timeline scripts run in Lune, which is not available: ${lune.error}`)
+    const runtimeDir = this.deps.runtimeDir()
+    if (!runtimeDir) throw new VfxError('The Lune runtime scripts are missing from this install (resources/lune).')
+    return { lune: lune.path, runtimeDir }
+  }
+
+  // Records a timeline script with Lune and compiles it onto `base` (kit rigs replaced, the rest kept).
+  async recordScript(script: string, base: VfxEffect): Promise<VfxScriptResult> {
+    const text = String(script ?? '')
+    if (!text.trim()) return { ok: false, error: { message: 'the script is empty' }, prints: [], warnings: [], summary: '' }
+    if (text.length > 60_000) return { ok: false, error: { message: 'the script is too long (60 KB max)' }, prints: [], warnings: [], summary: '' }
+    const paths = await this.lunePaths()
+    const rec = await luneTimeline(text, { ...paths, run: this.deps.luneRun })
+    const run = finishRun(base, text, rec)
+    return { ok: run.ok, ...(run.error ? { error: run.error } : {}), prints: run.prints, warnings: run.warnings, summary: run.effect ? timelineSummary(run.effect) : '', ...(run.effect ? { effect: run.effect } : {}) }
+  }
+
+  // Runs a timeline script against an entry (or a blank effect). save: store the result on the entry
+  // (or as a new entry when there is no id) and write it into the project.
+  async runScript(script: string, opts: { id?: string; save?: boolean; prompt?: string } = {}): Promise<VfxScriptResult> {
+    const hit = opts.id ? await this.find(opts.id) : null
+    if (opts.id && !hit) throw new VfxError(`no VFX entry "${opts.id}"`)
+    if (hit && !hit.entry.effect) throw new VfxError(`"${hit.entry.name}" is a media reference; it has no effect to script`)
+    const base = hit?.entry.effect ?? EMPTY_BASE(scriptName(script, opts.prompt ?? 'Sequence'))
+    const r = await this.recordScript(script, base)
+    if (!r.ok || !opts.save || !r.effect) return r
+    if (hit && this.running.has(hit.entry.id)) throw new VfxError('this effect is being refined; cancel the refinement first')
+    const { entry } = await this.saveEffect(r.effect, { id: hit?.entry.id, prompt: hit ? undefined : opts.prompt ?? r.effect.name })
+    return { ...r, entry }
+  }
+
+  // One step from a request to a scripted multi-stage effect: the model writes the timeline script
+  // with the kit (one repair round on errors), else the built-in draft for the request's archetype.
+  // Saved as a new entry; refined in the background when frames can be rendered (refine: false skips).
+  async compose(request: string, opts: VfxRefineOptions & { wait?: boolean; refine?: boolean; script?: string } = {}): Promise<VfxScriptResult & { refined?: Promise<unknown> }> {
+    const text = String(request ?? '').trim()
+    if (text.length < 3) throw new VfxError('Describe the effect, e.g. "a fireball that charges, flies forward and explodes".')
+    let source: VfxScriptResult['source'] = 'draft'
+    let result: VfxScriptResult | null = null
+    let script = opts.script?.trim() ? opts.script : ''
+    const vision = this.deps.vision?.()
+    if (!script && vision) {
+      const tags = promptTags(text)
+      const liked = (await this.list()).filter((e) => e.rating === 'up' && e.effect?.script && e.tags.some((t) => tags.includes(t))).slice(0, 1)
+      const avoid = (await this.list()).filter((e) => e.quality === 'avoid' && e.effect?.script && e.tags.some((t) => tags.includes(t))).slice(0, 3)
+      const lines = [
+        `Make: ${text}`,
+        ...liked.map((e) => `The user liked this related sequence ("${e.origin}"); reuse what fits:\n\`\`\`lua\n${e.effect!.script!.slice(0, 4000)}\n\`\`\``),
+        ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : [])
+      ]
+      try {
+        let raw = await vision(COMPOSE_SYSTEM, lines.join('\n\n'), [])
+        for (let attempt = 0; attempt < 2; attempt++) {
+          const s = extractScript(raw)
+          if (!s) throw new Error('no script in the answer')
+          const r = await this.recordScript(s, EMPTY_BASE(scriptName(s, text)))
+          if (r.ok) {
+            script = s
+            result = r
+            source = 'model'
+            break
+          }
+          if (attempt === 1) throw new Error(r.error?.message ?? 'the script failed')
+          const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
+          raw = await vision(COMPOSE_SYSTEM, `${lines.join('\n\n')}\n\nYour script:\n\`\`\`lua\n${s}\`\`\`\nfailed: ${r.error?.message}${where}\nFix it and answer with the whole corrected script.`, [])
+        }
+      } catch (e) {
+        this.deps.log?.(`vfx: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
+      }
+    }
+    if (!result) {
+      if (!script) script = draftScript(text)
+      else source = 'model'
+      result = await this.recordScript(script, EMPTY_BASE(scriptName(script, text)))
+      if (!result.ok && opts.script) return { ...result, source }
+      if (!result.ok) {
+        // The built-in draft always records; this only happens when Lune itself fails.
+        throw new VfxError(`could not record the draft timeline: ${result.error?.message}`)
+      }
+    }
+    const tags = [...new Set([...promptTags(text), 'sequence'])]
+    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})` })
+    await this.ensureChoreographySkill()
+    const out: VfxScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source }
+    if (opts.refine !== false && this.deps.capture) {
+      const refined = this.refine(entry.id, opts).catch((e) => this.deps.log?.(`vfx: refine failed: ${(e as Error).message}`, 'stderr'))
+      if (opts.wait) await refined
+      out.refined = refined
+    }
+    return out
+  }
+
+  // The choreography guide as a memory skill, so the assistant finds it from any chat (once per run).
+  private choreoSaved = false
+  private async ensureChoreographySkill(): Promise<void> {
+    if (this.choreoSaved || !this.deps.memory) return
+    this.choreoSaved = true
+    const body = `${CHOREOGRAPHY_GUIDE}\n\n## Timeline API\n${TIMELINE_API}\n\nCall vfx_kit for the kit reference, vfx_compose to draft an effect and its script in one step, vfx_run_script to iterate on a script (errors come back with line numbers), vfx_refine to render and critique the stages.`
+    await this.deps.memory.remember({ scope: 'user', kind: 'skill', name: 'vfx-choreography', description: 'How to choreograph multi-stage Roblox VFX (anticipation, charge, release, impact, dissipate) with timeline scripts and the kit', body: body.slice(0, 7900) }, 'agent').catch((e) => {
+      this.choreoSaved = false
+      this.deps.log?.(`vfx: choreography skill: ${(e as Error).message}`, 'stderr')
+    })
+  }
+
+  // Built-in scripted examples (Hollow Purple, charge-and-slash, ground slam).
+  examples(): { key: string; name: string; description: string; tags: string[] }[] {
+    return VFX_EXAMPLES.map(({ key, name, description, tags }) => ({ key, name, description, tags }))
+  }
+
+  // Adds a built-in example to the library (from its recorded timeline; no Lune needed). Reuses the
+  // entry when it was added before.
+  async addExample(key: string): Promise<VfxEntry> {
+    const ex = findExample(key)
+    if (!ex) throw new VfxError(`no built-in example "${key}" (examples: ${VFX_EXAMPLES.map((e) => e.key).join(', ')})`)
+    const origin = `example:${ex.key}`
+    const prev = (await this.list()).find((e) => e.origin === origin && e.kind === 'generated')
+    if (prev) return prev
+    const { effect } = compileTimeline(EMPTY_BASE(ex.name), RECORDED[ex.key] ?? [], ex.script)
+    const { entry } = await this.saveEffect(effect, { prompt: origin, description: ex.description, tags: [...ex.tags, 'sequence', 'example'] })
+    return entry
   }
 
   // ------------------------------------------------------------ textures

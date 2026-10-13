@@ -1,4 +1,4 @@
-// Theme rules for luau-lsp semantic tokens, in the harness-dark / harness-light palettes
+// Theme rules for luau-lsp semantic tokens, in the forge-dark / forge-light palettes
 // (src/renderer/src/monaco.ts). Spread them into the themes' `rules`.
 //
 // Token types and modifiers are luau-lsp's legend (src/include/Protocol/SemanticTokens.hpp,
@@ -18,24 +18,24 @@ type Rule = { token: string; foreground?: string; fontStyle?: string }
 
 const PALETTES = {
   dark: {
-    identifier: 'ebe7df',
-    type: 'c7b37a',
-    builtin: 'a7b8d6',
-    func: 'dcc9a6',
-    property: 'd5cdbf',
-    parameter: 'e3bfa3',
-    enumMember: 'c79bd6',
-    event: 'd6a35c'
+    identifier: 'c8c8c8',
+    type: 'c8c8c8',
+    builtin: '8fb8de',
+    func: 'd6d6d6',
+    property: 'c8c8c8',
+    parameter: '9cc4e4',
+    enumMember: 'c5d18a',
+    event: 'c9b6f2'
   },
   light: {
-    identifier: '2f2c27',
-    type: '8a6d1f',
-    builtin: '3d5f99',
-    func: '5c4a2e',
-    property: '4a463f',
-    parameter: '7a4f36',
-    enumMember: '8650a6',
-    event: '9a6a1c'
+    identifier: '2b2b2b',
+    type: '3a3a3a',
+    builtin: '2f6aa8',
+    func: '2b2b2b',
+    property: '3a3a3a',
+    parameter: '2f5f8a',
+    enumMember: '6f7a1f',
+    event: '6b4fb0'
   }
 }
 
@@ -61,7 +61,7 @@ export function semanticTokenRules(theme: 'dark' | 'light'): Rule[] {
     { token: 'type', foreground: p.type },
     { token: 'interface', foreground: p.type },
     { token: 'struct', foreground: p.type },
-    { token: 'typeParameter', foreground: p.type, fontStyle: 'italic' },
+    { token: 'typeParameter', foreground: p.type },
     { token: 'variable.deprecated', fontStyle: 'strikethrough' },
     { token: 'property.deprecated', fontStyle: 'strikethrough' },
     { token: 'function.deprecated', fontStyle: 'strikethrough' },

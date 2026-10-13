@@ -1,5 +1,4 @@
-// Local Monaco setup: bundled workers (no CDN), a Luau language and themes
-// that match the app palette.
+// Local Monaco setup: bundled workers (no CDN), a Luau language, Blink, and the forge themes.
 import * as monaco from 'monaco-editor'
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
 import { loader } from '@monaco-editor/react'
@@ -119,72 +118,122 @@ monaco.languages.setMonarchTokensProvider('luau', {
   }
 } as monaco.languages.IMonarchLanguage)
 
-const darkRules: monaco.editor.ITokenThemeRule[] = [
-  { token: 'comment', foreground: '7d776c', fontStyle: 'italic' },
-  { token: 'comment.directive', foreground: '9a8f7c' },
-  { token: 'keyword', foreground: 'e0896a' },
-  { token: 'keyword.type', foreground: 'd6a35c' },
-  { token: 'type', foreground: 'c7b37a' },
-  { token: 'predefined', foreground: 'a7b8d6' },
-  { token: 'function', foreground: 'dcc9a6' },
-  { token: 'string', foreground: 'a9c38a' },
-  { token: 'string.escape', foreground: 'cbb37a' },
-  { token: 'delimiter.interpolation', foreground: 'e0896a' },
-  { token: 'number', foreground: 'c79bd6' },
-  { token: 'number.hex', foreground: 'c79bd6' },
-  { token: 'operator', foreground: 'b9b3a8' },
-  { token: 'identifier', foreground: 'ebe7df' }
-]
+// Forge themes: calm, low-contrast "terminal" palette (docs/design/reference-terminal-style.png),
+// matching the --syn-* tokens in styles.css.
+const SYN = {
+  dark: { kw: '6fa8dc', fn: 'd6d6d6', str: 'a9c48f', num: 'c5d18a', com: '7a9f6a', glob: '8fb8de', type: 'c8c8c8', prop: 'c8c8c8', op: 'a0a0a0', brk: 'e5c07b', fg: 'c8c8c8' },
+  light: { kw: '2f6aa8', fn: '2b2b2b', str: '4f7a33', num: '6f7a1f', com: '5f8a50', glob: '2f6aa8', type: '3a3a3a', prop: '3a3a3a', op: '666666', brk: '9a6b12', fg: '2b2b2b' }
+}
 
-monaco.editor.defineTheme('harness-dark', {
+function rules(theme: 'dark' | 'light'): monaco.editor.ITokenThemeRule[] {
+  const c = SYN[theme]
+  return [
+    { token: '', foreground: c.fg },
+    { token: 'comment', foreground: c.com },
+    { token: 'comment.directive', foreground: c.com },
+    { token: 'keyword', foreground: c.kw },
+    { token: 'keyword.type', foreground: c.kw },
+    { token: 'type', foreground: c.type },
+    { token: 'predefined', foreground: c.glob },
+    { token: 'function', foreground: c.fn },
+    { token: 'string', foreground: c.str },
+    { token: 'string.escape', foreground: c.num },
+    { token: 'delimiter.interpolation', foreground: c.brk },
+    { token: 'number', foreground: c.num },
+    { token: 'number.hex', foreground: c.num },
+    { token: 'operator', foreground: c.op },
+    { token: 'delimiter', foreground: c.op },
+    { token: 'delimiter.bracket', foreground: c.brk },
+    { token: 'delimiter.parenthesis', foreground: c.brk },
+    { token: 'delimiter.curly', foreground: c.brk },
+    { token: 'delimiter.square', foreground: c.brk },
+    { token: 'delimiter.angle', foreground: c.brk },
+    { token: 'identifier', foreground: c.prop },
+    ...semanticTokenRules(theme)
+  ]
+}
+
+monaco.editor.defineTheme('forge-dark', {
   base: 'vs-dark',
   inherit: true,
-  // luau-lsp semantic tokens (lsp/semanticTheme.ts)
-  rules: [...darkRules, ...semanticTokenRules('dark')],
+  rules: rules('dark'),
   colors: {
-    'editor.background': '#1f1e1d',
-    'editor.foreground': '#ebe7df',
-    'editorLineNumber.foreground': '#57534c',
-    'editorLineNumber.activeForeground': '#a39d92',
-    'editor.lineHighlightBackground': '#2a2927',
+    'editor.background': '#1b1b1b',
+    'editor.foreground': '#c8c8c8',
+    'editorLineNumber.foreground': '#5c5c5c',
+    'editorLineNumber.activeForeground': '#a8a8a8',
+    'editor.lineHighlightBackground': '#ffffff07',
     'editor.lineHighlightBorder': '#00000000',
-    'editor.selectionBackground': '#d9775740',
-    'editor.inactiveSelectionBackground': '#d9775722',
-    'editorCursor.foreground': '#d97757',
-    'editorIndentGuide.background1': '#2f2e2b',
-    'editorIndentGuide.activeBackground1': '#45423d',
-    'editorWidget.background': '#2a2927',
-    'editorWidget.border': '#3a3835',
-    'scrollbarSlider.background': '#ffffff14',
-    'scrollbarSlider.hoverBackground': '#ffffff22',
-    'diffEditor.insertedTextBackground': '#7fae6a26',
-    'diffEditor.removedTextBackground': '#d9575726',
-    'diffEditor.insertedLineBackground': '#7fae6a14',
-    'diffEditor.removedLineBackground': '#d9575714'
+    'editor.selectionBackground': '#6fa8dc33',
+    'editor.inactiveSelectionBackground': '#6fa8dc1a',
+    'editor.selectionHighlightBackground': '#6fa8dc18',
+    'editor.wordHighlightBackground': '#ffffff0d',
+    'editor.findMatchBackground': '#e5c07b40',
+    'editor.findMatchHighlightBackground': '#e5c07b1e',
+    'editorCursor.foreground': '#c8c8c8',
+    'editorIndentGuide.background1': '#2a2a2a',
+    'editorIndentGuide.activeBackground1': '#3a3a3a',
+    'editorWhitespace.foreground': '#333333',
+    'editorBracketMatch.background': '#e5c07b14',
+    'editorBracketMatch.border': '#e5c07b55',
+    'editorWidget.background': '#1e1e1e',
+    'editorWidget.border': '#333333',
+    'editorHoverWidget.background': '#1e1e1e',
+    'editorHoverWidget.border': '#333333',
+    'editorSuggestWidget.background': '#1e1e1e',
+    'editorSuggestWidget.border': '#333333',
+    'editorSuggestWidget.selectedBackground': '#ffffff0f',
+    'editorSuggestWidget.highlightForeground': '#e5c07b',
+    'list.hoverBackground': '#ffffff0a',
+    'editorStickyScroll.background': '#1b1b1b',
+    'editorStickyScrollHover.background': '#222222',
+    'editorGutter.addedBackground': '#7fa86a',
+    'editorGutter.modifiedBackground': '#6fa8dc',
+    'editorGutter.deletedBackground': '#d98a9a',
+    'editorError.foreground': '#e88fa1',
+    'editorWarning.foreground': '#e5c07b',
+    'editorInfo.foreground': '#6fa8dc',
+    'editorOverviewRuler.errorForeground': '#e88fa1',
+    'editorOverviewRuler.warningForeground': '#e5c07b',
+    'minimap.background': '#1b1b1b',
+    'minimapSlider.background': '#ffffff0c',
+    'scrollbarSlider.background': '#ffffff10',
+    'scrollbarSlider.hoverBackground': '#ffffff1a',
+    'scrollbarSlider.activeBackground': '#ffffff24',
+    'diffEditor.insertedTextBackground': '#b5d99c22',
+    'diffEditor.removedTextBackground': '#f2a7b522',
+    'diffEditor.insertedLineBackground': '#b5d99c0e',
+    'diffEditor.removedLineBackground': '#f2a7b50e'
   }
 })
 
-monaco.editor.defineTheme('harness-light', {
+monaco.editor.defineTheme('forge-light', {
   base: 'vs',
   inherit: true,
-  rules: [
-    { token: 'comment', foreground: '8c867a', fontStyle: 'italic' },
-    { token: 'keyword', foreground: 'b4532f' },
-    { token: 'keyword.type', foreground: '9a6a1c' },
-    { token: 'type', foreground: '8a6d1f' },
-    { token: 'predefined', foreground: '3d5f99' },
-    { token: 'function', foreground: '5c4a2e' },
-    { token: 'string', foreground: '4f7a2f' },
-    { token: 'delimiter.interpolation', foreground: 'b4532f' },
-    { token: 'number', foreground: '8650a6' },
-    ...semanticTokenRules('light')
-  ],
+  rules: rules('light'),
   colors: {
-    'editor.background': '#fbfaf7',
-    'editor.lineHighlightBackground': '#f2efe8',
-    'editor.selectionBackground': '#d9775733',
-    'editorCursor.foreground': '#c4633f',
-    'editorLineNumber.foreground': '#bcb6aa'
+    'editor.background': '#fafaf8',
+    'editor.foreground': '#2b2b2b',
+    'editorLineNumber.foreground': '#a8a8a4',
+    'editorLineNumber.activeForeground': '#4a4a4a',
+    'editor.lineHighlightBackground': '#00000007',
+    'editor.lineHighlightBorder': '#00000000',
+    'editor.selectionBackground': '#2f6aa82a',
+    'editor.inactiveSelectionBackground': '#2f6aa816',
+    'editorCursor.foreground': '#2b2b2b',
+    'editorIndentGuide.background1': '#e6e6e2',
+    'editorIndentGuide.activeBackground1': '#cfcfca',
+    'editorWidget.background': '#ffffff',
+    'editorWidget.border': '#d8d8d4',
+    'editorSuggestWidget.selectedBackground': '#0000000c',
+    'editorSuggestWidget.highlightForeground': '#9a6b12',
+    'editorStickyScroll.background': '#fafaf8',
+    'editorGutter.addedBackground': '#5f8a50',
+    'editorGutter.modifiedBackground': '#2f6aa8',
+    'editorGutter.deletedBackground': '#b5475d',
+    'minimap.background': '#fafaf8',
+    'diffEditor.insertedTextBackground': '#5f8a5022',
+    'diffEditor.removedTextBackground': '#b5475d22'
   }
 })
 

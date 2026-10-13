@@ -1,0 +1,56 @@
+/* Bottom panel, dialogs and small shell pieces (terminal style). Tokens live in styles.css. */
+
+@media (max-width: 1240px) { .opt-branch { display: none !important; } }
+
+/* bottom panel */
+.bp-head { height: 32px; flex: none; display: flex; align-items: stretch; gap: 2px; padding: 0 6px 0 8px; border-bottom: 1px solid var(--line); }
+.bp-tab { display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; font: 500 10.5px/1 var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--fg-faint); position: relative; transition: color var(--dur-fast); }
+.bp-tab:hover { color: var(--fg-2); }
+.bp-tab.on { color: var(--fg); }
+.bp-tab.on::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: -1px; height: 1px; background: var(--fg-muted); }
+.bp-head .icon-btn { align-self: center; }
+.bp-badge { min-width: 16px; height: 16px; padding: 0 4px; border-radius: 8px; display: inline-grid; place-items: center; font: 500 9.5px/1 var(--font-mono); letter-spacing: 0; border: 1px solid; }
+.bp-badge.warn { color: var(--warn); background: var(--warn-fill); border-color: var(--warn-line); }
+.bp-badge.err { color: var(--err); background: var(--err-fill); border-color: var(--err-line); }
+.bp-body { flex: 1; min-height: 0; display: flex; flex-direction: column; }
+.bp-tools { display: flex; align-items: center; gap: 6px; padding: 5px 8px; flex: none; background: var(--bg-panel); min-width: 0; }
+.chips { display: flex; gap: 4px; min-width: 0; overflow-x: auto; scrollbar-width: none; }
+.chip { height: 22px; padding: 0 8px; display: inline-flex; align-items: center; gap: 5px; border-radius: var(--r-md); border: 1px solid var(--line-strong); color: var(--fg-muted); font-size: 11px; white-space: nowrap; flex: none; transition: border-color var(--dur-fast), color var(--dur-fast), background var(--dur-fast); }
+.chip:hover { color: var(--fg); border-color: var(--fg-faint); }
+.chip.on { color: var(--fg); background: var(--bg-active); border-color: var(--fg-faint); }
+.chip.static { cursor: default; }
+.chip .led { width: 6px; height: 6px; }
+.filter.mini { margin: 0; height: 22px; width: 180px; flex: none; }
+.out-wrap { flex: 1; min-height: 0; position: relative; display: flex; }
+.out { flex: 1; overflow: auto; padding: 4px 0 8px; font: 11.5px/19px var(--font-mono); }
+.ol { display: grid; grid-template-columns: 68px 64px minmax(0, 1fr); gap: 8px; padding: 0 12px; color: var(--fg-2); }
+.ol:hover { background: var(--bg-hover); }
+.ol .ot { color: var(--fg-faint); }
+.ol .os { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.ol .om { white-space: pre-wrap; word-break: break-word; }
+.ol .om a { color: var(--info); }
+.ol.bad .om { color: var(--err); }
+.ol.warn .om { color: var(--warn); }
+.ol.add .om { color: var(--ok); }
+.ol.del .om { color: var(--err); }
+.new-lines { position: absolute; right: 16px; bottom: 10px; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: var(--r-pill); background: var(--bg-overlay); box-shadow: var(--sh-2); color: var(--fg-2); font-size: 11px; animation: rf-pop-in var(--dur-base) var(--ease-out); }
+.probs { flex: 1; overflow: auto; }
+.pg { height: 24px; display: flex; align-items: center; gap: 6px; padding: 0 10px; cursor: pointer; color: var(--fg-2); font-size: 12px; min-width: 0; }
+.pg:hover { background: var(--bg-hover); }
+.pr { height: 22px; display: flex; align-items: center; gap: 8px; padding: 0 10px 0 34px; cursor: pointer; font-size: 11.5px; color: var(--fg-2); min-width: 0; }
+.pr:hover { background: var(--bg-hover); }
+.pr .mono { font-size: 10.5px; flex: none; }
+
+/* dialogs */
+.col-form { display: flex; flex-direction: column; gap: 10px; }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+.steps { display: flex; flex-direction: column; gap: 2px; margin: 12px 0 4px; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.step { display: flex; align-items: center; gap: 8px; height: 24px; font-size: 12px; color: var(--fg-muted); min-width: 0; }
+.step.running { color: var(--fg); }
+.step.done { color: var(--fg-2); }
+.step.done svg { color: var(--ok); }
+.step.failed { color: var(--err); }
+.step .led, .step svg, .step .spinner { width: 14px; flex: none; }
+
+/* keycap: small bordered box */
+.kc { display: inline-flex; align-items: center; height: 16px; padding: 0 4px; border: 1px solid var(--line-strong); border-radius: var(--r-sm); font: 10.5px/1 var(--font-mono); color: var(--fg-faint); }

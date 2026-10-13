@@ -1,6 +1,7 @@
 // Browser-preview mock of the HarnessApi. main.tsx installs it only when the
 // preload bridge is missing (plain Vite dev server, screenshots, design work).
 import type {
+  AppSettings,
   ChatMessage,
   ChatSession,
   GitStatus,
@@ -375,6 +376,26 @@ const scriptGroups: ScriptGroup[] = [
       script('src/server/Features/Inventory/init.server.luau', ['ServerScriptService', 'Server', 'Features', 'Inventory'], 'Script', 'Entry points', 'server', 'Inventory')
     ]
   },
+  {
+    category: 'Handlers',
+    scripts: [script('src/server/Handlers/DamageHandler.luau', ['ServerScriptService', 'Server', 'Handlers', 'DamageHandler'], 'ModuleScript', 'Handlers', 'server')]
+  },
+  {
+    category: 'Skills',
+    scripts: [script('src/shared/Skills/Dash.luau', ['ReplicatedStorage', 'Shared', 'Skills', 'Dash'], 'ModuleScript', 'Skills', 'shared')]
+  },
+  {
+    category: 'Protocols',
+    scripts: [script('src/shared/Protocols/TradeProtocol.luau', ['ReplicatedStorage', 'Shared', 'Protocols', 'TradeProtocol'], 'ModuleScript', 'Protocols', 'shared')]
+  },
+  {
+    category: 'Stories',
+    scripts: [script('src/shared/Interface/App/app.story.luau', ['ReplicatedStorage', 'Shared', 'Interface', 'App', 'app.story'], 'ModuleScript', 'Stories', 'shared')]
+  },
+  {
+    category: 'Tests',
+    scripts: [script('src/shared/Features/Inventory/Inventory.spec.luau', ['ReplicatedStorage', 'Shared', 'Features', 'Inventory', 'Inventory.spec'], 'ModuleScript', 'Tests', 'shared', 'Inventory')]
+  },
   { category: 'Other', scripts: [] }
 ]
 
@@ -402,9 +423,11 @@ const tree: TreeNode[] = [
       st('Sounds', 'Folder', [st('Purchase', 'Sound'), st('CoinPickup', 'Sound'), st('Error', 'Sound')])
     ]),
     n('Shared', 'Folder', [
-      n('Features', 'Folder', [n('Inventory', 'ModuleScript', [], 'src/shared/Features/Inventory/init.luau')]),
+      n('Features', 'Folder', [n('Inventory', 'ModuleScript', [n('Inventory.spec', 'ModuleScript', [], 'src/shared/Features/Inventory/Inventory.spec.luau')], 'src/shared/Features/Inventory/init.luau')]),
+      n('Skills', 'Folder', [n('Dash', 'ModuleScript', [], 'src/shared/Skills/Dash.luau')]),
+      n('Protocols', 'Folder', [n('TradeProtocol', 'ModuleScript', [], 'src/shared/Protocols/TradeProtocol.luau')]),
       n('Interface', 'Folder', [
-        n('App', 'Folder', [n('app', 'ModuleScript', [], 'src/shared/Interface/App/app.luau')]),
+        n('App', 'Folder', [n('app', 'ModuleScript', [], 'src/shared/Interface/App/app.luau'), n('app.story', 'ModuleScript', [], 'src/shared/Interface/App/app.story.luau')]),
         n('MountUI', 'ModuleScript', [], 'src/shared/Interface/MountUI.luau')
       ]),
       n('Modules', 'Folder', [n('ModuleLoader', 'ModuleScript', [], 'src/shared/Modules/ModuleLoader.luau'), n('Utils', 'Folder', [], undefined, 'repo')]),
@@ -421,7 +444,7 @@ const tree: TreeNode[] = [
       n('Features', 'Folder', [
         n('Inventory', 'Script', [n('InventoryService', 'ModuleScript', [], 'src/server/Features/Inventory/InventoryService.luau')], 'src/server/Features/Inventory/init.server.luau')
       ]),
-      n('Handlers', 'Folder', [], undefined, 'repo')
+      n('Handlers', 'Folder', [n('DamageHandler', 'ModuleScript', [], 'src/server/Handlers/DamageHandler.luau')], undefined, 'repo')
     ])
   ]),
   n('ServerStorage', 'ServerStorage', [st('BossModels', 'Folder', [st('Golem', 'Model')])]),
@@ -673,13 +696,26 @@ const api: HarnessApi = {
     return scriptGroups
   },
   async readFile(path) {
-    await delay(60)
-    return files[path] ?? `-- ${path}\n`
+    await delay(40)
+    if (files[path] !== undefined) return files[path]
+    // Known scripts without sample contents get a placeholder; anything else does not exist.
+    if (scriptGroups.some((g) => g.scripts.some((x) => x.path === path)) || Object.values(BLINK_OUTPUTS).includes(path)) return `-- ${path}\n`
+    throw new Error(`ENOENT: no such file or directory, open '${path}'`)
   },
   async writeFile(path, contents) {
+    const isNew = files[path] === undefined && !scriptGroups.some((g) => g.scripts.some((x) => x.path === path))
     files[path] = contents
     log('harness', `saved ${path}`, 'info')
     if (path === 'events.blink') void recheckBlink()
+    if (isNew) addMockFile(path)
+  },
+  async getAppSettings() {
+    return appSettings
+  },
+  async setAppSettings(patch) {
+    appSettings = { ...appSettings, ...patch }
+    log('harness', `settings: ${JSON.stringify(patch)}`, 'info')
+    return appSettings
   },
   async getBlink() {
     return blinkModel
@@ -809,6 +845,43 @@ const api: HarnessApi = {
     set.add(handler as Handler)
     return () => set!.delete(handler as Handler)
   }
+}
+
+let appSettings: AppSettings = { serveAllPlaces: false, autoRoute: true }
+
+// A new file from the create flow shows up in the tree and the scripts list, like the dev watcher's
+// sourcemap refresh would do.
+function addMockFile(path: string): void {
+  const m = /^src\/(shared|server|client)\/(.*)$/.exec(path)
+  if (!m || !/\.luau?$/.test(path)) return
+  const realm = m[1] as ScriptEntry['realm']
+  const base: Record<string, string[]> = { shared: ['ReplicatedStorage', 'Shared'], server: ['ServerScriptService', 'Server'], client: ['StarterPlayer', 'StarterPlayerScripts'] }
+  const rest = m[2].split('/')
+  const file = rest.pop()!
+  const init = /^init(\.(server|client))?\.luau?$/.test(file)
+  const name = init ? rest.pop()! : file.replace(/(\.(server|client))?\.luau?$/, '')
+  const kind: ScriptEntry['kind'] = /\.server\.luau?$/.test(file) ? 'Script' : /\.client\.luau?$/.test(file) ? 'LocalScript' : 'ModuleScript'
+  const instancePath = [...base[realm], ...rest, name]
+  let nodes = tree
+  for (const seg of instancePath.slice(0, -1)) {
+    let next = nodes.find((x) => x.name === seg)
+    if (!next) nodes.push((next = n(seg, 'Folder', [], undefined, 'repo')))
+    nodes = next.children
+  }
+  const existing = nodes.find((x) => x.name === name)
+  if (existing) {
+    existing.filePath = path
+    existing.className = kind
+  } else nodes.push(n(name, kind, [], path, 'repo'))
+  const category: ScriptEntry['category'] = /Service$/.test(name) ? 'Services' : /Controller$/.test(name) ? 'Controllers' : kind === 'ModuleScript' ? 'Modules' : 'Entry points'
+  const feature = /Features\/([^/]+)/.exec(path)?.[1] ?? /Controllers\/([^/]+)Controller/.exec(path)?.[1]
+  const group = scriptGroups.find((g) => g.category === category)
+  group?.scripts.push(script(path, instancePath, kind, category, realm, feature))
+  setTimeout(() => {
+    emit('tree:changed', JSON.parse(JSON.stringify(tree)))
+    emit('scripts:changed', scriptGroups.map((g) => ({ ...g, scripts: g.scripts.slice() })))
+    log('dev', `[sourcemap] add ${path}`)
+  }, 250)
 }
 
 function patchService(id: ServiceId, patch: Partial<ServiceStatus>): void {

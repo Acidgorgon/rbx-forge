@@ -8,6 +8,7 @@ import {
   type HarnessEvents,
   type LogLine,
   type PlaceInfo,
+  type AppSettings,
   type ProjectInfo,
   type ServiceId,
   type SyncSettings,
@@ -104,6 +105,13 @@ const EMPTY_BLINK: BlinkModel = { file: null, events: [], types: [], options: {}
 
 function syncSettings(): SyncSettings {
   return { ...DEFAULT_SYNC, ...settings.get<Partial<SyncSettings>>('sync', {}) }
+}
+
+function appSettings(): AppSettings {
+  return {
+    serveAllPlaces: settings.get<boolean>('serveAllPlaces', false) === true,
+    autoRoute: settings.get<boolean>('autoRoute', true) !== false
+  }
 }
 
 function harnessLog(text: string, stream: LogLine['stream'] = 'info'): void {
@@ -334,6 +342,19 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   listPlaces: () => project?.listPlaces() ?? [],
   getActivePlace: () => project?.getActivePlace() ?? null,
   setActivePlace: (file: string) => setActivePlace(file),
+  getAppSettings: () => appSettings(),
+  setAppSettings: async (patch: Partial<AppSettings>) => {
+    const before = appSettings()
+    if (typeof patch.serveAllPlaces === 'boolean') settings.set('serveAllPlaces', patch.serveAllPlaces)
+    if (typeof patch.autoRoute === 'boolean') settings.set('autoRoute', patch.autoRoute)
+    const after = appSettings()
+    // rojo's job list depends on serveAllPlaces; restart a running rojo so it serves the new set.
+    const rojo = supervisor.statuses().find((s) => s.id === 'rojo')
+    if (before.serveAllPlaces !== after.serveAllPlaces && rojo && (rojo.state === 'running' || rojo.state === 'starting')) {
+      await supervisor.restart('rojo').catch((error) => harnessLog(`rojo restart: ${error}`, 'stderr'))
+    }
+    return after
+  },
 
   searchWally: (query: string) => packages.search(query),
   wallyPackage: (id: string) => packages.metadata(id),
@@ -355,6 +376,14 @@ for (const [name, handler] of Object.entries(integrations.handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
 ipcMain.on(INVOKE_PREFIX + 'lspSend', (_event, message: unknown) => lsp.send(message))
+// Caption-button overlay colours follow the renderer theme (Windows/Linux only).
+ipcMain.on('forge:titlebarTheme', (event, theme: unknown) => {
+  if (process.platform === 'darwin') return
+  const win = BrowserWindow.fromWebContents(event.sender)
+  const light = theme === 'light'
+  win?.setTitleBarOverlay?.({ color: light ? '#e4e7eb' : '#0c0e11', symbolColor: light ? '#3c434d' : '#b0b7c2', height: 38 })
+  win?.setBackgroundColor(light ? '#e4e7eb' : '#0c0e11')
+})
 const agentIpc = registerAgentIpc(ctx, ipcMain)
 
 function preloadPath(): string {
@@ -369,12 +398,17 @@ function createWindow(): BrowserWindow {
   const window = new BrowserWindow({
     width: 1400,
     height: 900,
+    minWidth: 1024,
+    minHeight: 640,
     show: false,
-    backgroundColor: '#0f0f10',
+    backgroundColor: '#0c0e11',
     title: 'RBX Forge',
     // Windows/Linux window and taskbar icon; macOS uses the app bundle's icon.
     ...(process.platform === 'darwin' ? {} : { icon: iconPath }),
-    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
+    // The renderer draws its own 38px titlebar: macOS keeps the traffic lights inset, Windows/Linux
+    // get the native caption buttons as an overlay (the titlebar leaves room via titlebar-area env()).
+    titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
+    ...(process.platform === 'darwin' ? {} : { titleBarOverlay: { color: '#0c0e11', symbolColor: '#b0b7c2', height: 38 } }),
     webPreferences: {
       preload: preloadPath(),
       sandbox: false,
@@ -383,6 +417,11 @@ function createWindow(): BrowserWindow {
     }
   })
   window.once('ready-to-show', () => window.show())
+  // Links (PR URLs, docs) open in the browser, never in a new Electron window.
+  window.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//i.test(url)) void shell.openExternal(url)
+    return { action: 'deny' }
+  })
   if (process.env.ELECTRON_RENDERER_URL) {
     void window.loadURL(process.env.ELECTRON_RENDERER_URL)
   } else {

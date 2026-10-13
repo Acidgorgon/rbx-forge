@@ -1,0 +1,426 @@
+/* Packages drawer (PackagesDrawer.tsx). Uses the shared tokens from styles.css. */
+
+.pk-tabs {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.pk-tabs .seg button {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 12px;
+  font-size: 12.5px;
+}
+.pk-tab-n {
+  font-size: 11px;
+  color: var(--fg-faint);
+  font-variant-numeric: tabular-nums;
+}
+.pk-tab-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+}
+.pk-tab-dot.up {
+  background: var(--info);
+}
+.pk-tab-dot.bad {
+  background: var(--err);
+}
+.pk-installing,
+.pk-installing-inline {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  font-size: 12px;
+  color: var(--info);
+}
+.pk-installing {
+  margin-left: auto;
+  font-family: var(--font-mono);
+}
+.pk-head-fill {
+  flex: 1;
+}
+
+/* banners */
+.pk-banner {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  padding: 10px 8px 10px 14px;
+  border-radius: var(--r-sm);
+  font-size: 13px;
+}
+.pk-banner > svg {
+  margin-top: 2px;
+  flex: 0 0 auto;
+}
+.pk-banner .icon-btn {
+  width: 24px;
+  height: 24px;
+  margin-left: auto;
+}
+.pk-banner-text {
+  flex: 1;
+  min-width: 0;
+  line-height: 1.45;
+  white-space: pre-wrap;
+}
+.pk-banner.bad {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--err) 25%, transparent);
+}
+.pk-callout {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 16px;
+  border-radius: var(--r-lg);
+  border: 1px solid var(--line);
+  background: var(--bg-editor);
+}
+.pk-callout.bad {
+  border-color: color-mix(in srgb, var(--err) 40%, var(--line));
+  background: color-mix(in srgb, var(--err) 7%, var(--bg-editor));
+}
+.pk-callout.warn {
+  border-color: color-mix(in srgb, var(--warn) 35%, var(--line));
+  background: color-mix(in srgb, var(--warn) 6%, var(--bg-editor));
+}
+.pk-callout-icon {
+  width: 36px;
+  height: 36px;
+  border-radius: 10px;
+  display: grid;
+  place-items: center;
+  flex: 0 0 auto;
+}
+.pk-callout.bad .pk-callout-icon {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 14%, transparent);
+}
+.pk-callout.warn .pk-callout-icon {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+.pk-callout-main {
+  flex: 1;
+  min-width: 0;
+}
+.pk-callout-title {
+  font-weight: 600;
+  font-size: 13.5px;
+}
+.pk-callout-sub {
+  font-size: 12.5px;
+  color: var(--fg-2);
+  margin-top: 2px;
+  line-height: 1.45;
+}
+
+/* search */
+.pk-search {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+.pk-filter {
+  height: 38px;
+  border-color: var(--line-strong);
+}
+.pk-filter:focus-within {
+  border-color: var(--ember);
+}
+.pk-filter input {
+  font-size: 13.5px;
+}
+.pk-filter .spinner {
+  color: var(--fg-muted);
+}
+.pk-results {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-editor);
+  max-height: 340px;
+  overflow-y: auto;
+}
+.pk-empty {
+  margin: 0;
+  padding: 14px 16px;
+}
+.pk-result {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 12px 10px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.pk-result:last-child {
+  border-bottom: 0;
+}
+.pk-result:hover {
+  background: var(--bg-hover);
+}
+.pk-result-main {
+  flex: 1;
+  min-width: 0;
+}
+.pk-result-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex: 0 0 auto;
+}
+.pk-title-line {
+  display: flex;
+  align-items: baseline;
+  gap: 8px;
+  min-width: 0;
+}
+.pk-name,
+.pk-alias {
+  font-weight: 600;
+  font-size: 13.5px;
+  white-space: nowrap;
+}
+.pk-scope {
+  color: var(--fg-muted);
+  font-size: 12px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  min-width: 0;
+}
+.pk-scope.mono {
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+}
+.pk-title-line .pk-realm {
+  margin-left: 0;
+  align-self: center;
+}
+.pk-title-line .pk-version {
+  font-size: 11.5px;
+}
+.pk-desc {
+  font-size: 12.5px;
+  color: var(--fg-2);
+  margin-top: 2px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.pk-desc .faint,
+.faint {
+  color: var(--fg-faint);
+}
+.pk-version {
+  font-family: var(--font-mono);
+  font-size: 12px;
+  color: var(--fg-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+.pk-select {
+  height: 26px;
+  border-radius: 8px;
+  border: 1px solid var(--line-strong);
+  background: var(--bg-raised);
+  color: var(--fg);
+  font-size: 12px;
+  padding: 0 6px;
+  outline: none;
+  max-width: 130px;
+}
+.pk-select:focus {
+  border-color: var(--ember);
+}
+.pk-inline-error {
+  margin: 4px 0 0;
+  font-size: 12px;
+  color: var(--err);
+  white-space: normal;
+}
+
+/* lists */
+.pk-list {
+  display: flex;
+  flex-direction: column;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-editor);
+  overflow: hidden;
+}
+.pk-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 42px;
+  padding: 7px 10px 7px 14px;
+  border-bottom: 1px solid var(--line);
+}
+.pk-row:last-child {
+  border-bottom: 0;
+}
+.pk-row:hover {
+  background: var(--bg-hover);
+}
+.pk-row-main {
+  flex: 1;
+  min-width: 0;
+}
+.pk-row > .pk-realm {
+  margin-left: 0;
+  width: 52px;
+  text-align: center;
+}
+.pk-row > .pk-version {
+  width: 64px;
+  text-align: right;
+}
+.pk-state {
+  width: 92px;
+  display: flex;
+  justify-content: center;
+  flex: 0 0 auto;
+}
+.pk-ok {
+  color: var(--ok);
+  display: inline-grid;
+  place-items: center;
+}
+.pk-pending {
+  color: var(--info);
+  display: inline-grid;
+  place-items: center;
+}
+.pk-row-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 4px;
+  width: 128px;
+  flex: 0 0 auto;
+}
+.pk-update {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  height: 24px;
+  padding: 0 8px;
+  border-radius: 999px;
+  font-size: 11.5px;
+  font-weight: 600;
+  font-family: var(--font-mono);
+  color: var(--info);
+  background: color-mix(in srgb, var(--info) 13%, transparent);
+  transition: background 0.12s;
+}
+.pk-update:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--info) 22%, transparent);
+}
+.pk-update .spinner {
+  width: 9px;
+  height: 9px;
+}
+.pk-remove {
+  width: auto;
+  min-width: 28px;
+  height: 28px;
+  padding: 0 6px;
+  color: var(--fg-faint);
+}
+.pk-remove:hover {
+  color: var(--err);
+}
+.pk-remove.confirm {
+  color: var(--err);
+  background: color-mix(in srgb, var(--err) 12%, transparent);
+}
+.pk-confirm {
+  font-size: 11.5px;
+  font-weight: 600;
+}
+.pk-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 11px;
+  font-weight: 600;
+  padding: 0 8px;
+  line-height: 20px;
+  border-radius: 999px;
+  white-space: nowrap;
+  color: var(--fg-muted);
+  background: var(--bg-active);
+}
+.pk-badge.ok {
+  color: var(--ok);
+  background: color-mix(in srgb, var(--ok) 13%, transparent);
+}
+.pk-badge.warn {
+  color: var(--warn);
+  background: color-mix(in srgb, var(--warn) 14%, transparent);
+}
+.pk-badge.up {
+  color: var(--info);
+  background: color-mix(in srgb, var(--info) 13%, transparent);
+}
+.pk-badge.as-btn {
+  cursor: pointer;
+}
+.pk-badge.as-btn:hover:not(:disabled) {
+  background: color-mix(in srgb, var(--warn) 22%, transparent);
+}
+.pk-badge .spinner {
+  width: 9px;
+  height: 9px;
+}
+.pk-row.not-installed .pk-alias {
+  color: var(--fg-2);
+}
+.pk-skeleton {
+  height: 42px;
+  background: linear-gradient(90deg, transparent, var(--bg-hover), transparent);
+  background-size: 200% 100%;
+  animation: pk-shimmer 1.2s linear infinite;
+}
+@keyframes pk-shimmer {
+  from {
+    background-position: 200% 0;
+  }
+  to {
+    background-position: -200% 0;
+  }
+}
+.pk-tool-row {
+  align-items: center;
+}
+.pk-tool-icon {
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  display: grid;
+  place-items: center;
+  color: var(--fg-muted);
+  background: var(--bg-active);
+  flex: 0 0 auto;
+}
+.pk-tool-row .pk-row-actions {
+  width: auto;
+}
+.pk-custom {
+  margin-top: 10px;
+}
+
+.side-action:disabled {
+  opacity: 0.45;
+  pointer-events: none;
+}

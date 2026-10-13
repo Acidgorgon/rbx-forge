@@ -13,7 +13,7 @@ const SHORT: Record<ProviderId, string> = {
   custom: 'Custom'
 }
 
-const MARK: Record<ProviderId, string> = { anthropic: '', openai: 'O', openrouter: 'R', gemini: 'G', ollama: 'ol', custom: 'C' }
+const MARK: Record<ProviderId, string> = { anthropic: 'A', openai: 'O', openrouter: 'R', gemini: 'G', ollama: 'ol', custom: 'C' }
 
 // Models shown per provider before "type to search".
 const PER_GROUP = 6
@@ -21,15 +21,14 @@ const PER_GROUP = 6
 export function ProviderMark({ id, size = 18 }: { id: ProviderId; size?: number }) {
   return (
     <span className={`pmark pm-${id}`} style={{ width: size, height: size, fontSize: Math.round(size * 0.55) }} aria-hidden>
-      {id === 'anthropic' ? (
-        <svg width={size * 0.66} height={size * 0.66} viewBox="0 0 24 24">
-          <path d="M12 2.5l2.2 6.3 6.6.2-5.3 4 1.9 6.4L12 15.6l-5.4 3.8 1.9-6.4-5.3-4 6.6-.2z" fill="currentColor" />
-        </svg>
-      ) : (
-        MARK[id]
-      )}
+      {MARK[id]}
     </span>
   )
+}
+
+// Pill label: the model id without the provider prefix or date stamp ("claude-sonnet-4-5" → "sonnet-4-5").
+function shortModel(model: string): string {
+  return model.replace(/^.*\//, '').replace(/^claude-/, '').replace(/-\d{8}$/, '')
 }
 
 export function providerLabel(id: ProviderId): string {
@@ -130,10 +129,10 @@ export function ModelPicker({
         disabled={disabled || !providers}
         title={value ? `${SHORT[value.provider]} · ${value.model}${notReady ? ' (not set up)' : ''}` : placeholder ?? 'Choose a model'}
       >
-        {value ? <ProviderMark id={value.provider} size={variant === 'pill' ? 16 : 18} /> : icon ?? null}
-        <span className="mpick-name">{value ? value.model : placeholder ?? 'Choose a model'}</span>
+        {variant === 'field' ? value ? <ProviderMark id={value.provider} size={18} /> : icon ?? null : !value && icon ? icon : null}
+        <span className="mpick-name">{value ? shortModel(value.model) : placeholder ?? 'Choose a model'}</span>
         {notReady && <span className="mpick-dot" aria-label="not set up" />}
-        <IconChevronDown size={12} className="mpick-caret" />
+        {variant === 'pill' ? <span className="mpick-caret">▼</span> : <IconChevronDown size={12} className="mpick-caret" />}
       </button>
       {open && (
         <div className={`mpick-pop ${direction}`} role="listbox" onClick={(e) => e.stopPropagation()}>

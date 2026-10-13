@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron'
+import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { INVOKE_PREFIX, type HarnessApi, type HarnessEvents } from '@shared/types'
 
 const methods = [
@@ -13,7 +13,7 @@ const methods = [
   'getAgents', 'runAgents', 'cancelAgent',
   'lspStart',
   'getBlink',
-  'listPlaces', 'getActivePlace', 'setActivePlace',
+  'listPlaces', 'getActivePlace', 'setActivePlace', 'getAppSettings', 'setAppSettings',
   'searchWally', 'wallyPackage', 'listWallyDeps', 'addWallyDep', 'removeWallyDep', 'updateWallyDep',
   'listRokitTools', 'addRokitTool', 'updateRokitTool', 'curatedTools',
   // Collaboration
@@ -57,3 +57,11 @@ api.on = <K extends keyof HarnessEvents>(event: K, handler: (payload: HarnessEve
 }
 
 contextBridge.exposeInMainWorld('harness', api as unknown as HarnessApi)
+
+// Absolute path of a file dropped on the window (CSV import drop zone). File.path is gone in
+// current Electron; webUtils is the supported way and only works in the preload.
+contextBridge.exposeInMainWorld('forgeFiles', {
+  pathFor: (file: File) => webUtils.getPathForFile(file),
+  // Recolours the Windows/Linux caption buttons when the renderer switches theme.
+  setTitlebarTheme: (theme: 'dark' | 'light') => ipcRenderer.send('forge:titlebarTheme', theme)
+})

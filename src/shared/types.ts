@@ -138,6 +138,14 @@ export interface PlaceInfo {
   sourcemap: string
 }
 
+// App-wide switches the Settings tab changes (stored in the main process settings file).
+export interface AppSettings {
+  // rojo serves every place of a multi-place project, not only the active one.
+  serveAllPlaces: boolean
+  // Route simple chat turns to a cheaper model tier (agent/budget routeModel); off = always the chosen model.
+  autoRoute: boolean
+}
+
 export interface PlacesChanged {
   places: PlaceInfo[]
   active: string
@@ -534,6 +542,10 @@ export interface HarnessApi extends IntegrationApi {
   listPlaces(): Promise<PlaceInfo[]>
   getActivePlace(): Promise<PlaceInfo | null>
   setActivePlace(file: string): Promise<PlaceInfo>
+
+  // App-wide switches (serveAllPlaces restarts a running rojo so it serves the new set of places).
+  getAppSettings(): Promise<AppSettings>
+  setAppSettings(patch: Partial<AppSettings>): Promise<AppSettings>
 
   on<K extends keyof HarnessEvents>(event: K, handler: (payload: HarnessEvents[K]) => void): () => void
 }

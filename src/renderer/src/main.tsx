@@ -1,6 +1,9 @@
 import { StrictMode } from 'react'
 import { createRoot } from 'react-dom/client'
 import './styles.css'
+import { initAppearance } from './theme'
+
+initAppearance()
 
 async function boot(): Promise<void> {
   // Browser preview (no Electron preload): install the mock API first.

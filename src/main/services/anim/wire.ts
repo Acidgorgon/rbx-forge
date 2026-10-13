@@ -70,7 +70,7 @@ export function createAnimWiring(deps: AnimWireDeps): AnimWiring {
     animStyle: () => service.style(),
     animCoverage: () => service.coverage(),
     // The background refinement promise stays in main (not serialisable).
-    animCompose: async (request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType }) => {
+    animCompose: async (request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType; reference?: string }) => {
       const { refined: _refined, ...r } = await service.compose(String(request ?? ''), { ...(opts ?? {}), rig: rigOf(opts?.rig), wait: false })
       return r
     },

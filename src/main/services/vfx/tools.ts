@@ -162,10 +162,10 @@ export function vfxTools(service: VfxService, opts: { chatImage?: (absPath: stri
       name: 'vfx_compose',
       description:
         "Make a multi-stage Roblox VFX (any request: a beam merge, a charged slash, a ground slam, a teleport...) in one step: writes a Luau timeline script with the kit (anticipation -> charge -> release -> impact -> dissipate), records it, saves the effect to the VFX library and the project (src/shared/VFX/<Name>/init.luau + Timeline.luau + Effect.rbxmx, and the ForgeFX runtime), then refines it in the background (render + critique at each stage). Pass script to use your own timeline script instead of drafting one. Returns the entry id, the stages and cues. Iterate with vfx_set_script and vfx_refine.",
-      inputSchema: { request: z.string().min(3).max(500), script: z.string().max(60000).optional(), refine: z.boolean().optional() },
-      handler: (args: { request: string; script?: string; refine?: boolean }) =>
+      inputSchema: { request: z.string().min(3).max(500), script: z.string().max(60000).optional(), refine: z.boolean().optional(), reference: z.string().max(120).optional().describe('id of a video reference (ref_list / ref_import): "make it like this"; its beats, palette, glow, vision summary and key frames guide the script and the critic scores the match') },
+      handler: (args: { request: string; script?: string; refine?: boolean; reference?: string }) =>
         guard(async () => {
-          const r = await service.compose(args.request, { script: args.script, refine: args.refine })
+          const r = await service.compose(args.request, { script: args.script, refine: args.refine, reference: args.reference })
           return scriptReport(r, args.script) + (r.ok && r.refined ? '\nrefining in the background (watch the VFX Lab, or call vfx_refine to wait for it)' : '')
         })
     },

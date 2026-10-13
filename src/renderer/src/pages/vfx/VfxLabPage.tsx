@@ -12,9 +12,12 @@ import { errorText } from '../../lib/format'
 import { VfxPreview } from './VfxPreview'
 import { ParamEditor } from './ParamEditor'
 import { ScriptPanel } from './ScriptPanel'
+import { RefCard, RefCompare, RefDetail } from '../videoref/RefViews'
+import { RefImport } from '../videoref/RefImport'
+import { isRefFile } from '../videoref/decode'
 import './vfx.css'
 
-const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg/gif · mp4/webm'
+const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['sword slash', 'fire aura', 'lightning impact', 'heal burst', 'dash trail', 'energy beam']
 const SEQ_SUGGESTIONS = ['fireball that charges and explodes', 'charged lightning slash', 'ground slam shockwave', 'teleport blink', 'dragon breath sweep']
 const EXAMPLES = [
@@ -314,6 +317,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
 
       {tab === 'params' && draft && <ParamEditor effect={draft} onChange={edit} />}
       {tab === 'script' && draft && <ScriptPanel entry={entry} effect={draft} onPreview={setDraft} />}
+      {tab === 'iterations' && draft && entry.refId && <PinnedCompare entry={entry} effect={draft} />}
       {tab === 'iterations' && draft && <Iterations entry={entry} onRestore={(e, n) => (edit(e), actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'info' && (
         <div className="vfx-info">
@@ -365,6 +369,13 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
   )
 }
 
+// The best iteration's rendered beats next to the pinned video reference's key frames.
+function PinnedCompare({ entry, effect }: { entry: VfxEntry; effect: VfxEffect }) {
+  const its = entry.iterations ?? []
+  const best = its.length ? its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0]) : null
+  return <RefCompare lab="vfx" refId={entry.refId!} entryId={entry.id} frames={best?.frames ?? []} match={best?.critique?.match} matchNotes={best?.critique?.matchNotes} effect={best?.effect ?? effect} iteration={best?.n} />
+}
+
 export function VfxLabPage() {
   const { state, actions } = useStore()
   const h = window.harness
@@ -384,6 +395,9 @@ export function VfxLabPage() {
   const [busy, setBusy] = useState<string | null>(null)
   const [drag, setDrag] = useState(false)
   const [progress, setProgress] = useState<Record<string, VfxRefineProgress>>({})
+  // Video reference import review (a dropped / picked clip), and the reference pinned to Make.
+  const [refImport, setRefImport] = useState<{ file: File | null } | null>(null)
+  const [pin, setPin] = useState<{ id: string; name: string } | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -443,7 +457,11 @@ export function VfxLabPage() {
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setDrag(false)
-    const paths = [...e.dataTransfer.files].map((f) => window.forgeFiles?.pathFor(f) ?? '').filter(Boolean)
+    // Clips and GIFs open the video reference review; models and images import as before.
+    const files = [...e.dataTransfer.files]
+    const clip = files.find(isRefFile)
+    if (clip) setRefImport({ file: clip })
+    const paths = files.filter((f) => !isRefFile(f)).map((f) => window.forgeFiles?.pathFor(f) ?? '').filter(Boolean)
     void importPaths(paths)
   }
   const learn = async () => {
@@ -463,8 +481,8 @@ export function VfxLabPage() {
     if (!what || making) return
     setMaking(true)
     try {
-      if (mode === 'sequence') {
-        const r = await h.vfxCompose(what, { maxIterations: iters, threshold })
+      if (mode === 'sequence' || pin) {
+        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, ...(pin ? { reference: pin.id } : {}) })
         if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the timeline did not compile')
         await load()
         setSelected(r.entry.id)
@@ -513,6 +531,9 @@ export function VfxLabPage() {
             <button className="btn" onClick={async () => void importPaths(await h.vfxChooseImport())}>
               <Icon name="upload" size={12} /> Import
             </button>
+            <button className="btn" onClick={() => setRefImport({ file: null })} title="A clip or GIF to make something like it: trim, crop, analyse beats, palette, glow and motion">
+              <Icon name="image" size={12} /> Video ref
+            </button>
             <button className="btn" onClick={() => void learn()} disabled={!entries.length || !!busy} title="Turn the library into per-type recipes and save them as memory skills">
               <Icon name="memory" size={12} /> Learn
             </button>
@@ -542,6 +563,14 @@ export function VfxLabPage() {
             </span>
             <input className="input grow" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="purple sword slash with sparks" aria-label="Effect to make" spellCheck />
             <span className="vfx-make-lead mono">effect</span>
+            {pin && (
+              <span className="badge-o hot vfx-make-pin" title="Pinned video reference: Make composes a sequence like it">
+                like {pin.name}
+                <button type="button" className="btn small ghost" onClick={() => setPin(null)} aria-label="Unpin the reference">
+                  <Icon name="x" size={10} />
+                </button>
+              </span>
+            )}
             <div className="seg vfx-mode" role="group" aria-label="Kind of effect">
               <button type="button" className={mode === 'single' ? 'on' : ''} aria-pressed={mode === 'single'} onClick={() => setMode('single')} title="One burst of layers (emitters, beams, lights)">
                 single
@@ -630,13 +659,34 @@ export function VfxLabPage() {
               </div>
             )}
             <div className="vfx-grid">
-              {shown.map((e) => (
-                <Card key={e.id} entry={e} selected={e.id === selected} progress={progress[e.id]} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
-              ))}
+              {shown.map((e) =>
+                e.video ? (
+                  <RefCard key={e.id} lab="vfx" entry={e} selected={e.id === selected} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
+                ) : (
+                  <Card key={e.id} entry={e} selected={e.id === selected} progress={progress[e.id]} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
+                )
+              )}
             </div>
           </div>
-          {current && <Detail key={current.id} entry={current} progress={progress[current.id]} recipes={recipes} onClose={() => setSelected(null)} />}
+          {current &&
+            (current.video ? (
+              <RefDetail key={current.id} lab="vfx" entry={current} onClose={() => setSelected(null)} onMade={(id) => void load().then(() => setSelected(id))} onPin={(r) => (setPin(r), setMode('sequence'))} />
+            ) : (
+              <Detail key={current.id} entry={current} progress={progress[current.id]} recipes={recipes} onClose={() => setSelected(null)} />
+            ))}
         </div>
+        {refImport && (
+          <RefImport
+            lab="vfx"
+            scope={scope}
+            file={refImport.file}
+            onClose={() => setRefImport(null)}
+            onSaved={(r) => {
+              setRefImport(null)
+              void load().then(() => setSelected(r.id))
+            }}
+          />
+        )}
       </div>
     </div>
   )

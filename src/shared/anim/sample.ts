@@ -1,10 +1,15 @@
 // Sampling a clip: Roblox pose easing between keys, per-joint tracks, the pose at a time, and the
 // getAnimPose payload (Motor6D name -> Transform CFrame) other features use for previews.
 
-import type { AnimClip, AnimKey, PoseEasingDirection, PoseEasingStyle, R15Joint } from './model.ts'
+import type { AnimClip, AnimKey, PoseEasingDirection, PoseEasingStyle, R15Joint, RigType } from './model.ts'
 import { R15_JOINTS } from './model.ts'
 import { cfToXf, xfToCf, xlerp, type CF, type Xf } from './math.ts'
 import type { Pose } from './r15.ts'
+import { R6_JOINT_DEFS, r6ToNeutral, type R6Pose } from './r6.ts'
+
+export function clipRig(clip: Pick<AnimClip, 'rig'> | null | undefined): RigType {
+  return clip?.rig === 'R6' ? 'R6' : 'R15'
+}
 
 function bounceOut(x: number): number {
   const n1 = 7.5625
@@ -98,9 +103,19 @@ export function clipTime(clip: Pick<AnimClip, 'duration' | 'looped'>, t: number)
   return Math.max(0, Math.min(D, t))
 }
 
+// The pose at t as neutral transforms on R15 joint names. On an R6 clip the six R6 Motor6Ds come back
+// as their R15 equivalents (Root, Neck, shoulders, hips) in the plain joint frame, so measuring,
+// checks and the R15 tools read R6 clips too (the rest of the joints stay at rest).
 export function samplePose(clip: AnimClip, t: number): Pose {
   const tt = clipTime(clip, t)
   const pose: Pose = {}
+  if (clipRig(clip) === 'R6') {
+    for (const d of R6_JOINT_DEFS) {
+      const v = sampleTrack(clip.tracks[d.name], tt)
+      if (v) pose[d.r15] = r6ToNeutral(d.name, v)
+    }
+    return pose
+  }
   for (const j of R15_JOINTS) {
     const v = sampleTrack(clip.tracks[j], tt)
     if (v) pose[j] = v
@@ -108,9 +123,27 @@ export function samplePose(clip: AnimClip, t: number): Pose {
   return pose
 }
 
-// getAnimPose payload: Motor6D name -> Transform CFrame (12 numbers, Roblox component order).
+// Native R6 Transforms at t (R6 clips only; empty for R15 clips).
+export function sampleR6(clip: AnimClip, t: number): R6Pose {
+  const out: R6Pose = {}
+  if (clipRig(clip) !== 'R6') return out
+  const tt = clipTime(clip, t)
+  for (const d of R6_JOINT_DEFS) {
+    const v = sampleTrack(clip.tracks[d.name], tt)
+    if (v) out[d.name] = v
+  }
+  return out
+}
+
+// getAnimPose payload: Motor6D name -> Transform CFrame (12 numbers, Roblox component order). R15
+// clips use the R15 Motor6D names (Root, Waist, ...), R6 clips the R6 ones (RootJoint, Neck,
+// "Right Shoulder", ...) with the Transform in that Motor6D's own (rotated) frame, as Roblox plays it.
 export function poseCFrames(clip: AnimClip, t: number): Record<string, CF> {
   const out: Record<string, CF> = {}
+  if (clipRig(clip) === 'R6') {
+    for (const [j, v] of Object.entries(sampleR6(clip, t))) out[j] = xfToCf(v as Xf, 5)
+    return out
+  }
   const pose = samplePose(clip, t)
   for (const [j, v] of Object.entries(pose) as [R15Joint, Xf][]) out[j] = xfToCf(v, 5)
   return out

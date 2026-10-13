@@ -1,4 +1,4 @@
-// A minimal blocky R15 rig for the Ability Composer preview and for placing attachments: part sizes,
+// A minimal blocky R15 rig (and the R6 rig, below) for the Ability Composer preview and for placing attachments: part sizes,
 // the 15 Motor6Ds (Root, Waist, Neck, shoulders, elbows, wrists, hips, knees, ankles) with C0 / C1,
 // and the standard R15 attachment names. Proportions follow the default block R15 (HipHeight 2, root
 // 2x2x1 centred 3 studs above the floor, about 5.2 studs tall, facing -Z); the exact Roblox C0 / C1
@@ -9,7 +9,8 @@
 
 import { mul } from '../vfx/cframe.ts'
 import type { CFrameArr, Vec3 } from '../vfx/types.ts'
-import type { R15Part } from './types.ts'
+import { R15_PART_FOR_R6_PART, R6_HEAD_DRAW, R6_JOINT_DEFS, R6_PART_FOR_R15_PART, R6_PART_SIZE } from '../anim/r6.ts'
+import { R6_PARTS, type AbilityRig, type BodyPart, type R15Part, type R6Part } from './types.ts'
 
 export const JOINT_NAMES = ['Root', 'Waist', 'Neck', 'LeftShoulder', 'LeftElbow', 'LeftWrist', 'RightShoulder', 'RightElbow', 'RightWrist', 'LeftHip', 'LeftKnee', 'LeftAnkle', 'RightHip', 'RightKnee', 'RightAnkle'] as const
 export type JointName = (typeof JOINT_NAMES)[number]
@@ -123,6 +124,80 @@ export function solveRig(root: CFrameArr, pose: Pose = {}): Record<R15Part, CFra
 export function attachWorld(parts: Record<R15Part, CFrameArr>, part: R15Part, attachment: string | undefined, offset: Vec3, rotationDeg: Vec3): CFrameArr {
   const a = attachment ? RIG_ATTACHMENTS[attachment] : undefined
   const base = a ? mul(parts[a.part], T(a.at)) : parts[part]
+  const d = Math.PI / 180
+  return mul(base, anglesXYZ(rotationDeg[0] * d, rotationDeg[1] * d, rotationDeg[2] * d, offset))
+}
+
+// ------------------------------------------------------------------ R6
+//
+// The R6 rig uses the stock R6 Motor6Ds with their full C0 / C1 (rotations included; values and
+// sources in shared/anim/r6.ts), because getAnimPose returns R6 clips' Transforms in those rotated
+// joint frames (keyed RootJoint, Neck, "Right Shoulder", ...).
+
+export const R6_SIZE: Record<R6Part, Vec3> = { ...R6_PART_SIZE, Head: R6_HEAD_DRAW } as Record<R6Part, Vec3>
+
+// Attachments of the stock R6 character (the same names as R15 where they exist): grips and feet sit
+// at the bottom of the 2-stud limbs.
+export const R6_RIG_ATTACHMENTS: Record<string, { part: R6Part; at: Vec3 }> = {
+  RootAttachment: { part: 'HumanoidRootPart', at: [0, 0, 0] },
+  WaistCenterAttachment: { part: 'Torso', at: [0, -1, 0] },
+  BodyFrontAttachment: { part: 'Torso', at: [0, 0, -0.5] },
+  BodyBackAttachment: { part: 'Torso', at: [0, 0, 0.5] },
+  NeckAttachment: { part: 'Torso', at: [0, 1, 0] },
+  HatAttachment: { part: 'Head', at: [0, 0.5, 0] },
+  FaceFrontAttachment: { part: 'Head', at: [0, 0, -0.5] },
+  RightGripAttachment: { part: 'Right Arm', at: [0, -1, 0] },
+  LeftGripAttachment: { part: 'Left Arm', at: [0, -1, 0] },
+  RightFootAttachment: { part: 'Right Leg', at: [0, -1, 0] },
+  LeftFootAttachment: { part: 'Left Leg', at: [0, -1, 0] }
+}
+
+export function isR6Part(p: string): p is R6Part {
+  return (R6_PARTS as readonly string[]).includes(p)
+}
+
+// The part an event's part plays on for a rig (RightHand -> "Right Arm" on R6, "Right Arm" ->
+// RightHand on R15; HumanoidRootPart and Head are the same on both).
+export function partForRig(part: BodyPart | string, rig: AbilityRig = 'R15'): BodyPart {
+  if (rig === 'R6') return isR6Part(part) ? part : (R6_PART_FOR_R15_PART[part] ?? 'HumanoidRootPart')
+  if (part === 'HumanoidRootPart' || part === 'Head') return part
+  return isR6Part(part) ? (R15_PART_FOR_R6_PART[part] as R15Part) : (part as R15Part)
+}
+
+export function attachmentsFor(rig: AbilityRig = 'R15'): Record<string, { part: BodyPart; at: Vec3 }> {
+  return rig === 'R6' ? R6_RIG_ATTACHMENTS : RIG_ATTACHMENTS
+}
+
+export function partsFor(rig: AbilityRig = 'R15'): readonly BodyPart[] {
+  return rig === 'R6' ? R6_PARTS : (Object.keys(PART_SIZE) as R15Part[])
+}
+
+export function partSize(rig: AbilityRig, part: BodyPart): Vec3 {
+  return rig === 'R6' ? R6_SIZE[part as R6Part] : PART_SIZE[part as R15Part]
+}
+
+// World CFrame of every R6 part for a root CFrame and a pose keyed by R6 Motor6D name.
+export function solveRigR6(root: CFrameArr, pose: Pose = {}): Record<R6Part, CFrameArr> {
+  const out = { HumanoidRootPart: root } as Record<R6Part, CFrameArr>
+  for (const j of R6_JOINT_DEFS) {
+    const tr = pose[j.name]
+    let m = mul(out[j.part0], j.c0 as CFrameArr)
+    if (valid(tr)) m = mul(m, tr as CFrameArr)
+    out[j.part1] = mul(m, inverse(j.c1 as CFrameArr))
+  }
+  return out
+}
+
+export function solveRigFor(rig: AbilityRig, root: CFrameArr, pose: Pose = {}): Record<string, CFrameArr> {
+  return rig === 'R6' ? solveRigR6(root, pose) : solveRig(root, pose)
+}
+
+// attachWorld for either rig: the event's part and attachment are mapped onto the rig first (an
+// attachment the rig lacks falls back to its part).
+export function attachWorldFor(rig: AbilityRig, parts: Record<string, CFrameArr>, part: BodyPart, attachment: string | undefined, offset: Vec3, rotationDeg: Vec3): CFrameArr {
+  const table = attachmentsFor(rig)
+  const a = attachment ? table[attachment] : undefined
+  const base = a ? mul(parts[a.part], T(a.at)) : parts[partForRig(part, rig)]
   const d = Math.PI / 180
   return mul(base, anglesXYZ(rotationDeg[0] * d, rotationDeg[1] * d, rotationDeg[2] * d, offset))
 }

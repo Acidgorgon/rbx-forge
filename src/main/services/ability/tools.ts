@@ -39,7 +39,7 @@ async function guard(fn: () => Promise<string>): Promise<ToolResult> {
 }
 
 const EVENT_DOC = `Event kinds (every event: id, kind, at = {"at":seconds} or {"marker":"release","at":offset}):
-vfx {effect: VFX Lab entry id, effectName, part: R15 part | attachment: RightGripAttachment / LeftGripAttachment / RootAttachment / BodyFrontAttachment..., offset [x,y,z] studs (-Z forward), rotation [x,y,z] degrees}
+vfx {effect: VFX Lab entry id, effectName, part: R15 part (or an R6 part: Torso, "Right Arm", "Left Leg"... when the clip is R6) | attachment: RightGripAttachment / LeftGripAttachment / RootAttachment / BodyFrontAttachment..., offset [x,y,z] studs (-Z forward), rotation [x,y,z] degrees}
 sound {source: {"kind":"asset","id":"rbxassetid://..."}, volume, pitch, part?}
 shake {duration, amplitude studs, frequency Hz, falloff none|linear|exponential}
 screen {effect flash|colorCorrection|bloom|blur, attack, hold, release, style (EasingStyle), values {color [r,g,b], opacity | brightness, contrast, saturation, tint | intensity, size, threshold | size}}
@@ -85,7 +85,7 @@ export function abilityTools(service: AbilityService): { read: AbilityTool[]; wr
     {
       name: 'ability_compose',
       description:
-        'Draft a whole Roblox move ("a charged palm blast", "Hollow Purple", "dash punch") in one step: picks a VFX Lab effect (or makes one with vfx_compose when the library has none) and an Animation Lab clip (or anim_compose, else a placeholder pose track), attaches the effect to the right R15 part, puts its release stage on the clip release marker, adds the impact flash, camera shake and hit-stop on the marker, build-ups and root movement, then lets the model refine the timings. Saves it to the Ability Composer and returns the timeline and checks.',
+        'Draft a whole Roblox move ("a charged palm blast", "Hollow Purple", "dash punch") in one step: picks a VFX Lab effect (or makes one with vfx_compose when the library has none) and an Animation Lab clip (or anim_compose, else a placeholder pose track), attaches the effect to the right body part (R15, or R6 when the clip is R6), puts its release stage on the clip release marker, adds the impact flash, camera shake and hit-stop on the marker, build-ups and root movement, then lets the model refine the timings. Saves it to the Ability Composer and returns the timeline and checks.',
       inputSchema: { request: z.string().min(3).max(500) },
       handler: (args: { request: string }) =>
         guard(async () => {

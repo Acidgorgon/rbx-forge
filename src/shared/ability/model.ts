@@ -4,9 +4,9 @@
 
 import { EASING_STYLES } from '../vfx/timeline.ts'
 import type { EasingStyle, Rgb, Vec3 } from '../vfx/types.ts'
-import { RIG_ATTACHMENTS } from './rig.ts'
+import { isR6Part, R6_RIG_ATTACHMENTS, RIG_ATTACHMENTS } from './rig.ts'
 import { markerTime, resolveAbility, type EventLengths } from './timing.ts'
-import { EVENT_KINDS, R15_PARTS, type Ability, type AbilityAnimation, type AbilityEvent, type EventKind, type R15Part, type ScreenKind, type ScreenValues, type ShakeFalloff, type SoundSource, type TimeRef } from './types.ts'
+import { EVENT_KINDS, R15_PARTS, R6_PARTS, type Ability, type BodyPart, type AbilityAnimation, type AbilityEvent, type EventKind, type ScreenKind, type ScreenValues, type ShakeFalloff, type SoundSource, type TimeRef } from './types.ts'
 
 export class AbilityError extends Error {}
 
@@ -62,7 +62,19 @@ export function timeRef(v: unknown): TimeRef {
   return marker ? { marker, at } : { at: Math.max(0, at) }
 }
 
-const part = (v: unknown, d: R15Part): R15Part => (R15_PARTS.includes(v as R15Part) ? (v as R15Part) : d)
+// R15 or R6 part names ("Right Arm", also loosely "RightArm" / "right_arm").
+const ALL_PARTS: readonly BodyPart[] = [...R15_PARTS, ...R6_PARTS.filter((p) => !(R15_PARTS as readonly string[]).includes(p))]
+const squash = (s: string) => s.toLowerCase().replace(/[\s_]+/g, '')
+const part = (v: unknown, d: BodyPart): BodyPart => {
+  const s = String(v ?? '')
+  return ALL_PARTS.find((p) => p === s) ?? ALL_PARTS.find((p) => squash(p) === squash(s)) ?? d
+}
+// The attachment's part: in the R6 table when the event names an R6 limb or the Torso.
+function attachmentPart(name: string, p: BodyPart): BodyPart | null {
+  const r6 = isR6Part(p) && p !== 'HumanoidRootPart' && p !== 'Head'
+  const a = (r6 ? R6_RIG_ATTACHMENTS[name] : RIG_ATTACHMENTS[name]) ?? RIG_ATTACHMENTS[name] ?? R6_RIG_ATTACHMENTS[name]
+  return a ? a.part : null
+}
 const style = (v: unknown): EasingStyle => EASING_STYLES.find((s) => s.toLowerCase() === String(v ?? '').toLowerCase()) ?? 'Quad'
 
 // A fresh event id that is not taken.
@@ -109,13 +121,14 @@ export function normalizeEvent(raw: unknown, fallbackId: string): AbilityEvent {
     case 'vfx': {
       const effect = String(o.effect ?? '').trim()
       if (!effect) throw new AbilityError(`vfx event "${base.id}": effect (a VFX Lab entry id) is required`)
-      const attachment = typeof o.attachment === 'string' && RIG_ATTACHMENTS[o.attachment] ? o.attachment : undefined
+      const given = part(o.part, 'HumanoidRootPart')
+      const attachment = typeof o.attachment === 'string' && attachmentPart(o.attachment, given) ? o.attachment : undefined
       return {
         ...base,
         kind,
         effect: effect.slice(0, 100),
         effectName: abilityName(String(o.effectName ?? effect)),
-        part: attachment ? RIG_ATTACHMENTS[attachment].part : part(o.part, 'HumanoidRootPart'),
+        part: attachment ? attachmentPart(attachment, given)! : given,
         ...(attachment ? { attachment } : {}),
         offset: vec3(o.offset, [0, 0, 0]),
         rotation: vec3(o.rotation, [0, 0, 0]),
@@ -182,7 +195,8 @@ export function normalizeAnimation(raw: unknown): AbilityAnimation | null {
     speed: r3(num(o.speed, 1, 0.05, 10)),
     start: r3(num(o.start, 0, 0, MAX_DURATION)),
     fadeIn: r3(num(o.fadeIn, 0.1, 0, 2)),
-    ...(assetId ? { assetId: `rbxassetid://${assetId}` } : {})
+    ...(assetId ? { assetId: `rbxassetid://${assetId}` } : {}),
+    ...(o.rig === 'R6' ? { rig: 'R6' as const } : {})
   }
 }
 

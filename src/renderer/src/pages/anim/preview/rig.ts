@@ -1,13 +1,14 @@
 // The Animation Lab's WebGL preview: a blocky R15 dummy (shared/anim/r15.ts proportions, feet on
-// y = 0, facing -Z) posed by forward kinematics from the clip at time t, an optional ghost of a
+// y = 0, facing -Z) or, for R6 clips, the R6 dummy (shared/anim/r6.ts: Head, Torso, one part per arm
+// and leg on the default R6 Motor6Ds) posed by forward kinematics from the clip at time t, an optional ghost of a
 // library reference clip, onion skins (earlier and later poses), a floor grid and three cameras.
 // The same scene renders offscreen for the critic (AnimCapture).
 
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import type { AnimClip } from '@shared/anim/model'
-import { forwardKinematics, PARTS, type R15Part } from '@shared/anim/r15'
-import { samplePose } from '@shared/anim/sample'
+import type { AnimClip, RigType } from '@shared/anim/model'
+import { drawPartNames, drawSize, partRole, posedParts, type PartRole } from '@shared/anim/posed'
+import { clipRig } from '@shared/anim/sample'
 
 export type AnimView = 'front' | 'side' | 'wide'
 
@@ -17,39 +18,34 @@ const VIEWS: Record<AnimView, { pos: [number, number, number]; target: [number, 
   wide: { pos: [9, 7.5, -14], target: [0, 2.2, -2.5] }
 }
 
-const BODY = Object.keys(PARTS).filter((p) => p !== 'HumanoidRootPart') as R15Part[]
-
-const COLORS: Record<string, number> = {
-  Head: 0xd9d4ca,
-  UpperTorso: 0x4f7fc4,
-  LowerTorso: 0x41679f,
-  left: 0x8e96a2,
-  right: 0xc2ab8d,
-  leg: 0x3d4656
-}
-
-function partColor(p: R15Part): number {
-  if (COLORS[p]) return COLORS[p]
-  if (p.includes('Leg') || p.includes('Foot')) return p.startsWith('Right') ? 0x55617a : COLORS.leg
-  return p.startsWith('Right') ? COLORS.right : COLORS.left
+function partColor(role: PartRole, side?: 'Left' | 'Right'): number {
+  if (role === 'head') return 0xd9d4ca
+  if (role === 'torso') return 0x4f7fc4
+  if (role === 'lowerTorso') return 0x41679f
+  if (role === 'upperLeg' || role === 'lowerLeg' || role === 'foot' || role === 'leg') return side === 'Right' ? 0x55617a : 0x3d4656
+  return side === 'Right' ? 0xc2ab8d : 0x8e96a2
 }
 
 interface Rig {
+  rig: RigType
   group: THREE.Group
-  meshes: Map<R15Part, THREE.Mesh>
+  meshes: Map<string, THREE.Mesh>
 }
 
-function buildRig(opts: { ghost?: number; opacity?: number } = {}): Rig {
+function buildRig(opts: { ghost?: number; opacity?: number; rig?: RigType } = {}): Rig {
+  const rig = opts.rig ?? 'R15'
   const group = new THREE.Group()
-  const meshes = new Map<R15Part, THREE.Mesh>()
-  for (const p of BODY) {
-    const s = PARTS[p].size
-    const inset = p === 'Head' ? 0.92 : p.includes('Torso') ? 1 : 0.9
-    const geo = new THREE.BoxGeometry(s[0] * inset, s[1] * (p.includes('Torso') ? 1 : 0.98), s[2] * inset)
+  const meshes = new Map<string, THREE.Mesh>()
+  for (const p of drawPartNames(rig)) {
+    const s = drawSize(rig, p)
+    const role = partRole(rig, p)
+    const torso = role === 'torso' || role === 'lowerTorso'
+    const inset = role === 'head' ? 0.92 : torso ? 1 : 0.9
+    const geo = new THREE.BoxGeometry(s[0] * inset, s[1] * (torso ? 1 : 0.98), s[2] * inset)
     const ghost = opts.ghost !== undefined
     const mat = ghost
       ? new THREE.MeshBasicMaterial({ color: opts.ghost, transparent: true, opacity: opts.opacity ?? 0.25, depthWrite: false })
-      : new THREE.MeshStandardMaterial({ color: partColor(p), roughness: 0.8, metalness: 0 })
+      : new THREE.MeshStandardMaterial({ color: partColor(role, p.startsWith('Left') ? 'Left' : p.startsWith('Right') ? 'Right' : undefined), roughness: 0.8, metalness: 0 })
     const mesh = new THREE.Mesh(geo, mat)
     mesh.matrixAutoUpdate = false
     if (!ghost) {
@@ -59,18 +55,17 @@ function buildRig(opts: { ghost?: number; opacity?: number } = {}): Rig {
     group.add(mesh)
     meshes.set(p, mesh)
   }
-  return { group, meshes }
+  return { rig, group, meshes }
 }
 
 function poseRig(rig: Rig, clip: AnimClip | null, t: number, travel: boolean): void {
-  const pose = clip ? samplePose(clip, t) : {}
-  if (!travel && pose.Root) pose.Root = { p: [0, pose.Root.p[1], 0], q: pose.Root.q }
-  const parts = forwardKinematics(pose)
+  const parts = new Map(posedParts(clip, t, travel, rig.rig).map((p) => [p.name, p.x]))
   const q = new THREE.Quaternion()
   const v = new THREE.Vector3()
   const one = new THREE.Vector3(1, 1, 1)
   for (const [p, mesh] of rig.meshes) {
-    const x = parts[p]
+    const x = parts.get(p)
+    if (!x) continue
     q.set(x.q[0], x.q[1], x.q[2], x.q[3])
     v.set(x.p[0], x.p[1], x.p[2])
     mesh.matrix.compose(v, q, one)
@@ -145,12 +140,34 @@ export class AnimScene {
     } else this.camera.lookAt(...v.target)
   }
 
+  // The dummy follows the clip's rig (R15 or R6); rebuilt when it changes.
   setClip(clip: AnimClip | null): void {
     this.clip = clip
+    const rig = clipRig(clip)
+    if (rig !== this.rig.rig) {
+      this.scene.remove(this.rig.group)
+      disposeRig(this.rig)
+      this.rig = buildRig({ rig })
+      this.scene.add(this.rig.group)
+      const n = this.onion
+      this.onion = -1
+      this.setOnion(n, this.onionStep)
+    }
+  }
+
+  get rigType(): RigType {
+    return this.rig.rig
   }
 
   setReference(clip: AnimClip | null): void {
     this.reference = clip
+    const rig = clipRig(clip)
+    if (clip && rig !== this.ghost.rig) {
+      this.scene.remove(this.ghost.group)
+      disposeRig(this.ghost)
+      this.ghost = buildRig({ ghost: 0x6fd3c4, opacity: 0.28, rig })
+      this.scene.add(this.ghost.group)
+    }
     this.ghost.group.visible = !!clip
   }
 
@@ -166,7 +183,7 @@ export class AnimScene {
     this.onion = n
     for (let i = 1; i <= n; i++) {
       for (const sign of [-1, 1]) {
-        const rig = buildRig({ ghost: sign < 0 ? 0x7c8cff : 0xffa86b, opacity: 0.16 / i + 0.04 })
+        const rig = buildRig({ ghost: sign < 0 ? 0x7c8cff : 0xffa86b, opacity: 0.16 / i + 0.04, rig: this.rig.rig })
         this.scene.add(rig.group)
         this.onions.push({ rig, dt: sign * i })
       }

@@ -78,7 +78,7 @@ export class AbilityServiceError extends Error {}
 const FRAME_SIZE = { width: 512, height: 384 }
 const AUDIO_MIME: Record<string, string> = { '.mp3': 'audio/mpeg', '.ogg': 'audio/ogg', '.wav': 'audio/wav', '.flac': 'audio/flac', '.m4a': 'audio/mp4' }
 
-export const COMPOSE_SYSTEM = `You time Roblox abilities ("moves") for the RBX Forge Ability Composer. You get a drafted move as JSON (an animation clip with markers, VFX attached to R15 parts, screen effects, camera shake, hit-stop and root movement), its resolved timeline and the timing checks.
+export const COMPOSE_SYSTEM = `You time Roblox abilities ("moves") for the RBX Forge Ability Composer. You get a drafted move as JSON (an animation clip with markers, VFX attached to body parts of the clip's rig (R15, or R6 Torso / "Right Arm"... when animation.rig is "R6"), screen effects, camera shake, hit-stop and root movement), its resolved timeline and the timing checks.
 Improve the timing and feel for the request. Answer with JSON only: {"events":[{"id":"existing or new id","kind":"vfx|screen|shake|hitstop|move","at":{"marker":"release","at":0},...fields}],"remove":["ids"],"duration":seconds}. Keep event ids you edit; only include fields you change. Never invent VFX entry ids or sound asset ids.
 
 ${ABILITY_GUIDE}`

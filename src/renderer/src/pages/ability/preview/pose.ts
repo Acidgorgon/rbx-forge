@@ -5,7 +5,7 @@
 
 import { isPlaceholder, placeholderPose } from '@shared/ability/placeholder'
 import type { Pose } from '@shared/ability/rig'
-import type { AbilityAnimation } from '@shared/ability/types'
+import type { AbilityAnimation, AbilityRig } from '@shared/ability/types'
 import type { AnimClipRef } from '@shared/anim/types'
 
 type AnimIpc = {
@@ -50,6 +50,18 @@ export class PoseTrack {
     const poses = await Promise.all(Array.from({ length: n }, (_, i) => get(animation.clip, (i / (n - 1)) * animation.duration).catch(() => null)))
     if (poses.every((p) => !p)) this.missing = true
     this.samples = poses.map((p) => p ?? {})
+  }
+
+  // The rig the samples are for: R6 when getAnimPose keys R6 Motor6Ds (RootJoint, "Right Shoulder"...),
+  // else the clip's cached rig; placeholders are R15.
+  get rig(): AbilityRig {
+    const a = this.animation
+    if (!a || isPlaceholder(a.clip)) return 'R15'
+    for (const p of this.samples) {
+      const keys = Object.keys(p)
+      if (keys.length) return keys.some((k) => k === 'RootJoint' || k.includes(' ')) ? 'R6' : 'R15'
+    }
+    return a.rig ?? 'R15'
   }
 
   // Clip time for ability time t, or null while the clip is not playing (rest pose).

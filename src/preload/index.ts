@@ -62,7 +62,7 @@ const methods = [
   'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample',
   // Animation Lab (services/anim) + Labs model tiers
   'animStatus', 'animList', 'animGet', 'animImport', 'animPreviewImport', 'animChooseImport', 'animUpdate', 'animDelete', 'animRate',
-  'animLearn', 'animStyle', 'animCoverage', 'animCompose', 'animRunScript', 'animRefine', 'animCancel', 'animChecks', 'animExamples',
+  'animLearn', 'animStyle', 'animCoverage', 'animCompose', 'animRunScript', 'animGetRig', 'animSetRig', 'animConvert', 'animRefine', 'animCancel', 'animChecks', 'animExamples',
   'animAddExample', 'animFile', 'animSaveThumb', 'animExport', 'animUpload', 'listAnimClips', 'getAnimPose', 'getLabModels', 'setLabModels',
   // Ability Composer (moves: animation + VFX + shake / screen / hit-stop / movement)
   'abilityStatus', 'abilityList', 'abilityGet', 'abilitySave', 'abilityDelete', 'abilityRate', 'abilityCompose', 'abilityCritique',

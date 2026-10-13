@@ -134,7 +134,7 @@ export function AnimScriptPanel({ entry, onPreview }: { entry: AnimEntry; onPrev
         />
       </div>
       <div className="vfx-script-out mono" aria-live="polite">
-        {!result && <span className="faint">Run records the script with Lune (Ctrl/Cmd+Enter): kit poses, IK, foot plants and overlap become R15 keyframes.</span>}
+        {!result && <span className="faint">Run records the script with Lune (Ctrl/Cmd+Enter): kit poses, IK, foot plants and overlap become keyframes on the clip's rig ({entry.clip.rig ?? 'R15'}).</span>}
         {err && (
           <button className="vfx-script-err" onClick={() => err.line && (editorRef.current?.setPosition({ lineNumber: err.line, column: 1 }), editorRef.current?.revealLineInCenter(err.line), editorRef.current?.focus())}>
             <Icon name="err" size={11} /> {err.line ? `line ${err.line}: ` : ''}

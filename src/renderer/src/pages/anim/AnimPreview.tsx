@@ -1,4 +1,4 @@
-// Live preview of a clip on a blocky R15 dummy (three.js, preview/rig.ts) with transport controls:
+// Live preview of a clip on a blocky R15 or R6 dummy (the clip's rig) (three.js, preview/rig.ts) with transport controls:
 // play / pause, scrub on the timeline (beats, markers, keys), loop, slow motion, onion skins, root
 // motion on / in place, front / side / wide camera, and the ghost of a library reference clip.
 import { useEffect, useRef, useState } from 'react'

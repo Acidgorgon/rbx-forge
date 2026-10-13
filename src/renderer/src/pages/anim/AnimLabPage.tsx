@@ -1,10 +1,13 @@
-// Animation Lab: a library of R15 clips (imported KeyframeSequences and BVH, built-in examples and
+// Animation Lab: a library of R15 and R6 clips (imported KeyframeSequences and BVH, built-in examples and
 // generated clips) with tags, ratings, notes and "avoid" examples; the learned style profiles and the
 // library coverage; "Animate a ___" (script draft -> keys -> checks -> render / critique / refine, in
-// main); and a detail view with the live R15 preview, timeline, Script tab, checks and iterations.
+// main); and a detail view with the live preview, timeline, Script tab, checks and iterations. The
+// header's R15 / R6 switch sets the project rig new clips use; a clip converts between rigs in its detail.
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { AnimClip, AnimCoverage, AnimEntry, AnimImportPreview, AnimLabStatus, AnimRefineProgress, AnimScope, AnimStyle, AnimStyleProfile, LearnedPose, R15Joint } from '@shared/types'
+import type { AnimClip, AnimCoverage, AnimEntry, AnimImportPreview, AnimLabStatus, AnimRefineProgress, AnimScope, AnimStyle, AnimStyleProfile, LearnedPose, R15Joint, RigType } from '@shared/types'
 import { ANIM_RUBRIC_KEYS } from '@shared/anim/model'
+import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
+import { clipRig } from '@shared/anim/sample'
 import { MOVE_TAGS } from '@shared/anim/style'
 import { qeulerDeg, xfToCf } from '@shared/anim/math'
 import { useStore } from '../../store'
@@ -133,7 +136,10 @@ function Card({ entry, selected, progress, onSelect }: { entry: AnimEntry; selec
       <div className="vfx-cap">
         <span className="vfx-name">{entry.name}</span>
         {qualityTag(entry)}
-        <span className="faint mono">{entry.kind === 'generated' ? 'made' : entry.clip.source === 'bvh' ? 'bvh' : 'rbxm'}</span>
+        <span className="faint mono">
+          {entry.kind === 'generated' ? 'made' : entry.clip.source === 'bvh' ? 'bvh' : 'rbxm'}
+          {clipRig(entry.clip) === 'R6' ? <span className="anim-rig-b">R6</span> : null}
+        </span>
       </div>
       <div className="vfx-tags">
         {entry.tags.slice(0, 4).map((t) => (
@@ -186,7 +192,9 @@ function poseClip(p: LearnedPose): AnimClip {
   const tracks: AnimClip['tracks'] = {}
   for (const [j, e] of Object.entries(p.joints) as [R15Joint, [number, number, number]][]) tracks[j] = [{ t: 0, cf: xfToCf({ p: [0, 0, 0], q: qeulerDeg(e) }) }]
   if (p.root) tracks.Root = [{ t: 0, cf: xfToCf({ p: [0, 0, 0], q: qeulerDeg(p.root) }) }]
-  return { name: p.id, duration: 0.1, looped: false, priority: 'Action', tracks, markers: [] }
+  const clip: AnimClip = { name: p.id, duration: 0.1, looped: false, priority: 'Action', tracks, markers: [] }
+  // R6 learned poses (ids "r6-...") are measured on the R15 view: draw them on the R6 dummy.
+  return p.id.startsWith('r6-') ? convertClip(clip, 'R6') : clip
 }
 
 function Pct({ label, p, max }: { label: string; p: { p10: number; median: number; p90: number }; max: number }) {
@@ -214,7 +222,8 @@ function ProfileCard({ p }: { p: AnimStyleProfile }) {
           {p.liked ? ` · ${p.liked} liked` : ''}
         </span>
         <span className="grow" />
-        <span className="mono faint">anim-style-{p.tag === '*' ? 'overall' : p.tag}</span>
+        {p.rig === 'R6' && <span className="anim-rig-b">R6</span>}
+        <span className="mono faint">anim-style-{p.rig === 'R6' ? 'r6-' : ''}{p.tag === '*' ? 'overall' : p.tag}</span>
       </header>
       {p.samples > 0 && (
         <>
@@ -257,7 +266,7 @@ function ProfileCard({ p }: { p: AnimStyleProfile }) {
 }
 
 function StyleView({ style, onLearn, busy }: { style: AnimStyle | null; onLearn: () => void; busy: boolean }) {
-  const profiles = [...(style?.profiles ?? []), ...(style?.overall ? [style.overall] : [])]
+  const profiles = [...(style?.profiles ?? []), ...(style?.overall ? [style.overall] : []), ...(style?.r6?.profiles ?? []), ...(style?.r6?.overall ? [style.r6.overall] : [])]
   return (
     <div className="anim-style">
       <div className="row anim-style-head">
@@ -270,7 +279,7 @@ function StyleView({ style, onLearn, busy }: { style: AnimStyle | null; onLearn:
       </div>
       {!profiles.length && <div className="empty">No profiles yet. Import reference clips (or add the examples), then Learn.</div>}
       {profiles.map((p) => (
-        <ProfileCard key={p.tag} p={p} />
+        <ProfileCard key={`${p.rig ?? 'R15'}-${p.tag}`} p={p} />
       ))}
     </div>
   )
@@ -409,6 +418,16 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
   const refining = !!progress && progress.phase !== 'done' && progress.phase !== 'error'
   const refs = useMemo(() => entries.filter((e) => e.id !== entry.id && !bad(e) && e.tags.some((t) => entry.tags.includes(t))).slice(0, 12), [entries, entry])
   const reference = entry.reference ? entries.find((e) => e.id === entry.reference)?.clip ?? null : null
+  const rig = clipRig(entry.clip)
+  const other: RigType = rig === 'R6' ? 'R15' : 'R6'
+  const [converting, setConverting] = useState(false)
+  useEffect(() => setConverting(false), [entry.id])
+  const convert = (copy: boolean) =>
+    act('Convert', async () => {
+      const r = await h.animConvert(entry.id, other, { copy })
+      setConverting(false)
+      actions.toast({ text: copy ? `Copied as ${other}: ${r.entry.name}` : `Converted to ${other}`, detail: r.warning, kind: 'ok', ms: 5000 })
+    })
 
   const rate = async (r: 'up' | 'down') => {
     try {
@@ -452,6 +471,9 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
         <Icon name="figure" size={13} />
         <b className="vfx-title">{entry.name}</b>
         <span className="badge-o">{entry.scope}</span>
+        <span className="anim-rig-b" title={rig === 'R6' ? 'R6: Torso, Head and one part per arm / leg (RootJoint, Neck, shoulders, hips)' : 'R15: 15 parts'}>
+          {rig}
+        </span>
         {qualityTag(entry)}
         <span className="grow" />
         <button className={`btn small ghost${entry.rating === 'up' ? ' on' : ''}`} aria-pressed={entry.rating === 'up'} onClick={() => void rate('up')} title="Good: use as a reference, save as an example">
@@ -493,10 +515,35 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
         {entry.roblox && <span className="note mono">rbxassetid://{entry.roblox.assetId}</span>}
         {entry.written && !entry.roblox && <span className="note mono vfx-written" title={`${entry.written.module}\n${entry.written.model}`}>{entry.written.module}</span>}
         <span className="grow" />
+        <button className={`btn small ghost${converting ? ' on' : ''}`} onClick={() => setConverting(!converting)} disabled={!!busy || refining} aria-expanded={converting} title={`Convert this clip to ${other}`}>
+          {busy === 'Convert' ? <span className="spinner" aria-hidden /> : <Icon name="restart" size={11} />} To {other}
+        </button>
         <button className="btn small ghost danger" onClick={() => void remove()} aria-label="Delete">
           <Icon name="trash" size={11} />
         </button>
       </div>
+      {converting && (
+        <div className="callout anim-convert" role="alertdialog" aria-label={`Convert to ${other}`}>
+          <Icon name="warn" size={12} />
+          <div className="grow">
+            <b className="mono">
+              {rig} → {other}
+            </b>
+            <p className="note">{RIG_CONVERT_WARNING[other]}</p>
+            <div className="row">
+              <button className="btn small primary" onClick={() => void convert(false)} disabled={!!busy}>
+                Convert
+              </button>
+              <button className="btn small" onClick={() => void convert(true)} disabled={!!busy} title="Keep this clip and add a converted copy">
+                Make a copy
+              </button>
+              <button className="btn small ghost" onClick={() => setConverting(false)}>
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
       <p className="note anim-idnote">
         Roblox plays animations by asset id: upload the clip (Upload, or publish Sequence.rbxmx from Studio's Animation Editor) and the id goes into the module's AnimationId. Until then the module registers the sequence with KeyframeSequenceProvider, which only works in Studio.
       </p>
@@ -538,7 +585,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
             </dd>
             <dt>clip</dt>
             <dd className="mono">
-              {entry.clip.duration.toFixed(2)}s · {entry.clip.priority}
+              {rig} · {entry.clip.duration.toFixed(2)}s · {entry.clip.priority}
               {entry.clip.looped ? ' · looped' : ''} · {Object.keys(entry.clip.tracks).length} joints
               {entry.stats ? ` · ${entry.stats.keys} keys` : ''}
             </dd>
@@ -576,7 +623,7 @@ interface ImportRow extends AnimImportPreview {
   quality: 'reference' | 'good' | 'avoid' | null
 }
 
-function ImportReview({ rows, scope, onChange, onCancel, onImport, busy }: { rows: ImportRow[]; scope: AnimScope; onChange: (rows: ImportRow[]) => void; onCancel: () => void; onImport: () => void; busy: boolean }) {
+function ImportReview({ rows, scope, onChange, onCancel, onImport, busy, convert, onConvert }: { rows: ImportRow[]; scope: AnimScope; onChange: (rows: ImportRow[]) => void; onCancel: () => void; onImport: () => void; busy: boolean; convert: RigType | null; onConvert: (r: RigType | null) => void }) {
   const ok = rows.filter((r) => !r.error)
   const set = (i: number, patch: Partial<ImportRow>) => onChange(rows.map((r, n) => (n === i ? { ...r, ...patch } : r)))
   return (
@@ -592,7 +639,7 @@ function ImportReview({ rows, scope, onChange, onCancel, onImport, busy }: { row
               {r.name}
               <span className="faint">
                 {' '}
-                {r.error ? '' : `${r.duration.toFixed(2)}s${r.looped ? ' ⟳' : ''}${r.markers ? ` · ${r.markers} markers` : ''}`}
+                {r.error ? '' : `${r.rig === 'R6' ? 'R6 · ' : ''}${r.duration.toFixed(2)}s${r.looped ? ' ⟳' : ''}${r.markers ? ` · ${r.markers} markers` : ''}`}
               </span>
             </span>
             {r.error ? (
@@ -613,6 +660,14 @@ function ImportReview({ rows, scope, onChange, onCancel, onImport, busy }: { row
         ))}
       </ul>
       <div className="row">
+        <span className="faint mono">rig</span>
+        <div className="seg" role="radiogroup" aria-label="Rig of the imported clips">
+          {([null, 'R15', 'R6'] as const).map((r) => (
+            <button key={r ?? 'keep'} type="button" role="radio" aria-checked={convert === r} className={convert === r ? 'on' : ''} onClick={() => onConvert(r)} title={r ? RIG_CONVERT_WARNING[r] : 'Each clip keeps its own rig (R6 KeyframeSequences stay R6)'}>
+              {r ? `all ${r}` : 'keep'}
+            </button>
+          ))}
+        </div>
         <span className="grow" />
         <button className="btn small ghost" onClick={onCancel}>
           Cancel
@@ -644,7 +699,19 @@ export function AnimLabPage() {
   const [busy, setBusy] = useState<string | null>(null)
   const [drag, setDrag] = useState(false)
   const [review, setReview] = useState<ImportRow[] | null>(null)
+  const [importRig, setImportRig] = useState<RigType | null>(null)
   const [progress, setProgress] = useState<Record<string, AnimRefineProgress>>({})
+  const rig: RigType = status?.rig ?? 'R15'
+  const switchRig = async (r: RigType) => {
+    if (r === rig) return
+    try {
+      await h.animSetRig(r)
+      await load()
+      actions.toast({ text: `New clips use ${r}`, detail: r === 'R6' ? 'Scripts, the kit, IK, checks and export use the R6 body (Torso, Head, one part per limb). Existing clips keep their rig.' : 'Existing clips keep their rig; convert one from its detail view.', kind: 'ok', ms: 3500 })
+    } catch (e) {
+      actions.toast({ text: 'Could not switch the rig', detail: errorText(e), kind: 'err' })
+    }
+  }
 
   const load = useCallback(async () => {
     try {
@@ -705,7 +772,7 @@ export function AnimLabPage() {
       const files = [...new Set(review.filter((r) => !r.error).map((r) => r.file))]
       for (const f of files) {
         const row = review.find((r) => r.file === f && !r.error)!
-        const r = await h.animImport([f], scope, { tags: row.tags, ...(row.quality ? { quality: row.quality } : {}) })
+        const r = await h.animImport([f], scope, { tags: row.tags, ...(row.quality ? { quality: row.quality } : {}), ...(importRig ? { convert: importRig } : {}) })
         added += r.added.length
         skipped.push(...r.skipped.map((s) => `${s.file.split(/[\\/]/).pop()} (${s.reason})`))
         if (r.added[0] && !selected) setSelected(r.added[0].id)
@@ -741,7 +808,7 @@ export function AnimLabPage() {
     if (!what || making) return
     setMaking(true)
     try {
-      const r = await h.animCompose(what, { maxIterations: iters, threshold, scope })
+      const r = await h.animCompose(what, { maxIterations: iters, threshold, scope, rig })
       if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the script did not compile')
       await load()
       setSelected(r.entry.id)
@@ -755,7 +822,7 @@ export function AnimLabPage() {
   }
   const addExample = async (key: string) => {
     try {
-      const entry = await h.animAddExample(key)
+      const entry = await h.animAddExample(rig === 'R6' ? `${key}-r6` : key)
       await load()
       setSelected(entry.id)
       setView('library')
@@ -777,11 +844,18 @@ export function AnimLabPage() {
           <div>
             <h1>Animation Lab</h1>
             <div className="sub">
-              {status ? `${status.entries.user} in your library · ${status.entries.project} in this project · ${status.profiles} style profile${status.profiles === 1 ? '' : 's'}` : 'loading…'}
+              {status ? `${status.rig} · ${status.entries.user} in your library · ${status.entries.project} in this project · ${status.profiles} style profile${status.profiles === 1 ? '' : 's'}` : 'loading…'}
               {status && !status.projectRoot ? ' · open a project to export' : ''}
             </div>
           </div>
           <div className="actions">
+            <div className="seg anim-rig" role="radiogroup" aria-label="Rig for new clips" title={status?.projectRoot ? 'Rig for new clips in this project (.forge/anim/settings.json)' : 'Default rig for new clips'}>
+              {(['R15', 'R6'] as const).map((r) => (
+                <button key={r} role="radio" aria-checked={rig === r} className={rig === r ? 'on' : ''} onClick={() => void switchRig(r)}>
+                  {r}
+                </button>
+              ))}
+            </div>
             <select className="input" value={scope} onChange={(e) => setScope(e.target.value as AnimScope)} aria-label="Library for imports and new clips">
               <option value="user">your library</option>
               <option value="project" disabled={!status?.projectRoot}>
@@ -849,15 +923,16 @@ export function AnimLabPage() {
             <span className="vfx-examples">
               <span className="faint mono">examples</span>
               {EXAMPLES.map((x) => (
-                <button key={x.key} type="button" className="badge-o" onClick={() => void addExample(x.key)} title="Add this built-in scripted example to the library and open it">
+                <button key={x.key} type="button" className="badge-o" onClick={() => void addExample(x.key)} title={`Add the ${rig} version of this built-in scripted example to the library and open it`}>
                   {x.label}
+                  {rig === 'R6' ? ' · R6' : ''}
                 </button>
               ))}
             </span>
           </div>
         </section>
 
-        {review && <ImportReview rows={review} scope={scope} onChange={setReview} onCancel={() => setReview(null)} onImport={() => void doImport()} busy={!!busy} />}
+        {review && <ImportReview rows={review} scope={scope} onChange={setReview} onCancel={() => setReview(null)} onImport={() => void doImport()} busy={!!busy} convert={importRig} onConvert={setImportRig} />}
 
         <div className={`vfx-body${current ? ' has-detail' : ''}`}>
           <div className="vfx-lib">
@@ -866,7 +941,7 @@ export function AnimLabPage() {
                 library · {entries.length}
               </button>
               <button role="tab" aria-selected={view === 'style'} className={view === 'style' ? 'on' : ''} onClick={() => setView('style')}>
-                style · {style?.profiles.length ?? 0}
+                style · {(style?.profiles.length ?? 0) + (style?.r6?.profiles.length ?? 0)}
               </button>
             </div>
             {view === 'style' ? (

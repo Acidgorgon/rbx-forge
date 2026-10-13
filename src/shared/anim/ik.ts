@@ -3,8 +3,9 @@
 // follow-through. All in character space (feet on y = 0, facing -Z), on the rig in r15.ts.
 
 import type { R15Joint } from './model.ts'
-import { clamp, qaxis, qconj, qfromAxes, qmul, qnorm, qrot, qslerp, qtoEuler, qeuler, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3, type Xf } from './math.ts'
+import { clamp, qaxis, qconj, qfromAxes, qfromTo, qmul, qnorm, qrot, qslerp, qtoEuler, qeuler, vadd, vcross, vdot, vlen, vnorm, vscale, vsub, type Quat, type V3, type Xf } from './math.ts'
 import { JOINTS, LIMB, LIMBS, jointWorld, type LimbName, type R15Part } from './r15.ts'
+import { R6_JOINT, R6_LIMB_JOINT, R6_LIMB_PART, r6ForwardKinematicsNeutral, r6JointWorld, r6LimbEnd } from './r6.ts'
 
 export interface IkResult {
   upper: Quat
@@ -126,3 +127,25 @@ export function springFollow(targets: Quat[], dt: number, freq = 4, damping = 0.
 
 export { LIMBS, type LimbName }
 export type { R15Joint }
+
+// ------------------------------------------------------------------ R6
+
+// R6 limbs are one part with no elbow or knee, so "IK" aims the whole limb: the shoulder (hip) turns
+// so the grip point (the sole) points at the target, keeping the limb's twist. Pose and result are
+// neutral transforms on the R15 names of the R6 joints (RightShoulder, LeftHip...).
+export function aimLimbR6(pose: Partial<Record<R15Joint, Xf>>, limb: LimbName, target: V3): { upper: Quat; end: V3; reached: boolean } {
+  const parts = r6ForwardKinematicsNeutral(pose)
+  const joint = R6_LIMB_JOINT[limb]
+  const part = R6_LIMB_PART[limb]
+  const S = r6JointWorld(parts, joint)
+  const end = r6LimbEnd(parts, part)
+  const cur = vsub(end, S)
+  const want = vsub(target, S)
+  const reach = vlen(cur)
+  const world = qnorm(qmul(qfromTo(cur, vnorm(want, cur)), parts[part].q))
+  const parent = parts[R6_JOINT[joint].part0].q
+  // Local rotation in the joint's plain frame: Part1 world = Part0 * N (pure offsets around the pivot).
+  const upper = qnorm(qmul(qconj(parent), world))
+  const dist = vlen(want)
+  return { upper, end: vadd(S, vscale(vnorm(want, cur), reach)), reached: Math.abs(dist - reach) < 0.15 || dist < reach }
+}

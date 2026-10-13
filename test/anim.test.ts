@@ -254,12 +254,13 @@ test('ik: two-bone solve reaches a target in range and reports out-of-range ones
 })
 
 test('compile: the recorded examples become clips with their markers and pass the checks', () => {
-  const want: Record<string, string[]> = { 'sign-push': ['charge', 'release'], 'dash-punch': ['hit'], 'hit-reaction': ['impact'] }
+  const want: Record<string, string[]> = { 'sign-push': ['charge', 'release'], 'dash-punch': ['hit'], 'hit-reaction': ['impact'], 'sign-push-r6': ['charge', 'release'], 'dash-punch-r6': ['hit'], 'hit-reaction-r6': ['impact'] }
   for (const ex of ANIM_EXAMPLES) {
     const { clip, warnings } = compileAnim(ANIM_RECORDED[ex.key], ex.script)
     assert.equal(clip.name, ex.name)
     assert.deepEqual(clip.markers.map((m) => m.name), want[ex.key])
-    assert.ok(keyCount(clip) > 20, `${ex.key} keys`)
+    assert.equal(clip.rig ?? 'R15', ex.rig ?? 'R15')
+    assert.ok(keyCount(clip) > (ex.rig === 'R6' ? 12 : 20), `${ex.key} keys`)
     assert.ok(clip.beats && clip.beats.length >= 3)
     assert.ok(!warnings.some((w) => /error/i.test(w)), warnings.join('; '))
     const report = runChecks(clip)
@@ -466,7 +467,7 @@ test('service: import with tags, rate, avoid exclusion, listAnimClips / getAnimP
 
     const refs = await svc.listAnimClips()
     assert.deepEqual(refs.map((r) => r.name), ['DashPunch'], 'avoid clips are not offered')
-    assert.deepEqual(Object.keys(refs[0]).sort(), ['duration', 'id', 'looped', 'markers', 'name', 'scope'])
+    assert.deepEqual(Object.keys(refs[0]).sort(), ['duration', 'id', 'looped', 'markers', 'name', 'rig', 'scope'])
     assert.deepEqual(refs[0].markers.map((m) => m.name), ['hit'])
     const pose = await svc.getAnimPose(refs[0].id, refs[0].markers[0].t)
     assert.ok(pose && Array.isArray(pose.RightShoulder) && pose.RightShoulder.length === 12)

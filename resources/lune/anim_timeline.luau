@@ -225,6 +225,13 @@ function anim:priority(p)
 	record({ op = "priority", value = ser(p) })
 end
 
+function anim:rig(kind)
+	if kind ~= "R15" and kind ~= "R6" then
+		fail('a:rig: expected "R15" or "R6"')
+	end
+	record({ op = "rig", value = kind })
+end
+
 function anim:name(n)
 	record({ op = "name", value = str(n, "name", "name") })
 end

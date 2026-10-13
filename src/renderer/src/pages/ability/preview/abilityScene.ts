@@ -1,4 +1,4 @@
-// The Ability Composer's WebGL preview: a blocky R15 dummy posed by the move's animation (placeholder
+// The Ability Composer's WebGL preview: a blocky R15 or R6 dummy (the clip's rig) posed by the move's animation (placeholder
 // pose track or Animation Lab clip, Motor6D maths in shared/ability/rig.ts), root movement from move
 // events, one VFX Lab layer (pages/vfx/preview/fxLayer.ts) per VFX event spawned at its part or
 // attachment CFrame when the event starts (like Effect.play(cframe) in game), and camera shake on top
@@ -7,9 +7,9 @@
 
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
-import { attachWorld, PART_SIZE, ROOT_HEIGHT, solveRig } from '@shared/ability/rig'
+import { attachWorldFor, partsFor, partSize, ROOT_HEIGHT, solveRigFor } from '@shared/ability/rig'
 import { resolveAbility, rootOffset, screenAt, shakeAt, type EventLengths, type ResolvedAbility, type ScreenState } from '@shared/ability/timing'
-import { R15_PARTS, type Ability, type R15Part, type VfxEvent } from '@shared/ability/types'
+import type { Ability, AbilityRig, BodyPart, VfxEvent } from '@shared/ability/types'
 import type { CFrameArr, VfxEffect } from '@shared/vfx/types'
 import { FxLayer } from '../../vfx/preview/fxLayer'
 import { addStage, BG, TextureCache, type Background, type TextureResolver } from '../../vfx/preview/scene'
@@ -40,14 +40,14 @@ function rootAt(resolved: ResolvedAbility, t: number): CFrameArr {
   return [o[0], ROOT_HEIGHT + o[1], o[2], 1, 0, 0, 0, 1, 0, 0, 0, 1]
 }
 
-function buildRig(): { group: THREE.Group; parts: Map<R15Part, THREE.Mesh> } {
+function buildRig(rig: AbilityRig = 'R15'): { group: THREE.Group; parts: Map<BodyPart, THREE.Mesh>; rig: AbilityRig } {
   const group = new THREE.Group()
   const mat = new THREE.MeshStandardMaterial({ color: 0x9aa1ab, roughness: 0.85, metalness: 0 })
   const face = new THREE.MeshStandardMaterial({ color: 0x6f7782, roughness: 0.85, metalness: 0 })
-  const parts = new Map<R15Part, THREE.Mesh>()
-  for (const p of R15_PARTS) {
+  const parts = new Map<BodyPart, THREE.Mesh>()
+  for (const p of partsFor(rig)) {
     if (p === 'HumanoidRootPart') continue
-    const [w, h, d] = PART_SIZE[p]
+    const [w, h, d] = partSize(rig, p)
     const geo = p === 'Head' ? new THREE.SphereGeometry(0.62, 24, 16).scale(1.1, 1, 1.1) : new THREE.BoxGeometry(w * 0.98, h * 0.98, d * 0.98)
     const mesh = new THREE.Mesh(geo, mat)
     mesh.matrixAutoUpdate = false
@@ -58,7 +58,7 @@ function buildRig(): { group: THREE.Group; parts: Map<R15Part, THREE.Mesh> } {
   const nose = new THREE.Mesh(new THREE.BoxGeometry(0.3, 0.18, 0.2), face)
   nose.position.set(0, 0, -0.66)
   parts.get('Head')!.add(nose)
-  return { group, parts }
+  return { group, parts, rig }
 }
 
 interface VfxLayerSlot {
@@ -128,6 +128,10 @@ export class AbilityScene {
     return this.resolved
   }
 
+  get rigType(): AbilityRig {
+    return this.rig.rig
+  }
+
   get poseMissing(): boolean {
     return this.pose.missing
   }
@@ -141,6 +145,12 @@ export class AbilityScene {
     this.resolved = resolveAbility(ability, lengths)
     await this.pose.load(ability.animation, opts.reloadPose)
     if (seq !== this.loadSeq) return
+    if (this.pose.rig !== this.rig.rig) {
+      this.scene.remove(this.rig.group)
+      for (const m of this.rig.parts.values()) m.geometry.dispose()
+      this.rig = buildRig(this.pose.rig)
+      this.scene.add(this.rig.group)
+    }
     for (const s of this.slots) {
       s.layer.clear()
       this.scene.remove(s.layer.group)
@@ -156,8 +166,8 @@ export class AbilityScene {
       layer.group.visible = false
       this.scene.add(layer.group)
       // Placed where the part (or attachment) is when the event starts, like Effect.play(cframe).
-      const parts = solveRig(rootAt(this.resolved, r.start), this.pose.at(r.start))
-      cframeMatrix(attachWorld(parts, r.event.part, r.event.attachment, r.event.offset, r.event.rotation), layer.group.matrix)
+      const parts = solveRigFor(this.rig.rig, rootAt(this.resolved, r.start), this.pose.at(r.start))
+      cframeMatrix(attachWorldFor(this.rig.rig, parts, r.event.part, r.event.attachment, r.event.offset, r.event.rotation), layer.group.matrix)
       layer.group.matrixWorldNeedsUpdate = true
       this.slots.push({ event: r.event, layer, start: r.start, length: fx.duration })
       waits.push(layer.load({ ...fx, anchor: [0, 0, 0], motion: 'static' }, 1))
@@ -167,7 +177,7 @@ export class AbilityScene {
 
   // Poses the dummy, runs every VFX layer and works out shake and screen effects at ability time t.
   setTime(t: number): AbilityFrame {
-    const parts = solveRig(rootAt(this.resolved, t), this.pose.at(t))
+    const parts = solveRigFor(this.rig.rig, rootAt(this.resolved, t), this.pose.at(t))
     for (const [name, mesh] of this.rig.parts) {
       cframeMatrix(parts[name], mesh.matrix)
       mesh.matrixWorldNeedsUpdate = true

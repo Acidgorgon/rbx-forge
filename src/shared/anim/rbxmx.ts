@@ -6,14 +6,16 @@
 //
 // The XML (.rbxmx) side is read here with the VFX Lab's small XML reader; binary .rbxm comes in
 // through Lune (resources/lune/anim_extract.luau) in the same RawSequence shape. R6 sequences
-// (Torso, "Left Arm"...) are retargeted onto R15 joints.
+// (Torso, "Left Arm"...) stay R6 with keepR6 (tracks on the R6 Motor6D names, Transforms unchanged),
+// or are retargeted onto R15 joints. Export writes the pose tree of the clip's rig.
 
 import { parseXml, type XmlEl } from '../vfx/rbxmx.ts'
-import { ANIM_PRIORITIES, POSE_EASING_DIRECTIONS, POSE_EASING_STYLES, R15_JOINTS, type AnimClip, type AnimKey, type AnimPriority, type PoseEasingDirection, type PoseEasingStyle, type R15Joint } from './model.ts'
+import { ANIM_PRIORITIES, POSE_EASING_DIRECTIONS, POSE_EASING_STYLES, R15_JOINTS, type AnimClip, type AnimJoint, type AnimKey, type AnimPriority, type PoseEasingDirection, type PoseEasingStyle, type R15Joint } from './model.ts'
 import type { AnimMarker } from './types.ts'
-import { cfToXf, isCf, qconj, qeuler, qmul, qrot, xfToCf, type CF, type Xf } from './math.ts'
-import { normalizeKeys } from './sample.ts'
-import { JOINT_OF_PART, JOINTS, PART_OF_JOINT, type R15Part } from './r15.ts'
+import { cfToXf, isCf, xfToCf, type CF, type Xf } from './math.ts'
+import { clipRig, normalizeKeys } from './sample.ts'
+import { JOINT_OF_PART, JOINTS, PART_OF_JOINT } from './r15.ts'
+import { R6_JOINT_DEFS, R6_JOINT_OF_PART, r6ToNeutral, R15_OF_R6 } from './r6.ts'
 
 export interface RawPose {
   name: string
@@ -135,21 +137,8 @@ export function readKeyframeSequencesXml(xml: string): RawSequence[] {
 
 // ------------------------------------------------------------------ retarget (pose names -> joints)
 
-// R6 Motor6Ds have rotated C0/C1 (Roblox's default R6 rig), so their Transform is expressed in a
-// rotated joint frame. Rotating it back gives the equivalent R15 joint-local transform.
-const R6: Record<string, { joint: R15Joint; c0: [number, number, number] }> = {
-  Torso: { joint: 'Root', c0: [-Math.PI / 2, 0, Math.PI] },
-  Head: { joint: 'Neck', c0: [-Math.PI / 2, 0, Math.PI] },
-  'Right Arm': { joint: 'RightShoulder', c0: [0, Math.PI / 2, 0] },
-  'Left Arm': { joint: 'LeftShoulder', c0: [0, -Math.PI / 2, 0] },
-  'Right Leg': { joint: 'RightHip', c0: [0, Math.PI / 2, 0] },
-  'Left Leg': { joint: 'LeftHip', c0: [0, -Math.PI / 2, 0] }
-}
-
-function conjugate(t: Xf, e: [number, number, number]): Xf {
-  const r = qeuler(e[0], e[1], e[2])
-  return { p: qrot(r, t.p), q: qmul(qmul(r, t.q), qconj(r)) }
-}
+// R6 Motor6Ds have rotated C0/C1 (Roblox's default R6 rig, r6.ts), so their Transform is expressed
+// in a rotated joint frame; retargeting rotates it into the plain frame of the R15 joint (r6ToNeutral).
 
 export interface RetargetInfo {
   rig: 'R15' | 'R6' | 'unknown'
@@ -166,7 +155,7 @@ export function normalizeRawSequence(seq: RawSequence): RawSequence {
   return { ...seq, keyframes: list<RawKeyframe>(seq.keyframes).map((k) => ({ ...k, poses: list<RawPose>(k.poses).map(cleanPose), markers: list<RawKeyframe['markers'][number]>(k.markers) })) }
 }
 
-export function clipFromSequence(rawSeq: RawSequence, opts: { source?: AnimClip['source']; name?: string } = {}): { clip: AnimClip; info: RetargetInfo } {
+export function clipFromSequence(rawSeq: RawSequence, opts: { source?: AnimClip['source']; name?: string; keepR6?: boolean } = {}): { clip: AnimClip; info: RetargetInfo } {
   const seq = normalizeRawSequence(rawSeq)
   const names = new Set<string>()
   const scan = (p: RawPose) => {
@@ -176,7 +165,8 @@ export function clipFromSequence(rawSeq: RawSequence, opts: { source?: AnimClip[
   for (const k of seq.keyframes) k.poses.forEach(scan)
   const isR6 = names.has('Torso') && !names.has('UpperTorso')
   const unmapped = new Set<string>()
-  const tracks: Partial<Record<R15Joint, AnimKey[]>> = {}
+  const keep = isR6 && !!opts.keepR6
+  const tracks: Partial<Record<AnimJoint, AnimKey[]>> = {}
   const markers: AnimMarker[] = []
   let maxT = 0
   for (const kf of seq.keyframes) {
@@ -187,13 +177,14 @@ export function clipFromSequence(rawSeq: RawSequence, opts: { source?: AnimClip[
       p.children.forEach(visit)
       if (p.name === 'HumanoidRootPart') return
       if ((p.weight ?? 1) <= 0) return
-      let joint: R15Joint | undefined
+      let joint: AnimJoint | undefined
       let x = cfToXf(isCf(p.cf) ? p.cf : [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1])
       if (isR6) {
-        const r = R6[p.name]
-        if (r) {
-          joint = r.joint
-          x = conjugate(x, r.c0)
+        const r6 = R6_JOINT_OF_PART[p.name]
+        if (r6 && keep) joint = r6
+        else if (r6) {
+          joint = R15_OF_R6[r6]
+          x = r6ToNeutral(r6, x)
         }
       } else joint = JOINT_OF_PART[p.name]
       if (!joint) {
@@ -204,13 +195,14 @@ export function clipFromSequence(rawSeq: RawSequence, opts: { source?: AnimClip[
     }
     kf.poses.forEach(visit)
   }
-  for (const j of Object.keys(tracks) as R15Joint[]) tracks[j] = normalizeKeys(tracks[j]!)
+  for (const j of Object.keys(tracks) as AnimJoint[]) tracks[j] = normalizeKeys(tracks[j]!)
   markers.sort((a, b) => a.t - b.t)
   const clip: AnimClip = {
     name: (opts.name ?? seq.name ?? 'Animation').slice(0, 60),
     duration: Math.max(0.05, Math.round(maxT * 1000) / 1000),
     looped: !!seq.loop,
     priority: priorityOf(seq.priority),
+    ...(keep ? { rig: 'R6' as const } : {}),
     tracks,
     markers,
     source: opts.source ?? 'rbxmx'
@@ -226,9 +218,13 @@ const fmt = (v: number) => {
   return Object.is(r, -0) ? '0' : String(r)
 }
 
-// Pose tree order: which part holds which (Part0 -> Part1 children).
-const CHILDREN: Record<string, R15Part[]> = {}
+// Pose tree order: which part holds which (Part0 -> Part1 children), and the joint each Pose (named
+// after its part) carries. R15: HumanoidRootPart > LowerTorso > UpperTorso > ...; R6:
+// HumanoidRootPart > Torso > Head, Right Arm, Left Arm, Right Leg, Left Leg.
+const CHILDREN: Record<string, string[]> = {}
 for (const j of R15_JOINTS) (CHILDREN[JOINTS[j].part0] ??= []).push(JOINTS[j].part1)
+const CHILDREN_R6: Record<string, string[]> = {}
+for (const d of R6_JOINT_DEFS) (CHILDREN_R6[d.part0] ??= []).push(d.part1)
 
 // AnimClip -> KeyframeSequence .rbxmx (one Keyframe per key time, markers on Keyframes at their time,
 // a closing Keyframe at the clip's duration so the track length matches).
@@ -253,32 +249,35 @@ export function writeKeyframeSequenceXml(clip: AnimClip): string {
     '\t\t\t<float name="AuthoredHipHeight">2</float>',
     '\t\t</Properties>'
   ]
-  const keyAt = (j: R15Joint, t: number) => clip.tracks[j]?.find((k) => Math.abs(r3(k.t) - t) < 5e-4)
+  const keyAt = (j: AnimJoint, t: number) => clip.tracks[j]?.find((k) => Math.abs(r3(k.t) - t) < 5e-4)
+  const r6 = clipRig(clip) === 'R6'
+  const children = r6 ? CHILDREN_R6 : CHILDREN
+  const jointOfPart = (part: string): AnimJoint | undefined => (r6 ? R6_JOINT_OF_PART[part] : JOINT_OF_PART[part])
   for (const t of sorted) {
     lines.push(`\t\t<Item class="Keyframe" referent="${nextRef()}">`, '\t\t\t<Properties>', `\t\t\t\t<string name="Name">Keyframe</string>`, `\t\t\t\t<float name="Time">${fmt(t)}</float>`, '\t\t\t</Properties>')
     // A part's Pose is written when it or any descendant has a key at t.
-    const has = (part: R15Part): boolean => {
-      const j = JOINT_OF_PART[part]
+    const has = (part: string): boolean => {
+      const j = jointOfPart(part)
       if (j && keyAt(j, t)) return true
-      return (CHILDREN[part] ?? []).some(has)
+      return (children[part] ?? []).some(has)
     }
-    const pose = (part: R15Part, depth: number) => {
+    const pose = (part: string, depth: number) => {
       const pad = '\t'.repeat(depth)
-      const j = JOINT_OF_PART[part]
+      const j = jointOfPart(part)
       const k = j ? keyAt(j, t) : undefined
       const cf: CF = k?.cf ?? [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1]
       const c = ['X', 'Y', 'Z', 'R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22'].map((name, i) => `<${name}>${fmt(cf[i])}</${name}>`).join('')
       lines.push(
         `${pad}<Item class="Pose" referent="${nextRef()}">`,
         `${pad}\t<Properties>`,
-        `${pad}\t\t<string name="Name">${part}</string>`,
+        `${pad}\t\t<string name="Name">${esc(part)}</string>`,
         `${pad}\t\t<CoordinateFrame name="CFrame">${c}</CoordinateFrame>`,
         `${pad}\t\t<token name="EasingDirection">${POSE_EASING_DIRECTIONS.indexOf(k?.dir ?? 'In')}</token>`,
         `${pad}\t\t<token name="EasingStyle">${POSE_EASING_STYLES.indexOf(k?.ease ?? 'Linear')}</token>`,
         `${pad}\t\t<float name="Weight">${k ? 1 : 0}</float>`,
         `${pad}\t</Properties>`
       )
-      for (const c of CHILDREN[part] ?? []) if (has(c)) pose(c, depth + 1)
+      for (const c of children[part] ?? []) if (has(c)) pose(c, depth + 1)
       lines.push(`${pad}</Item>`)
     }
     if (has('HumanoidRootPart')) pose('HumanoidRootPart', 3)

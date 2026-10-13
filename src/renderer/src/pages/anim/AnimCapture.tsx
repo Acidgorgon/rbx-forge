@@ -1,4 +1,4 @@
-// Offscreen capture mode (?anim-capture=1): only the R15 preview canvas, driven by the main process
+// Offscreen capture mode (?anim-capture=1): only the R15 / R6 preview canvas, driven by the main process
 // through services/capture/offscreen.ts for the critic and anim_critique:
 //   window.__animCapture.load(clip, { reference }) -> resolves once the first frame is drawn
 //   window.__animCapture.at(t)                      -> draws the pose at t, resolves after paint

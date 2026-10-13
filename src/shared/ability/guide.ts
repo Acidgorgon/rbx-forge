@@ -2,12 +2,13 @@
 // skill) and the composer's model prompt.
 
 export const ABILITY_GUIDE = `# Ability choreography (RBX Forge Ability Composer)
-A move = one animation clip (Animation Lab) + VFX (VFX Lab effects attached to R15 parts) + sound + camera shake + screen effects + hit-stop + root movement, on one timeline. The composer references lab items by id; edit the clip in the Animation Lab and the effect in the VFX Lab.
+A move = one animation clip (Animation Lab) + VFX (VFX Lab effects attached to body parts: R15, or R6 when the clip is R6) + sound + camera shake + screen effects + hit-stop + root movement, on one timeline. The composer references lab items by id; edit the clip in the Animation Lab and the effect in the VFX Lab.
 
 Beats: anticipation (wind-up, telegraph) -> release (the contact / launch frame) -> impact (the first ~0.1 s after release) -> follow-through -> recovery.
 - Put the clip's "release" marker on the contact frame and sync impact events to it: {"marker":"release","at":0}. Prefer marker-relative times over absolute ones so retiming the clip keeps everything in sync.
 - Impact stack, all on the release marker (within 2 frames): a screen flash (white or the effect's hot colour, attack 0.02 s, hold 0.03-0.06 s, release 0.2-0.35 s), camera shake (light 0.25-0.4 amplitude / 20-25 Hz / 0.2-0.3 s; heavy 0.7-1 / 16-18 Hz / 0.4-0.6 s, exponential falloff) and a hit-stop (0.04-0.12 s at timeScale 0.03-0.1). Add a bloom pop for magic and big hits.
 - VFX: attach to the body part that does the work (RightGripAttachment for a hand / weapon, HumanoidRootPart with an offset for projectiles and AoE). Retime the effect so its release stage (fire / impact / slash) lands on the release marker: at = {"marker":"release","at": -<stage time>}.
+- R6 clips (the clip's rig is R6): attach to Torso, Head, "Right Arm", "Left Arm", "Right Leg", "Left Leg" or HumanoidRootPart; the grip / foot attachments sit at the end of the R6 limb. R15 names still work (RightHand plays on "Right Arm", UpperTorso on Torso) and the exported AbilityRunner maps them on either rig.
 - Anticipation: 0.15-0.5 s for normal attacks; up to ~3 s for charged ultimates when the charge itself is a spectacle (colour-correction build-up, gathering VFX). Below ~0.1 s the move pops without a read.
 - Follow-through: leave 0.3 s or more after the release; the effect dissipates and the pose recovers.
 - Root movement: a lunge before the release (velocity [0,0,-30..-50], decay, 0.2-0.3 s) or a recoil after a blast ([0,0,6..10], decay).

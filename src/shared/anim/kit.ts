@@ -245,6 +245,17 @@ export const KIT_GROUPS: Record<string, R15Joint[]> = {
   head: ['Neck']
 }
 
+// R6 versions: most kit poses collapse well onto R6 (each limb aims where the R15 hand / foot is, see
+// convert.ts), but a chambered or extended kick folds the shin back, so the straight R6 leg would
+// barely lift. These overrides replace the leg (straight, hip angle given) on R6.
+export const R6_KIT_OVERRIDES: Record<string, Partial<Record<R15Joint, V3>>> = {
+  kick_chamber: { RightHip: [82, 0, 0], RightKnee: [0, 0, 0], RightAnkle: [0, 0, 0] },
+  kick_extend: { RightHip: [96, 0, 0], RightKnee: [0, 0, 0], RightAnkle: [0, 0, 0] },
+  dash_lean: { LeftHip: [58, 0, -4], LeftKnee: [0, 0, 0] },
+  jump_tuck: { RightHip: [70, 0, 4], LeftHip: [70, 0, -4], RightKnee: [0, 0, 0], LeftKnee: [0, 0, 0] },
+  recoil: { RightHip: [-24, 0, 6], RightKnee: [0, 0, 0], LeftHip: [10, 0, -4], LeftKnee: [0, 0, 0] }
+}
+
 export function findKitPose(name: string, extra: KitPose[] = []): KitPose | null {
   const key = String(name ?? '').toLowerCase().replace(/[\s-]+/g, '_')
   return [...KIT_POSES, ...extra].find((p) => p.name.toLowerCase() === key) ?? null
@@ -257,7 +268,9 @@ export interface ResolvedPose {
 
 // A kit pose as joint transforms: mirrored for side = left, blended from rest by amount (0..1.5),
 // limited to `only` joints when given.
-export function resolveKitPose(pose: KitPose, opts: { side?: 'left' | 'right'; amount?: number; only?: R15Joint[] } = {}): ResolvedPose {
+export function resolveKitPose(pose: KitPose, opts: { side?: 'left' | 'right'; amount?: number; only?: R15Joint[]; rig?: 'R15' | 'R6' } = {}): ResolvedPose {
+  const over = opts.rig === 'R6' ? R6_KIT_OVERRIDES[pose.name] : undefined
+  if (over) pose = { ...pose, joints: { ...pose.joints, ...over } }
   const amount = Math.max(0, Math.min(1.5, opts.amount ?? 1))
   const out: ResolvedPose['joints'] = {}
   const all = KIT_GROUPS.all

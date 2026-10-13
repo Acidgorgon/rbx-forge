@@ -33,6 +33,13 @@ export const R15_PARTS = [
 ] as const
 export type R15Part = (typeof R15_PARTS)[number]
 
+// R6 body parts. An event may name either rig's parts: when the move's clip is R6 an R15 part plays on
+// the R6 part that holds it (RightHand -> "Right Arm", UpperTorso -> Torso...), and the other way round.
+export const R6_PARTS = ['HumanoidRootPart', 'Torso', 'Head', 'Right Arm', 'Left Arm', 'Right Leg', 'Left Leg'] as const
+export type R6Part = (typeof R6_PARTS)[number]
+export type BodyPart = R15Part | R6Part
+export type AbilityRig = 'R15' | 'R6'
+
 export interface TimeRef {
   // Seconds: absolute, or an offset from the marker when `marker` is set.
   at: number
@@ -54,6 +61,8 @@ export interface AbilityAnimation {
   fadeIn: number
   // rbxassetid of the published animation, for the game export (empty until published).
   assetId?: string
+  // The clip's rig (AnimClipRef.rig); absent = R15.
+  rig?: AbilityRig
 }
 
 interface EventBase {
@@ -68,7 +77,7 @@ export interface VfxEvent extends EventBase {
   // VFX Lab library entry id, and its effect name (the module the game requires).
   effect: string
   effectName: string
-  part: R15Part
+  part: BodyPart
   attachment?: string
   // Studs and degrees relative to the part (or attachment); -Z is the part's forward.
   offset: Vec3
@@ -86,7 +95,7 @@ export interface SoundEvent extends EventBase {
   // Sound.PlaybackSpeed.
   pitch: number
   // 3D sound from this part; absent = 2D (SoundService).
-  part?: R15Part
+  part?: BodyPart
   duration?: number
 }
 

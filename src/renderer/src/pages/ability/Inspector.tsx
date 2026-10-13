@@ -5,9 +5,9 @@ import { useEffect, useState } from 'react'
 import { releaseMarker } from '@shared/ability/critique'
 import { applyPatch, defaultEvent, removeEvent, upsertEvent } from '@shared/ability/model'
 import { placeholderClips } from '@shared/ability/placeholder'
-import { RIG_ATTACHMENTS } from '@shared/ability/rig'
+import { attachmentsFor, partsFor } from '@shared/ability/rig'
 import { markerTimes, round } from '@shared/ability/timing'
-import { EVENT_KINDS, R15_PARTS, type Ability, type AbilityEvent, type EventKind, type ScreenKind, type TimeRef } from '@shared/ability/types'
+import { EVENT_KINDS, type Ability, type AbilityRig, type AbilityEvent, type EventKind, type ScreenKind, type TimeRef } from '@shared/ability/types'
 import type { AnimClipRef } from '@shared/anim/types'
 import type { VfxEntry } from '@shared/types'
 import { Icon } from '../../components/Icons'
@@ -133,7 +133,7 @@ export function Inspector({ ability, selected, t, vfxEntries, onChange, onSelect
     if (!id) return onChange({ ...ability, animation: null })
     const c = clips.find((x) => x.id === id)
     if (!c) return
-    onChange(applyPatch(ability, { ability: { animation: { clip: c.id, name: c.name, duration: c.duration, looped: c.looped, markers: c.markers, speed: anim?.speed ?? 1, start: anim?.start ?? 0, fadeIn: anim?.fadeIn ?? 0.1, ...(anim?.clip === c.id && anim.assetId ? { assetId: anim.assetId } : {}) } } }))
+    onChange(applyPatch(ability, { ability: { animation: { clip: c.id, name: c.name, duration: c.duration, looped: c.looped, markers: c.markers, speed: anim?.speed ?? 1, start: anim?.start ?? 0, fadeIn: anim?.fadeIn ?? 0.1, ...(anim?.clip === c.id && anim.assetId ? { assetId: anim.assetId } : {}), rig: c.rig === 'R6' ? 'R6' : 'R15' } } }))
   }
   const setAnim = (fields: Record<string, unknown>) => onChange(applyPatch(ability, { ability: { animation: fields } }))
 
@@ -170,7 +170,7 @@ export function Inspector({ ability, selected, t, vfxEntries, onChange, onSelect
               <option value="">none</option>
               {clips.map((c) => (
                 <option key={c.id} value={c.id}>
-                  {c.name} · {c.duration.toFixed(2)}s{c.id.startsWith('placeholder:') ? ' · placeholder' : ''}
+                  {c.name} · {c.duration.toFixed(2)}s{c.rig === 'R6' ? ' · R6' : ''}{c.id.startsWith('placeholder:') ? ' · placeholder' : ''}
                 </option>
               ))}
             </select>
@@ -227,7 +227,7 @@ export function Inspector({ ability, selected, t, vfxEntries, onChange, onSelect
               <input className="input" defaultValue={ev.label ?? ''} key={`${ev.id}-label`} onBlur={(e) => e.target.value !== (ev.label ?? '') && patch({ label: e.target.value })} />
             </label>
             <When ability={ability} at={ev.at} onChange={(at) => patch({ at })} />
-            <EventFields ev={ev} vfxOptions={vfxOptions} patch={patch} importSound={importSound} />
+            <EventFields ev={ev} vfxOptions={vfxOptions} patch={patch} importSound={importSound} rig={anim?.rig ?? 'R15'} />
           </div>
         </div>
       )}
@@ -235,8 +235,12 @@ export function Inspector({ ability, selected, t, vfxEntries, onChange, onSelect
   )
 }
 
-function EventFields({ ev, vfxOptions, patch, importSound }: { ev: AbilityEvent; vfxOptions: VfxEntry[]; patch: (f: Record<string, unknown>) => void; importSound: () => void }) {
-  const attachments = ['', ...Object.keys(RIG_ATTACHMENTS)]
+// Part and attachment choices follow the clip's rig (R6: Torso, "Right Arm"...); a part named for the
+// other rig stays listed so it is not silently changed (it plays on the matching part).
+function EventFields({ ev, vfxOptions, patch, importSound, rig }: { ev: AbilityEvent; vfxOptions: VfxEntry[]; patch: (f: Record<string, unknown>) => void; importSound: () => void; rig: AbilityRig }) {
+  const attachments = ['', ...Object.keys(attachmentsFor(rig))]
+  const evPart = 'part' in ev ? ev.part : undefined
+  const parts: string[] = [...partsFor(rig), ...(evPart && !partsFor(rig).includes(evPart) ? [evPart] : [])]
   switch (ev.kind) {
     case 'vfx':
       return (
@@ -259,7 +263,7 @@ function EventFields({ ev, vfxOptions, patch, importSound }: { ev: AbilityEvent;
               ))}
             </select>
           </label>
-          <Pick label="part" value={ev.part} options={R15_PARTS} onChange={(part) => patch({ part, attachment: undefined })} />
+          <Pick label="part" value={ev.part} options={parts} onChange={(part) => patch({ part, attachment: undefined })} />
           <Pick label="attachment" value={ev.attachment ?? ''} options={attachments} labels={{ '': '(part centre)' }} onChange={(attachment) => patch(attachment ? { attachment } : { attachment: undefined, part: ev.part })} />
           <Vec label="offset" value={ev.offset} onChange={(offset) => patch({ offset })} />
           <Vec label="rotation°" value={ev.rotation} step={5} onChange={(rotation) => patch({ rotation })} />
@@ -279,7 +283,7 @@ function EventFields({ ev, vfxOptions, patch, importSound }: { ev: AbilityEvent;
           </label>
           <Num label="volume" value={ev.volume} step={0.05} min={0} max={10} onChange={(volume) => patch({ volume })} />
           <Num label="pitch" value={ev.pitch} step={0.05} min={0.05} max={4} onChange={(pitch) => patch({ pitch })} />
-          <Pick label="from" value={ev.part ?? ''} options={['', ...R15_PARTS]} labels={{ '': '2D (no part)' }} onChange={(part) => patch({ part: part || undefined })} />
+          <Pick label="from" value={ev.part ?? ''} options={['', ...parts]} labels={{ '': '2D (no part)' }} onChange={(part) => patch({ part: part || undefined })} />
         </>
       )
     case 'shake':

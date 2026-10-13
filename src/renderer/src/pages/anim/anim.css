@@ -120,3 +120,21 @@
 @media (prefers-reduced-motion: reduce) {
   .anim-pill button, .anim-cov-row, .anim-pill-add { transition: none; }
 }
+
+/* Rig (R15 / R6) */
+.anim-rig-b {
+  display: inline-block;
+  margin-left: 6px;
+  padding: 0 5px;
+  border: 1px solid var(--info-line);
+  border-radius: var(--r-xs);
+  font-family: var(--font-mono);
+  font-size: var(--fs-2xs);
+  line-height: 15px;
+  color: var(--info);
+  background: var(--info-fill);
+}
+.anim-rig button { min-width: 38px; font-family: var(--font-mono); }
+.anim-convert { align-items: flex-start; gap: 8px; }
+.anim-convert p { margin: 4px 0 8px; }
+.anim-convert .row { flex-wrap: wrap; gap: 6px; }

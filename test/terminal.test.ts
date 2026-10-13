@@ -54,7 +54,7 @@ const SHELLS: ShellInfo[] = [
   { id: 'bash', label: 'bash', path: '/bin/bash', args: ['-l'] }
 ]
 
-function setup(root: string | null = '/proj') {
+function setup(root: string | null = '/proj', releaseExited = false) {
   const ptys: FakePty[] = []
   const data: { id: string; data: string }[] = []
   const lists: TerminalInfo[][] = []
@@ -71,7 +71,8 @@ function setup(root: string | null = '/proj') {
     onData: (id, d) => data.push({ id, data: d }),
     onList: (list) => lists.push(list),
     batchMs: 0,
-    now: () => 1000
+    now: () => 1000,
+    releaseExited
   })
   return { manager, ptys, data, lists }
 }
@@ -207,6 +208,19 @@ test('run stops the command when aborted', async () => {
   const r = await pending
   assert.equal(r.exitCode, null)
   assert.equal(ptys[0].killed, true)
+})
+
+test('closing an exited tab releases its pty only where the backend needs it (Windows ConPTY)', () => {
+  for (const release of [false, true]) {
+    const { manager, ptys } = setup('/proj', release)
+    const a = manager.create()
+    const b = manager.create()
+    ptys[0].end(0)
+    ptys[1].end(1)
+    manager.kill(a.id)
+    manager.killAll()
+    assert.deepEqual(ptys.map((p) => p.killed), [release, release])
+  }
 })
 
 test('plainText strips CSI/OSC sequences and carriage-return overwrites', () => {

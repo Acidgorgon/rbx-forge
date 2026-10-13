@@ -40,6 +40,11 @@ export interface PtyManagerDeps {
   // Output batching delay in ms (0 = flush on the next tick).
   batchMs?: number
   now?: () => number
+  // Also kill() a pty whose process already exited when its tab is closed. node-pty on Windows
+  // frees the ConPTY handle and stops its conout worker thread only in kill(), so without this every
+  // closed tab leaks a thread and handles, and the worker keeps a Node process from ever exiting.
+  // Defaults to Windows only: on POSIX kill() signals the pid, which may already be reused.
+  releaseExited?: boolean
 }
 
 export interface RunResult {
@@ -275,7 +280,7 @@ export class PtyManager {
     if (s.timer) clearTimeout(s.timer)
     s.timer = null
     for (const d of s.subs.splice(0)) d.dispose()
-    if (s.pty && !s.info.exited) {
+    if (s.pty && (!s.info.exited || (this.deps.releaseExited ?? process.platform === 'win32'))) {
       try {
         s.pty.kill()
       } catch {

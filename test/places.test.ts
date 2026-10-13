@@ -236,9 +236,14 @@ test('watcher checks each blink file and groups the models by file', async () =>
     ])
     assert.ok(lines.includes('[blink] events.blink OK (1 event/function)'))
     assert.ok(lines.includes('[blink] menu.blink:4:5: bad'))
-    // A new root .blink file becomes an entry.
-    write(root, 'lobby.blink', 'event Hello {\n    From: Server,\n    Type: Reliable,\n    Call: SingleSync\n}\n')
-    for (let k = 0; k < 100 && !(watcher.model.files?.length === 3 && !watcher.model.files.some((m) => m.checking)); k++) {
+    // A new root .blink file becomes an entry. fs.watch has no "ready" signal, and on macOS its
+    // FSEvents stream starts asynchronously, so a write made right after start() can land before the
+    // stream is live and never be reported (seen on slow Intel runners). Rewrite the file until the
+    // watcher has picked it up instead of betting on the first event.
+    const lobby = 'event Hello {\n    From: Server,\n    Type: Reliable,\n    Call: SingleSync\n}\n'
+    const settled = () => watcher.model.files?.length === 3 && !watcher.model.files.some((m) => m.checking)
+    for (let k = 0; k < 250 && !settled(); k++) {
+      if (k % 10 === 0 && watcher.model.files?.length !== 3) write(root, 'lobby.blink', lobby)
       await new Promise((r) => setTimeout(r, 20))
     }
     assert.deepEqual(watcher.model.files?.map((m) => m.file), ['events.blink', 'lobby.blink', 'menu.blink'])

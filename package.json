@@ -19,8 +19,8 @@
     "test": "node --test --experimental-strip-types test/*.test.ts",
     "sdk-binaries": "node build/sdk-binaries.mjs",
     "dist": "node build/sdk-binaries.mjs && electron-vite build && electron-builder",
-    "dist:mac": "node build/sdk-binaries.mjs --platform darwin --arch arm64,x64 && electron-vite build && electron-builder --mac",
-    "dist:win": "node build/sdk-binaries.mjs --platform win32 --arch x64,arm64 && electron-vite build && electron-builder --win",
+    "dist:mac": "node build/sdk-binaries.mjs --platform darwin --arch arm64,x64 && electron-vite build && electron-builder --mac --arm64 --x64",
+    "dist:win": "node build/sdk-binaries.mjs --platform win32 --arch x64,arm64 && electron-vite build && electron-builder --win --x64 --arm64",
     "dist:dir": "node build/sdk-binaries.mjs && electron-vite build && electron-builder --dir"
   },
   "dependencies": {

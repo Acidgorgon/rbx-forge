@@ -21,7 +21,9 @@ function identity(dir: string, name: string): void {
   git(dir, 'config', 'user.email', `${name}@example.com`)
 }
 
-// A bare remote plus two clones (me and a collaborator) sharing one commit.
+// A bare remote plus two clones (me and a collaborator) sharing one commit. core.autocrlf is pinned
+// off in each repo so the host's global git config (Windows runners set autocrlf=true) cannot turn
+// the LF content these tests compare into CRLF on checkout.
 function setup(): { me: string; them: string } {
   const base = mkdtempSync(join(tmpdir(), 'harness-git-'))
   temps.push(base)
@@ -29,6 +31,7 @@ function setup(): { me: string; them: string } {
   git(base, 'init', '--bare', '-b', 'main', remote)
   const seed = join(base, 'seed')
   git(base, 'init', '-b', 'main', seed)
+  git(seed, 'config', 'core.autocrlf', 'false')
   identity(seed, 'seed')
   writeFileSync(join(seed, 'game.luau'), 'local speed = 1\nreturn speed\n')
   git(seed, 'add', '-A')
@@ -37,8 +40,8 @@ function setup(): { me: string; them: string } {
   git(seed, 'push', '-u', 'origin', 'main')
   const me = join(base, 'me')
   const them = join(base, 'them')
-  git(base, 'clone', remote, me)
-  git(base, 'clone', remote, them)
+  git(base, 'clone', '-c', 'core.autocrlf=false', remote, me)
+  git(base, 'clone', '-c', 'core.autocrlf=false', remote, them)
   identity(me, 'me')
   identity(them, 'them')
   return { me, them }

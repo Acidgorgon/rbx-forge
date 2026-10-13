@@ -246,6 +246,8 @@ export class LspBridge {
   private types: { ensure(): Promise<CachedFiles> }
   private root: string | null = null
   private child: ChildProcess | null = null
+  // Stopped servers that have not exited yet (dispose() waits for them).
+  private exiting = new Set<Promise<void>>()
   private framer = new LspFramer((error) => this.logLine('stderr', error))
   private wanted = false
   private initializeSent = false
@@ -385,10 +387,14 @@ export class LspBridge {
     this.dataModel.reset()
   }
 
-  dispose(): void {
+  // Stops the server. The returned promise settles once every server process this bridge stopped
+  // has exited: on Windows a live process keeps its cwd (the project folder) locked, so callers that
+  // remove or move the folder afterwards should await it. Fire-and-forget callers can ignore it.
+  dispose(): Promise<void> {
     this.wanted = false
     this.stopProcess()
     this.dataModel.dispose()
+    return Promise.all(this.exiting).then(() => undefined)
   }
 
   private stopProcess(): void {
@@ -402,6 +408,14 @@ export class LspBridge {
     this.framer.reset()
     this.resetHandshake()
     if (child) {
+      if (child.exitCode === null && child.signalCode === null) {
+        const exited = new Promise<void>((resolve) => {
+          child.once('exit', () => resolve())
+          child.once('error', () => resolve())
+        })
+        this.exiting.add(exited)
+        void exited.then(() => this.exiting.delete(exited))
+      }
       try {
         child.stdin?.end(encodeMessage({ jsonrpc: '2.0', method: 'exit' }))
       } catch {

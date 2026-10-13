@@ -185,6 +185,6 @@ test('bridge relays messages both ways and restarts a crashed server', async () 
     assert.equal(await bridge.start(), true)
     assert.equal(spawned, 3)
   } finally {
-    bridge.dispose()
+    await bridge.dispose()
   }
 })

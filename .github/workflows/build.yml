@@ -54,6 +54,9 @@ jobs:
 
   package:
     name: Package ${{ matrix.name }}
+    # macOS and Windows runners use far more paid Actions minutes than Linux, so pushes only run the
+    # Linux tests. Installers are built on a manual run (Actions > Build > Run workflow) or a v* tag.
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
     needs: test
     runs-on: ${{ matrix.os }}
     strategy:

@@ -65,7 +65,7 @@ test('store: create, read, update by name, remove; files + index on disk', async
   assert.equal(r.entry.name, 'blink-events-live-in-root')
   assert.equal(r.entry.type, 'project')
   const file = await readFile(join(dir, 'blink-events-live-in-root.md'), 'utf8')
-  assert.match(file, /^---\nname: blink-events-live-in-root\ndescription: events.blink is at the repo root\ntype: project\ncreated: 1000000\nlastUsed: 1000000\nuses: 0\n---\n\nEdit events.blink/)
+  assert.match(file, /^---\nname: blink-events-live-in-root\ndescription: events.blink is at the repo root\ntype: project\ncreated: 1000000\nupdated: 1000000\nlastUsed: 1000000\nuses: 0\n---\n\nEdit events.blink/)
   assert.match(await readFile(join(dir, INDEX_FILE), 'utf8'), /- \[blink-events-live-in-root\]\(blink-events-live-in-root.md\) \(project\) — events.blink is at the repo root/)
 
   t += 10

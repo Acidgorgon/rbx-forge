@@ -9,6 +9,7 @@ import { setMotionMode, setThemeMode, useAppearance, type MotionMode, type Theme
 import { errorText, fmtTokens, fmtUsd } from '../lib/format'
 import { ToolchainSection } from '../setup/Toolchain'
 import { DefaultEffortSetting } from '../assistant/EffortPicker'
+import { UpdatesSection } from '../updates/UpdatesSection'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -28,7 +29,8 @@ const SECTIONS = [
   ['budgets', 'Budgets'],
   ['places', 'Places'],
   ['sync', 'Sync'],
-  ['toolchain', 'Toolchain']
+  ['toolchain', 'Toolchain'],
+  ['updates', 'Updates']
 ] as const
 
 function Row({ title, desc, children, id }: { title: ReactNode; desc?: ReactNode; children?: ReactNode; id?: string }) {
@@ -396,6 +398,11 @@ export function SettingsPage() {
         <section className="set-sec" id="set-toolchain">
           <h2>Toolchain</h2>
           <ToolchainSection />
+        </section>
+
+        <section className="set-sec" id="set-updates">
+          <h2>Updates</h2>
+          <UpdatesSection />
         </section>
       </div>
     </div>

@@ -40,6 +40,8 @@ import * as release from './services/release/index.ts'
 import { createArtWiring, type ArtWireDeps } from './services/art/wire.ts'
 import { Credentials } from './agent/credentials.ts'
 import { TestService, testTools } from './services/tests/index.ts'
+import { createUiPreviewWiring, type UiPreviewWireDeps } from './services/uiPreview/wire.ts'
+import { withPreviewTools } from './agent/serviceTools.ts'
 
 export interface IntegrationDeps {
   ctx: HarnessContext
@@ -69,6 +71,8 @@ export interface IntegrationDeps {
   summarize?: (prompt: string) => Promise<string>
   // Art page: Electron nativeImage thumbnailer, image file picker, chat image bridge (optional).
   art?: Pick<ArtWireDeps, 'thumbnail' | 'chooseImages' | 'chatImage' | 'resolveReference'>
+  // UI Preview: the offscreen screenshot for preview_ui (Electron).
+  uiPreview?: Pick<UiPreviewWireDeps, 'capture'>
 }
 
 export interface Integrations {
@@ -124,6 +128,15 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     log: (text, stream = 'info') => log({ service: 'harness', stream, text: `[tests] ${text}` }),
     lunePath: () => settings.get<string | null>('tests.lunePath', null),
     projectFile: () => deps.projectFile()
+  })
+  // ---------------------------------------------------------------- UI Preview (UI Labs stories)
+  const uiPreview = createUiPreviewWiring({
+    root: deps.root,
+    projectFile: deps.projectFile,
+    lunePath: () => settings.get<string | null>('tests.lunePath', null),
+    emit: (event) => emit('uiPreview:event', event),
+    log: (text, stream = 'info') => log({ service: 'harness', stream, text }),
+    ...(deps.uiPreview ?? {})
   })
   const luneRunner = async (): Promise<release.LuneTestRun> => {
     const s = await tests.run({ scope: { kind: 'all' } })
@@ -247,12 +260,12 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
         return { content: [{ type: 'text', text: lines.join('\n') }] }
       }
     }
-    toolSets = {
+    toolSets = withPreviewTools({
       // Fixed order: the tool list is part of the cached prompt prefix.
       read: [...budget, ...blink.read, ...pkgs.read, ...(analyticsSvc.createAnalyticsTools(analytics) as ServiceTool[])],
       tests: testTools(tests) as ServiceTool[],
       write: [...blink.write, ...pkgs.write, renameTool, ...(art.tools() as ServiceTool[])]
-    }
+    }, uiPreview.tools() as unknown as ServiceTool[])
     return toolSets
   }
 
@@ -434,7 +447,10 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     renameFeature: (from: string, to: string) => doRename(String(from ?? ''), String(to ?? '')),
 
     // Art concepts
-    ...art.handlers
+    ...art.handlers,
+
+    // UI Preview
+    ...uiPreview.handlers
   }
 
   return {
@@ -449,6 +465,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     },
     async onProjectOpen(r: string) {
       tests.setRoot(r)
+      uiPreview.onProjectOpen(r)
       if (settings.get('tests.watch', false)) tests.startWatch()
       void projectMap.refresh().catch(() => undefined)
       await configureAnalytics(r).catch((error) => log({ service: 'harness', stream: 'stderr', text: `[analytics] ${(error as Error).message}` }))
@@ -462,10 +479,12 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     },
     onProjectClose() {
       tests.setRoot(null)
+      uiPreview.onProjectClose()
       analytics.stopPoller()
       notifiers.clear()
     },
     dispose() {
+      uiPreview.dispose()
       tests.stopWatch()
       tests.cancel()
       analytics.stopPoller()

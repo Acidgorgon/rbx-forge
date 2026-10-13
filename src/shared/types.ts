@@ -4,6 +4,8 @@
 import type { IntegrationApi, IntegrationEvents, OrchestrateMode, UsageSummary } from './integrationTypes.ts'
 import type { TerminalApi, TerminalEvents } from './terminalTypes.ts'
 import type { ArtApi, ArtEvents } from './artTypes.ts'
+import type { UiPreviewApi, UiPreviewEvents } from './uiPreviewTypes.ts'
+export type * from './uiPreviewTypes.ts'
 export type * from './artTypes.ts'
 import type { SetupApi, SetupEvents } from './setupTypes.ts'
 import type { ChatExtrasApi, ChatImage, EffortChoice, ModelMeta, NewChatOptions } from './chatTypes.ts'
@@ -14,6 +16,12 @@ export type * from './memoryTypes.ts'
 export type * from './terminalTypes.ts'
 export type * from './setupTypes.ts'
 export type * from './chatTypes.ts'
+import type { UpdateApi, UpdateEvents } from './updateTypes.ts'
+export type * from './updateTypes.ts'
+import type { BrainSyncApi, BrainSyncEvents } from './brainSyncTypes.ts'
+export type * from './brainSyncTypes.ts'
+import type { VfxApi, VfxEvents } from './vfxTypes.ts'
+export type * from './vfxTypes.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -435,7 +443,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -460,7 +468,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

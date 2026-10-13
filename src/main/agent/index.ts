@@ -20,6 +20,7 @@ import { capsBudget, classifyTool, defaultWriteTargets, openAiRunAgent, Orchestr
 import { projectRulesLoader, withRules } from './projectRules.ts'
 import { withMemoryLoader, type MemoryHooks } from './memory/hooks.ts'
 import { extraBody, isProviderId, Providers } from './providers.ts'
+import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './imageParts.ts'
 import { executableOption, OPENAI_TOOLS_NOTE, sdkQuery, type QueryFn } from './sdk.ts'
 import { SERVICE_WRITE_TOOLS } from './serviceTools.ts'
 import { TestAgentRunner } from './testAgents.ts'
@@ -36,6 +37,8 @@ export interface AgentLayer {
   team: TeamRunner
   // One-shot, tool-less answer from the default provider's cheap tier (summaries).
   oneShot(system: string, prompt: string): Promise<string>
+  // One-shot answer about images (VFX critique) on the default model, which should see images.
+  visionShot(system: string, prompt: string, images: ImagePayload[]): Promise<string>
   dispose(): void
 }
 
@@ -91,6 +94,7 @@ export function createAgentLayer(
     orchestrator,
     team,
     oneShot: (system, prompt) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt),
+    visionShot: (system, prompt, images) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt, images),
     dispose() {
       orchestrator.cancelAll()
       chats.dispose()
@@ -121,16 +125,18 @@ async function oneShot(
   ctx: HarnessContext,
   w: { queryFn?: QueryFn; fetchFn?: FetchFn; credentials: Credentials; providers: Providers; meter: Meter },
   system: string,
-  prompt: string
+  prompt: string,
+  // With images: the default model (not the cheap tier), images sent inline.
+  images: ImagePayload[] = []
 ): Promise<string> {
   const base = w.providers.defaultModel()
-  const model = routeModel({ task: 'summary', text: prompt, settings: { provider: base.provider, model: base.model, tiers: ctx.getSetting('modelTiers', undefined) } }).model
+  const model = images.length ? base.model : routeModel({ task: 'summary', text: prompt, settings: { provider: base.provider, model: base.model, tiers: ctx.getSetting('modelTiers', undefined) } }).model
   if (base.provider === 'anthropic') {
     const auth = await w.credentials.anthropicAuth()
     if (!auth.ready) throw new Error(auth.error ?? 'Anthropic is not set up.')
     let out = ''
     for await (const m of (w.queryFn ?? sdkQuery)({
-      prompt,
+      prompt: images.length ? anthropicPrompt(prompt, images) : prompt,
       options: {
         cwd: ctx.project()?.root ?? process.cwd(),
         model,
@@ -161,7 +167,7 @@ async function oneShot(
     headers: ep.headers,
     model,
     system,
-    history: [{ role: 'user', content: prompt }],
+    history: [{ role: 'user', content: chatCompletionsContent(prompt, images) }],
     tools: [],
     maxTurns: 1,
     signal: new AbortController().signal,
@@ -297,7 +303,7 @@ export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
   opts: { memory?: MemoryHooks; userDataDir?: string } = {}
-): { dispose(): void; summarize(prompt: string): Promise<string> } {
+): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[]): Promise<string> } {
   const layer = createAgentLayer(ctx, { memory: opts.memory })
   // Chat images live under userData/chat-images (history keeps only references).
   setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))
@@ -429,6 +435,7 @@ export function registerAgentIpc(
   }
 
   return {
+    vision: (system, prompt, images) => layer.visionShot(system, prompt, images),
     summarize: (prompt) =>
       layer.oneShot('Summarize these incoming git changes for a teammate on a Roblox (Luau, Rojo) game: what changed, by whom, which features are touched and anything that may conflict with local work. Terse bullet points, at most 200 words.', prompt),
     dispose() {

@@ -6,6 +6,7 @@ import { setMotionMode, setThemeMode } from '../theme'
 import { instancePathOfFile, featuresOf, scriptsFlat, realmOfFile } from '../lib/roblox'
 import { sparks } from '../lib/sparks'
 import { newTerminal, requestFocus, runTask, startTerminals, termStore } from '../terminal/session'
+import { requestPack } from '../pages/memory/MemoryPack'
 
 export interface Command {
   id: string
@@ -95,7 +96,19 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Navigate', 'release', 'Open Release', () => actions.openPage('release'), { icon: <Icon name="rocket" /> })
   add('Navigate', 'analytics', 'Open Analytics', () => actions.openPage('analytics'), { icon: <Icon name="chart" /> })
   add('Navigate', 'art', 'Open Art (image concepts)', () => actions.openPage('art'), { icon: <Icon name="image" /> })
+  add('Navigate', 'vfx', 'Open VFX Lab', () => actions.openPage('vfx'), { icon: <Icon name="sparkle" />, detail: 'particle effects · library · make & refine' })
+  add('Navigate', 'uipreview', 'Open UI Preview (UI Labs stories)', () => actions.openPage('uipreview'), { icon: <Icon name="monitor" /> })
   add('Navigate', 'memory', 'Open Memory & skills', () => actions.openPage('memory'), { icon: <Icon name="memory" /> })
+  // Memory export/import and device sync (pages/memory/MemoryPack.tsx).
+  add('Memory', 'memory.export', 'Export memory and skills…', () => (actions.openPage('memory'), requestPack('export')), { icon: <Icon name="download" />, detail: '.forgepack for another device' })
+  add('Memory', 'memory.import', 'Import memory and skills…', () => (actions.openPage('memory'), requestPack('import')), { icon: <Icon name="upload" />, detail: 'from a .forgepack' })
+  add('Memory', 'memory.sync', 'Sync memory across devices now', () => {
+    void h.brainSyncNow().then((s) => {
+      if (s.state === 'off') actions.toast({ text: 'Device sync is off', detail: 'Turn it on in Memory > Sync across devices.', kind: 'info' })
+      else if (s.state === 'error') actions.toast({ text: s.authProblem ? 'Sync needs a git sign-in' : 'Sync failed', detail: s.lastError, kind: 'err' })
+      else actions.toast({ text: 'Memory synced', detail: s.last ? `${s.last.pulled} pulled · ${s.last.pushed} pushed` : undefined, kind: 'ok', ms: 2400 })
+    }).catch((e) => actions.toast({ text: 'Sync failed', detail: String(e?.message ?? e), kind: 'err' }))
+  }, { icon: <Icon name="sync" /> })
   if (active) {
     add('Navigate', 'reveal', 'Reveal active file in tree', () => {
       const ip = instancePathOfFile(state.tree, active)

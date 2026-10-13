@@ -1,0 +1,48 @@
+/* Memory export/import dialogs and the device sync card. Terminal style: outlined groups,
+   monospace names, tinted tags; shared tokens only, so the light theme works as is. */
+
+.pk-pad { display: flex; align-items: center; gap: 8px; padding: 12px 0; }
+.pk-bar { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-bottom: 10px; }
+.pk-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2); cursor: pointer; }
+.pk-list { border: 1px solid var(--line); border-radius: var(--r-md); max-height: 46vh; overflow-y: auto; }
+.pk-group + .pk-group { border-top: 1px solid var(--line); }
+.pk-group.dim { opacity: .45; }
+.pk-group-head { display: flex; align-items: center; gap: 8px; padding: 8px 10px 6px; font-size: 11px; position: sticky; top: 0; background: var(--bg-overlay); z-index: 1; }
+.pk-group-name { color: var(--fg-muted); letter-spacing: .1em; text-transform: uppercase; font-weight: 500; }
+.pk-names { padding: 0 10px 10px; overflow: hidden; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; font-family: var(--font-mono); font-size: 11px; }
+.pk-row { display: flex; align-items: center; gap: 8px; padding: 5px 10px; font-size: 12px; min-width: 0; cursor: pointer; border-top: 1px dashed var(--line); }
+.pk-row:hover { background: var(--bg-hover); }
+.pk-row.blocked { cursor: not-allowed; }
+.pk-row.blocked .pk-name { color: var(--fg-faint); text-decoration: line-through; text-decoration-color: var(--err-line); }
+.pk-name { color: var(--fg); min-width: 0; max-width: 46%; flex: none; }
+.pk-desc { min-width: 0; flex: 1; font-size: 11.5px; }
+.pk-callout { margin: 10px 0 0; }
+.pk-sum { margin-right: auto; align-self: center; min-width: 0; }
+.dialog .actions .grow { flex: 1; }
+.pk-strong { color: var(--fg-2); font-weight: 500; }
+.pk-counts { display: flex; gap: 6px; flex-wrap: wrap; flex: 1; min-width: 0; }
+.pk-bulk { display: flex; align-items: center; gap: 8px; font-size: 11.5px; }
+.pk-seg { flex: none; }
+.pk-seg button { flex: none; }
+
+.pk-irow { padding: 7px 10px; border-top: 1px dashed var(--line); min-width: 0; }
+.pk-irow-main { display: flex; align-items: center; gap: 8px; min-width: 0; font-size: 12px; flex-wrap: wrap; }
+.pk-irow-main .pk-name { max-width: 40%; }
+.pk-irow-sub { margin-top: 3px; padding-left: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pk-irow.new .pk-irow-sub { padding-left: 21px; }
+.pk-irow.same { opacity: .6; }
+.pk-err { color: var(--err); white-space: normal; }
+.pk-irow.blocked .pk-irow-sub { white-space: normal; }
+
+.pk-sync .set-row + .set-row.pk-sync-target { border-top: 0; padding-top: 0; }
+.pk-sync-target { gap: 8px; }
+.pk-sync-target .input { min-width: 0; height: 26px; }
+.pk-path { color: var(--fg-2); font-size: 11.5px; min-width: 0; padding: 4px 8px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); }
+.pk-sync-status { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding: 8px 0 0; border-top: 1px solid var(--line); }
+.pk-device { text-align: right; }
+.pk-sync-foot { margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+
+@media (max-width: 640px) {
+  .pk-name, .pk-irow-main .pk-name { max-width: 100%; }
+  .pk-desc { display: none; }
+}

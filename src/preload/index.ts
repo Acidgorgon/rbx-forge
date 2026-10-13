@@ -48,9 +48,19 @@ const methods = [
   // Memory and skills
   'memoryList', 'memorySearch', 'memorySave', 'memoryDelete', 'memoryPin', 'memoryPromote', 'memoryFeed',
   'memoryGetSettings', 'memorySetSettings', 'memoryProposals', 'memoryAcceptProposal', 'memoryDismissProposal', 'memoryAnalyzeStyle',
+  // Memory export/import (.forgepack) and device sync
+  'packCandidates', 'packExport', 'packOpen', 'packImport',
+  'brainSyncStatus', 'brainSyncGetSettings', 'brainSyncSetSettings', 'brainSyncNow', 'brainSyncChooseFolder',
   // Art concepts (OpenAI images, Roblox import)
   'artStatus', 'artSetSettings', 'artSetRobloxKey', 'artClearRobloxKey', 'artList', 'artEstimate', 'artGenerate',
-  'artThumbnail', 'artDelete', 'artUndoDelete', 'artImportToRoblox', 'artSaveToProject', 'artRegistry', 'artChooseReferences'
+  'artThumbnail', 'artDelete', 'artUndoDelete', 'artImportToRoblox', 'artSaveToProject', 'artRegistry', 'artChooseReferences',
+  // UI Preview (UI Labs stories)
+  'uiPreviewStories', 'uiPreviewOpen', 'uiPreviewClose', 'uiPreviewInput', 'uiPreviewState', 'uiPreviewImages', 'uiPreviewSaveExport',
+  // VFX Lab (library, recipes, render / critique / refine)
+  'vfxStatus', 'vfxList', 'vfxGet', 'vfxSearch', 'vfxImport', 'vfxChooseImport', 'vfxUpdate', 'vfxDelete', 'vfxRate',
+  'vfxLearn', 'vfxRecipes', 'vfxMake', 'vfxRefine', 'vfxCancel', 'vfxCreate', 'vfxFile', 'vfxSaveThumb', 'vfxResolveTexture', 'vfxTestInStudio',
+  // Self-update (electron-updater)
+  'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]
 
 // Compile-time check: every HarnessApi method is exposed (tsc names any that is missing).

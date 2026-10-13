@@ -102,7 +102,8 @@ nsis:
   shortcutName: RBX Forge
   uninstallDisplayName: RBX Forge
   deleteAppDataOnUninstall: false
-  differentialPackage: false
+  # differentialPackage (default on) writes RBX-Forge-*.exe.blockmap next to the installer, so
+  # electron-updater can download only the changed blocks of a new version.
 
 linux:
   target:
@@ -111,4 +112,14 @@ linux:
   category: Development
   icon: build/icon.png
 
-publish: null
+# Self-update feed (electron-updater, src/main/services/updater). electron-builder writes these
+# into the app as resources/app-update.yml and writes latest.yml / latest-mac.yml (+ .blockmap
+# files) next to the installers. It never uploads anything: CI runs it with --publish never and
+# the release job of .github/workflows/build.yml uploads the files (see README "Updates").
+# The app reads releases anonymously, so this repository must be public. To keep the source
+# private, publish releases to a public binaries-only repo and change `repo` (one line), e.g.
+#   repo: rbx-forge-releases
+publish:
+  provider: github
+  owner: Acidgorgon
+  repo: rbx-forge

@@ -159,6 +159,7 @@ export class MemoryStore {
       description: String(data.description ?? '').trim(),
       body,
       created: Math.round(created),
+      updated: Math.round(Number(data.updated) || created),
       lastUsed: Math.max(Number(data.lastUsed) || 0, rec?.lastUsed ?? 0),
       uses: Math.max(Number(data.uses) || 0, rec?.uses ?? 0),
       file: file.replace(/\\/g, '/')
@@ -215,6 +216,8 @@ export class MemoryStore {
         description,
         ...(kind === 'memory' ? { type } : {}),
         created,
+        // Last content change; device sync resolves conflicts by the newest one.
+        updated: now,
         lastUsed: target ? Math.max(target.lastUsed, rec?.lastUsed ?? 0) || now : now,
         uses: target ? Math.max(target.uses, rec?.uses ?? 0) : 0
       }

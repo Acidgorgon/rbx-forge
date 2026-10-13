@@ -1,0 +1,172 @@
+// "Learning" from the library: per effect type (tag), the parameter ranges and patterns seen in the
+// references (layer roles, LightEmission, lifetimes, size-curve shapes, flipbooks, bursts, colours),
+// plus "avoid" notes from disliked results. Recipes are saved as memory skills (vfx-recipe-<tag>) so
+// prompts carry the one-line index and recall / use_skill pull the full numbers.
+
+import { allNodes, effectColors, emitterRole, sizeShape } from './analyze.ts'
+import { prop } from './schema.ts'
+import { curveShape, sequenceMax } from './sequence.ts'
+import { flipbookFrames } from './simulate.ts'
+import type { NumberRange, NumberSequence, VfxEntry, VfxRecipe } from './types.ts'
+
+export const RECIPE_PREFIX = 'vfx-recipe-'
+// Tags that are colours or too generic to make a recipe of their own.
+const NON_TYPE_TAGS = new Set(['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple', 'pink', 'white', 'grey', 'black'])
+
+function quantile(sorted: number[], q: number): number {
+  if (!sorted.length) return 0
+  const pos = (sorted.length - 1) * q
+  const lo = Math.floor(pos)
+  const hi = Math.ceil(pos)
+  return sorted[lo] + (sorted[hi] - sorted[lo]) * (pos - lo)
+}
+
+function r(x: number): number {
+  return Math.round(x * 100) / 100
+}
+
+export function recipeTags(entries: VfxEntry[]): string[] {
+  const counts = new Map<string, number>()
+  for (const e of entries) if (e.effect && e.quality !== 'avoid') for (const t of e.tags) if (!NON_TYPE_TAGS.has(t)) counts.set(t, (counts.get(t) ?? 0) + 1)
+  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t)
+}
+
+// One recipe from the entries tagged `tag` (references and liked results; "avoid" entries only
+// contribute notes).
+export function extractRecipe(tag: string, entries: VfxEntry[]): VfxRecipe | null {
+  const tagged = entries.filter((e) => e.tags.includes(tag) && e.effect)
+  const good = tagged.filter((e) => e.quality !== 'avoid')
+  if (!good.length) return null
+  const samples: Record<string, number[]> = {}
+  const add = (k: string, v: number) => {
+    if (Number.isFinite(v)) (samples[k] ??= []).push(v)
+  }
+  const roles = new Map<string, number>()
+  const shapes: Record<string, number> = {}
+  let emitterTotal = 0
+  let flip = 0
+  let burstEffects = 0
+  const colorCount = new Map<string, number>()
+  const emitterCounts: number[] = []
+  for (const e of good) {
+    const eff = e.effect!
+    const emitters = allNodes(eff.roots).filter((n) => n.className === 'ParticleEmitter')
+    emitterCounts.push(emitters.length)
+    if (eff.cues.some((c) => c.action === 'emit')) burstEffects++
+    for (const c of effectColors(eff)) colorCount.set(c, (colorCount.get(c) ?? 0) + 1)
+    for (const n of allNodes(eff.roots)) {
+      if (n.className === 'Trail' || n.className === 'Beam') roles.set(n.className.toLowerCase(), (roles.get(n.className.toLowerCase()) ?? 0) + 1)
+      if (/Light$/.test(n.className)) roles.set('light', (roles.get('light') ?? 0) + 1)
+    }
+    for (const n of emitters) {
+      emitterTotal++
+      const role = emitterRole(n)
+      roles.set(role, (roles.get(role) ?? 0) + 1)
+      const life = prop<NumberRange>(n, 'Lifetime')
+      const speed = prop<NumberRange>(n, 'Speed')
+      add('LightEmission', prop<number>(n, 'LightEmission'))
+      add(`${role}.Lifetime`, (life[0] + life[1]) / 2)
+      add(`${role}.Speed`, (speed[0] + speed[1]) / 2)
+      add(`${role}.SizePeak`, sequenceMax(prop<NumberSequence>(n, 'Size')))
+      add(`${role}.Drag`, prop<number>(n, 'Drag'))
+      add(`${role}.LightEmission`, prop<number>(n, 'LightEmission'))
+      add(`${role}.Brightness`, prop<number>(n, 'Brightness'))
+      const bursts = eff.cues.filter((c) => c.target === n.id && c.action === 'emit')
+      if (bursts.length) add(`${role}.Burst`, Math.max(...bursts.map((b) => b.count ?? 16)))
+      else add(`${role}.Rate`, prop<number>(n, 'Rate'))
+      const spread = prop<number[]>(n, 'SpreadAngle') ?? [0, 0]
+      add(`${role}.Spread`, Math.max(spread[0], spread[1]))
+      const shape = sizeShape(n)
+      shapes[shape] = (shapes[shape] ?? 0) + 1
+      const tshape = curveShape(prop<NumberSequence>(n, 'Transparency'))
+      shapes[`transparency:${tshape}`] = (shapes[`transparency:${tshape}`] ?? 0) + 1
+      if (flipbookFrames(n) > 1) flip++
+    }
+    for (const c of eff.cues) if (c.action === 'emit') add('burst.at', c.at)
+  }
+  const ranges: VfxRecipe['ranges'] = {}
+  for (const [k, vs] of Object.entries(samples)) {
+    const s = [...vs].sort((a, b) => a - b)
+    ranges[k] = { p10: r(quantile(s, 0.1)), median: r(quantile(s, 0.5)), p90: r(quantile(s, 0.9)) }
+  }
+  const layerTotal = [...roles.values()].reduce((a, b) => a + b, 0) || 1
+  const sortedCounts = [...emitterCounts].sort((a, b) => a - b)
+  const avoid = tagged
+    .filter((e) => e.quality === 'avoid')
+    .map((e) => `${e.name}: ${e.description}`.slice(0, 160))
+    .slice(0, 6)
+  const notes: string[] = []
+  const swell = shapes['swell-decay'] ?? 0
+  if (emitterTotal && swell / emitterTotal >= 0.3) notes.push(`${Math.round((swell / emitterTotal) * 100)}% of emitters use a quick swell-then-decay Size curve (peak in the first 40% of life).`)
+  const fadeOut = (shapes['transparency:grow'] ?? 0) + (shapes['transparency:pulse'] ?? 0) + (shapes['transparency:swell-decay'] ?? 0)
+  if (emitterTotal && fadeOut / emitterTotal >= 0.5) notes.push('Transparency rises toward 1 by the end of life (fade out) on most emitters; avoid popping.')
+  const le = ranges.LightEmission
+  if (le && le.median >= 0.6) notes.push(`Mostly additive (LightEmission median ${le.median}); keep smoke layers near 0 so they darken.`)
+  if (good.length >= 2 && sortedCounts.length) notes.push(`Typically ${quantile(sortedCounts, 0.5)} emitters (range ${sortedCounts[0]}-${sortedCounts[sortedCounts.length - 1]}).`)
+  if (burstEffects / good.length >= 0.5) notes.push('Burst driven: emitters disabled, played with Emit(n) at cue times.')
+  return {
+    tag,
+    samples: good.length,
+    emitters: r(quantile(sortedCounts, 0.5)),
+    layers: [...roles.entries()].sort((a, b) => b[1] - a[1]).map(([role, n]) => ({ role, share: r(n / layerTotal) })),
+    ranges,
+    sizeCurves: Object.fromEntries(Object.entries(shapes).filter(([k]) => !k.startsWith('transparency:'))),
+    flipbookShare: emitterTotal ? r(flip / emitterTotal) : 0,
+    burstShare: r(burstEffects / good.length),
+    colors: [...colorCount.entries()].sort((a, b) => b[1] - a[1]).slice(0, 4).map(([c]) => c),
+    avoid,
+    notes
+  }
+}
+
+export function extractRecipes(entries: VfxEntry[], minSamples = 1): VfxRecipe[] {
+  return recipeTags(entries)
+    .map((t) => extractRecipe(t, entries))
+    .filter((x): x is VfxRecipe => !!x && x.samples >= minSamples)
+}
+
+// The memory skill for a recipe (agent/memory skill: name, when-to-use description, steps body).
+export function recipeSkill(recipe: VfxRecipe, examples: string[] = []): { name: string; description: string; body: string } {
+  const range = (k: string) => {
+    const v = recipe.ranges[k]
+    return v ? `${v.p10}-${v.p90} (median ${v.median})` : null
+  }
+  const roleLines = recipe.layers.map((l) => {
+    const role = l.role
+    const bits = [
+      range(`${role}.Lifetime`) && `Lifetime ${range(`${role}.Lifetime`)}`,
+      range(`${role}.Speed`) && `Speed ${range(`${role}.Speed`)}`,
+      range(`${role}.SizePeak`) && `Size peak ${range(`${role}.SizePeak`)}`,
+      range(`${role}.LightEmission`) && `LightEmission ${range(`${role}.LightEmission`)}`,
+      range(`${role}.Rate`) && `Rate ${range(`${role}.Rate`)}`,
+      range(`${role}.Burst`) && `Emit ${range(`${role}.Burst`)}`,
+      range(`${role}.Drag`) && `Drag ${range(`${role}.Drag`)}`,
+      range(`${role}.Spread`) && `Spread ${range(`${role}.Spread`)}`
+    ].filter(Boolean)
+    return `- **${role}** (${Math.round(l.share * 100)}% of layers)${bits.length ? `: ${bits.join('; ')}` : ''}`
+  })
+  const body = [
+    `Learned from ${recipe.samples} reference effect${recipe.samples === 1 ? '' : 's'} tagged "${recipe.tag}" in the VFX library.`,
+    '',
+    '## Layers',
+    ...roleLines,
+    '',
+    '## Patterns',
+    ...recipe.notes.map((n) => `- ${n}`),
+    `- Size curves: ${Object.entries(recipe.sizeCurves).map(([k, v]) => `${k} x${v}`).join(', ') || 'n/a'}`,
+    `- Flipbooks on ${Math.round(recipe.flipbookShare * 100)}% of emitters; burst-driven in ${Math.round(recipe.burstShare * 100)}% of effects.`,
+    recipe.ranges['burst.at'] ? `- Burst times (s): ${range('burst.at')}` : '',
+    recipe.colors.length ? `- Palette: ${recipe.colors.join(', ')}` : '',
+    '',
+    ...(recipe.avoid.length ? ['## Avoid (disliked results)', ...recipe.avoid.map((a) => `- ${a}`), ''] : []),
+    ...(examples.length ? ['## Closest references', ...examples.map((e) => `- ${e}`), ''] : []),
+    '## Steps',
+    `1. vfx_search_library {"query":"${recipe.tag}"} and read the closest references' layers.`,
+    '2. vfx_create a spec with one layer per role above, numbers inside the ranges; additive core/glow/sparks, near-0 LightEmission smoke.',
+    '3. vfx_render, compare with the references, then vfx_refine (or adjust and re-create) until the critique passes.'
+  ]
+    .filter((l, i, a) => l !== '' || a[i - 1] !== '')
+    .join('\n')
+  const description = `Roblox ${recipe.tag} VFX: layer roles and parameter ranges from ${recipe.samples} reference${recipe.samples === 1 ? '' : 's'}; use when making a ${recipe.tag} effect`
+  return { name: `${RECIPE_PREFIX}${recipe.tag}`, description: description.slice(0, 200), body: body.slice(0, 7900) }
+}

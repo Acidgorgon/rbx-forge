@@ -8,6 +8,7 @@ import { useCursor } from '../lib/cursor'
 import { realmOfFile } from '../lib/roblox'
 import { ago, fmtTokens, fmtUsd } from '../lib/format'
 import { useProblems } from './problems'
+import { UpdatePill } from '../updates/UpdatePill'
 
 export function ledOf(s: ServiceStatus | undefined): 'ok' | 'warn' | 'err' | 'idle' {
   if (!s) return 'idle'
@@ -112,6 +113,7 @@ export function StatusBar() {
         <ServiceSegment key={s.id} s={s} port={place?.servePort} />
       ))}
       <span className="sb-sp" />
+      <UpdatePill />
       <span className="sb" onClick={() => actions.showBottom('problems')} title="Problems">
         <Icon name="warn" size={12} style={{ color: warnings ? 'var(--warn)' : undefined }} />
         {warnings}

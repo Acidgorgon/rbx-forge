@@ -161,6 +161,31 @@ On first launch Forge sets up the Roblox toolchain (see [above](#new-project-and
 
 Settings are stored in the same place for the installed app and `npm run dev`: `~/Library/Application Support/rbx-forge` (macOS) or `%APPDATA%\rbx-forge` (Windows).
 
+## Updates
+
+Forge updates itself from this repository's [GitHub Releases](https://github.com/Acidgorgon/rbx-forge/releases) with [electron-updater](https://www.electron.build/v26/docs/features/auto-update). It checks shortly after launch and then every 4 hours, downloads a new version in the background and shows **Update 0.2.1 ready, restart** in the status bar. Restart installs it; if you keep working, it installs the next time you quit. It never restarts on its own, and when a chat or agent is running or a file has unsaved changes it asks first. **Settings > Updates** has the auto-check switch, the channel, **Check now**, your version and the release notes.
+
+- **Channels.** *Stable* gets full releases. *Beta* also gets prereleases. Switching back to Stable keeps the beta you have until a newer full release comes out (no downgrades).
+- **Windows.** Updates install silently into the same folder. This works with the unsigned installer: electron-updater only checks the installer's signature when the build was signed with a certificate. Windows SmartScreen judges files by reputation and may still warn about the first, manually downloaded installer.
+- **macOS.** macOS only lets an app replace itself when it is signed with an Apple Developer ID (Squirrel.Mac checks the update against the running app's signature, and an ad-hoc signature only matches that exact build). The current builds are ad-hoc signed, so Forge shows **Update 0.2.1 available, download** and opens the release page. A build signed with a Developer ID switches to installing updates by itself, with no code change.
+- **Linux.** No Linux build is published, so updates are off.
+
+### Releasing
+
+Push a tag such as `v0.2.1` after bumping `version` in `package.json`, or run **Actions > Build > Run workflow** with a `release_tag`. The release job uploads the installers together with `latest.yml` (Windows), `latest-mac.yml` (macOS) and the `.blockmap` files the updater reads. Each arch builds on its own runner, so the job merges the per-arch `latest*.yml` files (`build/merge-update-info.mjs`) into one per platform that lists both arches. A release without these files (such as v0.2.0) is only visible to people who download it by hand.
+
+Builds on every push would ship unfinished code and spend macOS/Windows runner minutes, so updates come from releases only. For testers, run the workflow with **prerelease** checked: it publishes a GitHub prerelease such as `v0.2.1-beta.57` (the next patch after the last release, plus the run number, without changing `package.json`) that only the Beta channel offers.
+
+### Private source repository
+
+The app reads releases without a token, and a private repository answers those requests with "404 Not Found". Forge never ships a token (anyone could pull it out of the app), so with a private repository the check fails and Settings > Updates explains why. To keep the source private:
+
+1. Create a small **public** repository for the binaries only, for example `Acidgorgon/rbx-forge-releases`.
+2. In `electron-builder.yml`, change `publish.repo` to `rbx-forge-releases`. New builds then look for updates there.
+3. Add a `RELEASES_TOKEN` secret to the source repository: a fine-grained token with **Contents: read and write** on the releases repository. The release job uploads there when the feed repository differs from the one running the workflow.
+
+Apps already installed keep reading the repository they were built with, so make the switch while the old repository is still public, release once, then make it private.
+
 ## Build it yourself
 
 You need **Node 22+** and **git**.
@@ -191,7 +216,7 @@ Packaging is configured in `electron-builder.yml`. The icon is `build/icon.png` 
 
 `build/afterPack.cjs` keeps only the target's binaries and fails the build if one is missing. The Lune test runtime ships from `resources/lune`.
 
-CI (`.github/workflows/build.yml`) runs typecheck, tests and a build on every push. Installers are built on a manual run (Actions > Build > Run workflow, downloadable from the run's **Artifacts**) or a `v*` tag. Each target builds on its own runner: macOS arm64 on `macos-latest`, macOS x64 on `macos-15-intel`, and Windows x64 and arm64 on `windows-latest`. A tag such as `v0.2.0` also publishes a GitHub Release with all four installers.
+CI (`.github/workflows/build.yml`) runs typecheck, tests and a build on every push. Installers are built on a manual run (Actions > Build > Run workflow, downloadable from the run's **Artifacts**) or a `v*` tag. Each target builds on its own runner: macOS arm64 on `macos-latest`, macOS x64 on `macos-15-intel`, and Windows x64 and arm64 on `windows-latest`. A tag such as `v0.2.0` also publishes a GitHub Release with all four installers and the update metadata (see [Updates](#updates)).
 
 macOS builds get an ad-hoc signature only. To sign and notarize, set `mac.identity` (or `CSC_LINK`/`CSC_KEY_PASSWORD`) and `hardenedRuntime: true`, and add notarization. Windows signing takes `CSC_LINK` / `WIN_CSC_LINK`.
 

@@ -2,11 +2,12 @@
 // .forge/memory, shared with the team) and skills with search; view, edit, delete, pin and promote
 // user -> project; a "learned recently" feed; the reflection and style-profile settings.
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryListing, MemoryScope, MemorySettings, MemoryType, ReflectionMode } from '@shared/types'
+import type { ImportPreview, MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryListing, MemoryScope, MemorySettings, MemoryType, ReflectionMode } from '@shared/types'
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Markdown } from '../../components/Markdown'
 import { ago, errorText, plural } from '../../lib/format'
+import { ExportDialog, ImportDialog, SyncCard, usePackRequests } from './MemoryPack'
 import './memory.css'
 
 type Filter = 'all' | 'user' | 'project' | 'skills'
@@ -178,6 +179,18 @@ export function MemoryPage() {
   const [settings, setSettings] = useState<MemorySettings | null>(null)
   const [styleBusy, setStyleBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
+  const [exporting, setExporting] = useState(false)
+  const [importing, setImporting] = useState<ImportPreview | null>(null)
+
+  const openImport = useCallback(async () => {
+    try {
+      const p = await h.packOpen()
+      if (p) setImporting(p)
+    } catch (e) {
+      actions.toast({ text: 'Could not open the pack', detail: errorText(e), kind: 'err' })
+    }
+  }, [])
+  usePackRequests(useCallback((k: 'export' | 'import') => (k === 'export' ? setExporting(true) : void openImport()), [openImport]))
 
   const load = useCallback(async () => {
     try {
@@ -267,6 +280,8 @@ export function MemoryPage() {
             <div className="sub">What Forge's agents have learned about you and this game. Prompts only get names and one-line descriptions; agents read the rest with recall and use_skill.</div>
           </div>
           <div className="actions">
+            <button className="btn" onClick={() => void openImport()} title="Import memories and skills from a .forgepack file"><Icon name="upload" size={13} /> Import…</button>
+            <button className="btn" onClick={() => setExporting(true)} title="Save memories and skills to a .forgepack file for another device"><Icon name="download" size={13} /> Export…</button>
             <button className="btn" disabled={!projectOpen || styleBusy} onClick={() => void analyze()} title={projectOpen ? "Read this project's Luau and save its style as a project memory" : 'Open a project first'}>
               {styleBusy ? <span className="spinner" /> : <Icon name="code" size={13} />} Learn code style
             </button>
@@ -403,7 +418,11 @@ export function MemoryPage() {
             </div>
           </section>
         </div>
+
+        <SyncCard />
       </div>
+      {exporting && <ExportDialog onClose={() => setExporting(false)} />}
+      {importing && <ImportDialog preview={importing} onClose={() => (setImporting(null), void load())} />}
     </div>
   )
 }

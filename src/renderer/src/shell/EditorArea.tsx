@@ -14,12 +14,14 @@ import { PackagesPage } from '../pages/PackagesPage'
 import { ReleasePage } from '../pages/ReleasePage'
 import { AnalyticsPage } from '../pages/AnalyticsPage'
 import { ArtPage } from '../pages/art/ArtPage'
+import { VfxLabPage } from '../pages/vfx/VfxLabPage'
+import { UiPreviewPage } from '../pages/uipreview/UiPreviewPage'
 import { MemoryPage } from '../pages/memory/MemoryPage'
 import { GroupChatsPage } from '../assistant/GroupChatsPage'
 import { ConflictPage } from '../pages/ConflictPage'
 import { TranscriptPage } from '../pages/TranscriptPage'
 
-const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', art: 'image', memory: 'memory', groups: 'round', conflict: 'diff', transcript: 'bot' }
+const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', art: 'image', vfx: 'sparkle', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', transcript: 'bot' }
 
 function TabGlyph({ tab }: { tab: Tab }) {
   if (tab.kind === 'file' && tab.path) {
@@ -248,6 +250,12 @@ export function EditorArea() {
         break
       case 'art':
         page = <ArtPage />
+        break
+      case 'vfx':
+        page = <VfxLabPage />
+        break
+      case 'uipreview':
+        page = <UiPreviewPage />
         break
       case 'memory':
         page = <MemoryPage />

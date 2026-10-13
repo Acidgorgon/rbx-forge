@@ -1,0 +1,69 @@
+<!doctype html>
+<html>
+  <head>
+    <meta charset="utf-8" />
+    <style>
+      :root { color-scheme: light dark; }
+      body { margin: 0; padding: 12px; font: 12px/1.45 Inter, system-ui, sans-serif; color: var(--figma-color-text, #222); background: var(--figma-color-bg, #fff); display: flex; flex-direction: column; gap: 8px; height: calc(100vh - 24px); box-sizing: border-box; }
+      h1 { font-size: 13px; margin: 0; font-weight: 600; }
+      p { margin: 0; color: var(--figma-color-text-secondary, #666); }
+      textarea { flex: 1; min-height: 120px; resize: none; font: 11px/1.4 ui-monospace, Menlo, monospace; padding: 8px; border-radius: 6px; border: 1px solid var(--figma-color-border, #ddd); background: var(--figma-color-bg-secondary, #f7f7f7); color: inherit; }
+      .row { display: flex; gap: 6px; flex-wrap: wrap; }
+      button { height: 28px; padding: 0 12px; border-radius: 6px; border: 1px solid var(--figma-color-border, #ccc); background: var(--figma-color-bg, #fff); color: inherit; font: inherit; cursor: pointer; }
+      button.primary { background: var(--figma-color-bg-brand, #0d99ff); color: var(--figma-color-text-onbrand, #fff); border-color: transparent; }
+      #status { min-height: 18px; }
+      #status.err { color: var(--figma-color-text-danger, #d22); }
+    </style>
+  </head>
+  <body>
+    <h1>Forge UI</h1>
+    <p>Paste Forge JSON (RBX Forge › UI Preview › Figma › Forge JSON) and import it, or select an imported frame and export it back to Forge.</p>
+    <textarea id="json" spellcheck="false" placeholder='{ "format": "forge-ui", … }'></textarea>
+    <div class="row">
+      <button class="primary" id="import">Import Forge JSON</button>
+      <button id="export">Export selection to Forge</button>
+      <button id="copy">Copy</button>
+      <button id="save">Download .json</button>
+    </div>
+    <div id="status"></div>
+    <script>
+      const $ = (id) => document.getElementById(id)
+      const status = (text, err) => {
+        $('status').textContent = text
+        $('status').className = err ? 'err' : ''
+      }
+      let story = 'frame'
+      $('import').onclick = () => {
+        const json = $('json').value.trim()
+        if (!json) return status('Paste Forge JSON first.', true)
+        status('Importing…')
+        parent.postMessage({ pluginMessage: { type: 'import', json } }, '*')
+      }
+      $('export').onclick = () => parent.postMessage({ pluginMessage: { type: 'export' } }, '*')
+      $('copy').onclick = () => {
+        $('json').select()
+        // The plugin iframe has no async clipboard permission; execCommand still works here.
+        const ok = document.execCommand('copy')
+        status(ok ? 'Copied. In Forge: UI Preview › Figma › Paste from Figma.' : 'Select the text and copy it.', !ok)
+      }
+      $('save').onclick = () => {
+        const blob = new Blob([$('json').value], { type: 'application/json' })
+        const a = document.createElement('a')
+        a.href = URL.createObjectURL(blob)
+        a.download = `${story.split('/').pop().replace(/\.story\.luau?$/, '')}.from-figma.json`
+        a.click()
+      }
+      onmessage = (e) => {
+        const msg = e.data.pluginMessage
+        if (!msg) return
+        if (msg.type === 'imported') status(`Imported ${msg.name} (${msg.count} top-level elements).`)
+        if (msg.type === 'exported') {
+          $('json').value = msg.json
+          story = msg.story || story
+          status('Exported. Copy or download it, then use Import from Figma in Forge.')
+        }
+        if (msg.type === 'error') status(msg.message, true)
+      }
+    </script>
+  </body>
+</html>

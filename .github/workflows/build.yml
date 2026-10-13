@@ -14,6 +14,15 @@
 # target's prebuild and fails the build if it is missing. On ubuntu (test job) npm ci compiles it
 # from source, and test/terminal.pty.test.ts runs it for real on every runner.
 #
+# Self-update (electron-updater, see README "Updates"): each package job also uploads the
+# update metadata electron-builder writes next to the installers (latest.yml on Windows,
+# latest-mac.yml on macOS, *.blockmap for differential downloads). electron-builder runs with
+# --publish never; the release job uploads everything. Because every arch builds on its own runner,
+# each job's latest*.yml lists only its own installer, so the release job merges them
+# (build/merge-update-info.mjs) into one file per platform that lists both arches.
+# A manual run with "prerelease" publishes a beta prerelease (v<next>-beta.<run>) that the app's
+# Beta channel picks up; Stable users only ever see full releases.
+#
 # The app also ships the rokit binary for its target: build/rokit-binaries.mjs downloads the pinned
 # rokit release asset (SHA-256 checked) into resources/rokit/<os>-<arch>, electron-builder copies it
 # to <resources>/rokit, and afterPack fails the build if it is missing.
@@ -29,6 +38,11 @@ on:
         description: 'Publish a GitHub Release with this tag (e.g. v0.1.0); empty for a plain build'
         required: false
         default: ''
+      prerelease:
+        description: 'Publish a beta prerelease (v<next patch>-beta.<run number>, or release_tag if set) for the Beta update channel'
+        type: boolean
+        required: false
+        default: false
 
 permissions:
   contents: read
@@ -52,12 +66,58 @@ jobs:
       - run: npm test
       - run: npm run build
 
+  # Decides the version and tag. Tags and plain manual runs use package.json's version unchanged; a
+  # beta prerelease overrides it at build time only (electron-builder extraMetadata), so the repo's
+  # version is never bumped by CI. The beta is newer than the latest release: when v<version> is
+  # already released it takes the next patch (0.2.0 released -> 0.2.1-beta.<run>).
+  version:
+    name: Version
+    if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    outputs:
+      override: ${{ steps.v.outputs.override }}
+      tag: ${{ steps.v.outputs.tag }}
+      prerelease: ${{ steps.v.outputs.prerelease }}
+    steps:
+      - uses: actions/checkout@v5
+      - id: v
+        env:
+          GH_TOKEN: ${{ github.token }}
+          PRERELEASE: ${{ github.event_name == 'workflow_dispatch' && inputs.prerelease && 'true' || 'false' }}
+          RELEASE_TAG: ${{ inputs.release_tag || (startsWith(github.ref, 'refs/tags/') && github.ref_name) || '' }}
+          RUN_NUMBER: ${{ github.run_number }}
+        shell: bash
+        run: |
+          base=$(node -p "require('./package.json').version")
+          override=""
+          tag="$RELEASE_TAG"
+          if [ "$PRERELEASE" = "true" ]; then
+            if [ -n "$RELEASE_TAG" ]; then
+              override="${RELEASE_TAG#v}"
+            else
+              next="$base"
+              if gh release view "v$base" --repo "$GITHUB_REPOSITORY" >/dev/null 2>&1; then
+                next=$(node -p "const [a,b,c]=process.argv[1].split('-')[0].split('.').map(Number); [a,b,c+1].join('.')" "$base")
+              fi
+              override="$next-beta.$RUN_NUMBER"
+              tag="v$override"
+            fi
+            case "$override" in
+              *-*) ;;
+              *) echo "::error::A prerelease needs a prerelease version such as v0.3.0-beta.1 (got $override)"; exit 1 ;;
+            esac
+          fi
+          echo "override=$override" >> "$GITHUB_OUTPUT"
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "prerelease=$PRERELEASE" >> "$GITHUB_OUTPUT"
+          echo "version ${override:-$base}, tag ${tag:-none}, prerelease $PRERELEASE" >> "$GITHUB_STEP_SUMMARY"
+
   package:
     name: Package ${{ matrix.name }}
     # macOS and Windows runners use far more paid Actions minutes than Linux, so pushes only run the
     # Linux tests. Installers are built on a manual run (Actions > Build > Run workflow) or a v* tag.
     if: github.event_name == 'workflow_dispatch' || startsWith(github.ref, 'refs/tags/v')
-    needs: test
+    needs: [test, version]
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -100,8 +160,13 @@ jobs:
         shell: bash
         run: ls -l node_modules/node-pty/prebuilds/${{ matrix.platform }}-${{ matrix.arch }}/pty.node
       - run: npm run build
+      # electron-builder writes the update metadata (publish in electron-builder.yml) but never
+      # uploads: --publish never. A beta build gets its version from the version job.
       - name: electron-builder
-        run: npx electron-builder ${{ matrix.builder }} --${{ matrix.arch }} --publish never
+        shell: bash
+        env:
+          VERSION_OVERRIDE: ${{ needs.version.outputs.override }}
+        run: npx electron-builder ${{ matrix.builder }} --${{ matrix.arch }} --publish never ${VERSION_OVERRIDE:+-c.extraMetadata.version=$VERSION_OVERRIDE}
       - uses: actions/upload-artifact@v4
         with:
           name: RBX-Forge-${{ matrix.platform }}-${{ matrix.arch }}
@@ -109,26 +174,68 @@ jobs:
             dist/*.dmg
             dist/*.zip
             dist/*.exe
+            dist/*.blockmap
+            dist/latest*.yml
           if-no-files-found: error
           compression-level: 0 # dmg/zip/exe are already compressed
 
   release:
     name: GitHub Release
-    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.release_tag != '')
-    needs: package
+    if: needs.version.outputs.tag != ''
+    needs: [version, package]
     runs-on: ubuntu-latest
     permissions:
       contents: write
     steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      # Only for js-yaml (merge script, feed lookup); no install scripts, no Electron download.
+      - run: npm ci --ignore-scripts
+      # One folder per package job: artifacts/RBX-Forge-<platform>-<arch>/.
       - uses: actions/download-artifact@v4
         with:
           path: artifacts
-          merge-multiple: true
-      - run: ls -la artifacts
+      - name: Merge update metadata and collect release files
+        shell: bash
+        run: |
+          mkdir -p release
+          node build/merge-update-info.mjs --out release artifacts/*/
+          find artifacts -type f \( -name '*.dmg' -o -name '*.zip' -o -name '*.exe' -o -name '*.blockmap' \) -exec cp {} release/ \;
+          # Both arches must be in each platform's feed, or one arch would get the other's installer.
+          for f in latest.yml latest-mac.yml; do
+            n=$(grep -c '^  - url:' "release/$f")
+            echo "$f lists $n files"; cat "release/$f"
+            [ "$n" -eq 2 ] || { echo "::error::$f should list 2 installers"; exit 1; }
+          done
+          ls -la release
+      # Where the app looks for updates (electron-builder.yml publish). When that is another repo
+      # (a public binaries-only repo for a private source repo), upload there with RELEASES_TOKEN.
+      - name: Update feed
+        id: feed
+        shell: bash
+        env:
+          HAS_TOKEN: ${{ secrets.RELEASES_TOKEN != '' }}
+        run: |
+          feed=$(node -e "const y=require('js-yaml').load(require('fs').readFileSync('electron-builder.yml','utf8')); const p=[].concat(y.publish)[0]; console.log(p.owner + '/' + p.repo)")
+          echo "repo=$feed" >> "$GITHUB_OUTPUT"
+          if [ "$feed" = "$GITHUB_REPOSITORY" ]; then echo "external=false" >> "$GITHUB_OUTPUT"; else
+            echo "external=true" >> "$GITHUB_OUTPUT"
+            [ "$HAS_TOKEN" = "true" ] || { echo "::error::Releases go to $feed: add a RELEASES_TOKEN secret with contents write access to it"; exit 1; }
+          fi
+          echo "Publishing to $feed" >> "$GITHUB_STEP_SUMMARY"
       - uses: softprops/action-gh-release@v2.2.2
         with:
-          files: artifacts/*
-          tag_name: ${{ inputs.release_tag || github.ref_name }}
-          target_commitish: ${{ github.sha }}
-          generate_release_notes: true
+          files: release/*
+          tag_name: ${{ needs.version.outputs.tag }}
+          prerelease: ${{ needs.version.outputs.prerelease == 'true' }}
+          repository: ${{ steps.feed.outputs.repo }}
+          token: ${{ steps.feed.outputs.external == 'true' && secrets.RELEASES_TOKEN || github.token }}
+          # The commit only exists in this repo; a binaries-only repo tags its own default branch.
+          target_commitish: ${{ steps.feed.outputs.external != 'true' && github.sha || '' }}
+          # These notes are the changelog the app shows in Settings > Updates.
+          generate_release_notes: ${{ steps.feed.outputs.external != 'true' }}
+          body: ${{ steps.feed.outputs.external == 'true' && format('Built from {0}@{1}.', github.repository, github.sha) || '' }}
           fail_on_unmatched_files: true

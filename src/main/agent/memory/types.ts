@@ -25,6 +25,8 @@ export interface MemoryEntry {
   type?: MemoryType
   body: string
   created: number
+  // Last content change (frontmatter `updated`; falls back to created for older files).
+  updated?: number
   lastUsed: number
   uses: number
   pinned?: boolean

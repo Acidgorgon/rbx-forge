@@ -1,0 +1,13 @@
+{
+  "name": "UiPreviewFixture",
+  "tree": {
+    "$className": "DataModel",
+    "ReplicatedStorage": {
+      "Packages": { "$path": "Packages" },
+      "Shared": {
+        "$className": "Folder",
+        "Interface": { "$path": "src/shared/Interface" }
+      }
+    }
+  }
+}

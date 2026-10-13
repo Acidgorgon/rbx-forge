@@ -25,6 +25,10 @@ import { terminalMock } from './mockTerminal'
 import { setupMock } from './mockSetup'
 import { memoryMock } from './mockMemory'
 import { artMock } from './mockArt'
+import { updatesMock } from './mockUpdates'
+import { brainSyncMock } from './mockBrainSync'
+import { uiPreviewMock, uiPreviewMockSources } from './mockUiPreview'
+import { vfxMock } from './mockVfx'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -523,6 +527,8 @@ let studioConflicts: StudioConflict[] = [
 
 // ---------------------------------------------------------------- chat
 
+// UI Preview fixture stories (mockUiPreview.ts).
+Object.assign(files, uiPreviewMockSources)
 const providers = providersMock(emit)
 
 const chats: ChatSession[] = [
@@ -853,6 +859,14 @@ const api: HarnessApi = {
   ...memoryMock(emit),
   // Art concepts (mockArt.ts): placeholder SVG images.
   ...artMock(emit),
+  // Self-update (mockUpdates.ts); ?update=ready|downloading|available|private|disabled.
+  ...updatesMock(emit, (text) => log('harness', text, 'info')),
+  // Memory export/import and device sync (mockBrainSync.ts); ?brainsync=git|folder|auth|syncing.
+  ...brainSyncMock(emit),
+  // UI Preview (mockUiPreview.ts): Lune recordings of the fixture stories.
+  ...uiPreviewMock(emit, (text) => log('harness', text, 'info')),
+  // VFX Lab (mockVfx.ts): a small effect library built with the shared VFX code.
+  ...vfxMock(emit),
 
   on(event, handler) {
     let set = listeners.get(event)

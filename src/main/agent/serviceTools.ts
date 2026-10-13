@@ -192,3 +192,15 @@ export function withMemoryTools<T extends { read: ServiceTool[]; write: ServiceT
   if (!memory) return sets
   return { ...sets, read: [...sets.read, ...memory.read], write: [...sets.write, ...memory.write] }
 }
+
+// ---------------------------------------------------------------- UI Preview (services/uiPreview)
+
+export { previewTools, PREVIEW_UI_DESCRIPTION } from '../services/uiPreview/tools.ts'
+
+// preview_ui is read-only (it runs the story headless and takes a screenshot): every agent gets it,
+// appended after the other read tools (fixed order: the tool list is part of the cached prefix).
+export const PREVIEW_READ_TOOLS = ['preview_ui'] as const
+
+export function withPreviewTools<T extends { read: ServiceTool[] }>(sets: T, tools: ServiceTool[]): T {
+  return { ...sets, read: [...sets.read, ...tools] }
+}

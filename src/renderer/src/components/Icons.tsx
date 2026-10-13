@@ -76,7 +76,8 @@ const PATHS = {
   diff: <><path d="M4.5 2v7M1.5 5.5h6M9 11.5h5.5" /><rect x="8.5" y="2.5" width="5.5" height="6" rx="1" /></>,
   pin: <><path d="M6 2.5h4l-.6 3.8 2.1 2.2H4.5l2.1-2.2z" /><path d="M8 8.5v5" /></>,
   image: <><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><circle cx="5.8" cy="6" r="1.2" /><path d="m2.5 12 3.8-3.6 2.6 2.4 2.2-2 2.4 2.2" /></>,
-  memory: <><path d="M4 2.5h8v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z" /><path d="M5.8 2.5v11M8.2 5.8h2M8.2 8.2h2" /></>
+  memory: <><path d="M4 2.5h8v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z" /><path d="M5.8 2.5v11M8.2 5.8h2M8.2 8.2h2" /></>,
+  sparkle: <><path d="M7 2v2.6M7 9.4V12M2 7h2.6M9.4 7H12M3.6 3.6l1.6 1.6M8.8 8.8l1.6 1.6M10.4 3.6 8.8 5.2M5.2 8.8l-1.6 1.6" /><path d="M12.2 10.6v3.2M10.6 12.2h3.2" /></>
 } satisfies Record<string, ReactNode>
 
 export type IconName = keyof typeof PATHS

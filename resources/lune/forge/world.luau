@@ -290,6 +290,10 @@ local function setParent(inst, parent)
 			ancestor = data[ancestor].Parent
 		end
 	end
+	local observer = d.world and d.world.observer
+	if observer then
+		observer(inst, "Parent", parent)
+	end
 	fireIfAny(inst, "AncestryChanged", inst, parent)
 	local signal = d.propSignals.Parent
 	if signal then
@@ -347,6 +351,11 @@ InstanceMT.__newindex = function(self, key, value)
 		d.Name = tostring(value)
 	else
 		d.props[key] = value
+	end
+	-- UI preview (forge/gui.luau) streams property changes from here.
+	local observer = d.world and d.world.observer
+	if observer then
+		observer(self, key, value)
 	end
 	local signal = d.propSignals[key]
 	if signal then
@@ -514,6 +523,10 @@ method("Instance", "Destroy", function(self)
 	end
 	setParent(self, nil)
 	d.destroyed = true
+	local observer = d.world and d.world.observer
+	if observer then
+		observer(self, "__destroyed", nil)
+	end
 	d.parentLocked = true
 	for _, signal in d.signals do
 		signal:DisconnectAll()
@@ -1789,5 +1802,8 @@ World.fullName = fullName
 World.typeof = forgeTypeof
 World.Signal = Signal
 World.isA = isA
+-- Defines or replaces a method for a class (the UI preview swaps in animated tweens).
+World.method = method
+World.reflectedProperty = reflectedProperty
 
 return World

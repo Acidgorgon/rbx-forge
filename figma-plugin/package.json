@@ -1,0 +1,14 @@
+{
+  "name": "forge-ui-figma-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Figma plugin for RBX Forge UI Preview: imports Forge JSON frames and exports edited frames back.",
+  "scripts": {
+    "build": "tsc -p .",
+    "watch": "tsc -p . --watch"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "1.141.0",
+    "typescript": "^5.9.0"
+  }
+}

@@ -72,6 +72,8 @@ export function ActivityBar() {
     { icon: 'rocket', label: 'Release', page: 'release' },
     { icon: 'chart', label: 'Analytics', page: 'analytics' },
     { icon: 'image', label: 'Art (image concepts)', page: 'art' },
+    { icon: 'sparkle', label: 'VFX Lab', page: 'vfx' },
+    { icon: 'monitor', label: 'UI Preview (stories)', page: 'uipreview' },
     { icon: 'memory', label: 'Memory & skills', page: 'memory' },
     { icon: 'gear', label: 'Settings', keys: 'mod+comma', page: 'settings' }
   ]

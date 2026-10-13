@@ -12,6 +12,7 @@ import { errorText } from '../../lib/format'
 import { VfxPreview } from './VfxPreview'
 import { ParamEditor } from './ParamEditor'
 import { ScriptPanel } from './ScriptPanel'
+import { TextureLab } from './TextureLab'
 import './vfx.css'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg/gif · mp4/webm'
@@ -384,6 +385,8 @@ export function VfxLabPage() {
   const [busy, setBusy] = useState<string | null>(null)
   const [drag, setDrag] = useState(false)
   const [progress, setProgress] = useState<Record<string, VfxRefineProgress>>({})
+  // Library view: effects, or the custom texture library (TextureLab).
+  const [view, setView] = useState<'effects' | 'textures'>('effects')
 
   const load = useCallback(async () => {
     try {
@@ -588,55 +591,66 @@ export function VfxLabPage() {
           </div>
         </section>
 
-        <div className={`vfx-body${current ? ' has-detail' : ''}`}>
-          <div className="vfx-lib">
-            <div
-              className={`vfx-drop${drag ? ' drag' : ''}`}
-              onDragOver={(e) => (e.preventDefault(), setDrag(true))}
-              onDragLeave={() => setDrag(false)}
-              onDrop={onDrop}
-              role="button"
-              tabIndex={0}
-              onClick={async () => void importPaths(await h.vfxChooseImport())}
-              onKeyDown={async (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), void importPaths(await h.vfxChooseImport()))}
-            >
-              {busy ? (
-                <>
-                  <span className="spinner" aria-hidden /> {busy}
-                </>
-              ) : (
-                <>
-                  <Icon name="download" size={13} /> Drop references here <span className="faint mono">{IMPORT_HINT}</span>
-                </>
+        <div className="seg vfx-view" role="tablist" aria-label="Library">
+          <button role="tab" aria-selected={view === 'effects'} className={view === 'effects' ? 'on' : ''} onClick={() => setView('effects')}>
+            effects
+          </button>
+          <button role="tab" aria-selected={view === 'textures'} className={view === 'textures' ? 'on' : ''} onClick={() => setView('textures')} title="Custom particle and beam textures: procedural (free) or AI, upload to Roblox">
+            textures
+          </button>
+        </div>
+        {view === 'textures' && <TextureLab />}
+        {view === 'effects' && (
+          <div className={`vfx-body${current ? ' has-detail' : ''}`}>
+            <div className="vfx-lib">
+              <div
+                className={`vfx-drop${drag ? ' drag' : ''}`}
+                onDragOver={(e) => (e.preventDefault(), setDrag(true))}
+                onDragLeave={() => setDrag(false)}
+                onDrop={onDrop}
+                role="button"
+                tabIndex={0}
+                onClick={async () => void importPaths(await h.vfxChooseImport())}
+                onKeyDown={async (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), void importPaths(await h.vfxChooseImport()))}
+              >
+                {busy ? (
+                  <>
+                    <span className="spinner" aria-hidden /> {busy}
+                  </>
+                ) : (
+                  <>
+                    <Icon name="download" size={13} /> Drop references here <span className="faint mono">{IMPORT_HINT}</span>
+                  </>
+                )}
+              </div>
+              <div className="row vfx-lib-head">
+                <input className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name, tag or description" aria-label="Search library" />
+                <span className="note">{shown.length} shown</span>
+              </div>
+              {allTags.length > 0 && (
+                <div className="vfx-chips" role="group" aria-label="Filter by tag">
+                  {allTags.map(([t, n]) => (
+                    <button key={t} className={`badge-o${tag === t ? ' hot' : ''}`} aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}>
+                      {t} <span className="faint">{n}</span>
+                    </button>
+                  ))}
+                </div>
               )}
-            </div>
-            <div className="row vfx-lib-head">
-              <input className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name, tag or description" aria-label="Search library" />
-              <span className="note">{shown.length} shown</span>
-            </div>
-            {allTags.length > 0 && (
-              <div className="vfx-chips" role="group" aria-label="Filter by tag">
-                {allTags.map(([t, n]) => (
-                  <button key={t} className={`badge-o${tag === t ? ' hot' : ''}`} aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}>
-                    {t} <span className="faint">{n}</span>
-                  </button>
+              {!entries.length && status && (
+                <div className="empty">
+                  <Icon name="sparkle" size={22} className="i" />
+                  The library is empty. Drop .rbxm/.rbxmx effect models (or a folder of them) above, add reference gifs and videos, or make an effect.
+                </div>
+              )}
+              <div className="vfx-grid">
+                {shown.map((e) => (
+                  <Card key={e.id} entry={e} selected={e.id === selected} progress={progress[e.id]} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
                 ))}
               </div>
-            )}
-            {!entries.length && status && (
-              <div className="empty">
-                <Icon name="sparkle" size={22} className="i" />
-                The library is empty. Drop .rbxm/.rbxmx effect models (or a folder of them) above, add reference gifs and videos, or make an effect.
-              </div>
-            )}
-            <div className="vfx-grid">
-              {shown.map((e) => (
-                <Card key={e.id} entry={e} selected={e.id === selected} progress={progress[e.id]} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
-              ))}
             </div>
+            {current && <Detail key={current.id} entry={current} progress={progress[current.id]} recipes={recipes} onClose={() => setSelected(null)} />}
           </div>
-          {current && <Detail key={current.id} entry={current} progress={progress[current.id]} recipes={recipes} onClose={() => setSelected(null)} />}
-        </div>
+        )}
       </div>
     </div>
   )

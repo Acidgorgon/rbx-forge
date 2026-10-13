@@ -7,6 +7,7 @@ import { allNodes, emitterRole, perfScore, perfWarnings } from './analyze.ts'
 import { prop } from './schema.ts'
 import { curveShape, evalNumberSequence } from './sequence.ts'
 import { applyChanges, compactEffect, SpecError } from './spec.ts'
+import { textureSuggestions } from './tex/textures.ts'
 import { RUBRIC_KEYS, type NumberRange, type NumberSequence, type RubricKey, type VfxChange, type VfxCritique, type VfxEffect, type VfxRecipe } from './types.ts'
 
 export const RUBRIC_WEIGHTS: Record<RubricKey, number> = { readability: 0.22, layering: 0.18, timing: 0.16, color: 0.16, silhouette: 0.14, performance: 0.14 }
@@ -25,6 +26,7 @@ export const CRITIC_SYSTEM = `You are a senior Roblox VFX artist reviewing an ef
 You get frames from an approximate WebGL preview (dark background, a grey R15 dummy for scale, a 1-stud floor grid), the effect's parameters as JSON, numbers from the closest reference effects in the user's library, and sometimes reference images.
 ${RUBRIC_TEXT}
 Then propose at most 6 concrete parameter changes that would raise the lowest scores. Use only layer names and Roblox property names that exist in the parameters (Rate, Lifetime, Speed, SpreadAngle, Acceleration, Drag, Size, Transparency, Squash, Color, LightEmission, Brightness, Rotation, RotSpeed, ZOffset, Orientation, FlipbookLayout, FlipbookMode, Texture, Width0, Width1, WidthScale, CurveSize0, ...). Values use the same JSON shapes as the parameters: sequences [[t, v], ...] or [[t, v, envelope], ...], colour sequences [[t, "#hex"], ...], ranges [min, max]. To change bursts use prop "emit" with [{"at": seconds, "count": n}].
+Better texture: when a layer's texture does not fit its job (sparkle dots on smoke, a round dot on a stretched spark, a ring layer without a ring), change its Texture to a free procedural one, "forgetex://gen/<glow|ring|spark|smoke|crack|star|slash>" (smoke can add "?tint=grey"), or to a forgetex://<id> the user liked if the parameters list one.
 For a multi-stage sequence (it has stages: anticipation, charge, release, impact, dissipate...), frames come from inside each stage: judge timing as the beats (readable anticipation, a fast release, the biggest silhouette on impact, a clean dissipate) and name rigs and their layers as they appear in the parameters (e.g. "BlueGlow"); a change to a layer's props is kept when the timeline script is re-run.
 Answer with JSON only:
 {"scores":{"readability":n,"layering":n,"timing":n,"color":n,"silhouette":n,"performance":n},"summary":"two sentences","changes":[{"node":"LayerName","prop":"Property","value":...,"why":"short"}]}`
@@ -232,6 +234,13 @@ export function heuristicCritique(effect: VfxEffect, recipe: VfxRecipe | null, r
       misses++
       changes.push({ node: n.name, prop: 'Transparency', value: [...tr.filter((k) => k.t < 0.7).map((k) => [k.t, k.v]), [1, 1]], why: 'fade out instead of popping at the end of life' })
     }
+  }
+  // Better-texture actions (built-in textures used for a job they do not fit).
+  // First, so the cap of six keeps them.
+  for (const c of textureSuggestions(effect, (n) => emitterRole(n)).reverse()) {
+    checks++
+    misses++
+    changes.unshift(c)
   }
   const missingRoles = recipe ? recipe.layers.filter((l) => l.share >= 0.2 && !roles.has(l.role as never) && ['core', 'glow', 'sparks', 'smoke'].includes(l.role)).map((l) => l.role) : []
   if (missingRoles.length) notes.push(`The references usually also have ${missingRoles.join(', ')} layers.`)

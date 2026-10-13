@@ -9,6 +9,7 @@ import { evalNumberSequence, fromHex, hex } from '@shared/vfx/sequence'
 import { nodeRole } from '@shared/vfx/analyze'
 import { editProp } from '@shared/vfx/spec'
 import { Icon } from '../../components/Icons'
+import { TexturePicker } from './TexturePicker'
 
 const LAYER = new Set(['ParticleEmitter', 'Beam', 'Trail', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight', 'Part', 'MeshPart', 'SpecialMesh', 'Attachment'])
 const MOTIONS: VfxMotion[] = ['static', 'swing', 'orbit', 'dash', 'rise']
@@ -199,7 +200,9 @@ export function ParamEditor({ effect, onChange }: { effect: VfxEffect; onChange:
   const [advanced, setAdvanced] = useState(false)
   const node = list.find((n) => n.id === sel) ?? list[0] ?? null
   const schema = node ? SCHEMA[node.className] ?? {} : {}
-  const entries = Object.entries(schema).filter(([, s]) => s.kind !== 'ref' && s.kind !== 'cframe' && (advanced || s.main))
+  // Flipbook properties join the main list once the layer uses a flipbook.
+  const flipbook = !!node && typeof node.props.FlipbookLayout === 'string' && node.props.FlipbookLayout !== 'None'
+  const entries = Object.entries(schema).filter(([name, s]) => s.kind !== 'ref' && s.kind !== 'cframe' && (advanced || s.main || (flipbook && /^Flipbook(Layout|Mode|Framerate|StartRandom)$/.test(name))))
   const cues = node ? effect.cues.filter((c) => c.target === node.id) : []
   const scripted = !!effect.script
   const setCues = (next: VfxCue[]) => onChange({ ...effect, cues: [...effect.cues.filter((c) => c.target !== node!.id), ...next].sort((a, b) => a.at - b.at) })
@@ -234,9 +237,23 @@ export function ParamEditor({ effect, onChange }: { effect: VfxEffect; onChange:
       {node && (
         <div className="vfx-props">
           {entries.map(([name, spec]) => (
-            <div key={name} className={`vfx-prop${spec.kind === 'nseq' || spec.kind === 'cseq' ? ' wide' : ''}`}>
+            <div key={name} className={`vfx-prop${spec.kind === 'nseq' || spec.kind === 'cseq' || name === 'Texture' ? ' wide' : ''}`}>
               <span className="vfx-prop-name mono">{name}</span>
-              <Field name={name} spec={spec} value={node.props[name]} onChange={(v) => onChange(editProp(effect, node.id, name, v))} />
+              {name === 'Texture' && (node.className === 'ParticleEmitter' || node.className === 'Beam' || node.className === 'Trail') ? (
+                <TexturePicker
+                  value={String(node.props.Texture ?? spec.default ?? '')}
+                  className={node.className}
+                  onChange={(v) => onChange(editProp(effect, node.id, name, v))}
+                  onPick={(ref, fb) => {
+                    let next = editProp(effect, node.id, 'Texture', ref)
+                    // A flipbook texture brings its layout (OneShot plays the sheet once per particle).
+                    if (fb && (!node.props.FlipbookLayout || node.props.FlipbookLayout === 'None')) next = editProp(editProp(next, node.id, 'FlipbookLayout', fb.layout), node.id, 'FlipbookMode', 'OneShot')
+                    onChange(next)
+                  }}
+                />
+              ) : (
+                <Field name={name} spec={spec} value={node.props[name]} onChange={(v) => onChange(editProp(effect, node.id, name, v))} />
+              )}
             </div>
           ))}
           {scripted && (

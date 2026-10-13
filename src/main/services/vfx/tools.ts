@@ -15,6 +15,7 @@ import { compactEffect, SpecError, type VfxSpec } from '../../../shared/vfx/spec
 import type { VfxEntry, VfxScriptResult } from '../../../shared/vfx/types.ts'
 import { CHOREOGRAPHY_GUIDE, kitReference } from '../../../shared/vfx/choreo.ts'
 import { VFX_EXAMPLES } from '../../../shared/vfx/examples.ts'
+import { PROCEDURAL_GUIDE } from '../../../shared/vfx/tex/textures.ts'
 import type { VfxService } from './service.ts'
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean }
@@ -48,7 +49,7 @@ const SPEC_DOC = `spec = {"name","description","tags":[...],"duration":s,"motion
 "layers":[{"name","class":"ParticleEmitter|Beam|Trail|PointLight|SpotLight|Highlight","props":{Roblox property: value},
 "emit":[{"at":s,"count":n}] (bursts; the emitter starts disabled),"enable":[[from,to]],"shape":{"size":[x,y,z]} (emit from a part; set Shape/ShapeStyle),
 "width":studs (Trail attachment spacing),"from":[x,y,z],"to":[x,y,z] (Beam ends)}]}
-Values: ranges [min,max]; NumberSequence [[t,v],[t,v,envelope]]; ColorSequence ["#hex",...] or [[t,"#hex"],...]; vectors [x,y,z]; enums by name ("Top","VelocityParallel","Grid4x4","OneShot"); Texture "rbxassetid://<id>" (reuse ids from library references, never invent ids).`
+Values: ranges [min,max]; NumberSequence [[t,v],[t,v,envelope]]; ColorSequence ["#hex",...] or [[t,"#hex"],...]; vectors [x,y,z]; enums by name ("Top","VelocityParallel","Grid4x4","OneShot"); Texture "rbxassetid://<id>" (reuse ids from library references, never invent ids), "forgetex://<id>" (vfx_texture_list) or "forgetex://gen/<type>" (a free procedural texture).`
 
 // What the assistant reads back after a script run: the error with its line, or stages + cues.
 export function scriptReport(r: VfxScriptResult, script?: string): string {
@@ -96,6 +97,7 @@ export function vfxTools(service: VfxService, opts: { chatImage?: (absPath: stri
           return [
             kitReference(),
             CHOREOGRAPHY_GUIDE,
+            `## Textures\n${PROCEDURAL_GUIDE} vfx_texture_generate makes one (procedural or AI); vfx_texture_list shows the library.`,
             ex ? `## Example: ${ex.name}\n\`\`\`lua\n${ex.script}\`\`\`` : `## Examples (pass example to read one)\n${VFX_EXAMPLES.map((e) => `- ${e.key}: ${e.description}`).join('\n')}`
           ].join('\n\n')
         })

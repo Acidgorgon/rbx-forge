@@ -1,122 +1,223 @@
 # RBX Forge
 
-A desktop dev harness for Roblox games made from the GenTree template (MyTemplate-Legacy). Open a game folder and Forge runs the tooling for you, shows the game as a Roblox explorer and an organised script list, and gives you a Claude-style chat that can read, edit and test the game.
+![RBX Forge: the editor with the Roblox explorer, luau-lsp and the assistant](docs/screenshots/20-editor-dark.png)
 
-![Chat](docs/screenshots/05-explorer-context-menu.png)
+RBX Forge is a desktop workbench for Roblox games built on the GenTree template (MyTemplate-Legacy). Point it at a game folder, or have it create one, and it installs the toolchain, runs the dev loop, Rojo, luau-lsp and Studio sync for you. It shows the game the way Studio does, as a DataModel explorer, next to a code editor with full Luau intellisense, a terminal, Lune tests, Wally packages, Blink events, git sync for your team, releases and analytics. The AI assistant works on the same project with the same tools. It can use Claude, OpenAI, Gemini, OpenRouter, Ollama or any OpenAI-compatible model, pull other models into a group chat, split big jobs across a team of agents, remember how you work, and generate game art that it uploads to Roblox.
+
+- [Feature tour](#feature-tour)
+- [Install](#install)
+- [Build it yourself](#build-it-yourself)
+- [Settings](#settings)
+- [Layout](#layout)
+
+## Feature tour
+
+### Editor with luau-lsp intellisense
+
+Monaco with Luau and Blink highlighting, driven by luau-lsp: diagnostics, completion, hover, signature help and go to definition. It uses the Roblox type definitions and API docs, which are downloaded once and cached. The bottom panel has Output (filterable by service), Problems, the Dev and Rojo logs and the terminal. When a script also changed in Studio, a banner offers **Compare**. Ctrl/Cmd+K opens the command palette, which searches scripts, instances and commands.
+
+The editor is in the screenshot at the top of this page.
+
+### Explorer, scripts and Studio two-way sync
+
+![Explorer context menu with New, Copy Roblox path and Copy require](docs/screenshots/21-explorer-menu-dark.png)
+
+- **Explorer.** The DataModel tree from the Rojo project and `sourcemap.json`, merged with a live snapshot from the Studio plugin. Models, sounds and GUIs that exist only in Studio show up too, marked *Studio*. The **Files** and **Features** tabs show the same project by folder and by GenTree feature.
+- **Create from the tree.** Right-click > **New** adds a ModuleScript, Script or LocalScript, a folder, a whole GenTree feature (shared module + server service + client controller) or a Blink event.
+- **Copy paths.** **Copy Roblox path** (`game.ReplicatedStorage.Shared.Features.Inventory`), **Copy as GetService**, slash path, **Copy require(…)** and **Copy file path**.
+- **Scripts.** Every script grouped as Configs, Data, Services, Controllers, Modules, Events, UI and Entry points, with realm and feature tags.
+
+![Source control with Studio conflicts, incoming changes and the pre-sync check](docs/screenshots/25-sync-dark.png)
+
+- **Studio sync, both ways.** Rojo pushes files into Studio. Script edits made in Studio (including Team Create) come back into the repo through the template's `tools/studio-sync.py`. When a file changed in both places it is held under `.studio-sync/conflicts` and opens as a side-by-side diff where you pick the Studio or the repo version.
+- **Collaborator sync.** Source control shows ahead/behind, incoming commits grouped by feature (with overlap warnings against your local changes), and a selene + StyLua pre-sync check. **Sync now** (or every N minutes) commits your work, pulls with rebase, falls back to a merge on conflict and pushes. It never force-pushes.
+
+### Multi-place projects
+
+Every `*.project.json` at the project root is a place. The place switcher in the title bar (and in the palette) changes which place Rojo serves, which sourcemap the explorer and luau-lsp read, and which place releases go to. **Serve all places** runs a `rojo serve` for each place on its own `servePort`.
+
+### Services that run themselves
+
+When you open a project, Forge starts the template's `./dev` loop (feature watcher, Blink, sourcemap, Wally, Studio sync), `rojo serve` and luau-lsp. A crashed process restarts with backoff. The status bar and the Forge home page show each service, with Restart and Logs.
+
+- Forge does not run `./dev` inside the template repo itself, because `./dev` disconnects the template's git there. Add `.keep-git` (or set `allowTemplateDisconnect`) if you really want that.
+
+### Terminal
+
+![Integrated terminal with Lune test output and an assistant command waiting for approval](docs/screenshots/40-terminal-dark.png)
+
+A real terminal (xterm.js on node-pty) in the bottom panel, opened in the project folder with the Roblox tools on its PATH. It has tabs, a shell picker, find in the scrollback, and one-click tasks for the project's commands. File paths in the output are links that open in the editor. When the assistant wants to run a command (`wally install` above), it asks first, and the command runs in your terminal only after you click **Run**.
+
+### New project and automatic toolchain
+
+![New project dialog creating a game from the GenTree template](docs/screenshots/41-new-project-progress-dark.png)
+
+- **Toolchain setup.** Forge ships rokit. On first launch it installs rokit and the pinned tools into `~/.rokit/bin` for your user only, with no admin rights: **rojo, wally, blink, lune, luau-lsp, selene, stylua** and wally-package-types. Each project still uses the versions pinned in its own `rokit.toml`. Forge runs `rokit install` for a project whose known tools are missing. Re-run it from **Settings > Toolchain**.
+- **New project.** Fetches the GenTree template (or makes an empty Rojo project), removes the template's history, names the project, runs `git init` and the first commit with your team's remote, then installs tools and packages and compiles the Blink events.
+- **Join project.** Clones a teammate's game and runs `rokit install` and `wally install`.
+
+### AI assistant: providers, effort and images
+
+![Assistant answering a question about an attached screenshot, with effort and routing](docs/screenshots/42-dark-image.png)
+
+The assistant panel is a chat with project tools: overview, list/read/edit/write scripts, explorer tree, find instance, new feature, Blink events, Wally packages, tests, terminal commands, service logs and restarts, collaborator sync and Studio conflicts. Writes are limited to the Rojo folders under `src/` and `events.blink`. `Packages/` is off limits. Type `@` to attach files and `/` for commands.
+
+- **Providers.** Pick a provider and model per chat.
+  - **Anthropic** (Claude Opus, Sonnet and Haiku 5.5) runs through the Claude Agent SDK. It is the only provider with the Roblox Studio MCP tools.
+  - **OpenAI**, **OpenRouter**, **Google Gemini** (its OpenAI-compatible endpoint), **Ollama** (local, `http://localhost:11434/v1`, no key) and **Custom** (any OpenAI-compatible base URL) run through Forge's own agent loop, with the same tools and write rules.
+- **Model routing and effort.** Unless you pin a model for the chat, a router sends quick questions to a small model and big jobs to a large one (the budget bar shows the choice, such as `auto → haiku · low`). The effort menu sets reasoning effort per chat: Auto, Low, Medium, High, X-High or Max. Each level is clamped to what the model supports. A budget bar shows tokens and cost for the chat.
+- **Images.** Paste, drop or attach screenshots and concept art. Models with vision see them, and Forge tells you when the chosen model can't.
+- **Keys.** Settings has a card per provider. A pasted key is encrypted with the OS keychain (Electron safeStorage) and never sent to the window. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` and `OLLAMA_API_KEY` are used when nothing is stored. Model lists come from each provider's `GET /models`, and you can type any model id.
+- **Claude Code login.** An Anthropic API key is Anthropic's documented way to authenticate apps built on the Agent SDK, and it is the default. *Use my Claude Code login (personal use only)* in Settings lets Forge fall back to the Claude Code login on this machine (or `CLAUDE_CODE_OAUTH_TOKEN`) when no key is set. That is for your own personal use and draws from your Claude Pro/Max plan limits. It is off by default.
+
+### Group chats with other models
+
+![Group chat: Claude hosts, GPT and Gemini advise, and the host writes a plan](docs/screenshots/42-dark-group-room.png)
+
+Invite other models into a chat. The host model has the project tools and is the only one that edits files. Guests are read-only advisers, and you choose whether they may read project files. `@sol what do you think?` asks one guest directly. "Talk to Sol about…" lets the host consult a guest. A **roundtable** has the models take turns on a topic for 1 to 4 rounds, then the host writes a plan card (agreements, disagreements, recommendation) that becomes a task list in one click. Guests get a compact context pack instead of the whole history, and the usage panel shows tokens per model.
+
+### Multi-agent orchestration
+
+In team mode, large multi-part requests go to an orchestrator instead of a single agent. Shift+Tab in the message box cycles the mode: *auto routing* (Forge decides when a request is big enough to split), *single agent* or *team*. A **lead** model plans the work as a task graph. Specialists run in parallel: **scouts** read, **builders** edit, **testers** write and run Lune specs, and **reviewers** check the diff. Each writer claims its files first, so two agents never edit the same file at once. Shared files such as `events.blink`, `wally.toml` and `default.project.json` go through the lead. Per-task and per-run token and cost caps, plus timeouts, stop a run that runs away. The lead then integrates the results and answers.
+
+### Memory and skills
+
+![Memory page with user and project memories, skills, and learning settings](docs/screenshots/44-memory-page-dark.png)
+
+Forge's agents keep memories about you (user) and about the game (project, stored in `.forge/memory` so the team shares them), plus **skills**, which are step-by-step recipes such as "add a GenTree feature". Prompts only carry names and one-line descriptions. Agents load the rest with `recall` and `use_skill`. After a chat, a background review can propose new memories as a card you save, edit or dismiss (*Ask*), save them itself (*Auto*), or do nothing (*Off*). **Learn code style** builds a Luau style profile of the project locally, with no model call. You can edit, pin, delete, or promote any memory to the project from the Memory page.
+
+### Art: OpenAI images to Roblox assets
+
+![Art page: prompt, style presets, gallery and a generated asset's details](docs/screenshots/43-art-detail-dark.png)
+
+Generate UI art, icons, key art and thumbnails with OpenAI's image models (`gpt-image-2.5-flare` by default). You get style presets, sizes, quality, 1 to 4 variants, transparent backgrounds and reference images to edit or riff on. Every generation shows its cost up front, and a daily budget (default $5) stops overspending. Concepts are saved under `art/` in the project. **Roblox import** uploads an image as an Image or Decal asset through the Open Cloud Assets API and returns its asset id. **Ask the agent** hands the image to the assistant, and the assistant can generate art with the same tools.
+
+### Lune tests and test agents
+
+![Tests panel with Lune specs, Run all and Watch, and test agent scenarios](docs/screenshots/26-tests-dark.png)
+
+- **Lune tests.** `*.spec.luau` files run headless under Lune, against a bundled Roblox-like world built from the Rojo tree (`require` of instances, services, signals). The runner supports `describe`/`it`, Jest-style `expect` and mocks. Run everything, one spec or a name filter, or **Watch** to rerun on save. Failures link to the line.
+- **Test agents.** Give one scenario per line and Forge runs them as parallel agents (3 at a time by default), each reporting passed or failed. If Roblox Studio's MCP server is configured (`studioMcp`), one agent at a time gets Studio to play-test; the others review the code.
+
+### Packages (Wally and rokit)
+
+![Packages page listing wally.toml dependencies with available updates](docs/screenshots/32-packages-dark.png)
+
+- **Wally.** Search the Wally registry and add a package as *Shared* (`[dependencies]`), *Server* (`[server-dependencies]`) or *Dev* (`[dev-dependencies]`). Forge edits `wally.toml` line by line, so comments and order are kept. It shows installed versions from `wally.lock`, newer releases with one-click updates, and removal. The dev loop (or Forge itself) then runs `wally install`.
+- **Tools.** The project's `rokit.toml` tools, with installed state and newer GitHub releases. You can add from a curated list (luau-lsp, StyLua, selene, Blink, Zap, Lune, darklua, pesde, Rojo, Wally) or any `owner/repo`.
+
+### Blink events
+
+![Events panel listing Blink events and types next to events.blink](docs/screenshots/24-events-dark.png)
+
+The **Events** panel lists every `event` and `function` in `events.blink` and the files it imports, with direction (Server → Client / Client → Server), Reliable or Unreliable, and the types. Click one to jump to it. **Copy usage** copies the calls Blink generates (`Fire`/`FireAll`/`On`/`Invoke`, and so on), with the `require` path worked out from the project. On every save Forge compiles a copy with the project's `blink` into a temp folder, so your real output files are never touched. Errors show in the panel, as editor squiggles and in the logs. The generated client and server files open read-only.
+
+### Release and publish
+
+![Release page with publish mode and version bump](docs/screenshots/33-release-dark.png)
+
+A release runs checks (git state, Studio conflicts, Blink, Lune tests, selene), writes a changelog from the commits since the last tag, bumps the version (suggested from the commits), tags and pushes, and can post to a Discord webhook. There are three modes:
+
+- **Studio publish** (default). You publish from Studio afterwards. Use this for every GenTree game, because maps, models and GUIs live only in the Studio place.
+- **Rojo build.** Builds the place with Rojo and publishes it with Open Cloud. This only works for fully Rojo-managed games, and it asks you to confirm first.
+- **Place file.** Publishes a `.rbxl` exported from Studio with Open Cloud.
+
+The Open Cloud key and the webhook are stored encrypted and never written to the repo.
+
+### Analytics
+
+![Analytics page with DAU, retention, revenue and signals](docs/screenshots/34-analytics-dark.png)
+
+DAU, retention, session length, revenue and concurrent players for the experience. The data comes from the Open Cloud Analytics API when you add a key, from a Creator Dashboard CSV export, or otherwise from public stats. **Signals** explain changes without a model (week over week, retention cohorts, anomalies, release impact), and **Ask the agent** brings the numbers into a chat. Agents also get analytics tools and Luau `AnalyticsService` snippets in the GenTree layout.
+
+### Team collaboration
+
+![Team panel with file claims, pull requests, activity and history (light theme)](docs/screenshots/27-team-light.png)
+
+The Team panel shows **claims** (shared "working on" markers in `.forge/claims.json`, flagged when stale or contested), open pull requests (through `gh`, or a GitHub compare link), an activity feed that merges git history with Studio sync events, the history and blame of the open file, and lint problems. Team settings are kept in `.forge/project.json` and committed. Forge has light and dark themes. Use the sun/moon button in the title bar.
 
 ## Install
 
-RBX Forge is built for macOS (Apple Silicon and Intel) and Windows (x64 and ARM) by GitHub Actions.
+Download the installer for your computer from the **[latest release](https://github.com/Acidgorgon/rbx-forge/releases/latest)**.
 
-1. Download it:
-   - **Releases** (tagged versions): [github.com/Acidgorgon/rbx-forge/releases](https://github.com/Acidgorgon/rbx-forge/releases).
-   - **Latest build of `main`**: open [Actions > Build](https://github.com/Acidgorgon/rbx-forge/actions/workflows/build.yml), pick the newest green run, and download from **Artifacts** at the bottom (you need to be signed in to GitHub). Each artifact is a zip around the installer.
+| Your computer | File |
+|---|---|
+| Mac with Apple Silicon (M1 and later) | `RBX-Forge-<version>-mac-arm64.dmg` |
+| Intel Mac | `RBX-Forge-<version>-mac-x64.dmg` |
+| Windows PC (most) | `RBX-Forge-<version>-win-x64.exe` |
+| Windows on ARM (Surface Pro X, Copilot+ PCs) | `RBX-Forge-<version>-win-arm64.exe` |
 
-   | Your computer | File |
-   |---|---|
-   | Mac with Apple Silicon (M1/M2/M3/M4, most MacBook Airs since 2020) | `RBX-Forge-<version>-mac-arm64.dmg` |
-   | Intel Mac | `RBX-Forge-<version>-mac-x64.dmg` |
-   | Windows PC (most) | `RBX-Forge-<version>-win-x64.exe` |
-   | Windows on ARM (Surface Pro X / Copilot+ PCs) | `RBX-Forge-<version>-win-arm64.exe` |
+Not sure which Mac you have? Open Apple menu > About This Mac. "Chip: Apple M…" means arm64, and "Processor: Intel" means x64.
 
-   Not sure which Mac you have: Apple menu > About This Mac. "Chip: Apple M…" means arm64; "Processor: Intel" means x64.
+The builds are not signed with a paid certificate, so your OS warns you the first time:
 
-2. **macOS:** open the `.dmg` and drag **RBX Forge** into **Applications**. The app is not notarized by Apple (no paid developer certificate), so the first time:
-   - In Applications, **right-click (or Control-click) RBX Forge > Open**, then **Open** in the dialog. After that it opens normally.
-   - If macOS says the app "is damaged and can't be opened" or offers no Open button (newer macOS versions), go to **System Settings > Privacy & Security**, scroll down and click **Open Anyway**; or run this once in Terminal:
-     ```bash
-     xattr -dr com.apple.quarantine "/Applications/RBX Forge.app"
-     ```
+- **macOS (Gatekeeper).** Open the `.dmg` and drag **RBX Forge** into **Applications**. The first time, **right-click (or Control-click) RBX Forge > Open**, then click **Open** in the dialog. If macOS says the app "is damaged and can't be opened" or shows no Open button, go to **System Settings > Privacy & Security**, scroll down and click **Open Anyway**. You can also run this once in Terminal:
+  ```bash
+  xattr -dr com.apple.quarantine "/Applications/RBX Forge.app"
+  ```
+- **Windows (SmartScreen).** Run the `.exe`. When SmartScreen says "Windows protected your PC", click **More info > Run anyway**. The installer lets you pick a folder and adds Desktop and Start menu shortcuts. Uninstall from Settings > Apps.
 
-3. **Windows:** run the `.exe` installer. It is not code-signed, so SmartScreen shows "Windows protected your PC": click **More info > Run anyway**. Pick an install folder (or keep the default); the installer adds Desktop and Start menu shortcuts. Uninstall from Settings > Apps.
+On first launch Forge sets up the Roblox toolchain (see [above](#new-project-and-automatic-toolchain)). You need **git** (on macOS `xcode-select --install`, on Windows from git-scm.com). Studio sync also needs **Python 3**, because the template's `tools/studio-sync.py` runs on it (on Windows, install it from python.org with the `py` launcher). Forge looks for tools in `~/.rokit/bin` (`%USERPROFILE%\.rokit\bin`), your PATH, Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`), nvm and, on macOS, your login shell's PATH, so it finds them even when started from the Dock or Finder. On Windows the dev loop runs `tools\dev.ps1` in PowerShell (or `./dev` with Git Bash when there is no `dev.ps1`).
 
-The app still needs your game's own tools: in the game folder run `rokit install` (rojo, wally, luau-lsp), and install Python 3 for Studio sync (on Windows, from python.org with the `py` launcher). Forge looks for tools in `~/.rokit/bin` (`%USERPROFILE%\.rokit\bin`), your PATH, Homebrew (`/opt/homebrew/bin`, `/usr/local/bin`), nvm, and on macOS your login shell's PATH, so it finds them even when started from the Dock or Finder. On Windows the dev loop runs `tools\dev.ps1` in PowerShell (or `./dev` with Git Bash when there is no `dev.ps1`).
-
-Settings live in the same place for the installed app and `npm run dev`: `~/Library/Application Support/rbx-forge` (macOS), `%APPDATA%\rbx-forge` (Windows).
+Settings are stored in the same place for the installed app and `npm run dev`: `~/Library/Application Support/rbx-forge` (macOS) or `%APPDATA%\rbx-forge` (Windows).
 
 ## Build it yourself
 
+You need **Node 22+** and **git**.
+
 ```bash
-npm install
+npm ci
+npm run dev         # run from source with hot reload
 npm run dist        # installer for this computer (.dmg/.zip on a Mac, .exe on Windows) in dist/
+```
+
+Other scripts:
+
+```bash
 npm run dist:mac    # macOS arm64 + x64 (run on a Mac)
 npm run dist:win    # Windows x64 + arm64 (run on Windows; NSIS needs Windows or wine)
 npm run dist:dir    # unpacked app only, quickest check
+npm run build       # production build into out/; npm start runs it
+npm test            # node --test suites; npm run typecheck for tsc
 ```
 
-Packaging is configured in `electron-builder.yml`; the icon is `build/icon.png` (source `build/icon.svg`), converted to `.icns`/`.ico` by electron-builder.
+Then click **Open project** and pick a game folder (one with `default.project.json`), or create a **New project**. Forge remembers the folder. To preview the UI in a browser with sample data, run `npx vite --config src/renderer/vite.preview.config.ts`.
 
-The chat runs the Claude Agent SDK's native CLI from the npm package `@anthropic-ai/claude-agent-sdk-<platform>-<arch>`. npm installs only the one for the machine running `npm install`, so the `dist` scripts first run `build/sdk-binaries.mjs`, which downloads the package for each target platform/arch when it is missing (for example the x64 one when building Intel on an Apple Silicon Mac). The packages are unpacked from the asar (an executable cannot run from inside it) and `build/afterPack.cjs` removes the ones the target does not need, failing the build if its own is missing. In CI each target is built on its own runner (`.github/workflows/build.yml`): macOS arm64 on `macos-latest`, macOS x64 on `macos-15-intel`, Windows x64 and arm64 on `windows-latest`. Pushing a tag like `v0.2.0` also publishes a GitHub Release with all four installers.
+Packaging is configured in `electron-builder.yml`. The icon is `build/icon.png` (source `build/icon.svg`), which electron-builder converts to `.icns`/`.ico`. Three native or binary pieces are handled per target:
 
-macOS builds get an ad-hoc signature only. To sign and notarize, set `mac.identity` (or `CSC_LINK`/`CSC_KEY_PASSWORD`), `hardenedRuntime: true` and add notarization; Windows signing takes `CSC_LINK` / `WIN_CSC_LINK`.
+- **Claude Agent SDK CLI.** The chat runs the Agent SDK's native CLI from `@anthropic-ai/claude-agent-sdk-<platform>-<arch>`. npm installs only the package for the machine running it, so the `dist` scripts first run `build/sdk-binaries.mjs`, which downloads the package for each target platform and arch when it is missing. The packages are unpacked from the asar, because an executable cannot run from inside it.
+- **rokit.** `build/rokit-binaries.mjs` downloads the pinned rokit release for the target (SHA-256 checked) into `resources/rokit/<os>-<arch>`, and electron-builder ships it.
+- **node-pty.** The terminal uses node-pty 1.1.0, an N-API addon whose npm package carries prebuilds for all four targets, so no rebuild is needed.
 
-## Run it from source
+`build/afterPack.cjs` keeps only the target's binaries and fails the build if one is missing. The Lune test runtime ships from `resources/lune`.
 
-Needs Node 20+, and in the game folder the template's tools (`rokit install`), plus Python 3 for Studio sync.
+CI (`.github/workflows/build.yml`) runs typecheck, tests and a build on every push. Installers are built on a manual run (Actions > Build > Run workflow, downloadable from the run's **Artifacts**) or a `v*` tag. Each target builds on its own runner: macOS arm64 on `macos-latest`, macOS x64 on `macos-15-intel`, and Windows x64 and arm64 on `windows-latest`. A tag such as `v0.2.0` also publishes a GitHub Release with all four installers.
 
-```bash
-npm install
-npm run dev      # development, hot reload
-npm run build    # production build into out/
-npm start        # run the production build
-```
-
-Then **Open project** and pick a game folder (one with `default.project.json`). Forge remembers it.
-
-## What it does
-
-- **Services, automatic.** On open it starts the template's `./dev` loop (feature watcher, Blink, sourcemap, wally, Studio sync), `rojo serve`, and luau-lsp. Crashed processes restart with backoff. The status bar shows each one; click for Restart / Stop / Logs.
-  - Forge will not run `./dev` inside the template repo itself, because `./dev` disconnects the template's git there. Add `.keep-git` (or set `allowTemplateDisconnect`) if you really want that.
-- **Collaborator sync.** The git pill shows ahead/behind/conflicts. Sync now (or every N minutes) commits your work, pulls with rebase, falls back to a merge on conflict and lists conflicted files, then pushes. Never force-pushes. A new game folder has no git (the template's `./dev` removes it); **Init git** in the Sync drawer sets up your shared remote.
-- **Studio sync.** Script edits made in Studio (Team Create) come back into the repo through `tools/studio-sync.py`. Conflicts show as a side-by-side diff with *Use Studio version* / *Keep repo version*.
-- **Explorer.** The DataModel tree from `default.project.json` and `sourcemap.json`, merged with a live snapshot from the Studio plugin, so models, sounds and GUIs that only exist in Studio show up too (dimmed, marked *Studio*). Needs the template's live-tree plugin update.
-- **Scripts.** Every script grouped as Configs, Data, Services, Controllers, Modules, Events, UI and Entry points, with realm and feature tags.
-- **Copy path.** Right-click any node: Copy Roblox path (`game.ReplicatedStorage.Assets["Starter Sword"]`), Copy as GetService, Copy file path, Insert path into chat. Ctrl/Cmd-click to select several; Ctrl/Cmd+Shift+C copies.
-- **Editor.** Monaco with Luau highlighting and luau-lsp (diagnostics, completion, hover, signature help, go to definition) using Roblox type definitions and API docs, downloaded once and cached.
-- **Chat.** Pick a provider and model per chat from the pill under the message box. Every provider gets the same compact `gentree` toolset: project_overview, list_scripts, read_script, edit_script, write_script, explorer_tree, find_instance, new_feature, sync_collaborators, studio_conflicts, resolve_studio_conflict, service_logs, restart_service. Writes are limited to the Rojo folders and `events.blink`; Packages is off limits.
-  - **Anthropic** (Claude Opus/Sonnet/Haiku 5.5) runs through the Claude Agent SDK, and is the only provider with Roblox Studio MCP tools and the read-only file tools.
-  - **OpenAI**, **OpenRouter**, **Google Gemini** (its OpenAI-compatible endpoint), **Ollama** (local, `http://localhost:11434/v1`, no key) and **Custom** (any OpenAI-compatible base URL, optional key) run through Forge's own agent loop: streamed `/chat/completions` with function calling, the same system prompt, tools and write rules, a turn limit (`chatMaxTurns`, default 50) and Stop.
-  - **Keys.** Settings (gear at the bottom of the sidebar) has a card per provider: paste a key (encrypted with the OS keychain via Electron safeStorage, never sent to the window), set the base URL for Ollama/Custom, and see which providers are ready. Keys in `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY` or `GEMINI_API_KEY` are used when nothing is stored. Model lists come from each provider's `GET /models` once a key is set, plus a few defaults; you can also type any model id in the picker.
-  - **Claude Code login.** An Anthropic API key is Anthropic's documented way to authenticate apps built on the Agent SDK, and it is the default. *Use my Claude Code login (personal use only)* in Settings lets Forge fall back to the Claude Code login on this machine (or `CLAUDE_CODE_OAUTH_TOKEN`) when no key is set; that is for your own personal use and draws from your Claude Pro/Max plan limits. It is off by default.
-- **Test agents.** Give one scenario per line and Forge runs them as parallel agents (3 at a time by default), each reporting passed or failed. If Roblox Studio's MCP server is configured (`studioMcp` setting), one agent at a time gets Studio access to play-test; the others review the code. The Agents drawer has its own model picker; Studio play-testing needs the Anthropic provider, so on other providers every agent is a code reviewer.
-
-## Blink events
-
-The **Events** tab (next to Explorer and Scripts) lists every `event` and `function` in `events.blink` and the files it imports, grouped by `scope`: direction (Server → Client / Client → Server), Reliable or Unreliable, the `Call` kind, and the `Data` shape. Click one to jump to its declaration; right-click → **Copy usage** copies the calls Blink generates for it (`Fire`/`FireAll`/`FireExcept`/`FireList`, `On`, `Iter` for polling, `Invoke`), with the `require` path worked out from `default.project.json` and the `ClientOutput`/`ServerOutput` options.
-
-On every save of `events.blink` (or an import) Forge compiles a copy with the project's `blink` (from rokit) into a temp folder, so your real output files are never touched. If it fails you get a red banner in the Events tab, an error squiggle in the editor, and a `[blink]` line in the Dev loop log. `.blink` files get syntax highlighting. The generated `client.luau`/`server.luau` open read-only with a note to edit `events.blink` instead.
-
-The template's `tools/dev.sh` currently runs `blink events.blink -w` with its output thrown away; `docs/template-dev-blink.patch` keeps it (console plus `.blink.log`).
-
-![Events tab](docs/screenshots/16-events-panel.png)
-
-## Packages
-
-**Packages** in the status bar (or the sidebar) opens a drawer with two tabs.
-
-- **Wally packages.** Search the Wally registry (the public API behind wally.run) and add a package with a version and a realm: *Shared* goes to `[dependencies]`, *Server* to `[server-dependencies]`, *Dev* to `[dev-dependencies]`. Server-only packages can't be added as shared. The alias follows the file's existing style (`Janitor`, `Videcharm`); Forge refuses an alias that another package already uses. Forge edits `wally.toml` one line at a time, so comments and order stay as they are. The `./dev` loop then runs `wally install`; if the loop isn't running, Forge runs `wally install` itself and shows the output in Logs. The list shows each dependency's installed version (from `wally.lock` and `Packages/`), any newer release with a one-click update, and a remove button.
-- **Tools.** The project's `rokit.toml` tools show whether they're installed and whether a newer GitHub release exists (one click updates the version and runs `rokit install`). There's also a curated list to add from: luau-lsp, StyLua, selene, Blink, Zap, Lune, darklua, pesde, Rojo and Wally. You can also add any `owner/repo`. If luau-lsp is missing, Forge flags it at the top of the tab and in the status bar, because the editor depends on it. Release checks use the GitHub API without authentication (it uses `GITHUB_TOKEN` if set). The results are cached for an hour, and Forge pauses the checks while GitHub is rate limiting.
-
-![Packages](docs/screenshots/14-packages-wally.png)
+macOS builds get an ad-hoc signature only. To sign and notarize, set `mac.identity` (or `CSC_LINK`/`CSC_KEY_PASSWORD`) and `hardenedRuntime: true`, and add notarization. Windows signing takes `CSC_LINK` / `WIN_CSC_LINK`.
 
 ## Settings
 
-Stored in the app's user data folder (`settings.json`): `defaultModel` (`{ "provider": "anthropic", "model": "claude-opus-5-5" }`; the older `model` string still works), `providerConfig` (base URLs for `ollama`/`custom`), `anthropicUseClaudeLogin` (default `false`), `chatMaxTurns`, `studioMcp` (`{ "command": "...", "args": [] }`), `allowBash`, `maxParallelAgents`, `agentMaxTurns`, `sync` (`autoSyncMinutes`, `autoCommit`), `allowTemplateDisconnect`.
+Most settings are in the app (gear at the bottom of the activity bar): providers and keys, default model and effort, budgets, toolchain, memory and the Studio MCP. They are stored in `settings.json` in the app's user data folder. Useful keys include:
+
+- `defaultModel` (`{ "provider": "anthropic", "model": "claude-opus-5-5" }`) and `defaultEffort`
+- `providerConfig` (base URLs for `ollama`/`custom`) and `anthropicUseClaudeLogin` (default `false`)
+- `chatMaxTurns`, `studioMcp` (`{ "command": "...", "args": [] }`), `maxParallelAgents` and `agentMaxTurns`
+- `serveAllPlaces` and `allowTemplateDisconnect`
+
+Team settings (version, publish mode and place ids, notifications) live in the project's `.forge/project.json`. Secrets never go there.
 
 ## Layout
 
 ```
-src/main        Electron main process
-  services/     supervisor, git sync, Studio conflicts, project tree, luau-lsp bridge, settings, logs
-  agent/        chat, gentree MCP tools, test agents, credentials
-src/preload     the window.harness bridge
-src/renderer    React UI (Monaco editor, panels, drawers); mock.ts powers a browser preview
-src/shared      types shared by all three
-test            node --test suites (npm test)
+src/main            Electron main process
+  services/         supervisor, project tree and places, git sync, Studio conflicts, luau-lsp bridge,
+                    Blink, packages, terminal, setup (toolchain, new project), tests (Lune),
+                    collab, release, analytics, art
+  agent/            chat and providers, gentree tools, group chat, orchestrator, memory,
+                    budget, test agents, credentials
+src/preload         the window.harness bridge
+src/renderer        React UI: shell, views, pages, assistant, terminal, Monaco + LSP client
+src/shared          types shared by all three
+resources/lune      Lune test runtime (world, testkit, expect)
+test                node --test suites (npm test)
 ```
-
-Browser preview with sample data: `npx vite --config src/renderer/vite.preview.config.ts`.
-
-## Status
-
-Built and tested headless: typecheck, 51 unit/integration tests (tree building, categories, git sync against real repos, Studio conflicts, MCP tools, agent scheduling, LSP framing and client), and a production build. Not yet run end to end in a real Electron window against a real game, Studio and API key.

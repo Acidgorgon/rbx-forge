@@ -215,7 +215,7 @@ test('bridge sends the Studio DataModel after initialize + configuration + didOp
     bridge.setDataModel([{ name: 'ReplicatedStorage', className: 'ReplicatedStorage', origin: 'repo', children: [] }] as any)
     await waitFor((m) => m.method === 'echo' && m.params.method === '$/plugin/clear', '$/plugin/clear')
   } finally {
-    bridge.dispose()
+    await bridge.dispose()
   }
 })
 
@@ -230,5 +230,5 @@ test('bridge without a server ignores DataModel updates', async () => {
   bridge.setDataModel(TREE as any)
   bridge.send({ jsonrpc: '2.0', method: 'initialized' })
   assert.equal(await bridge.start(), false)
-  bridge.dispose()
+  await bridge.dispose()
 })

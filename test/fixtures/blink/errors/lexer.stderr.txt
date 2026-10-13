@@ -1,0 +1,9 @@
+[31m[E1001] Error[0m: Unexpected token
+    ╭─[input.blink:1:4]
+    │
+[2m003[0m │ type A = u8 $
+    ┆             [31m[0m[31m┬[0m[31m[0m
+    ┆             [31m│[0m
+    ┆             [31m╰──[0m [31mUnexpected token[0m
+    │
+────╯

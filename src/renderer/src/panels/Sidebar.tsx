@@ -1,7 +1,9 @@
 import { useStore } from '../store'
-import { IconChat, IconFolder, IconPlus, IconSidebar } from '../components/Icons'
+import { IconChat, IconFolder, IconGear, IconPlus, IconSidebar } from '../components/Icons'
 import { ExplorerPanel } from './ExplorerPanel'
 import { ScriptsPanel } from './ScriptsPanel'
+import { IconPackage } from './PackagesDrawer'
+import { EventsPanel } from './EventsPanel'
 
 function relTime(t: number): string {
   const d = Date.now() - t
@@ -41,6 +43,10 @@ export function Sidebar() {
           <span className="side-action-icon"><IconFolder size={15} /></span>
           Open project…
         </button>
+        <button className="side-action" onClick={() => actions.set({ drawer: 'packages' })} disabled={!project}>
+          <span className="side-action-icon"><IconPackage size={15} /></span>
+          Packages
+        </button>
       </div>
 
       <div className="side-section chats">
@@ -69,8 +75,19 @@ export function Sidebar() {
         <button role="tab" aria-selected={sidebarTab === 'scripts'} className={sidebarTab === 'scripts' ? 'active' : ''} onClick={() => actions.set({ sidebarTab: 'scripts' })}>
           Scripts
         </button>
+        <button role="tab" aria-selected={sidebarTab === 'events'} className={sidebarTab === 'events' ? 'active' : ''} onClick={() => actions.set({ sidebarTab: 'events' })}>
+          Events
+          {(state.blink?.diagnostics.length ?? 0) > 0 && <span className="tab-alert" title="events.blink has errors" />}
+        </button>
       </div>
-      <div className="side-panel">{sidebarTab === 'explorer' ? <ExplorerPanel /> : <ScriptsPanel />}</div>
+      <div className="side-panel">{sidebarTab === 'explorer' ? <ExplorerPanel /> : sidebarTab === 'events' ? <EventsPanel /> : <ScriptsPanel />}</div>
+      <div className="side-footer">
+        <button className="side-foot-btn" onClick={() => actions.openSettings()} title="Settings: providers, keys and default model">
+          <IconGear size={15} />
+          <span>Settings</span>
+          {state.providers && !state.providers.some((p) => p.ready) && <span className="side-foot-warn">Add a provider</span>}
+        </button>
+      </div>
     </aside>
   )
 }

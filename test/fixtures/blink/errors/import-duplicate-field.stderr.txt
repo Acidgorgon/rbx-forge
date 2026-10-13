@@ -1,0 +1,9 @@
+[31m[E3004] Error[0m: Duplicate field "a"
+    ╭─[./sub/inner:1:5]
+    │
+[2m003[0m │   a: u8
+    ┆   [31m[0m[31m┬[0m[31m[0m
+    ┆   [31m│[0m
+    ┆   [31m╰──[0m [31mDuplicate field[0m
+    │
+────╯

@@ -3,6 +3,7 @@
 import * as monaco from 'monaco-editor'
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
 import { loader } from '@monaco-editor/react'
+import { semanticTokenRules } from './lsp/semanticTheme'
 
 declare global {
   interface Window {
@@ -138,7 +139,8 @@ const darkRules: monaco.editor.ITokenThemeRule[] = [
 monaco.editor.defineTheme('harness-dark', {
   base: 'vs-dark',
   inherit: true,
-  rules: darkRules,
+  // luau-lsp semantic tokens (lsp/semanticTheme.ts)
+  rules: [...darkRules, ...semanticTokenRules('dark')],
   colors: {
     'editor.background': '#1f1e1d',
     'editor.foreground': '#ebe7df',
@@ -174,7 +176,8 @@ monaco.editor.defineTheme('harness-light', {
     { token: 'function', foreground: '5c4a2e' },
     { token: 'string', foreground: '4f7a2f' },
     { token: 'delimiter.interpolation', foreground: 'b4532f' },
-    { token: 'number', foreground: '8650a6' }
+    { token: 'number', foreground: '8650a6' },
+    ...semanticTokenRules('light')
   ],
   colors: {
     'editor.background': '#fbfaf7',
@@ -184,5 +187,75 @@ monaco.editor.defineTheme('harness-light', {
     'editorLineNumber.foreground': '#bcb6aa'
   }
 })
+
+// Blink (github.com/1Axen/blink) networking IDL, for events.blink. Grammar from Blink 0.18.1
+// src/Lexer.luau + src/Settings.luau: keywords, primitives, -- and --[[ ]] comments, ranges.
+monaco.languages.register({ id: 'blink', extensions: ['.blink'], aliases: ['Blink', 'blink'] })
+
+monaco.languages.setLanguageConfiguration('blink', {
+  comments: { lineComment: '--', blockComment: ['--[[', ']]'] },
+  brackets: [['{', '}'], ['[', ']'], ['(', ')'], ['<', '>']],
+  autoClosingPairs: [
+    { open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' },
+    { open: '"', close: '"', notIn: ['string'] }
+  ],
+  surroundingPairs: [{ open: '{', close: '}' }, { open: '(', close: ')' }, { open: '[', close: ']' }, { open: '"', close: '"' }],
+  indentationRules: { increaseIndentPattern: /\{\s*$/, decreaseIndentPattern: /^\s*\}/ }
+})
+
+monaco.languages.setMonarchTokensProvider('blink', {
+  defaultToken: '',
+  keywords: ['map', 'set', 'type', 'enum', 'struct', 'event', 'function', 'scope', 'option', 'export', 'import', 'as'],
+  primitives: [
+    'u8', 'u16', 'u32', 'i8', 'i16', 'i32', 'f16', 'f32', 'f64', 'boolean', 'string', 'vector', 'buffer',
+    'Color3', 'CFrame', 'Instance', 'BrickColor', 'unknown', 'DateTime', 'DateTimeMillis'
+  ],
+  // Values of the event/function fields and booleans.
+  constants: [
+    'Server', 'Client', 'Reliable', 'Unreliable', 'SingleSync', 'SingleAsync', 'ManySync', 'ManyAsync', 'Polling',
+    'Coroutine', 'Future', 'Promise', 'true', 'false', 'Pascal', 'Camel', 'Snake'
+  ],
+  fields: ['From', 'Type', 'Call', 'Poll', 'Data', 'Return', 'Yield'],
+  tokenizer: {
+    root: [
+      [/--\[(=*)\[/, { token: 'comment', next: '@blockComment.$1' }],
+      [/--.*$/, 'comment'],
+      // Declaration names: `event Name`, `struct Name<T>`, `option Name`
+      [/(event|function|struct|enum|map|set|type|scope)(\s+)([A-Za-z_]\w*)/, ['keyword', '', 'function']],
+      [/(option)(\s+)([A-Za-z_]\w*)/, ['keyword', '', 'keyword.type']],
+      // `Key:` in events, functions and structs
+      [/([A-Za-z_]\w*)(\s*)(:)/, [{ cases: { '@fields': 'keyword.type', '@default': 'identifier' } }, '', 'delimiter']],
+      [/\.\.[A-Za-z_]\w*/, 'predefined'],
+      [/[A-Za-z_][\w]*(\.[A-Za-z_]\w*)+/, 'type'],
+      [/[A-Za-z_]\w*/, {
+        cases: {
+          '@keywords': 'keyword',
+          '@primitives': 'type',
+          '@constants': 'predefined',
+          // Capitalised names are type references (Item, Inventory, HitKind...).
+          '[A-Z]\\w*': 'type',
+          '@default': 'identifier'
+        }
+      }],
+      [/"([^"\\]|\\.)*"/, 'string'],
+      [/'([^'\\]|\\.)*'/, 'string'],
+      [/-?\d*\.?\d+/, 'number'],
+      [/\.\./, 'operator'],
+      [/[?=]/, 'operator'],
+      [/[{}()[\]<>]/, '@brackets'],
+      [/[,:]/, 'delimiter']
+    ],
+    blockComment: [
+      [/\](=*)\]/, { cases: { '$1==$S2': { token: 'comment', next: '@pop' }, '@default': 'comment' } }],
+      [/[^\]]+/, 'comment'],
+      [/./, 'comment']
+    ]
+  }
+} as monaco.languages.IMonarchLanguage)
+
+// Editor language for a repo path.
+export function languageForPath(path: string): string {
+  return /\.blink$/i.test(path) ? 'blink' : 'luau'
+}
 
 export { monaco }

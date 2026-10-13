@@ -13,6 +13,11 @@
 // returns from workspace/configuration. luau-lsp < 1.56 takes the definitions path without
 // the "@roblox=" name, so the name is only added for 1.56 and newer.
 //
+// Live Studio DataModel: setDataModel(tree) takes Forge's merged Rojo + Studio tree and sends
+// it to the server as luau-lsp's Studio plugin notifications ($/plugin/full, $/plugin/clear),
+// see lspDataModel.ts. Sent once the server can take them, again when the tree changes
+// (debounced), and again to every new server process.
+//
 // Bridge-made notifications sent to the renderer (not part of LSP):
 //   harness/lspRestarted { rootUri }  a new server process is up; initialize it again
 //   harness/lspStopped   {}           the server is gone (no project, or luau-lsp missing)
@@ -21,7 +26,8 @@ import type { ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
-import type { LogLine } from '@shared/types'
+import type { LogLine, TreeNode } from '@shared/types'
+import { DataModelSync } from './lspDataModel.ts'
 
 const HEALTHY_MS = 60_000
 const MAX_BACKOFF_MS = 30_000
@@ -226,6 +232,8 @@ export interface LspBridgeOptions {
   backoffMs?: number
   // Skip downloads (tests).
   types?: { ensure(): Promise<CachedFiles> }
+  // Debounce for DataModel updates (default 500ms).
+  dataModelDebounceMs?: number
 }
 
 export class LspBridge {
@@ -244,12 +252,26 @@ export class LspBridge {
   private pendingChanges = new Map<string, number>()
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private versionText: string | null | undefined
+  // Studio DataModel -> $/plugin/full. Ready once initialized, configured and a file is open.
+  private dataModel: DataModelSync
+  private configRequests = new Set<number | string>()
+  private handshake = { initialized: false, configured: false, opened: false }
 
   constructor(options: LspBridgeOptions) {
     this.options = options
     this.types =
       options.types ??
       new TypeCache(options.cacheDir, (text) => this.logLine('info', text), options.fetch)
+    this.dataModel = new DataModelSync({
+      notify: (method, params) => this.sendToServer(params === undefined ? { jsonrpc: '2.0', method } : { jsonrpc: '2.0', method, params }),
+      log: (text) => this.logLine('info', text),
+      debounceMs: options.dataModelDebounceMs
+    })
+  }
+
+  // Forge's merged Rojo + live Studio tree (project.tree), or null when there is none.
+  setDataModel(tree: TreeNode[] | null): void {
+    this.dataModel.setTree(tree)
   }
 
   private logLine(stream: LogLine['stream'], text: string): void {
@@ -296,17 +318,47 @@ export class LspBridge {
   }
 
   send(message: unknown): void {
+    if (!this.sendToServer(message)) return
+    const m = message as { method?: unknown; id?: unknown }
+    if (m?.method === 'initialize') this.initializeSent = true
+    if (m?.method === 'initialized') {
+      this.startWatching()
+      this.handshake.initialized = true
+    }
+    if (m?.method === 'textDocument/didOpen') this.handshake.opened = true
+    // The client's answer to the server's workspace/configuration request.
+    if (m && m.method === undefined && (typeof m.id === 'number' || typeof m.id === 'string') && this.configRequests.delete(m.id)) {
+      this.handshake.configured = true
+    }
+    const h = this.handshake
+    if (h.initialized && h.configured && h.opened) this.dataModel.ready()
+  }
+
+  private sendToServer(message: unknown): boolean {
     const child = this.child
-    if (!child || !child.stdin || child.stdin.destroyed) return
-    const method = (message as { method?: unknown })?.method
-    if (method === 'initialize') this.initializeSent = true
-    if (method === 'initialized') this.startWatching()
+    if (!child || !child.stdin || child.stdin.destroyed) return false
     child.stdin.write(encodeMessage(message))
+    return true
+  }
+
+  // Server -> renderer, noting what the DataModel sync needs.
+  private fromServer(message: unknown): void {
+    const m = message as { method?: unknown; id?: unknown }
+    if (m?.method === 'workspace/configuration' && (typeof m.id === 'number' || typeof m.id === 'string')) this.configRequests.add(m.id)
+    this.dataModel.observe(message)
+    this.options.send(message)
+  }
+
+  private resetHandshake(): void {
+    this.handshake = { initialized: false, configured: false, opened: false }
+    this.configRequests.clear()
+    this.dataModel.reset()
   }
 
   dispose(): void {
     this.wanted = false
     this.stopProcess()
+    this.dataModel.dispose()
   }
 
   private stopProcess(): void {
@@ -318,6 +370,7 @@ export class LspBridge {
     this.child = null
     this.initializeSent = false
     this.framer.reset()
+    this.resetHandshake()
     if (child) {
       try {
         child.stdin?.end(encodeMessage({ jsonrpc: '2.0', method: 'exit' }))
@@ -353,13 +406,14 @@ export class LspBridge {
     }
     this.child = child
     this.initializeSent = false
+    this.resetHandshake()
     this.startedAt = Date.now()
     this.framer.reset()
     this.logLine('info', `$ luau-lsp lsp ${args.join(' ')}`)
 
     child.stdout?.on('data', (chunk: Buffer) => {
       if (this.child !== child) return
-      for (const message of this.framer.push(chunk)) this.options.send(message)
+      for (const message of this.framer.push(chunk)) this.fromServer(message)
     })
     let stderr = ''
     child.stderr?.on('data', (chunk: Buffer) => {
@@ -376,6 +430,7 @@ export class LspBridge {
       if (this.child !== child) return
       this.child = null
       this.initializeSent = false
+      this.resetHandshake()
       this.stopWatching()
       if (!this.wanted || !this.root) return
       if (Date.now() - this.startedAt >= HEALTHY_MS) this.failures = 0

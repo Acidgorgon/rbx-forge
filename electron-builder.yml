@@ -1,0 +1,84 @@
+# electron-builder config. Build with `npm run dist` (this machine) or `npm run dist:mac` / `dist:win`.
+# See README "Build it yourself" and .github/workflows/build.yml.
+appId: com.acidgorgon.rbxforge
+productName: RBX Forge
+copyright: Copyright © 2026 Acidgorgon
+artifactName: RBX-Forge-${version}-${os}-${arch}.${ext}
+
+directories:
+  output: dist
+  buildResources: build
+
+# The app is the electron-vite output. Production dependencies (the Claude Agent SDK, MCP SDK, zod)
+# are added from node_modules by electron-builder; React/Monaco are bundled into out/renderer.
+files:
+  - out/**/*
+  - "!out/**/*.map"
+  - "!**/node_modules/**/{README,CHANGELOG,HISTORY}.md"
+  - "!**/node_modules/**/*.{d.ts,d.mts,d.cts,map}"
+
+# The Agent SDK runs a native CLI from @anthropic-ai/claude-agent-sdk-<platform>-<arch>. Executables
+# cannot run from inside app.asar, so those packages are unpacked; the app passes the unpacked path
+# to the SDK (src/main/services/sdkBinary.ts). build/afterPack.cjs keeps only the target's binary.
+asar: true
+asarUnpack:
+  - "node_modules/@anthropic-ai/claude-agent-sdk-*/**"
+afterPack: build/afterPack.cjs
+
+# No native node modules to rebuild.
+npmRebuild: false
+# Smaller dmg/zip/installer; most of the size is the ~250 MB Agent SDK CLI.
+compression: maximum
+electronLanguages: [en, en-US, en-GB]
+
+mac:
+  target:
+    - target: dmg
+      arch: [arm64, x64]
+    - target: zip
+      arch: [arm64, x64]
+  category: public.app-category.developer-tools
+  icon: build/icon.png
+  # Ad-hoc signature ("-") so the app runs on Apple Silicon without a Developer ID certificate.
+  # It is not notarized: first launch needs right-click > Open (see README). With a real certificate,
+  # set identity (or CSC_LINK), hardenedRuntime: true and notarize.
+  identity: "-"
+  hardenedRuntime: false
+  entitlements: build/entitlements.mac.plist
+  entitlementsInherit: build/entitlements.mac.plist
+  # Keep the Agent SDK CLI's own (Anthropic) signature instead of re-signing it ad hoc.
+  signIgnore:
+    - "claude-agent-sdk-darwin-[^/]+/claude$"
+  extendInfo:
+    NSHumanReadableCopyright: Copyright © 2026 Acidgorgon
+
+dmg:
+  title: ${productName} ${version}
+  writeUpdateInfo: false
+
+win:
+  target:
+    - target: nsis
+      arch: [x64, arm64]
+  icon: build/icon.png
+
+nsis:
+  oneClick: false
+  perMachine: false
+  allowElevation: true
+  allowToChangeInstallationDirectory: true
+  createDesktopShortcut: always
+  createStartMenuShortcut: true
+  shortcutName: RBX Forge
+  uninstallDisplayName: RBX Forge
+  deleteAppDataOnUninstall: false
+  differentialPackage: false
+
+linux:
+  target:
+    - target: AppImage
+      arch: [x64]
+  category: Development
+  icon: build/icon.png
+
+publish: null

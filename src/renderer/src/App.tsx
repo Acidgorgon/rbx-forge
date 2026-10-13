@@ -5,6 +5,8 @@ import { Chat } from './panels/Chat'
 import { StatusBar } from './panels/StatusBar'
 import { LogsDrawer } from './panels/LogsDrawer'
 import { AgentsDrawer } from './panels/AgentsDrawer'
+import { PackagesDrawer } from './panels/PackagesDrawer'
+import { SettingsDrawer } from './panels/SettingsDrawer'
 import { IconSidebar } from './components/Icons'
 
 // Monaco is large: load it the first time a script or the Sync drawer opens.
@@ -93,6 +95,8 @@ function Workspace() {
       <StatusBar />
       {state.drawer === 'logs' && <LogsDrawer />}
       {state.drawer === 'agents' && <AgentsDrawer />}
+      {state.drawer === 'packages' && <PackagesDrawer />}
+      {state.drawer === 'settings' && <SettingsDrawer />}
       {state.drawer === 'sync' && (
         <Suspense fallback={null}>
           <SyncDrawer />

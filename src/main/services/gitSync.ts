@@ -1,7 +1,7 @@
 import { existsSync } from 'node:fs'
 import { resolve } from 'node:path'
 import type { GitStatus, SyncSettings } from '@shared/types'
-import { run, toolEnv, type RunResult } from './tools.ts'
+import { findTool, outputLines, run, toolEnv, toRepoPath, type RunResult } from './tools.ts'
 
 export const DEFAULT_SYNC: SyncSettings = { autoSyncMinutes: 5, autoCommit: true }
 
@@ -22,6 +22,7 @@ export class GitSync {
   readonly root: string
   private options: GitSyncOptions
   private env: NodeJS.ProcessEnv
+  private gitPath: string
   private busy: Promise<GitStatus> | null = null
   private timer: ReturnType<typeof setInterval> | null = null
   private lastSync?: number
@@ -32,10 +33,12 @@ export class GitSync {
     this.root = options.root
     // No credential prompts or editors: they would hang a background sync.
     this.env = { ...toolEnv(), GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' }
+    // Full path: a GUI app's PATH may not have git, and Windows lookups by bare name skip toolEnv's PATH.
+    this.gitPath = options.git || findTool('git') || 'git'
   }
 
   private async git(args: string[]): Promise<RunResult> {
-    const result = await run(this.options.git || 'git', args, this.root, this.env)
+    const result = await run(this.gitPath, ['-c', 'core.quotepath=false', ...args], this.root, this.env)
     this.options.log?.(`git ${args.join(' ')}${result.code !== 0 ? ` (exit ${result.code})` : ''}`, 'info')
     const output = (result.stdout + result.stderr).trim()
     if (output && args[0] !== 'status' && args[0] !== 'rev-parse' && args[0] !== 'rev-list' && args[0] !== 'diff') {
@@ -45,12 +48,12 @@ export class GitSync {
   }
 
   private async quiet(args: string[]): Promise<RunResult> {
-    return run(this.options.git || 'git', args, this.root, this.env)
+    return run(this.gitPath, ['-c', 'core.quotepath=false', ...args], this.root, this.env)
   }
 
   private async conflictedFiles(): Promise<string[]> {
     const result = await this.quiet(['diff', '--name-only', '--diff-filter=U'])
-    return result.code === 0 ? result.stdout.split('\n').map((line) => line.trim()).filter(Boolean) : []
+    return result.code === 0 ? outputLines(result.stdout).map(toRepoPath) : []
   }
 
   private async upstream(): Promise<string | null> {
@@ -79,7 +82,7 @@ export class GitSync {
   async status(fetch = false): Promise<GitStatus> {
     const inside = await this.quiet(['rev-parse', '--is-inside-work-tree'])
     if (inside.code !== 0 || inside.stdout.trim() !== 'true') return emptyStatus()
-    const remotes = (await this.quiet(['remote'])).stdout.split('\n').filter(Boolean)
+    const remotes = outputLines((await this.quiet(['remote'])).stdout)
     if (fetch && remotes.length > 0) {
       const fetched = await this.quiet(['fetch', '--quiet'])
       if (fetched.code !== 0) this.lastError = fetched.stderr.trim() || 'git fetch failed'
@@ -93,7 +96,7 @@ export class GitSync {
       behind = right || 0
     }
     const porcelain = await this.quiet(['status', '--porcelain'])
-    const dirty = porcelain.stdout.split('\n').filter(Boolean).length
+    const dirty = outputLines(porcelain.stdout).length
     const status: GitStatus = {
       isRepo: true,
       hasRemote: remotes.length > 0,
@@ -231,6 +234,6 @@ export class GitSync {
 
 function firstLine(result: RunResult): string {
   const text = (result.stderr || result.stdout).trim()
-  const lines = text.split('\n').map((line) => line.trim()).filter(Boolean)
+  const lines = outputLines(text)
   return lines.find((line) => /^(error|fatal|hint: Updates were rejected)/i.test(line)) || lines[0] || ''
 }

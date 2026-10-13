@@ -133,3 +133,95 @@ export function relativePath(rootUri: string, uri: string): string | null {
   const matches = windows ? target.toLowerCase().startsWith(root.toLowerCase()) : target.startsWith(root)
   return matches ? target.slice(root.length) : null
 }
+
+// --- Edits
+
+export interface LspTextEdit {
+  range: LspRange
+  newText: string
+}
+
+// LSP WorkspaceEdit -> text edits by document URI (in server order). Handles `changes` and
+// `documentChanges` text edits; create/rename/delete file operations are reported back in
+// `unsupported` (luau-lsp does not send them).
+export function workspaceEditByUri(edit: any): { byUri: Map<string, LspTextEdit[]>; unsupported: number } {
+  const byUri = new Map<string, LspTextEdit[]>()
+  let unsupported = 0
+  const add = (uri: string, edits: LspTextEdit[]) => {
+    const list = byUri.get(uri) ?? []
+    list.push(...edits)
+    byUri.set(uri, list)
+  }
+  if (!edit || typeof edit !== 'object') return { byUri, unsupported }
+  if (Array.isArray(edit.documentChanges)) {
+    for (const change of edit.documentChanges) {
+      if (change && change.textDocument && Array.isArray(change.edits)) add(change.textDocument.uri, change.edits)
+      else unsupported++
+    }
+  } else if (edit.changes && typeof edit.changes === 'object') {
+    for (const [uri, edits] of Object.entries(edit.changes)) if (Array.isArray(edits)) add(uri, edits as LspTextEdit[])
+  }
+  return { byUri, unsupported }
+}
+
+function offsetAt(text: string, lineStarts: number[], position: LspPosition): number {
+  if (position.line >= lineStarts.length) return text.length
+  const start = lineStarts[position.line]
+  const next = position.line + 1 < lineStarts.length ? lineStarts[position.line + 1] : text.length
+  // Clamp to the line, before its line break.
+  let end = next
+  if (end > start && text[end - 1] === '\n') end--
+  if (end > start && text[end - 1] === '\r') end--
+  return Math.min(start + Math.max(0, position.character), end)
+}
+
+// Applies LSP text edits (all against the original text, non-overlapping) to a string.
+export function applyTextEdits(text: string, edits: LspTextEdit[]): string {
+  const lineStarts = [0]
+  for (let i = 0; i < text.length; i++) if (text[i] === '\n') lineStarts.push(i + 1)
+  const resolved = edits
+    .map((edit, index) => ({ start: offsetAt(text, lineStarts, edit.range.start), end: offsetAt(text, lineStarts, edit.range.end), text: edit.newText, index }))
+    .sort((a, b) => b.start - a.start || b.index - a.index)
+  let out = text
+  for (const edit of resolved) out = out.slice(0, edit.start) + edit.text + out.slice(edit.end)
+  return out
+}
+
+// --- Symbols, highlights, folding
+
+// LSP SymbolKind is 1-based (File = 1); Monaco's languages.SymbolKind is the same list 0-based.
+export function toMonacoSymbolKind(kind: number | undefined): number {
+  return typeof kind === 'number' && kind >= 1 && kind <= 26 ? kind - 1 : 12 // Variable
+}
+
+// LSP DocumentHighlightKind 1 Text, 2 Read, 3 Write -> Monaco 0, 1, 2.
+export function toMonacoHighlightKind(kind: number | undefined): number {
+  return kind === 2 ? 1 : kind === 3 ? 2 : 0
+}
+
+export interface DecodedSemanticToken {
+  line: number
+  character: number
+  length: number
+  type: string
+  modifiers: string[]
+}
+
+// Relative-encoded LSP semantic token data -> absolute tokens (for tests and debugging; Monaco
+// takes the encoded data as is).
+export function decodeSemanticTokens(data: ArrayLike<number>, legend: { tokenTypes: string[]; tokenModifiers: string[] }): DecodedSemanticToken[] {
+  const out: DecodedSemanticToken[] = []
+  let line = 0
+  let character = 0
+  for (let i = 0; i + 4 < data.length; i += 5) {
+    const deltaLine = data[i]
+    line += deltaLine
+    character = deltaLine === 0 ? character + data[i + 1] : data[i + 1]
+    const modifiers: string[] = []
+    for (let bit = 0, set = data[i + 4]; set > 0 && bit < legend.tokenModifiers.length; bit++, set >>= 1) {
+      if (set & 1) modifiers.push(legend.tokenModifiers[bit])
+    }
+    out.push({ line, character, length: data[i + 2], type: legend.tokenTypes[data[i + 3]] ?? String(data[i + 3]), modifiers })
+  }
+  return out
+}

@@ -1,0 +1,1 @@
+[{"type":"parse_error","message":"unexpected token `end`: expected an expression","filename":"src/client/Broken.luau","location":{"start":10,"start_line":2,"start_column":1,"end":13,"end_line":2,"end_column":4}}]

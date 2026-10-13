@@ -2,7 +2,9 @@ import { cpSync, mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 
-const TEMPLATE = resolve(import.meta.dirname, '..', '..')
+// Copies of the GenTree template's (github.com/Acidgorgon/MyTemplate-Legacy) default.project.json and
+// tools/studio-sync.py, vendored so the tests run from a clone of rbx-forge alone.
+const TEMPLATE = resolve(import.meta.dirname, 'fixtures', 'template')
 
 export function write(root: string, path: string, contents = ''): void {
   mkdirSync(dirname(join(root, path)), { recursive: true })

@@ -1,15 +1,27 @@
 {
   "name": "rbx-forge",
+  "productName": "RBX Forge",
   "version": "0.1.0",
   "private": true,
   "description": "Desktop dev harness for Roblox projects built on the GenTree template",
+  "author": "Acidgorgon",
+  "homepage": "https://github.com/Acidgorgon/rbx-forge",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Acidgorgon/rbx-forge.git"
+  },
   "main": "out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",
     "build": "electron-vite build",
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
-    "test": "node --test --experimental-strip-types test/*.test.ts"
+    "test": "node --test --experimental-strip-types test/*.test.ts",
+    "sdk-binaries": "node build/sdk-binaries.mjs",
+    "dist": "node build/sdk-binaries.mjs && electron-vite build && electron-builder",
+    "dist:mac": "node build/sdk-binaries.mjs --platform darwin --arch arm64,x64 && electron-vite build && electron-builder --mac",
+    "dist:win": "node build/sdk-binaries.mjs --platform win32 --arch x64,arm64 && electron-vite build && electron-builder --win",
+    "dist:dir": "node build/sdk-binaries.mjs && electron-vite build && electron-builder --dir"
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "0.3.296",
@@ -23,6 +35,7 @@
     "@types/react-dom": "^19.0.0",
     "@vitejs/plugin-react": "5.2.0",
     "electron": "44.7.0",
+    "electron-builder": "26.17.0",
     "electron-vite": "5.0.0",
     "monaco-editor": "0.57.0",
     "react": "19.3.0",

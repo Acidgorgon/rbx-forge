@@ -1,7 +1,7 @@
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { StudioConflict } from '@shared/types'
-import { findPython, run } from './tools.ts'
+import { findPythonCommand, run, toRepoPath, type Command } from './tools.ts'
 
 // Studio versions held back by tools/studio-sync.py live in .studio-sync/conflicts,
 // named after the repo path with "/" replaced by "__".
@@ -9,9 +9,9 @@ export class StudioConflicts {
   readonly root: string
   private timer: ReturnType<typeof setInterval> | null = null
   private signature = ''
-  private python: () => string | null
+  private python: () => Command | null
 
-  constructor(root: string, python: () => string | null = findPython) {
+  constructor(root: string, python: () => Command | null = () => findPythonCommand()) {
     this.root = root
     this.python = python
   }
@@ -40,13 +40,14 @@ export class StudioConflicts {
 
   // Goes through studio-sync.py so its state.json stays consistent.
   async resolve(path: string, take: 'studio' | 'repo'): Promise<void> {
+    path = toRepoPath(path)
     const held = (await this.list()).map((conflict) => conflict.path)
     if (!held.includes(path)) throw new Error(`No held Studio version for ${path}`)
     const python = this.python()
     if (!python) throw new Error('Python 3 not found; it is needed to resolve Studio conflicts')
     const result = await run(
-      python,
-      ['tools/studio-sync.py', take === 'studio' ? 'take-studio' : 'take-disk', path],
+      python.file,
+      [...python.args, 'tools/studio-sync.py', take === 'studio' ? 'take-studio' : 'take-disk', path],
       this.root
     )
     if (result.code !== 0) throw new Error(result.stderr.trim() || `studio-sync.py exited ${result.code}`)

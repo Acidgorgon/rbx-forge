@@ -1,0 +1,11 @@
+[31m[E2005] Error[0m: Field "Call" is missing
+    ╭─[missing.blink:1:7]
+    │
+[2m003[0m │ event Foo {
+[2m004[0m │     From: Server,
+[2m005[0m │     Type: Reliable
+    ┆ [31m─────────[0m[31m┬[0m[31m─────────[0m
+    ┆          [31m│[0m
+    ┆          [31m╰──[0m [31mAdd missing field "Call"[0m
+    │
+────╯

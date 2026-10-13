@@ -1,0 +1,7 @@
+[string "STANDALONE"]:4688: A client output path must be defined.
+[Stack Begin]
+	Script '[C]' - function 'assert'
+	Script 'STANDALONE', Line 4688
+	Script 'STANDALONE', Line 5033
+[Stack End]
+

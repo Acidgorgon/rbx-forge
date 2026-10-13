@@ -1,0 +1,108 @@
+# Builds installable RBX Forge apps: macOS dmg/zip (Apple Silicon + Intel) and Windows NSIS installers
+# (x64 + arm64). Download them from the run's "Artifacts" section, or from the GitHub Release that a
+# v* tag creates. Builds are unsigned (macOS: ad-hoc signature); see README "Install".
+#
+# Each target's Claude Agent SDK CLI comes from @anthropic-ai/claude-agent-sdk-<platform>-<arch>.
+# npm ci installs only the runner's own one, so build/sdk-binaries.mjs fetches the target's package
+# when it differs (Windows arm64 is cross-built on an x64 runner), and build/afterPack.cjs fails the
+# build if the target's binary did not make it into the app.
+name: Build
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: build-${{ github.ref }}
+  cancel-in-progress: ${{ !startsWith(github.ref, 'refs/tags/') }}
+
+jobs:
+  test:
+    name: Test (ubuntu)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm run typecheck
+      - run: npm test
+      - run: npm run build
+
+  package:
+    name: Package ${{ matrix.name }}
+    needs: test
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: macOS arm64
+            os: macos-latest # Apple Silicon
+            platform: darwin
+            builder: --mac
+            arch: arm64
+          - name: macOS x64
+            os: macos-15-intel # Intel runner (macos-13 is retired)
+            platform: darwin
+            builder: --mac
+            arch: x64
+          - name: Windows x64
+            os: windows-latest
+            platform: win32
+            builder: --win
+            arch: x64
+          - name: Windows arm64
+            os: windows-latest # cross-built; no native node modules to rebuild
+            platform: win32
+            builder: --win
+            arch: arm64
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npm test
+      - run: npm run typecheck
+      - name: Fetch the Agent SDK CLI for ${{ matrix.platform }}-${{ matrix.arch }}
+        run: node build/sdk-binaries.mjs --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}
+      - run: npm run build
+      - name: electron-builder
+        run: npx electron-builder ${{ matrix.builder }} --${{ matrix.arch }} --publish never
+      - uses: actions/upload-artifact@v4
+        with:
+          name: RBX-Forge-${{ matrix.platform }}-${{ matrix.arch }}
+          path: |
+            dist/*.dmg
+            dist/*.zip
+            dist/*.exe
+          if-no-files-found: error
+          compression-level: 0 # dmg/zip/exe are already compressed
+
+  release:
+    name: GitHub Release
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: package
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - run: ls -la artifacts
+      - uses: softprops/action-gh-release@v2.2.2
+        with:
+          files: artifacts/*
+          generate_release_notes: true
+          fail_on_unmatched_files: true

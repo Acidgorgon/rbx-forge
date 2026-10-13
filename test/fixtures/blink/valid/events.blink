@@ -1,0 +1,102 @@
+option ClientOutput = "src/shared/events/client.luau"
+option ServerOutput = "src/server/events/server.luau"
+option Casing = Pascal
+option WriteValidations = true
+option RemoteScope = "GAME"
+option FutureLibrary = "ReplicatedStorage.Packages.Future"
+
+--[[
+    Block comment
+]]
+import "./shared/economy"
+import "./shared/common" as Common
+
+type Health = u8(0..100)
+type Username = string(3..20)?
+type Ids = f64[1..50]
+map Inventory = { [string]: u16 }
+map Map<K, V> = {[K]: V}
+map Scores = Map<string, f64>
+set Flags = {
+    FeatureA,
+    FeatureB
+}
+enum CharacterStatus = { Idling, Walking, Running }
+enum MouseEvent = "Type" {
+    Move {
+        Delta: vector,
+    },
+    Click {
+        Button: enum { Left, Right },
+        Position: vector<i16>
+    }
+}
+struct Entity {
+    Health: Health,
+    Position: vector,
+    Location: CFrame<i16, f16>,
+    Owner: Instance(Player)?,
+    Nested: struct {
+        A: u8?,
+    }
+}
+struct Fragment<T> {
+    Index: u8,
+    Data: T
+}
+struct Merged {
+    ..Entity,
+    Extra: boolean
+}
+export struct Snapshot {
+    Tick: u32,
+}
+
+event PlayerDamaged {
+    From: Server,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: (Instance(Player), Health) -- trailing comment
+}
+
+event MouseInput {
+    From: Client,
+    Type: Unreliable,
+    Call: SingleSync,
+    Poll: true,
+    Data: MouseEvent
+}
+
+event Heartbeat {
+    From: Server,
+    Type: Unreliable,
+    Call: Polling
+}
+
+function GetInventory {
+    Yield: Coroutine,
+    Data: Common.PlayerId,
+    Return: Inventory
+}
+
+scope Combat {
+    type Damage = u16
+    event Hit {
+        From: Client,
+        Type: Reliable,
+        Call: SingleAsync,
+        Data: struct { Target: Instance, Damage: Damage }
+    }
+    scope Inner {
+        event Deep {
+            From: Server,
+            Type: Reliable,
+            Call: ManySync,
+            Data: Common.Vec2
+        }
+    }
+    function Parry {
+        Yield: Future,
+        Return: boolean
+    }
+}

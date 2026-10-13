@@ -1,9 +1,10 @@
 import { useEffect, useState } from 'react'
-import type { TestAgent } from '@shared/types'
+import type { ModelChoice, TestAgent } from '@shared/types'
 import { useStore } from '../store'
 import { Drawer } from '../components/Drawer'
 import { Markdown } from '../components/Markdown'
 import { IconChevron, IconPlay, IconRobot } from '../components/Icons'
+import { ModelPicker, providerLabel } from '../components/ModelPicker'
 import { ToolChip } from './Chat'
 
 const label: Record<TestAgent['state'], string> = {
@@ -46,6 +47,7 @@ function AgentCard({ a, index }: { a: TestAgent; index: number }) {
       {(a.summary || live) && (
         <div className="agent-summary">
           {a.summary ?? (a.state === 'queued' ? 'Waiting for a free Studio session…' : 'Playing the scenario…')}
+          {a.model && <span className="agent-time agent-on" title={a.provider}>{a.model}</span>}
           {duration(a) && <span className="agent-time">{duration(a)}</span>}
         </div>
       )}
@@ -76,6 +78,10 @@ export function AgentsDrawer() {
   const { state, actions } = useStore()
   const [text, setText] = useState('')
   const [starting, setStarting] = useState(false)
+  // Model for the next run; defaults to the app's default model.
+  const [picked, setPicked] = useState<ModelChoice | null>(null)
+  const choice = picked ?? state.defaultModel
+  const chosenReady = !!state.providers?.find((p) => p.id === choice?.provider)?.ready
   const scenarios = text.split('\n').map((s) => s.trim()).filter(Boolean)
   const running = state.agents.filter((a) => a.state === 'running').length
   const passed = state.agents.filter((a) => a.state === 'passed').length
@@ -98,7 +104,7 @@ export function AgentsDrawer() {
     >
       <section className="card">
         <h3>New run</h3>
-        <p className="muted small">One scenario per line. Each agent plays the game in its own Studio session and reports what it saw.</p>
+        <p className="muted small">One scenario per line. Each agent checks one scenario and reports passed or failed.</p>
         <textarea
           className="scenario-input"
           rows={4}
@@ -109,15 +115,30 @@ export function AgentsDrawer() {
             if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) (e.currentTarget.form ?? e.currentTarget.parentElement)?.querySelector<HTMLButtonElement>('.run-btn')?.click()
           }}
         />
+        <div className="agent-model">
+          <ModelPicker
+            value={choice}
+            providers={state.providers}
+            onChange={setPicked}
+            onAddKey={(id) => actions.openSettings(id)}
+            direction="down"
+          />
+          <span className="muted small agent-model-note">
+            {choice?.provider === 'anthropic'
+              ? 'One agent at a time can play-test in Studio when the Studio MCP is configured; the rest review code.'
+              : `Studio tools need the Anthropic provider. On ${choice ? providerLabel(choice.provider) : 'this provider'}, agents review the code only.`}
+          </span>
+        </div>
         <div className="row-end">
           <span className="muted small">{scenarios.length ? `${scenarios.length} agent${scenarios.length > 1 ? 's' : ''}` : ''}</span>
           <button
             className="btn primary run-btn"
-            disabled={!scenarios.length || starting}
+            disabled={!scenarios.length || starting || !chosenReady}
+            title={chosenReady ? undefined : 'Set up this provider in Settings first'}
             onClick={async () => {
               setStarting(true)
               try {
-                await window.harness.runAgents(scenarios)
+                await window.harness.runAgents(scenarios, choice ?? undefined)
                 setText('')
               } finally {
                 setStarting(false)

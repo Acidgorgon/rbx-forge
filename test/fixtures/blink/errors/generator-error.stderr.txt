@@ -1,0 +1,10 @@
+[string "STANDALONE"]:4027: Cannot use yield type: "Future", without providing a path to the future library.
+[Stack Begin]
+	Script '[C]' - function 'error'
+	Script 'STANDALONE', Line 4027
+	Script 'STANDALONE', Line 4470
+	Script 'STANDALONE', Line 4542
+	Script 'STANDALONE', Line 4730
+	Script 'STANDALONE', Line 5033
+[Stack End]
+

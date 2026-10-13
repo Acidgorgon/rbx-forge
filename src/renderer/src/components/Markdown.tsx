@@ -171,3 +171,8 @@ export function Markdown({ text }: { text: string }) {
     </div>
   )
 }
+
+// Inline markdown only (code, bold, links...), for one-line items such as checklist tasks.
+export function InlineMarkdown({ text }: { text: string }) {
+  return <>{inline(text)}</>
+}

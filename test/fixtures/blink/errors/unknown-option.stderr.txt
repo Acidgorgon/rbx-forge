@@ -1,0 +1,9 @@
+[31m[E2003] Error[0m: Unknown option "Reliabl"
+    ╭─[bad.blink:1:9]
+    │
+[2m005[0m │     Type: Reliabl,
+    ┆           [31m───[0m[31m┬[0m[31m───[0m
+    ┆              [31m│[0m
+    ┆              [31m╰──[0m [31mExpected one of "Reliable" or "Unreliable"[0m
+    │
+────╯

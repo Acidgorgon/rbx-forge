@@ -1,0 +1,9 @@
+[31m[E3007] Error[0m: Unknown reference
+    ╭─[bad2.blink:1:6]
+    │
+[2m004[0m │     x: Missing
+    ┆        [31m───[0m[31m┬[0m[31m───[0m
+    ┆           [31m│[0m
+    ┆           [31m╰──[0m [31mUnknown reference[0m
+    │
+────╯

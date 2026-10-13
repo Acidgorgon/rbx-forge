@@ -1,6 +1,7 @@
 import { useCallback, useState, type MouseEvent } from 'react'
 import type { ServiceStatus } from '@shared/types'
 import { useStore } from '../store'
+import { IconPackage } from './PackagesDrawer'
 import { Menu, type MenuEntry } from '../components/Menu'
 import { IconAlert, IconCheck, IconGit, IconPlay, IconRestart, IconRobot, IconSquare, IconTerminal } from '../components/Icons'
 
@@ -56,6 +57,7 @@ export function StatusBar() {
     }
   }
   const studioN = state.studioConflicts.length
+  const lspMissing = state.services.some((s) => s.id === 'lsp' && s.state === 'missing')
   const running = state.agents.filter((a) => a.state === 'running' || a.state === 'queued').length
   const failed = state.agents.filter((a) => a.state === 'failed' || a.state === 'error').length
 
@@ -85,6 +87,15 @@ export function StatusBar() {
         {running ? `${running} running` : 'Agents'}
         {failed > 0 && !running && <span className="pill-badge bad">{failed} failed</span>}
         {running > 0 && <span className="spinner" />}
+      </button>
+      <button
+        className="pill"
+        onClick={() => actions.set({ drawer: 'packages' })}
+        title={lspMissing ? 'Packages: luau-lsp is missing (the editor needs it)' : 'Wally packages and Rokit tools'}
+      >
+        <IconPackage size={14} />
+        Packages
+        {lspMissing && <span className="pill-badge bad">luau-lsp missing</span>}
       </button>
       <button className="pill" onClick={() => actions.set({ drawer: 'logs' })} title="Logs">
         <IconTerminal size={14} />

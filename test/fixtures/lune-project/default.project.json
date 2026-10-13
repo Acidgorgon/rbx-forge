@@ -1,0 +1,37 @@
+{
+  "name": "GenTree",
+  "tree": {
+    "$className": "DataModel",
+
+    "ReplicatedStorage": {
+      "Shared": {
+        "$path": "src/shared",
+        "$ignoreUnknownInstances": true
+      },
+      "Packages": {
+        "$path": "Packages"
+      }
+    },
+
+    "ServerScriptService": {
+      "Server": {
+        "$path": "src/server",
+        "$ignoreUnknownInstances": true
+      }
+    },
+
+    "ServerStorage": {
+      "$path": "src/ServerStorage",
+      "$ignoreUnknownInstances": true
+    },
+
+    "StarterPlayer": {
+      "StarterPlayerScripts": {
+        "Client": {
+          "$path": "src/client",
+          "$ignoreUnknownInstances": true
+        }
+      }
+    }
+  }
+}

@@ -1,0 +1,31 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1024" height="1024" viewBox="0 0 1024 1024">
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#2b2927"/>
+      <stop offset="1" stop-color="#1a1918"/>
+    </linearGradient>
+    <radialGradient id="glow" cx="0.5" cy="0.62" r="0.5">
+      <stop offset="0" stop-color="#d97757" stop-opacity="0.22"/>
+      <stop offset="1" stop-color="#d97757" stop-opacity="0"/>
+    </radialGradient>
+    <linearGradient id="metal" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0" stop-color="#ec9473"/>
+      <stop offset="0.45" stop-color="#d97757"/>
+      <stop offset="1" stop-color="#b65a3b"/>
+    </linearGradient>
+    <clipPath id="anvil"><path d="M210 392 Q290 380 340 378 L800 378 L800 410 Q780 470 720 474 L680 474 Q650 520 664 572 L720 600 Q760 612 770 650 L770 690 L380 690 L380 650 Q390 612 430 600 L486 572 Q500 520 470 474 L420 474 Q330 470 270 430 Q230 410 210 392 Z"/></clipPath>
+  </defs>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#bg)"/>
+  <rect x="100" y="100" width="824" height="824" rx="186" fill="url(#glow)"/>
+  <rect x="101.5" y="101.5" width="821" height="821" rx="184.5" fill="none" stroke="#ffffff" stroke-opacity="0.07" stroke-width="3"/>
+  <g transform="translate(10 52)">
+    <path fill="url(#metal)" d="M210 392 Q290 380 340 378 L800 378 L800 410 Q780 470 720 474 L680 474 Q650 520 664 572 L720 600 Q760 612 770 650 L770 690 L380 690 L380 650 Q390 612 430 600 L486 572 Q500 520 470 474 L420 474 Q330 470 270 430 Q230 410 210 392 Z"/>
+    <rect x="200" y="370" width="610" height="22" fill="#ffffff" fill-opacity="0.16" clip-path="url(#anvil)"/>
+    <g fill="#f6b89c">
+      <rect x="602" y="300" width="26" height="26" transform="rotate(45 615 313)"/>
+      <rect x="676" y="250" width="18" height="18" transform="rotate(45 685 259)"/>
+      <rect x="548" y="236" width="16" height="16" transform="rotate(45 556 244)"/>
+      <rect x="724" y="320" width="14" height="14" transform="rotate(45 731 327)"/>
+    </g>
+  </g>
+</svg>

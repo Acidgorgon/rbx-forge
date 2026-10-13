@@ -1,8 +1,8 @@
-import { execFile, execFileSync, spawn, type ChildProcess } from 'node:child_process'
+import { execFile, execFileSync, type ChildProcess } from 'node:child_process'
 import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import type { LogLine, ServiceId, ServiceStatus } from '@shared/types'
-import { findTool, run, toolEnv } from './tools.ts'
+import { findBash, findPowerShell, findTool, run, spawnTool, toolEnv } from './tools.ts'
 
 const isWindows = process.platform === 'win32'
 const TEMPLATE_ORIGIN = /github\.com[:/]Acidgorgon\/MyTemplate-Legacy(\.git)?\/?$/i
@@ -32,10 +32,7 @@ interface Proc {
   healthy: ReturnType<typeof setTimeout> | null
 }
 
-interface Command {
-  file: string
-  args: string[]
-}
+type Command = { file: string; args: string[] }
 
 export function isTemplateOrigin(url: string): boolean {
   return TEMPLATE_ORIGIN.test(url.trim())
@@ -157,7 +154,7 @@ export class Supervisor {
       const pid = proc?.child?.pid
       if (!pid) continue
       try {
-        if (isWindows) execFileSync('taskkill', ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore' })
+        if (isWindows) execFileSync(taskkill(), ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
         else process.kill(-pid, 'SIGKILL')
       } catch {
         // already gone
@@ -171,11 +168,10 @@ export class Supervisor {
     if (!this.root) return null
     const lsp = this.lspPath || findTool('luau-lsp')
     if (!lsp) return null
-    return spawn(lsp, ['lsp', ...args], {
+    return spawnTool(lsp, ['lsp', ...args], {
       cwd: this.root,
       env: toolEnv(),
-      stdio: ['pipe', 'pipe', 'pipe'],
-      windowsHide: true
+      stdio: ['pipe', 'pipe', 'pipe']
     })
   }
 
@@ -210,18 +206,12 @@ export class Supervisor {
       this.update('dev', { state: 'missing', detail: 'wally not found. Run rokit install.' })
       return null
     }
-    if (isWindows) {
-      return {
-        file: findTool('powershell') || 'powershell.exe',
-        args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join('tools', 'dev.ps1')]
-      }
-    }
-    const bash = findTool('bash')
-    if (!bash) {
-      this.update('dev', { state: 'missing', detail: 'bash not found.' })
+    const dev = devCommand(root, process.platform, existsSync)
+    if ('missing' in dev) {
+      this.update('dev', { state: 'missing', detail: dev.missing })
       return null
     }
-    return { file: bash, args: [existsSync(join(root, 'dev')) ? './dev' : 'tools/dev.sh'] }
+    return dev
   }
 
   // dev.sh deletes .git when origin is the template repo and .keep-git is missing. Do not let that happen silently.
@@ -244,11 +234,11 @@ export class Supervisor {
     this.info(id, `$ ${[command.file, ...command.args].join(' ')}`)
     let child: ChildProcess
     try {
-      child = spawn(command.file, command.args, {
+      child = spawnTool(command.file, command.args, {
         cwd: this.root as string,
         env: toolEnv(),
+        // Own process group on mac/linux so killTree can stop everything ./dev started.
         detached: !isWindows,
-        windowsHide: true,
         stdio: ['ignore', 'pipe', 'pipe']
       })
     } catch (error) {
@@ -352,6 +342,35 @@ export class Supervisor {
   }
 }
 
+// taskkill by full path: a GUI app's PATH can lack System32 entries, and a PATH entry could shadow it.
+function taskkill(): string {
+  return join(process.env.SystemRoot || process.env.windir || 'C:\\Windows', 'System32', 'taskkill.exe')
+}
+
+// The dev loop command for a project root: tools/dev.ps1 under PowerShell on Windows (Git Bash for
+// ./dev when there is no dev.ps1), ./dev (or tools/dev.sh) under bash elsewhere.
+export function devCommand(
+  root: string,
+  platform: NodeJS.Platform,
+  exists: (path: string) => boolean,
+  locate: { powershell: () => string; bash: () => string | null } = { powershell: findPowerShell, bash: findBash }
+): Command | { missing: string } {
+  const has = (rel: string) => exists(join(root, rel))
+  if (platform === 'win32') {
+    if (has(join('tools', 'dev.ps1'))) {
+      return { file: locate.powershell(), args: ['-NoProfile', '-ExecutionPolicy', 'Bypass', '-File', join('tools', 'dev.ps1')] }
+    }
+    const script = has('dev') ? './dev' : has(join('tools', 'dev.sh')) ? 'tools/dev.sh' : null
+    if (!script) return { missing: 'tools/dev.ps1 not found in this project.' }
+    const bash = locate.bash()
+    if (!bash) return { missing: 'tools/dev.ps1 not found, and Git Bash is not installed to run ./dev.' }
+    return { file: bash, args: [script] }
+  }
+  const bash = locate.bash()
+  if (!bash) return { missing: 'bash not found.' }
+  return { file: bash, args: [has('dev') ? './dev' : 'tools/dev.sh'] }
+}
+
 // Stops a child and everything it started: the process group on mac/linux, taskkill /T on Windows.
 export function killTree(child: ChildProcess, graceMs = 3000): Promise<void> {
   const pid = child.pid
@@ -363,7 +382,7 @@ export function killTree(child: ChildProcess, graceMs = 3000): Promise<void> {
     }
     child.once('exit', finish)
     if (isWindows) {
-      execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => undefined)
+      execFile(taskkill(), ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => undefined)
     } else {
       try {
         process.kill(-pid, 'SIGTERM')
@@ -373,7 +392,7 @@ export function killTree(child: ChildProcess, graceMs = 3000): Promise<void> {
     }
     const force = setTimeout(() => {
       try {
-        if (isWindows) execFile('taskkill', ['/pid', String(pid), '/T', '/F'], () => undefined)
+        if (isWindows) execFile(taskkill(), ['/pid', String(pid), '/T', '/F'], { windowsHide: true }, () => undefined)
         else process.kill(-pid, 'SIGKILL')
       } catch {
         // already gone

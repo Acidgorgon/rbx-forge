@@ -1,0 +1,5 @@
+# Keep LF everywhere (tests compare file contents; shell scripts must stay LF on Windows checkouts).
+* text=auto eol=lf
+*.png binary
+*.ico binary
+*.icns binary

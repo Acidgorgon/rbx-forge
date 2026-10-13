@@ -3,9 +3,9 @@
 
 import { mkdir, stat } from 'node:fs/promises'
 import { join, posix } from 'node:path'
-import { createSdkMcpServer, tool } from '@anthropic-ai/claude-agent-sdk'
+import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
 import type { McpSdkServerConfigWithInstance, SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
-import { z } from 'zod'
+import { z, type ZodRawShape } from 'zod'
 import type { ServiceId, TreeNode } from '@shared/types'
 import { robloxPaths } from '../../shared/robloxPath.ts'
 import type { HarnessContext } from '../context.ts'
@@ -65,7 +65,66 @@ export interface GentreeToolOptions {
   fs?: ToolFs
 }
 
-type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean }
+export type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean }
+
+// A gentree tool: name, description, zod input shape and handler. Structurally the same object the
+// Agent SDK's tool() builds, so the SDK path wraps these in an MCP server unchanged, while the
+// OpenAI-compatible loop calls handlers directly with toFunctionSpecs() schemas.
+export interface GentreeTool<S extends ZodRawShape = ZodRawShape> {
+  name: string
+  description: string
+  inputSchema: S
+  handler: (args: z.infer<z.ZodObject<S>>, extra: unknown) => Promise<ToolResult>
+}
+
+export function defineTool<S extends ZodRawShape>(
+  name: string,
+  description: string,
+  inputSchema: S,
+  handler: (args: z.infer<z.ZodObject<S>>, extra: unknown) => Promise<ToolResult>
+): GentreeTool<S> {
+  return { name, description, inputSchema, handler }
+}
+
+// Same identifier, so the definitions below read like the SDK's tool() calls.
+const tool = defineTool
+
+// JSON Schema for a tool's input (zod 4's z.toJSONSchema), trimmed for function-calling APIs:
+// no $schema, and no safe-integer bounds zod adds to every .int().
+export function toolJsonSchema(shape: ZodRawShape): Record<string, unknown> {
+  const schema = z.toJSONSchema(z.object(shape)) as Record<string, unknown>
+  delete schema.$schema
+  const clean = (node: unknown): void => {
+    if (!node || typeof node !== 'object') return
+    if (Array.isArray(node)) return node.forEach(clean)
+    const o = node as Record<string, unknown>
+    if (o.maximum === Number.MAX_SAFE_INTEGER) delete o.maximum
+    if (o.minimum === Number.MIN_SAFE_INTEGER) delete o.minimum
+    for (const v of Object.values(o)) clean(v)
+  }
+  clean(schema)
+  return schema
+}
+
+// OpenAI-style function definitions for a tool list.
+export function toFunctionSpecs(tools: GentreeTool<any>[]): { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }[] {
+  return tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: toolJsonSchema(t.inputSchema) } }))
+}
+
+// Validates model-supplied arguments against the tool's zod shape, then runs the handler.
+// The SDK's MCP server does the same validation on the anthropic path.
+export async function runTool(t: GentreeTool<any>, args: unknown): Promise<ToolResult> {
+  const parsed = z.object(t.inputSchema).safeParse(args ?? {})
+  if (!parsed.success) {
+    const issues = parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')
+    return fail(`invalid arguments for ${t.name}: ${issues}`)
+  }
+  try {
+    return await t.handler(parsed.data, {})
+  } catch (e) {
+    return fail(`${t.name} failed: ${(e as Error).message}`)
+  }
+}
 
 const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }] })
 const fail = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true })
@@ -206,7 +265,7 @@ export function findInstances(tree: TreeNode[], query: string, service?: string,
 }
 
 // Builds the tool definitions. Exported separately from the server so tests can call handlers directly.
-export function gentreeTools(ctx: HarnessContext, opts: GentreeToolOptions = {}): SdkMcpToolDefinition<any>[] {
+export function gentreeTools(ctx: HarnessContext, opts: GentreeToolOptions = {}): GentreeTool<any>[] {
   const fs = opts.fs ?? nodeFs(ctx)
 
   const read = [
@@ -445,14 +504,18 @@ export function gentreeTools(ctx: HarnessContext, opts: GentreeToolOptions = {})
 // connects to a single transport, so concurrent queries must not share one.
 export function createGentreeServer(
   ctx: HarnessContext,
-  opts: GentreeToolOptions & { extraTools?: SdkMcpToolDefinition<any>[] } = {}
+  opts: GentreeToolOptions & { extraTools?: GentreeTool<any>[] } = {}
 ): McpSdkServerConfigWithInstance {
+  return wrapInSdkServer([...gentreeTools(ctx, opts), ...(opts.extraTools ?? [])])
+}
+
+export function wrapInSdkServer(tools: GentreeTool<any>[]): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: SERVER_NAME,
     version: '1.0.0',
     // Few small tools: keep them all in the prompt instead of behind tool search.
     alwaysLoad: true,
-    tools: [...gentreeTools(ctx, opts), ...(opts.extraTools ?? [])]
+    tools: tools as unknown as SdkMcpToolDefinition<any>[]
   })
 }
 

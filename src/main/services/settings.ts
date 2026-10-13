@@ -1,5 +1,5 @@
-import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs'
-import { join } from 'node:path'
+import { mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs'
+import { dirname, join } from 'node:path'
 
 // Per-user settings kept as one JSON file (userData/settings.json in the app).
 export class Settings {
@@ -36,10 +36,17 @@ export class Settings {
   }
 
   private save(): void {
-    const dir = join(this.file, '..')
+    const dir = dirname(this.file)
     mkdirSync(dir, { recursive: true })
     const temp = this.file + '.tmp'
-    writeFileSync(temp, JSON.stringify(this.data, null, 2))
-    renameSync(temp, this.file)
+    const text = JSON.stringify(this.data, null, 2)
+    writeFileSync(temp, text)
+    try {
+      renameSync(temp, this.file)
+    } catch {
+      // Windows can refuse to replace a file another process (antivirus, indexer) holds open.
+      writeFileSync(this.file, text)
+      rmSync(temp, { force: true })
+    }
   }
 }

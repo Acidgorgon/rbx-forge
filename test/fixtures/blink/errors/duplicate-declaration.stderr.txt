@@ -1,0 +1,13 @@
+[31m[E3010] Error[0m: Duplicate declaration
+    ╭─[dup.blink:1:5]
+    │
+[2m003[0m │ type A = u8
+    ┆      [34m[0m[34m┬[0m[34m[0m
+    ┆      [34m│[0m
+    ┆      [34m╰──[0m [34mPreviously declared here[0m
+[2m004[0m │ type A = u16
+    ┆      [31m[0m[31m┬[0m[31m[0m
+    ┆      [31m│[0m
+    ┆      [31m╰──[0m [31mDuplicate declared here[0m
+    │
+────╯

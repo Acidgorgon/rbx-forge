@@ -1,11 +1,15 @@
 // App state: one reducer fed by HarnessApi calls and HarnessEvents.
 import { createContext, useCallback, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
 import type {
+  BlinkModel,
   ChatMessage,
   ChatSession,
   GitStatus,
   LogLine,
+  ModelChoice,
   ProjectInfo,
+  ProviderId,
+  ProviderInfo,
   ScriptGroup,
   ServiceStatus,
   StudioConflict,
@@ -14,8 +18,8 @@ import type {
   TreeNode
 } from '@shared/types'
 
-export type Drawer = 'logs' | 'sync' | 'agents' | null
-export type SidebarTab = 'explorer' | 'scripts'
+export type Drawer = 'logs' | 'sync' | 'agents' | 'settings' | 'packages' | null
+export type SidebarTab = 'explorer' | 'scripts' | 'events'
 
 export interface OpenFile {
   path: string
@@ -48,6 +52,13 @@ export interface State {
   agents: TestAgent[]
   agentMessages: Record<string, ChatMessage[]>
   hasApiKey: boolean | null
+  // null until first loaded.
+  providers: ProviderInfo[] | null
+  defaultModel: ModelChoice | null
+  // Model picked in the composer before the chat exists (applied on first send).
+  pendingModel: ModelChoice | null
+  // Provider card to scroll to when Settings opens.
+  settingsFocus: ProviderId | null
   // UI
   sidebarOpen: boolean
   sidebarTab: SidebarTab
@@ -57,6 +68,10 @@ export interface State {
   activeFile: string | null
   composerInsert: { text: string; nonce: number } | null
   toasts: Toast[]
+  // events.blink model (Events tab, editor markers, generated-file guard).
+  blink: BlinkModel | null
+  // Position to show once a file is open in the editor (openFileAt).
+  reveal: { path: string; line: number; column: number; nonce: number } | null
 }
 
 const initial: State = {
@@ -76,6 +91,10 @@ const initial: State = {
   agents: [],
   agentMessages: {},
   hasApiKey: null,
+  providers: null,
+  defaultModel: null,
+  pendingModel: null,
+  settingsFocus: null,
   sidebarOpen: true,
   sidebarTab: 'scripts',
   drawer: null,
@@ -83,7 +102,9 @@ const initial: State = {
   files: [],
   activeFile: null,
   composerInsert: null,
-  toasts: []
+  toasts: [],
+  blink: null,
+  reveal: null
 }
 
 type Action =
@@ -204,6 +225,18 @@ export interface Actions {
   insertIntoComposer(text: string): void
   refreshSync(): Promise<void>
   loadAgentTranscript(agentId: string): Promise<void>
+  // Opens a file and moves the cursor to line/column (1-based).
+  openFileAt(path: string, line: number, column?: number): Promise<void>
+  refreshProviders(): Promise<void>
+  // Sets the model of the active chat (or the next new chat).
+  chooseModel(choice: ModelChoice): Promise<void>
+  openSettings(focus?: ProviderId): void
+  // Group chat (creates the chat first when none is active).
+  addGuest(choice: ModelChoice): Promise<void>
+  removeGuest(alias: string): Promise<void>
+  setGuestTools(on: boolean): Promise<void>
+  startRoundtable(topic: string, rounds: number): Promise<void>
+  planToChecklist(messageId: string): Promise<void>
 }
 
 const Ctx = createContext<{ state: State; actions: Actions } | null>(null)
@@ -246,7 +279,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         // Titles are usually set by the backend after the first reply.
         if (!busy) void h.listChats().then((chats) => dispatch({ type: 'set', patch: { chats } }))
       }),
-      h.on('agents:changed', (agents) => dispatch({ type: 'set', patch: { agents } }))
+      h.on('agents:changed', (agents) => dispatch({ type: 'set', patch: { agents } })),
+      h.on('chat:updated', (chat) => dispatch({ type: 'set', patch: { chats: stateRef.current.chats.map((c) => (c.id === chat.id ? chat : c)) } })),
+      h.on('blink:changed', (blink) => dispatch({ type: 'set', patch: { blink } })),
+      h.on('providers:changed', (providers) => dispatch({ type: 'set', patch: { providers, hasApiKey: providers.some((p) => p.id === 'anthropic' && p.ready) } }))
     ]
 
     void (async () => {
@@ -262,7 +298,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         h.hasApiKey()
       ])
       dispatch({ type: 'set', patch: { project, services, git, studioConflicts, syncSettings, chats, agents, hasApiKey } })
+      // Providers can be slow (an Ollama probe); load them without holding up the rest.
+      void Promise.all([h.listProviders(), h.getDefaultModel()])
+        .then(([providers, defaultModel]) => dispatch({ type: 'set', patch: { providers, defaultModel } }))
+        .catch(() => dispatch({ type: 'set', patch: { providers: [] } }))
       dispatch({ type: 'logs', lines: logs })
+      void h.getBlink?.().then((blink) => dispatch({ type: 'set', patch: { blink } })).catch(() => undefined)
       if (project) await loadProjectData()
     })()
 
@@ -290,14 +331,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'chatMessages', sessionId: id, messages })
       },
       async newChat() {
-        dispatch({ type: 'set', patch: { activeChatId: null } })
+        dispatch({ type: 'set', patch: { activeChatId: null, pendingModel: null } })
       },
       async send(text) {
         let id = stateRef.current.activeChatId
         if (!id) {
-          const chat = await h.newChat()
+          const chat = await h.newChat(stateRef.current.pendingModel ?? undefined)
           id = chat.id
-          dispatch({ type: 'set', patch: { activeChatId: id, chats: [chat, ...stateRef.current.chats.filter((c) => c.id !== chat.id)] } })
+          dispatch({ type: 'set', patch: { activeChatId: id, pendingModel: null, chats: [chat, ...stateRef.current.chats.filter((c) => c.id !== chat.id)] } })
           dispatch({ type: 'chatMessages', sessionId: id, messages: [] })
         }
         const local: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text, at: Date.now(), agentId: 'main', sessionId: id }
@@ -354,6 +395,17 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       insertIntoComposer(text) {
         dispatch({ type: 'set', patch: { composerInsert: { text, nonce: Date.now() } } })
       },
+      async openFileAt(path, line, column = 1) {
+        dispatch({ type: 'set', patch: { reveal: { path, line, column, nonce: Date.now() } } })
+        const existing = stateRef.current.files.find((f) => f.path === path)
+        dispatch({ type: 'openFile', path })
+        if (existing) return
+        try {
+          dispatch({ type: 'fileLoaded', path, contents: await h.readFile(path) })
+        } catch (e) {
+          dispatch({ type: 'fileLoaded', path, contents: `-- Could not read ${path}: ${(e as Error).message}\n` })
+        }
+      },
       async loadAgentTranscript(agentId) {
         try {
           const messages = await h.getChat(agentId)
@@ -361,6 +413,74 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         } catch {
           // Transcript not available yet; live events still arrive.
         }
+      },
+      async refreshProviders() {
+        const [providers, defaultModel] = await Promise.all([h.listProviders(), h.getDefaultModel()])
+        dispatch({ type: 'set', patch: { providers, defaultModel, hasApiKey: providers.some((p) => p.id === 'anthropic' && p.ready) } })
+      },
+      async chooseModel(choice) {
+        const id = stateRef.current.activeChatId
+        if (!id) {
+          dispatch({ type: 'set', patch: { pendingModel: choice } })
+          return
+        }
+        const chats = stateRef.current.chats.map((c) => (c.id === id ? { ...c, ...choice } : c))
+        dispatch({ type: 'set', patch: { chats } })
+        try {
+          await h.setChatModel(id, choice.provider, choice.model)
+        } catch (e) {
+          toast(`Could not switch model: ${(e as Error).message}`)
+        }
+      },
+      async addGuest(choice) {
+        let id = stateRef.current.activeChatId
+        if (!id) {
+          const chat = await h.newChat(stateRef.current.pendingModel ?? undefined)
+          id = chat.id
+          dispatch({ type: 'set', patch: { activeChatId: id, pendingModel: null, chats: [chat, ...stateRef.current.chats.filter((c) => c.id !== chat.id)] } })
+          dispatch({ type: 'chatMessages', sessionId: id, messages: [] })
+        }
+        try {
+          const chat = await h.addGuest(id, choice)
+          dispatch({ type: 'set', patch: { chats: stateRef.current.chats.map((c) => (c.id === chat.id ? chat : c)) } })
+        } catch (e) {
+          toast(`Could not add model: ${(e as Error).message}`)
+        }
+      },
+      async removeGuest(alias) {
+        const id = stateRef.current.activeChatId
+        if (!id) return
+        const chat = await h.removeGuest(id, alias)
+        dispatch({ type: 'set', patch: { chats: stateRef.current.chats.map((c) => (c.id === chat.id ? chat : c)) } })
+      },
+      async setGuestTools(on) {
+        const id = stateRef.current.activeChatId
+        if (!id) return
+        const chat = await h.setGuestTools(id, on)
+        dispatch({ type: 'set', patch: { chats: stateRef.current.chats.map((c) => (c.id === chat.id ? chat : c)) } })
+      },
+      async startRoundtable(topic, rounds) {
+        const id = stateRef.current.activeChatId
+        if (!id) return
+        dispatch({ type: 'busy', sessionId: id, busy: true })
+        try {
+          await h.startRoundtable(id, topic, rounds)
+        } catch (e) {
+          dispatch({ type: 'busy', sessionId: id, busy: false })
+          toast(`Could not start the roundtable: ${(e as Error).message}`)
+        }
+      },
+      async planToChecklist(messageId) {
+        const id = stateRef.current.activeChatId
+        if (!id) return
+        try {
+          await h.planToChecklist(id, messageId)
+        } catch (e) {
+          toast(`Could not make a task list: ${(e as Error).message}`)
+        }
+      },
+      openSettings(focus) {
+        dispatch({ type: 'set', patch: { drawer: 'settings', settingsFocus: focus ?? null } })
       },
       async refreshSync() {
         const [git, studioConflicts, syncSettings] = await Promise.all([h.getGitStatus(), h.getStudioConflicts(), h.getSyncSettings()])

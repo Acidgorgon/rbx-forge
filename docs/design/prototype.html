@@ -1,0 +1,1417 @@
+<!doctype html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>RBX Forge Prototype</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Chakra+Petch:wght@500;600;700&family=IBM+Plex+Sans:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" rel="stylesheet">
+<style>
+/* =====================================================================
+   RBX FORGE — design tokens (mirror of docs/design/SPEC.md §2–§6)
+   ===================================================================== */
+:root {
+  /* ---- type ---- */
+  --font-ui: 'IBM Plex Sans', ui-sans-serif, system-ui, -apple-system, 'Segoe UI', sans-serif;
+  --font-mono: 'JetBrains Mono', ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  --font-display: 'Chakra Petch', 'IBM Plex Sans', sans-serif;
+  --fs-2xs: 10px; --fs-xs: 11px; --fs-sm: 12px; --fs-ui: 13px; --fs-md: 14px; --fs-lg: 16px; --fs-xl: 20px; --fs-2xl: 28px;
+  --fs-code: 13px; --lh-code: 20px; --lh-ui: 18px;
+  --fw-regular: 400; --fw-medium: 500; --fw-semibold: 600;
+
+  /* ---- spacing (4px grid, 2px half-steps for dense rows) ---- */
+  --sp-0: 0; --sp-half: 2px; --sp-1: 4px; --sp-2: 6px; --sp-3: 8px; --sp-4: 12px; --sp-5: 16px; --sp-6: 20px; --sp-7: 24px; --sp-8: 32px; --sp-10: 40px;
+
+  /* ---- radius: machined, not pillowy ---- */
+  --r-xs: 2px; --r-sm: 4px; --r-md: 6px; --r-lg: 8px; --r-xl: 12px; --r-pill: 999px;
+
+  /* ---- layout ---- */
+  --titlebar-h: 38px; --activity-w: 46px; --side-w: 268px; --right-w: 360px; --bottom-h: 214px;
+  --tabs-h: 35px; --crumbs-h: 26px; --status-h: 24px; --row-h: 22px; --indent: 12px;
+
+  /* ---- motion ---- */
+  --dur-instant: 70ms; --dur-fast: 120ms; --dur-base: 180ms; --dur-panel: 220ms; --dur-slow: 280ms; --dur-glacial: 420ms;
+  --ease-out: cubic-bezier(.16, 1, .3, 1);
+  --ease-in: cubic-bezier(.5, 0, .75, 0);
+  --ease-in-out: cubic-bezier(.65, 0, .35, 1);
+  --ease-snap: cubic-bezier(.2, .9, .25, 1.15);
+  --ease-linear: linear;
+}
+
+/* ---- DARK (default): graphite + ember ---- */
+:root, [data-theme="dark"] {
+  color-scheme: dark;
+  --bg-chrome: #0c0e11;      /* titlebar, activity bar, status bar */
+  --bg-panel: #121418;       /* side + right + bottom panels */
+  --bg-editor: #16191e;      /* editor, welcome */
+  --bg-raised: #1c2026;      /* inputs, cards */
+  --bg-overlay: #1f242b;     /* menus, palette, toasts */
+  --bg-hover: rgba(200, 214, 235, .055);
+  --bg-active: rgba(200, 214, 235, .095);
+  --bg-selected: rgba(255, 122, 47, .13);
+  --line: #23272e;
+  --line-strong: #30363f;
+  --line-focus: #ff7a2f;
+  --fg: #e3e6eb;
+  --fg-2: #b0b7c2;
+  --fg-muted: #7d8592;
+  --fg-faint: #535a66;
+  --fg-on-accent: #1a0d05;
+
+  --ember: #ff7a2f;
+  --ember-hi: #ffa25e;
+  --ember-lo: #d4520f;
+  --ember-text: #ff9150;
+  --ember-soft: rgba(255, 122, 47, .14);
+  --ember-glow: rgba(255, 122, 47, .45);
+  --ember-grad: linear-gradient(180deg, #ff9a4d 0%, #ff7a2f 45%, #e65a14 100%);
+
+  --realm-server: #67a3ff; --realm-server-soft: rgba(103, 163, 255, .13);
+  --realm-client: #45d4a0; --realm-client-soft: rgba(69, 212, 160, .12);
+  --realm-shared: #b494ff; --realm-shared-soft: rgba(180, 148, 255, .13);
+  --realm-studio: #e8b44c; --realm-studio-soft: rgba(232, 180, 76, .12);
+
+  --ok: #3fd18a; --warn: #f2b33d; --err: #ff5f5f; --info: #67a3ff; --idle: #5d6573;
+
+  --sh-1: 0 1px 0 rgba(255,255,255,.03) inset, 0 1px 2px rgba(0,0,0,.4);
+  --sh-2: 0 8px 24px rgba(0,0,0,.45), 0 2px 6px rgba(0,0,0,.35), 0 0 0 1px rgba(255,255,255,.05);
+  --sh-3: 0 24px 64px rgba(0,0,0,.6), 0 6px 16px rgba(0,0,0,.4), 0 0 0 1px rgba(255,255,255,.06);
+  --focus-ring: 0 0 0 1px var(--bg-editor), 0 0 0 3px rgba(255, 122, 47, .55);
+
+  /* syntax */
+  --syn-kw: #ff8f5a; --syn-fn: #f2d27a; --syn-str: #9fd88a; --syn-num: #d7a0ff; --syn-com: #5d6676;
+  --syn-glob: #67b8ff; --syn-type: #5fd4c9; --syn-prop: #c9d1dd; --syn-op: #8a93a1;
+}
+
+/* ---- LIGHT: brushed steel ---- */
+[data-theme="light"] {
+  color-scheme: light;
+  --bg-chrome: #e4e7eb;
+  --bg-panel: #eef0f3;
+  --bg-editor: #fbfbfc;
+  --bg-raised: #ffffff;
+  --bg-overlay: #ffffff;
+  --bg-hover: rgba(30, 40, 55, .055);
+  --bg-active: rgba(30, 40, 55, .09);
+  --bg-selected: rgba(226, 87, 15, .11);
+  --line: #d9dde3;
+  --line-strong: #c4cad3;
+  --line-focus: #e2570f;
+  --fg: #171a1f;
+  --fg-2: #3c434d;
+  --fg-muted: #5f6875;
+  --fg-faint: #9aa2ad;
+  --fg-on-accent: #ffffff;
+
+  --ember: #e8590c;
+  --ember-hi: #ff7a2f;
+  --ember-lo: #b8440a;
+  --ember-text: #c2410c;
+  --ember-soft: rgba(232, 89, 12, .1);
+  --ember-glow: rgba(232, 89, 12, .3);
+  --ember-grad: linear-gradient(180deg, #ff7f3a 0%, #ec5f12 55%, #cf4c08 100%);
+
+  --realm-server: #2563d9; --realm-server-soft: rgba(37, 99, 217, .1);
+  --realm-client: #0f8f66; --realm-client-soft: rgba(15, 143, 102, .1);
+  --realm-shared: #7a4fd6; --realm-shared-soft: rgba(122, 79, 214, .1);
+  --realm-studio: #a8700a; --realm-studio-soft: rgba(168, 112, 10, .1);
+
+  --ok: #16a05c; --warn: #b7790d; --err: #d63c3c; --info: #2563d9; --idle: #9aa2ad;
+
+  --sh-1: 0 1px 2px rgba(20,30,45,.08);
+  --sh-2: 0 8px 24px rgba(20,30,45,.12), 0 2px 6px rgba(20,30,45,.08), 0 0 0 1px rgba(20,30,45,.08);
+  --sh-3: 0 24px 64px rgba(20,30,45,.18), 0 6px 16px rgba(20,30,45,.1), 0 0 0 1px rgba(20,30,45,.1);
+  --focus-ring: 0 0 0 1px var(--bg-editor), 0 0 0 3px rgba(232, 89, 12, .45);
+
+  --syn-kw: #c2410c; --syn-fn: #8a5a00; --syn-str: #2f7d1f; --syn-num: #8a3fd1; --syn-com: #98a0ab;
+  --syn-glob: #1f5fc4; --syn-type: #0b7f78; --syn-prop: #2b313a; --syn-op: #6b7380;
+}
+
+/* =====================================================================
+   Motion keyframes
+   ===================================================================== */
+@keyframes rf-fade-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes rf-pop-in { from { opacity: 0; transform: translateY(-4px) scale(.98) } to { opacity: 1; transform: none } }
+@keyframes rf-menu-in { from { opacity: 0; transform: scale(.97) } to { opacity: 1; transform: none } }
+@keyframes rf-palette-in { from { opacity: 0; transform: translateY(-8px) scale(.985) } to { opacity: 1; transform: none } }
+@keyframes rf-scrim-in { from { opacity: 0 } to { opacity: 1 } }
+@keyframes rf-item-in { from { opacity: 0; transform: translateY(4px) } to { opacity: 1; transform: none } }
+@keyframes rf-tab-open { from { opacity: 0; max-width: 0; } to { opacity: 1; max-width: 240px; } }
+@keyframes rf-tab-close { from { opacity: 1; max-width: 240px; } to { opacity: 0; max-width: 0; padding-inline: 0; } }
+@keyframes rf-toast-in { from { opacity: 0; transform: translateY(12px) scale(.98) } to { opacity: 1; transform: none } }
+@keyframes rf-toast-out { to { opacity: 0; transform: translateX(16px) } }
+@keyframes rf-toast-timer { from { transform: scaleX(1) } to { transform: scaleX(0) } }
+@keyframes rf-shimmer { from { background-position: 150% 0 } to { background-position: -50% 0 } }
+@keyframes rf-pulse { 0%, 100% { opacity: 1 } 50% { opacity: .35 } }
+@keyframes rf-ember-breathe { 0%, 100% { box-shadow: 0 0 0 0 var(--ember-glow) } 50% { box-shadow: 0 0 0 3px transparent, 0 0 10px 1px var(--ember-glow) } }
+@keyframes rf-spin { to { transform: rotate(360deg) } }
+@keyframes rf-flash { 0% { background: var(--ember-soft) } 100% { background: transparent } }
+@keyframes rf-spark { 0% { opacity: 0; transform: translate(0,0) scale(.6) } 20% { opacity: 1 } 100% { opacity: 0; transform: translate(var(--sx), var(--sy)) scale(.2) } }
+@keyframes rf-caret { 50% { opacity: 0 } }
+
+@media (prefers-reduced-motion: reduce) {
+  :root { --dur-instant: 0ms; --dur-fast: 0ms; --dur-base: 0ms; --dur-panel: 0ms; --dur-slow: 0ms; --dur-glacial: 0ms; }
+  *, *::before, *::after { animation-duration: 1ms !important; animation-iteration-count: 1 !important; transition-duration: 1ms !important; scroll-behavior: auto !important; }
+  .spark { display: none !important; }
+}
+
+/* =====================================================================
+   Base
+   ===================================================================== */
+* { box-sizing: border-box; }
+html, body { height: 100%; margin: 0; }
+body {
+  background: var(--bg-chrome); color: var(--fg);
+  font: var(--fw-regular) var(--fs-ui)/var(--lh-ui) var(--font-ui);
+  -webkit-font-smoothing: antialiased; overflow: hidden; user-select: none;
+}
+button { font: inherit; color: inherit; background: none; border: 0; padding: 0; cursor: pointer; }
+input { font: inherit; color: inherit; }
+:focus { outline: none; }
+:focus-visible { box-shadow: var(--focus-ring); border-radius: var(--r-sm); }
+.mono { font-family: var(--font-mono); }
+svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
+svg.i.sm { width: 14px; height: 14px; }
+svg.i.xs { width: 12px; height: 12px; }
+kbd { font: 500 10.5px/1 var(--font-mono); color: var(--fg-muted); background: var(--bg-raised); border: 1px solid var(--line-strong); border-bottom-width: 2px; border-radius: var(--r-sm); padding: 2px 4px 1px; min-width: 16px; display: inline-flex; justify-content: center; }
+
+/* =====================================================================
+   Shell
+   ===================================================================== */
+.app { position: fixed; inset: 0; display: grid; grid-template-rows: var(--titlebar-h) minmax(0, 1fr) var(--status-h); grid-template-columns: minmax(0, 1fr); }
+.body { display: flex; min-height: 0; min-width: 0; }
+
+/* Titlebar */
+.titlebar { display: flex; align-items: center; gap: var(--sp-3); padding: 0 var(--sp-3) 0 var(--sp-3); background: var(--bg-chrome); border-bottom: 1px solid var(--line); -webkit-app-region: drag; position: relative; }
+.traffic { display: flex; gap: 8px; padding: 0 10px 0 6px; }
+.traffic i { width: 12px; height: 12px; border-radius: 50%; background: var(--line-strong); }
+.brand { display: flex; align-items: center; gap: 8px; padding-right: 10px; margin-right: 2px; border-right: 1px solid var(--line); height: 20px; }
+.brand-mark { width: 20px; height: 20px; position: relative; }
+.wordmark { display: flex; align-items: center; gap: 5px; }
+.wordmark .rbx { font: 600 9.5px/1 var(--font-mono); letter-spacing: .08em; color: var(--fg-2); border: 1px solid var(--line-strong); border-radius: var(--r-xs); padding: 3px 3px 2px 4px; }
+.wordmark .forge { font: 700 13.5px/1 var(--font-display); letter-spacing: .16em; color: var(--fg); }
+.proj { display: flex; align-items: center; gap: 6px; padding: 3px 8px; border-radius: var(--r-md); -webkit-app-region: no-drag; color: var(--fg); font-weight: 500; transition: background var(--dur-fast) var(--ease-out); }
+.proj:hover { background: var(--bg-hover); }
+.proj .branch { display: inline-flex; align-items: center; gap: 4px; color: var(--fg-muted); font: 500 11.5px var(--font-mono); }
+.omni { position: absolute; left: 50%; transform: translateX(-50%); width: min(460px, 34vw); height: 26px; display: flex; align-items: center; gap: 8px; padding: 0 6px 0 10px; border-radius: var(--r-md); background: var(--bg-raised); border: 1px solid var(--line); color: var(--fg-muted); -webkit-app-region: no-drag; transition: border-color var(--dur-fast), background var(--dur-fast); }
+.omni:hover { border-color: var(--line-strong); color: var(--fg-2); }
+.omni span { flex: 1; text-align: left; font-size: 12.5px; }
+.tb-right { margin-left: auto; display: flex; align-items: center; gap: 2px; -webkit-app-region: no-drag; }
+.tb-btn { height: 26px; min-width: 28px; padding: 0 6px; display: inline-flex; align-items: center; justify-content: center; gap: 6px; border-radius: var(--r-md); color: var(--fg-muted); transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast); }
+.tb-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.tb-btn:active { transform: translateY(.5px); background: var(--bg-active); }
+.tb-btn.on { color: var(--fg); }
+.tb-sep { width: 1px; height: 16px; background: var(--line); margin: 0 6px; }
+.btn-forge { height: 26px; padding: 0 10px 0 8px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--r-md); background: var(--ember-grad); color: var(--fg-on-accent); font-weight: 600; font-size: 12.5px; box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 0 0 1px var(--ember-lo), 0 2px 10px -2px var(--ember-glow); transition: filter var(--dur-fast), transform var(--dur-instant), box-shadow var(--dur-base); position: relative; overflow: visible; }
+.btn-forge:hover { filter: brightness(1.07); box-shadow: 0 1px 0 rgba(255,255,255,.25) inset, 0 0 0 1px var(--ember-lo), 0 4px 16px -2px var(--ember-glow); }
+.btn-forge:active { transform: translateY(1px) scale(.985); filter: brightness(.96); }
+.btn-ghost { height: 26px; padding: 0 10px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--r-md); border: 1px solid var(--line-strong); color: var(--fg-2); font-weight: 500; font-size: 12.5px; background: var(--bg-raised); transition: border-color var(--dur-fast), background var(--dur-fast), transform var(--dur-instant); }
+.btn-ghost:hover { border-color: var(--fg-faint); color: var(--fg); }
+.btn-ghost:active { transform: translateY(1px); }
+
+/* Activity bar */
+.activity { width: var(--activity-w); flex: none; background: var(--bg-chrome); border-right: 1px solid var(--line); display: flex; flex-direction: column; align-items: center; padding: 6px 0; gap: 2px; }
+.act { width: 36px; height: 36px; border-radius: var(--r-md); display: grid; place-items: center; color: var(--fg-faint); position: relative; transition: color var(--dur-fast), background var(--dur-fast); }
+.act svg.i { width: 20px; height: 20px; stroke-width: 1.4; }
+.act:hover { color: var(--fg-2); background: var(--bg-hover); }
+.act.on { color: var(--fg); }
+.act.on::before { content: ''; position: absolute; left: -5px; top: 8px; bottom: 8px; width: 2px; border-radius: 2px; background: var(--ember); box-shadow: 0 0 8px var(--ember-glow); }
+.act .badge { position: absolute; right: 3px; top: 4px; min-width: 14px; height: 14px; padding: 0 3px; border-radius: 7px; background: var(--ember); color: var(--fg-on-accent); font: 700 9px/14px var(--font-mono); text-align: center; box-shadow: 0 0 0 2px var(--bg-chrome); }
+.act .dot { position: absolute; right: 7px; top: 7px; width: 7px; height: 7px; border-radius: 50%; background: var(--warn); box-shadow: 0 0 0 2px var(--bg-chrome); animation: rf-pulse 1.6s var(--ease-in-out) infinite; }
+.act-spacer { flex: 1; }
+.act-tip { position: fixed; z-index: 50; pointer-events: none; padding: 4px 8px; border-radius: var(--r-sm); background: var(--bg-overlay); box-shadow: var(--sh-2); font-size: 12px; color: var(--fg); display: none; gap: 8px; align-items: center; }
+
+/* Panels (generic) */
+.panel { background: var(--bg-panel); display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
+.side { width: var(--side-w); flex: none; border-right: 1px solid var(--line); transition: width var(--dur-panel) var(--ease-out), border-color var(--dur-panel); }
+.right { width: var(--right-w); flex: none; border-left: 1px solid var(--line); transition: width var(--dur-panel) var(--ease-out); }
+.panel > .panel-inner { display: flex; flex-direction: column; min-height: 0; height: 100%; transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-panel) var(--ease-out); }
+.side .panel-inner { width: var(--side-w); }
+.right .panel-inner { width: var(--right-w); }
+.app.side-off .side { width: 0; border-right-color: transparent; }
+.app.side-off .side .panel-inner { opacity: 0; transform: translateX(-12px); }
+.app.right-off .right { width: 0; border-left-color: transparent; }
+.app.right-off .right .panel-inner { opacity: 0; transform: translateX(12px); }
+.panel-head { height: 34px; flex: none; display: flex; align-items: center; gap: 4px; padding: 0 6px 0 12px; }
+.panel-title { font: 600 11px/1 var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--fg-muted); flex: 1; }
+.icon-btn { width: 24px; height: 24px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--fg-muted); transition: background var(--dur-fast), color var(--dur-fast), transform var(--dur-instant); }
+.icon-btn:hover { background: var(--bg-hover); color: var(--fg); }
+.icon-btn:active { background: var(--bg-active); transform: scale(.94); }
+
+.resizer { flex: none; width: 5px; margin: 0 -2px; z-index: 5; cursor: col-resize; position: relative; }
+.resizer::after { content: ''; position: absolute; inset: 0 2px; background: transparent; transition: background var(--dur-fast) var(--ease-out) 0ms; }
+.resizer:hover::after { background: var(--ember); transition-delay: 300ms; }
+.resizer.h { width: auto; height: 5px; margin: -2px 0; cursor: row-resize; }
+.resizer.h::after { inset: 2px 0; }
+
+/* Explorer */
+.filter { margin: 0 8px 6px; height: 26px; display: flex; align-items: center; gap: 6px; padding: 0 8px; border-radius: var(--r-md); background: var(--bg-raised); border: 1px solid var(--line); color: var(--fg-faint); transition: border-color var(--dur-fast), box-shadow var(--dur-fast); }
+.filter:focus-within { border-color: var(--ember); box-shadow: 0 0 0 3px var(--ember-soft); }
+.filter input { border: 0; background: none; flex: 1; min-width: 0; font-size: 12.5px; color: var(--fg); }
+.filter input::placeholder { color: var(--fg-faint); }
+.seg { display: flex; gap: 2px; padding: 0 8px 8px; }
+.seg button { flex: 1; height: 22px; border-radius: var(--r-sm); font-size: 11.5px; color: var(--fg-muted); font-weight: 500; transition: background var(--dur-fast), color var(--dur-fast); }
+.seg button:hover { color: var(--fg); }
+.seg button.on { background: var(--bg-active); color: var(--fg); }
+.section-h { height: 24px; display: flex; align-items: center; gap: 4px; padding: 0 8px 0 6px; font: 600 10.5px/1 var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--fg-muted); cursor: pointer; }
+.section-h:hover { color: var(--fg-2); }
+.section-h .count { margin-left: auto; font: 500 10px var(--font-mono); color: var(--fg-faint); letter-spacing: 0; }
+.tree { flex: 1; overflow: auto; padding-bottom: 12px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+.node { position: relative; }
+.row { height: var(--row-h); display: flex; align-items: center; gap: 5px; padding-left: calc(var(--d) * var(--indent) + 6px); padding-right: 8px; color: var(--fg-2); cursor: pointer; position: relative; white-space: nowrap; transition: background var(--dur-instant) var(--ease-out), color var(--dur-instant); }
+.row:hover { background: var(--bg-hover); color: var(--fg); }
+.row.sel { background: var(--bg-selected); color: var(--fg); }
+.row.sel::before { content: ''; position: absolute; left: 0; top: 0; bottom: 0; width: 2px; background: var(--ember); }
+.row.focus-outline { box-shadow: inset 0 0 0 1px var(--ember); }
+.row .tw { width: 14px; height: 14px; display: grid; place-items: center; color: var(--fg-faint); flex: none; transition: transform var(--dur-base) var(--ease-out); }
+.row .tw.leaf { visibility: hidden; }
+.node.open > .row .tw { transform: rotate(90deg); }
+.row .name { overflow: hidden; text-overflow: ellipsis; }
+.row .ext { color: var(--fg-faint); font-size: 11.5px; }
+.row .tag { margin-left: auto; font: 600 9px/1 var(--font-mono); letter-spacing: .06em; padding: 3px 4px 2px; border-radius: var(--r-xs); flex: none; }
+.row .meta { margin-left: auto; font: 500 10.5px var(--font-mono); color: var(--fg-faint); }
+.row .gitm { margin-left: auto; font: 600 10.5px var(--font-mono); width: 12px; text-align: center; }
+.row .gitm.M { color: var(--warn); }
+.row .gitm.A { color: var(--ok); }
+.row.dim { color: var(--fg-muted); }
+.row.dim .name { font-style: normal; }
+.row.flash { animation: rf-flash 900ms var(--ease-out); }
+.tag.server { color: var(--realm-server); background: var(--realm-server-soft); }
+.tag.client { color: var(--realm-client); background: var(--realm-client-soft); }
+.tag.shared { color: var(--realm-shared); background: var(--realm-shared-soft); }
+.tag.studio { color: var(--realm-studio); background: var(--realm-studio-soft); }
+.tag.wally { color: var(--fg-muted); background: var(--bg-active); }
+/* tree expand: grid 0fr -> 1fr + fade */
+.kids { display: grid; grid-template-rows: 0fr; opacity: 0; transition: grid-template-rows var(--dur-base) var(--ease-out), opacity var(--dur-base) var(--ease-out); position: relative; }
+.kids > .kids-inner { overflow: hidden; min-height: 0; }
+.node.open > .kids { grid-template-rows: 1fr; opacity: 1; }
+.kids::before { content: ''; position: absolute; top: 0; bottom: 2px; left: calc(var(--d) * var(--indent) + 12px); width: 1px; background: var(--rail, var(--line)); opacity: .55; z-index: 1; pointer-events: none; }
+.tree:not(:hover) .kids::before { opacity: .3; }
+
+/* Roblox class glyph */
+.cg { width: 16px; height: 16px; flex: none; }
+.cg * { vector-effect: non-scaling-stroke; }
+
+/* Editor area */
+.center { flex: 1; min-width: 0; display: flex; flex-direction: column; background: var(--bg-editor); }
+.editor-area { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
+.tabs { height: var(--tabs-h); flex: none; display: flex; align-items: stretch; background: var(--bg-panel); border-bottom: 1px solid var(--line); overflow: hidden; }
+.tab { position: relative; display: flex; align-items: center; gap: 6px; padding: 0 8px 0 12px; max-width: 240px; color: var(--fg-muted); border-right: 1px solid var(--line); cursor: pointer; white-space: nowrap; transition: color var(--dur-fast), background var(--dur-fast); }
+.tab:hover { color: var(--fg-2); background: var(--bg-hover); }
+.tab.on { background: var(--bg-editor); color: var(--fg); }
+.tab.on::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 2px; background: var(--ember); box-shadow: 0 0 10px var(--ember-glow); }
+.tab.on::after { content: ''; position: absolute; left: 0; right: 0; bottom: -1px; height: 1px; background: var(--bg-editor); }
+.tab .x { width: 18px; height: 18px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--fg-faint); opacity: 0; transition: opacity var(--dur-fast), background var(--dur-fast); }
+.tab:hover .x, .tab.on .x { opacity: 1; }
+.tab .x:hover { background: var(--bg-active); color: var(--fg); }
+.tab .dirty { width: 18px; height: 18px; display: grid; place-items: center; }
+.tab .dirty i { width: 7px; height: 7px; border-radius: 50%; background: var(--fg-2); }
+.tab:hover .dirty i { display: none; }
+.tab.preview .tname { font-style: italic; }
+.tab.opening { animation: rf-tab-open var(--dur-base) var(--ease-out) both; }
+.tab.closing { animation: rf-tab-close var(--dur-base) var(--ease-in-out) forwards; pointer-events: none; }
+.tabs-fill { flex: 1; display: flex; justify-content: flex-end; align-items: center; padding-right: 6px; gap: 2px; }
+.crumbs { height: var(--crumbs-h); flex: none; overflow: hidden; white-space: nowrap; display: flex; align-items: center; gap: 2px; padding: 0 12px; color: var(--fg-muted); font-size: 12px; border-bottom: 1px solid var(--line); }
+.crumb { display: inline-flex; align-items: center; gap: 4px; padding: 1px 4px; border-radius: var(--r-sm); cursor: pointer; transition: background var(--dur-fast), color var(--dur-fast); }
+.crumb:hover { color: var(--fg); background: var(--bg-hover); }
+.crumb.last { color: var(--fg); }
+.crumbs .sep { color: var(--fg-faint); font-size: 11px; }
+.crumbs .realm { margin-left: 8px; }
+.crumbs .right-meta { margin-left: auto; padding-left: 16px; overflow: hidden; text-overflow: ellipsis; min-width: 0; display: flex; gap: 10px; align-items: center; font: 500 11px var(--font-mono); color: var(--fg-faint); }
+.view { flex: 1; min-height: 0; min-width: 0; display: none; position: relative; }
+.view.on { display: flex; animation: rf-fade-in var(--dur-fast) var(--ease-out); }
+
+/* code */
+.code { flex: 1; min-width: 0; overflow: auto; display: flex; font: var(--fs-code)/var(--lh-code) var(--font-mono); padding-top: 8px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; user-select: text; }
+.gutter { flex: none; text-align: right; color: var(--fg-faint); padding: 0 14px 40px 16px; min-width: 64px; position: relative; font-size: 12px; }
+.gutter div { height: var(--lh-code); position: relative; }
+.gutter .cur { color: var(--fg-2); }
+.gutter .gm { position: absolute; right: -10px; top: 2px; bottom: 2px; width: 3px; border-radius: 1px; }
+.gm.add { background: var(--ok); } .gm.mod { background: var(--info); }
+.lines { flex: 1; padding: 0 24px 40px 6px; white-space: pre; tab-size: 4; color: var(--syn-prop); position: relative; }
+.lines div { height: var(--lh-code); position: relative; }
+.lines .curline { background: rgba(255,255,255,.025); box-shadow: inset 0 1px 0 var(--line), inset 0 -1px 0 var(--line); margin-left: -6px; padding-left: 6px; }
+[data-theme="light"] .lines .curline { background: rgba(0,0,0,.025); }
+.lines .indent-g { position: absolute; top: 0; bottom: 0; width: 1px; background: var(--line); }
+.caret { display: inline-block; width: 2px; height: 17px; vertical-align: -3px; background: var(--ember); margin-left: -1px; animation: rf-caret 1.1s steps(1) infinite; box-shadow: 0 0 6px var(--ember-glow); }
+.k { color: var(--syn-kw); } .f { color: var(--syn-fn); } .s { color: var(--syn-str); } .n { color: var(--syn-num); } .c { color: var(--syn-com); font-style: italic; } .g { color: var(--syn-glob); } .t { color: var(--syn-type); } .o { color: var(--syn-op); }
+.squig { text-decoration: underline wavy var(--warn); text-underline-offset: 3px; text-decoration-thickness: 1px; }
+.squig.err { text-decoration-color: var(--err); }
+.hover-card, .hover-card div { height: auto !important; }
+.lines > .hover-card { position: absolute; }
+.hover-card div { position: static !important; }
+.hover-card { position: absolute; z-index: 10; width: 400px; background: var(--bg-overlay); box-shadow: var(--sh-2); border-radius: var(--r-lg); font: 12px/1.5 var(--font-ui); color: var(--fg-2); white-space: normal; overflow: hidden; animation: rf-pop-in var(--dur-base) var(--ease-out); }
+.hover-card .hc-code { font: 12px/1.5 var(--font-mono); padding: 8px 12px; border-bottom: 1px solid var(--line); color: var(--fg); }
+.hover-card .hc-body { padding: 8px 12px; display: flex; gap: 8px; }
+.hover-card .hc-foot { padding: 6px 12px; border-top: 1px solid var(--line); display: flex; gap: 12px; font-size: 11.5px; }
+.hover-card .hc-foot a { color: var(--ember-text); cursor: pointer; }
+.minimap { width: 70px; flex: none; position: relative; padding-top: 8px; opacity: .55; border-left: 1px solid var(--line); }
+.minimap i { display: block; height: 2px; margin: 0 8px 1px; border-radius: 1px; background: var(--fg-faint); opacity: .5; }
+.minimap .slider { position: absolute; left: 0; right: 0; top: 8px; height: 150px; background: var(--bg-hover); }
+.minimap .mk { position: absolute; right: 0; width: 3px; height: 4px; }
+
+/* Welcome / Forge dashboard */
+.welcome { flex: 1; overflow: auto; position: relative; }
+.welcome::before { content: ''; position: absolute; inset: 0; pointer-events: none;
+  background:
+    radial-gradient(600px 280px at 12% -6%, var(--ember-soft), transparent 70%),
+    linear-gradient(var(--line) 1px, transparent 1px) 0 0 / 24px 24px,
+    linear-gradient(90deg, var(--line) 1px, transparent 1px) 0 0 / 24px 24px;
+  -webkit-mask-image: linear-gradient(180deg, rgba(0,0,0,.9), rgba(0,0,0,.15) 55%, transparent 80%);
+          mask-image: linear-gradient(180deg, rgba(0,0,0,.9), rgba(0,0,0,.15) 55%, transparent 80%);
+  opacity: .55; }
+.wl { position: relative; max-width: 860px; margin: 0 auto; padding: 36px 40px 40px; }
+.wl-head { display: flex; align-items: flex-end; gap: 16px; margin-bottom: 24px; }
+.wl-head h1 { font: 700 28px/1 var(--font-display); letter-spacing: .02em; margin: 0; }
+.wl-head .sub { color: var(--fg-muted); font: 500 12px var(--font-mono); margin-top: 8px; display: flex; gap: 12px; }
+.wl-head .sub b { color: var(--fg-2); font-weight: 500; }
+.wl-head .actions { margin-left: auto; display: flex; gap: 8px; }
+.wl-label { font: 600 10.5px/1 var(--font-ui); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-muted); margin: 0 0 10px; display: flex; align-items: center; gap: 8px; }
+.wl-label::after { content: ''; flex: 1; height: 1px; background: var(--line); }
+.qa { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin-bottom: 28px; }
+.qa-card { text-align: left; padding: 12px 12px 10px; border-radius: var(--r-lg); background: var(--bg-raised); border: 1px solid var(--line); box-shadow: var(--sh-1); display: flex; flex-direction: column; gap: 8px; position: relative; overflow: hidden; transition: border-color var(--dur-fast), transform var(--dur-base) var(--ease-out), box-shadow var(--dur-base) var(--ease-out); animation: rf-item-in var(--dur-slow) var(--ease-out) both; }
+.qa-card:hover { border-color: var(--line-strong); transform: translateY(-1px); box-shadow: var(--sh-2); }
+.qa-card:active { transform: translateY(0) scale(.99); }
+.qa-card .qi { width: 28px; height: 28px; border-radius: var(--r-md); display: grid; place-items: center; background: var(--bg-active); color: var(--fg-2); }
+.qa-card.primary { border-color: color-mix(in srgb, var(--ember) 45%, var(--line)); background: linear-gradient(180deg, var(--ember-soft), transparent 70%), var(--bg-raised); }
+.qa-card.primary .qi { background: var(--ember-grad); color: var(--fg-on-accent); box-shadow: 0 2px 10px -2px var(--ember-glow); }
+.qa-card .qt { font-weight: 600; color: var(--fg); font-size: 13px; }
+.qa-card .qd { color: var(--fg-muted); font-size: 11.5px; line-height: 1.4; }
+.qa-card kbd { position: absolute; right: 10px; top: 12px; }
+.wl-grid { display: grid; grid-template-columns: 1.35fr 1fr; gap: 24px; }
+.svc-list { border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-raised); overflow: hidden; }
+.svc { display: grid; grid-template-columns: 18px 1fr auto auto; align-items: center; gap: 10px; padding: 9px 12px; border-top: 1px solid var(--line); animation: rf-item-in var(--dur-slow) var(--ease-out) both; }
+.svc:first-child { border-top: 0; }
+.svc .sn { font-weight: 500; color: var(--fg); }
+.svc .sd { color: var(--fg-muted); font: 11px var(--font-mono); }
+.svc .st { font: 600 10px var(--font-mono); letter-spacing: .06em; text-transform: uppercase; }
+.svc .st.ok { color: var(--ok); } .svc .st.err { color: var(--err); } .svc .st.warn { color: var(--warn); }
+.led { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; }
+.led.ok { background: var(--ok); box-shadow: 0 0 6px color-mix(in srgb, var(--ok) 60%, transparent); }
+.led.err { background: var(--err); box-shadow: 0 0 6px color-mix(in srgb, var(--err) 60%, transparent); }
+.led.warn { background: var(--warn); animation: rf-pulse 1.4s var(--ease-in-out) infinite; }
+.led.idle { background: var(--idle); }
+.spark-line { width: 64px; height: 18px; }
+.recent { display: flex; flex-direction: column; gap: 2px; }
+.rec { display: flex; align-items: center; gap: 10px; padding: 7px 10px; border-radius: var(--r-md); cursor: pointer; transition: background var(--dur-fast); animation: rf-item-in var(--dur-slow) var(--ease-out) both; }
+.rec:hover { background: var(--bg-hover); }
+.rec .rn { color: var(--fg); font-weight: 500; }
+.rec .rp { color: var(--fg-faint); font: 11px var(--font-mono); }
+.rec .rt { margin-left: auto; color: var(--fg-faint); font: 11px var(--font-mono); }
+.rec .avatar { width: 28px; height: 28px; border-radius: var(--r-md); display: grid; place-items: center; font: 700 12px var(--font-display); color: var(--fg-2); background: var(--bg-active); border: 1px solid var(--line); }
+.skel { height: 10px; border-radius: var(--r-xs); background: linear-gradient(90deg, var(--bg-active) 0%, var(--bg-hover) 40%, color-mix(in srgb, var(--fg) 12%, transparent) 50%, var(--bg-hover) 60%, var(--bg-active) 100%); background-size: 300% 100%; animation: rf-shimmer 1.4s var(--ease-linear) infinite; }
+
+/* AI panel */
+.ai-head { height: 38px; flex: none; display: flex; align-items: center; gap: 6px; padding: 0 6px 0 12px; border-bottom: 1px solid var(--line); }
+.model { display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 6px 0 8px; border-radius: var(--r-md); border: 1px solid var(--line); background: var(--bg-raised); font-size: 12px; color: var(--fg-2); transition: border-color var(--dur-fast); }
+.model:hover { border-color: var(--line-strong); color: var(--fg); }
+.model .md { width: 6px; height: 6px; border-radius: 1px; background: var(--ember); transform: rotate(45deg); }
+.meter { display: flex; align-items: center; gap: 8px; padding: 6px 12px; border-bottom: 1px solid var(--line); font: 500 11px var(--font-mono); color: var(--fg-muted); }
+.meter .bar { flex: 1; height: 4px; border-radius: 2px; background: var(--bg-active); overflow: hidden; position: relative; }
+.meter .bar i { position: absolute; left: 0; top: 0; bottom: 0; width: 23%; background: var(--ember-grad); border-radius: 2px; }
+.meter .bar i + i { left: 23%; width: 6%; background: var(--fg-faint); opacity: .5; }
+.meter b { color: var(--fg-2); font-weight: 500; }
+.thread { flex: 1; overflow: auto; padding: 10px 12px; display: flex; flex-direction: column; gap: 12px; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; user-select: text; }
+.msg { font-size: 12.5px; line-height: 1.55; color: var(--fg-2); animation: rf-item-in var(--dur-slow) var(--ease-out) both; }
+.msg.user { display: flex; gap: 8px; padding: 7px 10px; border-radius: var(--r-md); background: var(--bg-raised); border: 1px solid var(--line); color: var(--fg); }
+.msg.user .who { font: 600 10px/20px var(--font-mono); color: var(--fg-faint); }
+.msg code { font: 11.5px var(--font-mono); color: var(--fg); background: var(--bg-active); padding: 1px 4px; border-radius: var(--r-xs); }
+.msg p { margin: 0 0 6px; }
+.tool { display: flex; align-items: center; gap: 6px; height: 22px; font: 11.5px var(--font-mono); color: var(--fg-muted); }
+.tool .ok-check { color: var(--ok); }
+.tool b { color: var(--fg-2); font-weight: 500; }
+.tool .dur { margin-left: auto; color: var(--fg-faint); }
+.diff-card { border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; background: var(--bg-editor); margin-top: 4px; }
+.diff-card .dh { display: flex; align-items: center; gap: 6px; padding: 6px 8px 6px 10px; border-bottom: 1px solid var(--line); background: var(--bg-raised); font: 500 11.5px var(--font-mono); color: var(--fg); }
+.diff-card .dh .plus { color: var(--ok); } .diff-card .dh .minus { color: var(--err); }
+.diff-card .dh .sp { flex: 1; }
+.diff-card pre { margin: 0; padding: 6px 0; font: 11.5px/18px var(--font-mono); color: var(--fg-2); overflow: hidden; }
+.diff-card pre div { padding: 0 10px; white-space: pre; }
+.diff-card .a { background: color-mix(in srgb, var(--ok) 12%, transparent); color: var(--fg); box-shadow: inset 2px 0 var(--ok); }
+.diff-card .r { background: color-mix(in srgb, var(--err) 10%, transparent); color: var(--fg-muted); box-shadow: inset 2px 0 var(--err); }
+.mini-btn { height: 22px; padding: 0 8px; border-radius: var(--r-sm); font-size: 11.5px; font-weight: 500; display: inline-flex; align-items: center; gap: 4px; color: var(--fg-2); border: 1px solid var(--line-strong); background: var(--bg-editor); transition: border-color var(--dur-fast), color var(--dur-fast), transform var(--dur-instant); font-family: var(--font-ui); }
+.mini-btn:hover { color: var(--fg); border-color: var(--fg-faint); }
+.mini-btn:active { transform: translateY(1px); }
+.mini-btn.hot { background: var(--ember-grad); color: var(--fg-on-accent); border-color: var(--ember-lo); }
+.composer { flex: none; margin: 8px 10px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-lg); background: var(--bg-raised); transition: border-color var(--dur-fast), box-shadow var(--dur-base); }
+.composer:focus-within { border-color: var(--ember); box-shadow: 0 0 0 3px var(--ember-soft); }
+.chips { display: flex; gap: 4px; padding: 6px 6px 0; flex-wrap: wrap; }
+.chip { display: inline-flex; align-items: center; gap: 4px; height: 20px; padding: 0 6px 0 4px; border-radius: var(--r-sm); background: var(--bg-active); font: 11px var(--font-mono); color: var(--fg-2); }
+.composer textarea { display: block; width: 100%; resize: none; border: 0; background: none; color: var(--fg); font: 12.5px/1.5 var(--font-ui); padding: 6px 10px; height: 44px; }
+.composer textarea::placeholder { color: var(--fg-faint); }
+.composer .cf { display: flex; align-items: center; gap: 6px; padding: 4px 6px 6px 8px; color: var(--fg-faint); font-size: 11px; }
+.composer .cf .sp { flex: 1; }
+.send { width: 26px; height: 24px; border-radius: var(--r-md); display: grid; place-items: center; background: var(--ember-grad); color: var(--fg-on-accent); box-shadow: 0 0 0 1px var(--ember-lo); transition: transform var(--dur-instant), filter var(--dur-fast); }
+.send:hover { filter: brightness(1.08); }
+.send:active { transform: scale(.94); }
+
+/* Bottom panel */
+.bottom { height: var(--bottom-h); flex: none; border-top: 1px solid var(--line); transition: height var(--dur-panel) var(--ease-out); }
+.app.bottom-off .bottom { height: 0; border-top-color: transparent; }
+.app.bottom-off .bottom .panel-inner { opacity: 0; transform: translateY(8px); }
+.btabs { height: 32px; flex: none; display: flex; align-items: center; gap: 2px; padding: 0 6px 0 8px; }
+.btab { height: 32px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; font: 600 10.5px/1 var(--font-ui); letter-spacing: .08em; text-transform: uppercase; color: var(--fg-muted); position: relative; transition: color var(--dur-fast); }
+.btab:hover { color: var(--fg-2); }
+.btab.on { color: var(--fg); }
+.btab.on::after { content: ''; position: absolute; left: 8px; right: 8px; bottom: 4px; height: 2px; border-radius: 1px; background: var(--ember); }
+.btab .cnt { font: 600 9.5px var(--font-mono); letter-spacing: 0; padding: 2px 5px 1px; border-radius: 7px; background: var(--bg-active); color: var(--fg-2); }
+.btab .cnt.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+.svc-chips { display: flex; gap: 4px; margin-left: 12px; }
+.svc-chip { height: 22px; display: inline-flex; align-items: center; gap: 6px; padding: 0 8px; border-radius: var(--r-sm); font: 500 11px var(--font-mono); color: var(--fg-muted); border: 1px solid transparent; transition: background var(--dur-fast), color var(--dur-fast), border-color var(--dur-fast); }
+.svc-chip:hover { color: var(--fg); background: var(--bg-hover); }
+.svc-chip.on { color: var(--fg); background: var(--bg-raised); border-color: var(--line-strong); }
+.svc-chip .led { width: 6px; height: 6px; }
+.bview { flex: 1; overflow: auto; display: none; padding: 2px 0 8px; font: 12px/19px var(--font-mono); scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; user-select: text; }
+.bview.on { display: block; animation: rf-fade-in var(--dur-fast) var(--ease-out); }
+.log { display: grid; grid-template-columns: 64px 64px 1fr; gap: 10px; padding: 0 14px; color: var(--fg-2); }
+.log:hover { background: var(--bg-hover); }
+.log .ts { color: var(--fg-faint); }
+.log .src { font-weight: 500; }
+.log.new { animation: rf-flash 1.2s var(--ease-out), rf-item-in var(--dur-base) var(--ease-out); }
+.src.rojo { color: var(--ember-text); } .src.watcher { color: var(--realm-shared); } .src.blink { color: var(--realm-client); } .src.lsp { color: var(--realm-server); } .src.studio { color: var(--realm-studio); }
+.log .add { color: var(--ok); } .log .warnt { color: var(--warn); }
+.prob { display: flex; align-items: center; gap: 8px; padding: 0 14px; height: 24px; font-family: var(--font-ui); font-size: 12.5px; color: var(--fg-2); cursor: pointer; }
+.prob:hover { background: var(--bg-hover); }
+.prob .loc { color: var(--fg-faint); font: 11.5px var(--font-mono); }
+.prob .srcb { margin-left: auto; font: 500 10.5px var(--font-mono); color: var(--fg-faint); }
+.prob.grp { color: var(--fg); font-weight: 500; }
+
+/* Status bar */
+.status { display: flex; align-items: center; background: var(--bg-chrome); border-top: 1px solid var(--line); font: 500 11.5px/1 var(--font-ui); color: var(--fg-muted); padding: 0 4px 0 0; }
+.sb { height: 100%; display: inline-flex; align-items: center; gap: 5px; padding: 0 8px; cursor: pointer; transition: background var(--dur-fast), color var(--dur-fast); white-space: nowrap; }
+.sb:hover { background: var(--bg-hover); color: var(--fg); }
+.sb.home { background: var(--ember-grad); color: var(--fg-on-accent); font-weight: 600; padding: 0 10px; gap: 6px; }
+.sb.home:hover { filter: brightness(1.08); color: var(--fg-on-accent); }
+.sb .led { width: 6px; height: 6px; }
+.sb .mono { font-size: 11px; }
+.sb.crash { color: var(--err); }
+.sb-sp { flex: 1; }
+.sb .realm-pill { font: 600 9.5px var(--font-mono); letter-spacing: .06em; padding: 3px 5px 2px; border-radius: var(--r-xs); }
+
+/* Overlays */
+.scrim { position: fixed; inset: 0; z-index: 40; background: rgba(5, 7, 10, .45); backdrop-filter: blur(1.5px); display: none; }
+[data-theme="light"] .scrim { background: rgba(30, 40, 55, .18); }
+.scrim.on { display: block; animation: rf-scrim-in var(--dur-fast) var(--ease-out); }
+.palette { position: fixed; z-index: 41; left: 50%; top: 70px; width: 620px; margin-left: -310px; background: var(--bg-overlay); border-radius: var(--r-xl); box-shadow: var(--sh-3); overflow: hidden; display: none; transform-origin: 50% 0; }
+.palette.on { display: block; animation: rf-palette-in var(--dur-base) var(--ease-out); }
+.pal-in { display: flex; align-items: center; gap: 10px; height: 46px; padding: 0 14px; border-bottom: 1px solid var(--line); }
+.pal-in .mode { font: 600 13px var(--font-mono); color: var(--ember-text); }
+.pal-in input:focus-visible { box-shadow: none; }
+.pal-in input { flex: 1; border: 0; background: none; font-size: 14px; color: var(--fg); }
+.pal-in input::placeholder { color: var(--fg-faint); }
+.pal-modes { display: flex; gap: 4px; }
+.pal-modes span { font: 500 10.5px var(--font-mono); color: var(--fg-faint); border: 1px solid var(--line); border-radius: var(--r-sm); padding: 2px 5px; }
+.pal-modes span.on { color: var(--fg-2); border-color: var(--line-strong); background: var(--bg-active); }
+.pal-list { max-height: 380px; overflow: auto; padding: 6px; }
+.pal-group { font: 600 10px/1 var(--font-ui); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-faint); padding: 10px 10px 6px; }
+.pal-item { height: 32px; display: flex; align-items: center; gap: 10px; padding: 0 10px; border-radius: var(--r-md); color: var(--fg-2); cursor: pointer; position: relative; animation: rf-item-in var(--dur-base) var(--ease-out) both; }
+.pal-item .pi { color: var(--fg-muted); display: grid; place-items: center; width: 18px; }
+.pal-item .pd { color: var(--fg-faint); font-size: 12px; }
+.pal-item .pk { margin-left: auto; display: flex; gap: 3px; }
+.pal-item mark { background: none; color: var(--ember-text); font-weight: 600; }
+.pal-item.on { background: var(--bg-selected); color: var(--fg); }
+.pal-item.on::before { content: ''; position: absolute; left: 0; top: 7px; bottom: 7px; width: 2px; border-radius: 2px; background: var(--ember); }
+.pal-item.on .pi { color: var(--ember-text); }
+.pal-foot { display: flex; gap: 14px; padding: 8px 14px; border-top: 1px solid var(--line); font-size: 11px; color: var(--fg-faint); align-items: center; }
+.pal-foot span { display: inline-flex; gap: 5px; align-items: center; }
+
+.menu { position: fixed; z-index: 45; min-width: 236px; padding: 4px; background: var(--bg-overlay); border-radius: var(--r-lg); box-shadow: var(--sh-3); display: none; transform-origin: top left; }
+.menu.on { display: block; animation: rf-menu-in var(--dur-fast) var(--ease-out); }
+.mi { height: 26px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: var(--r-sm); color: var(--fg-2); cursor: pointer; position: relative; }
+.mi:hover, .mi.hl { background: var(--bg-selected); color: var(--fg); }
+.mi .mk { margin-left: auto; padding-left: 16px; color: var(--fg-muted); font: 11px var(--font-mono); display: flex; gap: 3px; align-items: center; }
+.mi.danger { color: var(--err); }
+.mi.danger:hover { background: color-mix(in srgb, var(--err) 14%, transparent); }
+.mi .mic { width: 16px; display: grid; place-items: center; color: var(--fg-muted); }
+.mi.tall { height: 40px; align-items: center; }
+.mi .two { display: flex; flex-direction: column; line-height: 1.3; }
+.mi .two small { color: var(--fg-faint); font: 10.5px var(--font-mono); }
+.msep { height: 1px; background: var(--line); margin: 4px 6px; }
+.mhead { font: 600 10px/1 var(--font-ui); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-faint); padding: 8px 8px 5px; }
+
+.toasts { position: fixed; z-index: 60; right: calc(var(--right-w) + 16px); bottom: calc(var(--status-h) + 16px); display: flex; flex-direction: column; gap: 8px; align-items: flex-end; transition: right var(--dur-panel) var(--ease-out); }
+.app.right-off ~ .toasts { right: 16px; }
+.toast { width: 380px; display: flex; align-items: center; gap: 10px; padding: 10px 10px 10px 12px; background: var(--bg-overlay); border-radius: var(--r-lg); box-shadow: var(--sh-3); position: relative; overflow: hidden; animation: rf-toast-in var(--dur-slow) var(--ease-snap) both; }
+.toast.out { animation: rf-toast-out var(--dur-base) var(--ease-in) forwards; }
+.toast .ti { width: 22px; height: 22px; border-radius: var(--r-sm); display: grid; place-items: center; flex: none; }
+.toast .ti.del { color: var(--err); background: color-mix(in srgb, var(--err) 14%, transparent); }
+.toast .ti.ok { color: var(--ok); background: color-mix(in srgb, var(--ok) 14%, transparent); }
+.toast .tt { flex: 1; min-width: 0; font-size: 12.5px; color: var(--fg); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toast .tt small { display: block; color: var(--fg-muted); font: 11px var(--font-mono); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.toast .timer { position: absolute; left: 0; right: 0; bottom: 0; height: 2px; background: var(--ember); transform-origin: left; animation: rf-toast-timer 6s linear forwards; opacity: .8; }
+
+.spark { position: fixed; z-index: 70; width: 3px; height: 3px; border-radius: 50%; background: var(--ember-hi); box-shadow: 0 0 6px var(--ember); pointer-events: none; animation: rf-spark 520ms var(--ease-out) forwards; }
+
+.rename-input { flex: 1; min-width: 0; height: 18px; border: 1px solid var(--ember); border-radius: var(--r-xs); background: var(--bg-editor); padding: 0 4px; font-size: 12.5px; box-shadow: 0 0 0 2px var(--ember-soft); color: var(--fg); }
+.drop-ok { background: color-mix(in srgb, var(--ok) 12%, transparent) !important; box-shadow: inset 0 0 0 1px var(--ok); }
+</style>
+</head>
+<body>
+
+<!-- ============ icon sprite: 16px grid, 1.5 stroke ============ -->
+<svg width="0" height="0" style="position:absolute">
+  <defs>
+    <linearGradient id="anvilG" x1="0" y1="0" x2="0" y2="1"><stop offset="0" stop-color="#cfd6e0"/><stop offset="1" stop-color="#6f7886"/></linearGradient>
+    <radialGradient id="emberG" cx=".5" cy=".5" r=".5"><stop offset="0" stop-color="#ffd9a8"/><stop offset=".45" stop-color="#ff8a3d"/><stop offset="1" stop-color="#ff7a2f" stop-opacity="0"/></radialGradient>
+  </defs>
+  <symbol id="i-files" viewBox="0 0 16 16"><path d="M3.5 2.5h5l3 3v8h-8z"/><path d="M8.5 2.5v3h3"/></symbol>
+  <symbol id="i-tree" viewBox="0 0 16 16"><rect x="2" y="2" width="4.5" height="3.5" rx=".8"/><rect x="9.5" y="6.5" width="4.5" height="3" rx=".8"/><rect x="9.5" y="11" width="4.5" height="3" rx=".8"/><path d="M4.2 5.5v6.5h5.3M4.2 8h5.3"/></symbol>
+  <symbol id="i-script" viewBox="0 0 16 16"><path d="M4 2.5h6l2.5 2.5v8.5H4z"/><path d="M6.2 8.2 5 9.4l1.2 1.2M9.8 8.2 11 9.4l-1.2 1.2"/></symbol>
+  <symbol id="i-bolt" viewBox="0 0 16 16"><path d="M9 1.8 3.8 9h4l-1 5.2L12.2 7h-4z"/></symbol>
+  <symbol id="i-package" viewBox="0 0 16 16"><path d="m8 1.8 5.5 3v6.4L8 14.2l-5.5-3V4.8z"/><path d="m2.6 4.9 5.4 3 5.4-3M8 7.9v6.2M5.2 3.4l5.5 3"/></symbol>
+  <symbol id="i-sync" viewBox="0 0 16 16"><path d="M13 6.5A5.2 5.2 0 0 0 3.6 5M3 9.5A5.2 5.2 0 0 0 12.4 11"/><path d="M3.3 2.6v2.6h2.6M12.7 13.4v-2.6h-2.6"/></symbol>
+  <symbol id="i-branch" viewBox="0 0 16 16"><circle cx="4.5" cy="3.8" r="1.5"/><circle cx="4.5" cy="12.2" r="1.5"/><circle cx="11.5" cy="5.5" r="1.5"/><path d="M4.5 5.3v5.4M11.5 7c0 2.5-2.5 2.8-7 3.6"/></symbol>
+  <symbol id="i-agents" viewBox="0 0 16 16"><rect x="3" y="5" width="10" height="8" rx="2"/><path d="M8 2.2V5M6 9h.01M10 9h.01M1.5 8.5v2M14.5 8.5v2"/><circle cx="8" cy="2" r=".6"/></symbol>
+  <symbol id="i-gear" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.1"/><path d="M8 1.8v1.6M8 12.6v1.6M14.2 8h-1.6M3.4 8H1.8M12.4 3.6l-1.1 1.1M4.7 11.3l-1.1 1.1M12.4 12.4l-1.1-1.1M4.7 4.7 3.6 3.6"/><circle cx="8" cy="8" r="4.6"/></symbol>
+  <symbol id="i-search" viewBox="0 0 16 16"><circle cx="7" cy="7" r="4.3"/><path d="m10.2 10.2 3.3 3.3"/></symbol>
+  <symbol id="i-chev" viewBox="0 0 16 16"><path d="m6 4 4 4-4 4"/></symbol>
+  <symbol id="i-chev-d" viewBox="0 0 16 16"><path d="m4 6 4 4 4-4"/></symbol>
+  <symbol id="i-x" viewBox="0 0 16 16"><path d="m4.5 4.5 7 7M11.5 4.5l-7 7"/></symbol>
+  <symbol id="i-plus" viewBox="0 0 16 16"><path d="M8 3.5v9M3.5 8h9"/></symbol>
+  <symbol id="i-play" viewBox="0 0 16 16"><path d="M5 3.5v9l7.5-4.5z"/></symbol>
+  <symbol id="i-panel-l" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M6.2 2.5v11"/></symbol>
+  <symbol id="i-panel-b" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M2 9.8h12"/></symbol>
+  <symbol id="i-panel-r" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M9.8 2.5v11"/></symbol>
+  <symbol id="i-hammer" viewBox="0 0 16 16"><path d="M9.5 2.5 13.5 6.5l-1.6 1.6-1.2-1.2-6.5 6.5a1.1 1.1 0 0 1-1.6-1.6l6.5-6.5-1.2-1.2z"/><path d="m7.3 4.7 2.2-2.2"/></symbol>
+  <symbol id="i-folder-plus" viewBox="0 0 16 16"><path d="M2 4.5V12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.6 3.5H3A1 1 0 0 0 2 4.5z"/><path d="M8 7.3v3.6M6.2 9.1h3.6"/></symbol>
+  <symbol id="i-file-plus" viewBox="0 0 16 16"><path d="M4 2.5h5.5L12 5v8.5H4z"/><path d="M8 7v4M6 9h4"/></symbol>
+  <symbol id="i-trio" viewBox="0 0 16 16"><rect x="5.5" y="1.8" width="5" height="4" rx=".8"/><rect x="1.8" y="10.2" width="5" height="4" rx=".8"/><rect x="9.2" y="10.2" width="5" height="4" rx=".8"/><path d="M8 5.8v2.2M4.3 10.2V8h7.4v2.2"/></symbol>
+  <symbol id="i-pencil" viewBox="0 0 16 16"><path d="M10.5 3 13 5.5 5.5 13H3v-2.5z"/><path d="m9 4.5 2.5 2.5"/></symbol>
+  <symbol id="i-copy" viewBox="0 0 16 16"><rect x="5" y="5" width="8.5" height="8.5" rx="1.2"/><path d="M11 5V3.5A1 1 0 0 0 10 2.5H3.5a1 1 0 0 0-1 1V10a1 1 0 0 0 1 1H5"/></symbol>
+  <symbol id="i-trash" viewBox="0 0 16 16"><path d="M2.8 4.3h10.4M6.3 4.3V2.8h3.4v1.5M4.2 4.3l.6 9h6.4l.6-9"/></symbol>
+  <symbol id="i-link" viewBox="0 0 16 16"><path d="M6.8 9.2a2.8 2.8 0 0 0 4 0l2-2a2.8 2.8 0 0 0-4-4l-.6.6M9.2 6.8a2.8 2.8 0 0 0-4 0l-2 2a2.8 2.8 0 0 0 4 4l.6-.6"/></symbol>
+  <symbol id="i-reveal" viewBox="0 0 16 16"><path d="M2 4.5V12a1 1 0 0 0 1 1h10a1 1 0 0 0 1-1V6a1 1 0 0 0-1-1H8L6.6 3.5H3A1 1 0 0 0 2 4.5z"/><path d="m7 8.8 1.5 1.5L10.5 8"/></symbol>
+  <symbol id="i-collapse" viewBox="0 0 16 16"><rect x="2.5" y="2.5" width="11" height="11" rx="1.5"/><path d="M5.5 8h5"/></symbol>
+  <symbol id="i-more" viewBox="0 0 16 16"><circle cx="3.5" cy="8" r=".9" fill="currentColor"/><circle cx="8" cy="8" r=".9" fill="currentColor"/><circle cx="12.5" cy="8" r=".9" fill="currentColor"/></symbol>
+  <symbol id="i-warn" viewBox="0 0 16 16"><path d="M8 2.2 14.2 13H1.8z"/><path d="M8 6.5v3M8 11.2h.01"/></symbol>
+  <symbol id="i-err" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8"/><path d="m6 6 4 4M10 6l-4 4"/></symbol>
+  <symbol id="i-check" viewBox="0 0 16 16"><path d="m3.5 8.5 3 3 6-7"/></symbol>
+  <symbol id="i-terminal" viewBox="0 0 16 16"><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5"/><path d="m4.5 6.5 2 1.8-2 1.8M8 10.2h3.5"/></symbol>
+  <symbol id="i-studio" viewBox="0 0 16 16"><path d="m3 3.5 9.5 2.5-2.5 9.5L.5 13z" transform="translate(1.5 -1)"/><rect x="6.3" y="6.3" width="3" height="3" transform="rotate(15 7.8 7.8)"/></symbol>
+  <symbol id="i-bell" viewBox="0 0 16 16"><path d="M4 11V7.5a4 4 0 0 1 8 0V11l1 1.5H3z"/><path d="M6.5 14h3"/></symbol>
+  <symbol id="i-sun" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.8"/><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1"/></symbol>
+  <symbol id="i-moon" viewBox="0 0 16 16"><path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z"/></symbol>
+  <symbol id="i-clock" viewBox="0 0 16 16"><circle cx="8" cy="8" r="5.8"/><path d="M8 4.8V8l2 1.5"/></symbol>
+  <symbol id="i-at" viewBox="0 0 16 16"><circle cx="8" cy="8" r="2.4"/><path d="M10.4 8v1a1.8 1.8 0 0 0 3.6 0V8A6 6 0 1 0 11 13.2"/></symbol>
+  <symbol id="i-arrow-up" viewBox="0 0 16 16"><path d="M8 13V3.5M4 7.5l4-4 4 4"/></symbol>
+  <symbol id="i-undo" viewBox="0 0 16 16"><path d="M4 6h6a3.5 3.5 0 0 1 0 7H6"/><path d="M6.5 3.5 4 6l2.5 2.5"/></symbol>
+  <symbol id="i-filter" viewBox="0 0 16 16"><path d="M2.5 3.5h11L9.2 8.6v4l-2.4 1V8.6z"/></symbol>
+  <symbol id="i-split" viewBox="0 0 16 16"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M8 2.5v11"/></symbol>
+  <symbol id="i-stop" viewBox="0 0 16 16"><rect x="4" y="4" width="8" height="8" rx="1.2"/></symbol>
+  <symbol id="i-restart" viewBox="0 0 16 16"><path d="M3 8a5 5 0 1 0 1.5-3.6"/><path d="M3.5 2.2v2.6h2.6"/></symbol>
+</svg>
+
+<div class="app" id="app">
+  <!-- ================= TITLEBAR ================= -->
+  <header class="titlebar">
+    <div class="traffic"><i></i><i></i><i></i></div>
+    <div class="brand">
+      <svg class="brand-mark" viewBox="0 0 20 20" aria-hidden="true">
+        <circle cx="15.2" cy="4" r="3.6" fill="url(#emberG)"/>
+        <circle cx="15.2" cy="4" r="1.1" fill="#ffe2bf"/>
+        <path d="M1.5 7.2h11.8c.4 1.6 2 2.6 4.4 2.6v1.1h-5.2l-.9 2.6h1.6V16H5.2v-2.5h1.6L6 10.9H4.2C2.6 10.9 1.5 9.4 1.5 7.2z" fill="url(#anvilG)"/>
+      </svg>
+      <div class="wordmark"><span class="rbx">RBX</span><span class="forge">FORGE</span></div>
+    </div>
+    <button class="proj">GenTree <span class="branch"><svg class="i xs"><use href="#i-branch"/></svg>main</span><svg class="i xs" style="color:var(--fg-faint)"><use href="#i-chev-d"/></svg></button>
+    <button class="omni" id="omni"><svg class="i sm"><use href="#i-search"/></svg><span>Search scripts, instances, commands</span><kbd>⌘K</kbd></button>
+    <div class="tb-right">
+      <button class="btn-ghost" id="syncBtn" title="Sync with collaborators (⌘⇧S)"><svg class="i sm"><use href="#i-sync"/></svg>Sync <span class="mono" style="color:var(--ember-text);font-size:11px">↓2</span></button>
+      <button class="btn-forge" id="serveBtn" title="Rojo is serving · click to restart"><svg class="i sm" style="fill:currentColor;stroke:none"><use href="#i-play"/></svg>Serve <span class="mono" style="opacity:.75;font-size:11px">:34872</span></button>
+      <span class="tb-sep"></span>
+      <button class="tb-btn on" data-toggle="side" title="Toggle side panel (⌘B)"><svg class="i"><use href="#i-panel-l"/></svg></button>
+      <button class="tb-btn on" data-toggle="bottom" title="Toggle bottom panel (⌘J)"><svg class="i"><use href="#i-panel-b"/></svg></button>
+      <button class="tb-btn on" data-toggle="right" title="Toggle Assistant (⌘L)"><svg class="i"><use href="#i-panel-r"/></svg></button>
+      <button class="tb-btn" id="themeBtn" title="Toggle theme"><svg class="i"><use href="#i-sun"/></svg></button>
+    </div>
+  </header>
+
+  <div class="body">
+    <!-- ================= ACTIVITY BAR ================= -->
+    <nav class="activity" id="activity">
+      <button class="act on" data-view="explorer" data-tip="Explorer" data-kb="⌘⇧E"><svg class="i"><use href="#i-tree"/></svg></button>
+      <button class="act" data-view="scripts" data-tip="Scripts" data-kb="⌘⇧F"><svg class="i"><use href="#i-script"/></svg></button>
+      <button class="act" data-view="events" data-tip="Events (Blink)" data-kb="⌘⇧V"><svg class="i"><use href="#i-bolt"/></svg></button>
+      <button class="act" data-view="packages" data-tip="Packages (Wally)" data-kb=""><svg class="i"><use href="#i-package"/></svg></button>
+      <button class="act" data-view="sync" data-tip="Source control &amp; Sync" data-kb="⌘⇧G"><svg class="i"><use href="#i-branch"/></svg><span class="badge">2</span></button>
+      <button class="act" data-view="agents" data-tip="Test agents" data-kb="⌘⇧A"><svg class="i"><use href="#i-agents"/></svg><span class="dot"></span></button>
+      <div class="act-spacer"></div>
+      <button class="act" data-view="settings" data-tip="Settings" data-kb="⌘,"><svg class="i"><use href="#i-gear"/></svg></button>
+    </nav>
+
+    <!-- ================= SIDE PANEL ================= -->
+    <aside class="panel side">
+      <div class="panel-inner">
+        <div class="panel-head">
+          <span class="panel-title" id="sideTitle">Explorer</span>
+          <button class="icon-btn" title="New… (⌘N)" id="newBtn"><svg class="i"><use href="#i-file-plus"/></svg></button>
+          <button class="icon-btn" title="New Feature (⌘⇧N)"><svg class="i"><use href="#i-trio"/></svg></button>
+          <button class="icon-btn" title="Collapse all"><svg class="i"><use href="#i-collapse"/></svg></button>
+        </div>
+        <label class="filter"><svg class="i sm"><use href="#i-filter"/></svg><input placeholder="Filter instances" id="treeFilter"><kbd>⌥F</kbd></label>
+        <div class="seg"><button class="on">Game tree</button><button>Files</button><button>Features</button></div>
+        <div class="tree" id="tree" role="tree"></div>
+      </div>
+    </aside>
+    <div class="resizer" data-resize="side" title="Drag to resize · double-click to reset"></div>
+
+    <!-- ================= CENTER ================= -->
+    <section class="center">
+      <div class="editor-area">
+        <div class="tabs" id="tabs">
+          <div class="tab" data-tab="welcome"><svg class="i sm" style="color:var(--ember)"><use href="#i-hammer"/></svg><span class="tname">Forge</span><span class="x"><svg class="i xs"><use href="#i-x"/></svg></span></div>
+          <div class="tab on" data-tab="service"><span data-glyph="Script"></span><span class="tname">InventoryService</span><span class="dirty"><i></i></span><span class="x" style="display:none"><svg class="i xs"><use href="#i-x"/></svg></span></div>
+          <div class="tab" data-tab="controller"><span data-glyph="ModuleScript" data-realm="client"></span><span class="tname">InventoryController</span><span class="x"><svg class="i xs"><use href="#i-x"/></svg></span></div>
+          <div class="tab" data-tab="blink"><svg class="i sm" style="color:var(--realm-client)"><use href="#i-bolt"/></svg><span class="tname">events.blink</span><span class="x"><svg class="i xs"><use href="#i-x"/></svg></span></div>
+          <div class="tab preview" data-tab="loader"><span data-glyph="ModuleScript" data-realm="shared"></span><span class="tname">ModuleLoader</span><span class="x"><svg class="i xs"><use href="#i-x"/></svg></span></div>
+          <div class="tabs-fill">
+            <button class="icon-btn" title="Split right (⌘\)"><svg class="i"><use href="#i-split"/></svg></button>
+            <button class="icon-btn" title="More"><svg class="i"><use href="#i-more"/></svg></button>
+          </div>
+        </div>
+        <div class="crumbs" id="crumbs"></div>
+
+        <div class="view" data-view="welcome" id="v-welcome">
+          <div class="welcome">
+            <div class="wl">
+              <div class="wl-head">
+                <div>
+                  <h1>GenTree</h1>
+                  <div class="sub"><span>~/Games/GenTree</span><span><b>main</b> ↓2 ↑0</span><span>Rojo 7.5 · Blink 0.17</span></div>
+                </div>
+                <div class="actions">
+                  <button class="btn-ghost"><svg class="i sm"><use href="#i-studio"/></svg>Open in Studio</button>
+                </div>
+              </div>
+
+              <div class="wl-label">Quick actions</div>
+              <div class="qa">
+                <button class="qa-card primary" style="animation-delay:0ms" data-act="feature"><span class="qi"><svg class="i"><use href="#i-trio"/></svg></span><span><div class="qt">New Feature</div><div class="qd">Shared config + Service + Controller</div></span><kbd>⌘⇧N</kbd></button>
+                <button class="qa-card" style="animation-delay:30ms"><span class="qi"><svg class="i"><use href="#i-file-plus"/></svg></span><span><div class="qt">New Script</div><div class="qd">Module, Script or LocalScript</div></span><kbd>⌘N</kbd></button>
+                <button class="qa-card" style="animation-delay:60ms"><span class="qi"><svg class="i"><use href="#i-sync"/></svg></span><span><div class="qt">Sync</div><div class="qd">Pull 2 commits, 1 Studio conflict</div></span><kbd>⌘⇧S</kbd></button>
+                <button class="qa-card" style="animation-delay:90ms"><span class="qi"><svg class="i"><use href="#i-agents"/></svg></span><span><div class="qt">Run agents</div><div class="qd">Play-test a flow in Studio</div></span><kbd>⌘⇧A</kbd></button>
+              </div>
+
+              <div class="wl-grid">
+                <div>
+                  <div class="wl-label">Services</div>
+                  <div class="svc-list" id="svcList"></div>
+                </div>
+                <div>
+                  <div class="wl-label">Recent projects</div>
+                  <div class="recent">
+                    <div class="rec" style="animation-delay:40ms"><span class="avatar" style="color:var(--ember-text)">GT</span><span><div class="rn">GenTree</div><div class="rp">~/Games/GenTree</div></span><span class="rt">now</span></div>
+                    <div class="rec" style="animation-delay:70ms"><span class="avatar">TD</span><span><div class="rn">TD Game</div><div class="rp">~/Games/td-game</div></span><span class="rt">2d</span></div>
+                    <div class="rec" style="animation-delay:100ms"><span class="avatar">OB</span><span><div class="rn">Obby Rush</div><div class="rp">~/Games/obby-rush</div></span><span class="rt">1w</span></div>
+                    <div class="rec" style="animation-delay:130ms"><span class="avatar" style="border-style:dashed;background:none"><svg class="i sm"><use href="#i-plus"/></svg></span><span><div class="rn" style="color:var(--fg-2)">New project from GenTree…</div><div class="rp">clone · rokit install · ./dev</div></span></div>
+                  </div>
+                  <div class="wl-label" style="margin-top:20px">Features</div>
+                  <div class="recent">
+                    <div class="rec"><svg class="i" style="color:var(--realm-shared)"><use href="#i-trio"/></svg><span><div class="rn">Inventory</div><div class="rp">Service · Controller</div></span><span class="rt" style="color:var(--ok)">complete</span></div>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="view on" data-view="service" id="v-service">
+          <div class="code" id="codeService"></div>
+          <div class="minimap" id="mmService"></div>
+        </div>
+        <div class="view" data-view="controller"><div class="code" id="codeController"></div><div class="minimap"></div></div>
+        <div class="view" data-view="blink"><div class="code" id="codeBlink"></div><div class="minimap"></div></div>
+        <div class="view" data-view="loader"><div class="code" id="codeLoader"></div><div class="minimap"></div></div>
+      </div>
+
+      <div class="resizer h" data-resize="bottom"></div>
+      <!-- ================= BOTTOM PANEL ================= -->
+      <div class="panel bottom">
+        <div class="panel-inner">
+          <div class="btabs">
+            <button class="btab on" data-b="output">Output</button>
+            <button class="btab" data-b="problems">Problems <span class="cnt warn">3</span></button>
+            <button class="btab" data-b="term">Dev · Rojo</button>
+            <div class="svc-chips" id="svcChips">
+              <button class="svc-chip on">All</button>
+              <button class="svc-chip"><span class="led ok"></span>rojo</button>
+              <button class="svc-chip"><span class="led ok"></span>watcher</button>
+              <button class="svc-chip"><span class="led ok"></span>blink</button>
+              <button class="svc-chip"><span class="led ok"></span>luau-lsp</button>
+              <button class="svc-chip"><span class="led warn"></span>studio</button>
+            </div>
+            <span style="flex:1"></span>
+            <button class="icon-btn" title="Filter"><svg class="i"><use href="#i-filter"/></svg></button>
+            <button class="icon-btn" title="Restart service"><svg class="i"><use href="#i-restart"/></svg></button>
+            <button class="icon-btn" title="Close panel (⌘J)" data-toggle="bottom"><svg class="i"><use href="#i-x"/></svg></button>
+          </div>
+          <div class="bview on" data-b="output" id="logView"></div>
+          <div class="bview" data-b="problems">
+            <div class="prob grp"><svg class="i sm" style="color:var(--fg-faint)"><use href="#i-chev-d"/></svg><span data-glyph="Script"></span>InventoryService.luau <span class="loc">src/server/Features/Inventory</span><span class="srcb">2</span></div>
+            <div class="prob" style="padding-left:38px"><svg class="i sm" style="color:var(--warn)"><use href="#i-warn"/></svg>Type 'nil' could not be converted into '{ [string]: number }' <span class="loc">[33, 37]</span><span class="srcb">luau-lsp</span></div>
+            <div class="prob" style="padding-left:38px"><svg class="i sm" style="color:var(--warn)"><use href="#i-warn"/></svg>Variable 'RunService' is never used <span class="loc">[4, 7]</span><span class="srcb">selene</span></div>
+            <div class="prob grp"><svg class="i sm" style="color:var(--fg-faint)"><use href="#i-chev-d"/></svg><svg class="i sm" style="color:var(--realm-client)"><use href="#i-bolt"/></svg>events.blink <span class="loc">./</span><span class="srcb">1</span></div>
+            <div class="prob" style="padding-left:38px"><svg class="i sm" style="color:var(--warn)"><use href="#i-warn"/></svg>Event 'ItemEquipped' is declared but never fired from server code <span class="loc">[12, 7]</span><span class="srcb">blink</span></div>
+          </div>
+          <div class="bview" data-b="term">
+            <div class="log"><span class="ts">./dev</span><span class="src rojo">$</span><span>feature watcher + blink --watch + sourcemap + wally install</span></div>
+            <div class="log"><span class="ts"></span><span class="src watcher">watch</span><span>watching src/shared/Features and src/server/Features  (Ctrl+C to stop)</span></div>
+            <div class="log"><span class="ts"></span><span class="src blink">blink</span><span>watching events.blink</span></div>
+            <div class="log"><span class="ts">rojo</span><span class="src rojo">$</span><span>rojo serve default.project.json --port 34872</span></div>
+            <div class="log"><span class="ts"></span><span class="src rojo">rojo</span><span>Visit http://localhost:34872/ in your browser for more information.</span></div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <div class="resizer" data-resize="right"></div>
+    <!-- ================= RIGHT: ASSISTANT ================= -->
+    <aside class="panel right">
+      <div class="panel-inner">
+        <div class="ai-head">
+          <span class="panel-title" style="flex:none">Assistant</span>
+          <span style="flex:1"></span>
+          <button class="model"><span class="md"></span>Opus 5.5<svg class="i xs" style="color:var(--fg-faint)"><use href="#i-chev-d"/></svg></button>
+          <button class="icon-btn" title="History"><svg class="i"><use href="#i-clock"/></svg></button>
+          <button class="icon-btn" title="New thread (⌘⇧L)"><svg class="i"><use href="#i-plus"/></svg></button>
+          <button class="icon-btn" title="Close (⌘L)" data-toggle="right"><svg class="i"><use href="#i-x"/></svg></button>
+        </div>
+        <div class="meter" title="Context window · session cost"><span>ctx</span><span class="bar"><i></i><i></i></span><span><b>46.1k</b>/200k</span><span style="color:var(--fg-faint)">·</span><span><b>$0.42</b></span></div>
+        <div class="thread">
+          <div class="msg user" style="animation-delay:0ms"><span class="who">YOU</span><span>Give() lets amount go negative. Guard it and fire InventoryChanged only on success.</span></div>
+          <div class="msg" style="animation-delay:40ms">
+            <div class="tool"><svg class="i xs ok-check"><use href="#i-check"/></svg><b>read_script</b> InventoryService.luau<span class="dur">0.1s</span></div>
+            <div class="tool"><svg class="i xs ok-check"><use href="#i-check"/></svg><b>read_script</b> Features/Inventory/init.luau<span class="dur">0.1s</span></div>
+            <div class="tool"><svg class="i xs ok-check"><use href="#i-check"/></svg><b>grep</b> "InventoryChanged" <span style="color:var(--fg-faint)">3 hits</span><span class="dur">0.2s</span></div>
+          </div>
+          <div class="msg" style="animation-delay:80ms">
+            <p><code>Inventory.canAdd</code> doesn't check the sign of <code>amount</code>, so a negative stack passes. I added a guard at the top of <code>Give</code> and kept the event fire after the write.</p>
+            <div class="diff-card">
+              <div class="dh"><span data-glyph="Script"></span>InventoryService.luau<span class="plus">+3</span><span class="minus">−0</span><span class="sp"></span><button class="mini-btn">Open</button><button class="mini-btn hot">Apply</button></div>
+              <pre><div style="color:var(--fg-faint)">@@ 38 function InventoryService:Give</div><div class="a">+	if amount &lt;= 0 then</div><div class="a">+		return false</div><div class="a">+	end</div><div>  	local inv = self.Inventories[player]</div></pre>
+            </div>
+          </div>
+          <div class="msg" style="animation-delay:120ms;color:var(--fg-muted);font-size:12px">Want me to run a test agent on “buy with 0 coins” after applying?</div>
+        </div>
+        <div class="composer">
+          <div class="chips"><span class="chip"><span data-glyph="Script"></span>InventoryService</span><span class="chip"><svg class="i xs" style="color:var(--fg-muted)"><use href="#i-warn"/></svg>3 problems</span></div>
+          <textarea placeholder="Ask about this script, or describe a change…"></textarea>
+          <div class="cf"><button class="icon-btn" style="width:20px;height:20px" title="Add context (@)"><svg class="i sm"><use href="#i-at"/></svg></button><span>Edits need approval</span><span class="sp"></span><kbd>⌘↵</kbd><button class="send" title="Send (⌘↵)"><svg class="i sm"><use href="#i-arrow-up"/></svg></button></div>
+        </div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- ================= STATUS BAR ================= -->
+  <footer class="status">
+    <span class="sb home"><svg class="i xs"><use href="#i-hammer"/></svg>GenTree</span>
+    <span class="sb"><svg class="i xs"><use href="#i-branch"/></svg>main <span class="mono" style="color:var(--ember-text)">↓2</span></span>
+    <span class="sb" title="Rojo serving"><span class="led ok"></span>Rojo <span class="mono" style="color:var(--fg-faint)">:34872</span></span>
+    <span class="sb"><span class="led ok"></span>Watcher</span>
+    <span class="sb"><span class="led ok"></span>Blink</span>
+    <span class="sb"><span class="led warn"></span>Studio <span style="color:var(--fg-faint)">connecting…</span></span>
+    <span class="sb-sp"></span>
+    <span class="sb"><svg class="i xs" style="color:var(--warn)"><use href="#i-warn"/></svg>3 <svg class="i xs" style="color:var(--fg-faint)"><use href="#i-err"/></svg>0</span>
+    <span class="sb" id="sbRealm"><span class="realm-pill tag server">SERVER</span></span>
+    <span class="sb mono" id="sbPos">Ln 33, Col 58</span>
+    <span class="sb">Tabs: 4</span>
+    <span class="sb"><span class="led ok"></span>luau-lsp</span>
+    <span class="sb" title="Assistant tokens this session"><svg class="i xs"><use href="#i-hammer"/></svg><span class="mono">46.1k · $0.42</span></span>
+    <span class="sb"><svg class="i xs"><use href="#i-bell"/></svg></span>
+  </footer>
+</div>
+
+<!-- toasts sit after .app so `.app.right-off ~ .toasts` works -->
+<div class="toasts" id="toasts"></div>
+
+<!-- ================= OVERLAYS ================= -->
+<div class="scrim" id="scrim"></div>
+<div class="palette" id="palette" role="dialog" aria-label="Command palette">
+  <div class="pal-in"><span class="mode">&gt;</span><input id="palInput" placeholder="Type a command" value="new"><div class="pal-modes"><span>⌘P files</span><span class="on">&gt; cmds</span><span>@ symbols</span><span># instances</span></div></div>
+  <div class="pal-list" id="palList"></div>
+  <div class="pal-foot"><span><kbd>↑</kbd><kbd>↓</kbd> move</span><span><kbd>↵</kbd> run</span><span><kbd>⌘↵</kbd> run, keep open</span><span style="margin-left:auto"><kbd>esc</kbd> close</span></div>
+</div>
+
+<div class="menu" id="ctx">
+  <div class="mi hl" id="miNew"><span class="mic"><svg class="i sm"><use href="#i-plus"/></svg></span>New<span class="mk"><svg class="i xs"><use href="#i-chev"/></svg></span></div>
+  <div class="msep"></div>
+  <div class="mi"><span class="mic"><svg class="i sm"><use href="#i-pencil"/></svg></span>Rename<span class="mk">F2</span></div>
+  <div class="mi"><span class="mic"><svg class="i sm"><use href="#i-copy"/></svg></span>Duplicate<span class="mk">⌘D</span></div>
+  <div class="mi"><span class="mic"><svg class="i sm"><use href="#i-link"/></svg></span>Copy Roblox path<span class="mk">⌥⌘C</span></div>
+  <div class="mi"><span class="mic"><svg class="i sm"><use href="#i-script"/></svg></span>Copy require(…)<span class="mk">⇧⌘C</span></div>
+  <div class="mi"><span class="mic"><svg class="i sm"><use href="#i-reveal"/></svg></span>Reveal in Finder<span class="mk">⌥⌘R</span></div>
+  <div class="msep"></div>
+  <div class="mi danger" id="miDelete"><span class="mic" style="color:inherit"><svg class="i sm"><use href="#i-trash"/></svg></span>Delete…<span class="mk">⌘⌫</span></div>
+</div>
+<div class="menu" id="ctxNew" style="min-width:300px">
+  <div class="mhead">Script · in Features</div>
+  <div class="mi" data-new="ModuleScript"><span class="mic" data-glyph="ModuleScript" data-realm="shared"></span>ModuleScript<span class="mk">M</span></div>
+  <div class="mi" data-new="Script"><span class="mic" data-glyph="Script"></span>Script<span class="mk" style="color:var(--fg-faint)">S</span></div>
+  <div class="mi" data-new="LocalScript"><span class="mic" data-glyph="LocalScript"></span>LocalScript<span class="mk">L</span></div>
+  <div class="msep"></div>
+  <div class="mhead">Scaffold</div>
+  <div class="mi tall hl" data-new="Feature"><span class="mic" style="color:var(--ember-text)"><svg class="i"><use href="#i-trio"/></svg></span><span class="two">Feature<small>shared/Features + Service + Controller</small></span><span class="mk">F</span></div>
+  <div class="mi" data-new="Folder"><span class="mic" data-glyph="Folder"></span>Folder<span class="mk">D</span></div>
+  <div class="mi tall" data-new="Blink"><span class="mic" style="color:var(--realm-client)"><svg class="i sm"><use href="#i-bolt"/></svg></span><span class="two">Blink event<small>appends to events.blink</small></span><span class="mk">E</span></div>
+</div>
+
+<div class="act-tip" id="tip"></div>
+
+<script>
+/* ===================== Roblox class glyphs (16px) ===================== */
+const REALM = { server: 'var(--realm-server)', client: 'var(--realm-client)', shared: 'var(--realm-shared)', studio: 'var(--realm-studio)' };
+function glyph(cls, realm) {
+  const c = realm ? REALM[realm] : null;
+  const page = (col, inner) => `<svg class="cg" viewBox="0 0 16 16" fill="none" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 1.8h6.2l2.8 2.8v9.6h-9z" stroke="${col}" stroke-width="1.3" fill="color-mix(in srgb, ${col} 14%, transparent)"/><path d="M9.6 1.8v2.9h2.9" stroke="${col}" stroke-width="1.3"/>${inner}</svg>`;
+  switch (cls) {
+    case 'Script': return page(c || REALM.server, `<path d="M5.8 8.2h4.4M5.8 10.6h3" stroke="${c || REALM.server}" stroke-width="1.3"/>`);
+    case 'LocalScript': return page(c || REALM.client, `<circle cx="8" cy="8.1" r="1.2" stroke="${c || REALM.client}" stroke-width="1.2"/><path d="M5.6 12c.4-1.2 1.3-1.8 2.4-1.8s2 .6 2.4 1.8" stroke="${c || REALM.client}" stroke-width="1.2"/>`);
+    case 'ModuleScript': return page(c || REALM.shared, `<path d="M8 6.8l2.2 1.2v2.4L8 11.6l-2.2-1.2V8z" stroke="${c || REALM.shared}" stroke-width="1.15"/>`);
+    case 'Folder': return `<svg class="cg" viewBox="0 0 16 16" fill="none"><path d="M1.8 4.2c0-.6.4-1 1-1h3.5l1.4 1.5h5.5c.6 0 1 .4 1 1v6.6c0 .6-.4 1-1 1H2.8c-.6 0-1-.4-1-1z" stroke="var(--fg-muted)" stroke-width="1.3" fill="color-mix(in srgb, var(--fg-muted) 16%, transparent)" stroke-linejoin="round"/></svg>`;
+    case 'Service': return `<svg class="cg" viewBox="0 0 16 16" fill="none" stroke="${c || 'var(--fg-muted)'}" stroke-width="1.3" stroke-linejoin="round"><rect x="2" y="2.5" width="12" height="11" rx="2" fill="color-mix(in srgb, ${c || 'var(--fg-muted)'} 12%, transparent)"/><path d="M2 6h12" /><circle cx="4.3" cy="4.25" r=".5" fill="currentColor"/></svg>`;
+    case 'Workspace': return `<svg class="cg" viewBox="0 0 16 16" fill="none" stroke="#7fb3e6" stroke-width="1.3" stroke-linejoin="round"><path d="M8 1.8l5.6 3.1v6.2L8 14.2l-5.6-3.1V4.9z" fill="rgba(127,179,230,.14)"/><path d="M2.5 5 8 8l5.5-3M8 8v6"/></svg>`;
+    case 'Model': return `<svg class="cg" viewBox="0 0 16 16" fill="none" stroke="var(--realm-studio)" stroke-width="1.3" stroke-linejoin="round"><rect x="2.5" y="2.5" width="6" height="6" rx="1"/><rect x="7.5" y="7.5" width="6" height="6" rx="1" fill="color-mix(in srgb, var(--realm-studio) 14%, transparent)"/></svg>`;
+    case 'Tool': return `<svg class="cg" viewBox="0 0 16 16" fill="none" stroke="var(--realm-studio)" stroke-width="1.3" stroke-linecap="round"><path d="M3 13l6.5-6.5M9 3.5l3.5 3.5-2 2L7 5.5z"/></svg>`;
+    case 'Package': return `<svg class="cg" viewBox="0 0 16 16" fill="none" stroke="var(--fg-muted)" stroke-width="1.3" stroke-linejoin="round"><path d="m8 1.8 5.5 3v6.4L8 14.2l-5.5-3V4.8z"/><path d="m2.6 4.9 5.4 3 5.4-3M8 7.9v6.2"/></svg>`;
+    case 'Player': return `<svg class="cg" viewBox="0 0 16 16" fill="none" stroke="var(--realm-client)" stroke-width="1.3"><circle cx="8" cy="5.5" r="2.5"/><path d="M3 14c.6-2.8 2.6-4.2 5-4.2s4.4 1.4 5 4.2"/></svg>`;
+    case 'Blink': return `<svg class="cg" viewBox="0 0 16 16" fill="none" stroke="var(--realm-client)" stroke-width="1.3" stroke-linejoin="round"><path d="M9 1.8 3.8 9h4l-1 5.2L12.2 7h-4z"/></svg>`;
+  }
+  return '';
+}
+document.querySelectorAll('[data-glyph]').forEach(el => el.innerHTML = glyph(el.dataset.glyph, el.dataset.realm));
+
+/* ===================== Explorer tree (GenTree, Rojo-mapped) ===================== */
+// [name, class, opts{realm, kids, open, tag, dim, git, sel, ext}]
+const T = (name, cls, o = {}) => ({ name, cls, ...o });
+const tree = [
+  T('Workspace', 'Workspace', { tag: 'studio', dim: true, kids: [
+    T('Map', 'Model', { dim: true }), T('SpawnLocation', 'Model', { dim: true }), T('TrainingDummy', 'Model', { dim: true }),
+  ]}),
+  T('ReplicatedStorage', 'Service', { realm: 'shared', open: true, rail: 'shared', kids: [
+    T('Shared', 'Folder', { open: true, meta: 'src/shared', kids: [
+      T('Features', 'Folder', { open: true, id: 'features', kids: [
+        T('Inventory', 'ModuleScript', { realm: 'shared', git: 'A', ext: 'init' }),
+      ]}),
+      T('Modules', 'Folder', { open: true, kids: [
+        T('ModuleLoader', 'ModuleScript', { realm: 'shared' }),
+        T('Utils', 'Folder', { kids: [] }),
+      ]}),
+      T('events', 'Folder', { kids: [ T('client', 'ModuleScript', { realm: 'shared', tag: 'blink' }) ]}),
+      T('Interface', 'Folder', { kids: [ T('MountUI', 'ModuleScript', { realm: 'shared' }), T('App', 'Folder', { kids: [ T('app', 'ModuleScript', { realm: 'shared' }) ] }) ]}),
+    ]}),
+    T('Packages', 'Folder', { tag: 'wally', meta: '15', dim: true, kids: [ T('Janitor', 'Package', { dim: true }), T('Vide', 'Package', { dim: true }), T('Charm', 'Package', { dim: true }) ] }),
+  ]}),
+  T('ServerScriptService', 'Service', { realm: 'server', open: true, rail: 'server', kids: [
+    T('Server', 'Folder', { open: true, meta: 'src/server', kids: [
+      T('Features', 'Folder', { open: true, kids: [
+        T('Inventory', 'Script', { open: true, ext: 'init.server', git: 'A', kids: [
+          T('InventoryService', 'ModuleScript', { realm: 'server', git: 'M', sel: true }),
+        ]}),
+      ]}),
+      T('events', 'Folder', { kids: [ T('server', 'ModuleScript', { realm: 'server', tag: 'blink' }) ]}),
+      T('Data', 'Folder', { kids: [] }),
+      T('Handlers', 'Folder', { kids: [] }),
+    ]}),
+  ]}),
+  T('ServerStorage', 'Service', { tag: 'studio', rail: 'studio', kids: [
+    T('Assets', 'Folder', { dim: true, kids: [ T('StarterSword', 'Tool', { dim: true }), T('ShopKiosk', 'Model', { dim: true }) ] }),
+  ]}),
+  T('StarterPlayer', 'Player', { open: true, rail: 'client', kids: [
+    T('StarterPlayerScripts', 'Folder', { open: true, kids: [
+      T('Client', 'LocalScript', { open: true, ext: 'init.client', meta: 'src/client', kids: [
+        T('Controllers', 'Folder', { open: true, kids: [
+          T('InventoryController', 'ModuleScript', { realm: 'client', git: 'A' }),
+        ]}),
+      ]}),
+    ]}),
+  ]}),
+];
+const RAILS = { shared: 'var(--realm-shared)', server: 'var(--realm-server)', client: 'var(--realm-client)', studio: 'var(--realm-studio)' };
+let uid = 0;
+function renderNode(n, d, rail) {
+  const id = n.id || 'n' + (uid++);
+  const hasKids = !!n.kids;
+  const r = n.rail || rail;
+  const right = n.git ? `<span class="gitm ${n.git}">${n.git}</span>`
+    : n.tag === 'studio' ? `<span class="tag studio" title="Lives only in Studio; not in Rojo">STUDIO</span>`
+    : n.tag === 'wally' ? `<span class="tag wally">WALLY</span>`
+    : n.tag === 'blink' ? `<span class="tag" style="color:var(--realm-client);background:var(--realm-client-soft)">BLINK</span>`
+    : n.meta ? `<span class="meta">${n.meta}</span>` : '';
+  const g = ['Service'].includes(n.cls) ? glyph('Service', n.realm ? REALM[n.realm] && n.realm : null) : glyph(n.cls, n.realm);
+  let html = `<div class="node${n.open ? ' open' : ''}" data-id="${id}" data-name="${n.name}" data-cls="${n.cls}">
+    <div class="row${n.sel ? ' sel' : ''}${n.dim ? ' dim' : ''}" style="--d:${d}" role="treeitem" tabindex="-1">
+      <span class="tw${hasKids ? '' : ' leaf'}"><svg class="i xs"><use href="#i-chev"/></svg></span>${g}
+      <span class="name">${n.name}</span>${n.ext ? `<span class="ext">${n.ext}</span>` : ''}${right}
+    </div>`;
+  if (hasKids) {
+    html += `<div class="kids" style="--d:${d};${r ? `--rail:${RAILS[r]}` : ''}"><div class="kids-inner">${n.kids.map(k => renderNode(k, d + 1, r)).join('')}</div></div>`;
+  }
+  return html + '</div>';
+}
+const treeEl = document.getElementById('tree');
+treeEl.innerHTML = `<div class="section-h"><svg class="i xs"><use href="#i-chev-d"/></svg>game<span class="count">rojo · 214</span></div>` + tree.map(n => renderNode(n, 0)).join('');
+treeEl.addEventListener('click', e => {
+  const row = e.target.closest('.row'); if (!row) return;
+  const node = row.parentElement;
+  if (node.querySelector(':scope > .kids')) node.classList.toggle('open');
+  treeEl.querySelectorAll('.row.sel').forEach(r => r.classList.remove('sel'));
+  row.classList.add('sel');
+});
+
+/* ===================== Code (tiny Luau / Blink highlighter) ===================== */
+const KW = new Set('local function end if then else elseif return for in do while repeat until not and or nil true false self break continue type export'.split(' '));
+const GLOB = new Set('game script require task workspace print warn error typeof pairs ipairs table string math'.split(' '));
+function hl(line) {
+  const esc = s => s.replace(/&/g, '&amp;').replace(/</g, '&lt;');
+  let out = '', m, i = 0;
+  const re = /(--.*$)|("(?:[^"\\]|\\.)*")|(\b\d+(?:\.\d+)?\b)|(\b[A-Za-z_][A-Za-z0-9_]*\b)|(::|[{}()[\]=<>+\-*/:.,#])/g;
+  while ((m = re.exec(line))) {
+    out += esc(line.slice(i, m.index)); i = re.lastIndex;
+    const [t] = m;
+    if (m[1]) out += `<span class="c">${esc(t)}</span>`;
+    else if (m[2]) out += `<span class="s">${esc(t)}</span>`;
+    else if (m[3]) out += `<span class="n">${t}</span>`;
+    else if (m[4]) {
+      const next = line.slice(i);
+      if (KW.has(t)) out += `<span class="k">${t}</span>`;
+      else if (GLOB.has(t)) out += `<span class="g">${t}</span>`;
+      else if (/^\s*\(/.test(next)) out += `<span class="f">${t}</span>`;
+      else if (/^[A-Z]/.test(t) && /^(Player|Folder|Instance|Model)$/.test(t)) out += `<span class="t">${t}</span>`;
+      else out += t;
+    } else out += `<span class="o">${esc(t)}</span>`;
+  }
+  return out + esc(line.slice(i));
+}
+function renderCode(el, src, opts = {}) {
+  const lines = src.replace(/^\n/, '').split('\n');
+  const g = lines.map((_, i) => {
+    const n = i + 1, gm = opts.git?.[n];
+    return `<div class="${n === opts.cur ? 'cur' : ''}">${n}${gm ? `<span class="gm ${gm}"></span>` : ''}</div>`;
+  }).join('');
+  const body = lines.map((l, i) => {
+    let h = hl(l);
+    if (opts.decorate?.[i + 1]) h = opts.decorate[i + 1](h);
+    const guides = (l.match(/^\t*/)[0].length);
+    let ig = ''; for (let k = 0; k < guides; k++) ig += `<span class="indent-g" style="left:${6 + k * 4 * 7.8}px"></span>`;
+    return `<div class="${i + 1 === opts.cur ? 'curline' : ''}">${ig}${h || ' '}</div>`;
+  }).join('');
+  el.innerHTML = `<div class="gutter">${g}</div><div class="lines">${body}${opts.extra || ''}</div>`;
+}
+const serviceSrc = `
+--!strict
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local ServerScriptService = game:GetService("ServerScriptService")
+
+local Inventory = require(ReplicatedStorage.Shared.Features.Inventory)
+local Events = require(ServerScriptService.Server.events.server)
+
+local InventoryService = {}
+InventoryService.Inventories = {} :: { [Player]: { [string]: number } }
+
+function InventoryService:Init()
+	Players.PlayerAdded:Connect(function(player)
+		self.Inventories[player] = {}
+	end)
+	Players.PlayerRemoving:Connect(function(player)
+		self.Inventories[player] = nil
+	end)
+end
+
+function InventoryService:Start()
+	Events.EquipItem.On(function(player, itemId)
+		local inv = self.Inventories[player]
+		if not inv or not inv[itemId] then
+			return
+		end
+		Events.ItemEquipped.FireAll({ player = player, itemId = itemId })
+	end)
+end
+
+function InventoryService:Give(player: Player, itemId: string, amount: number): boolean
+	local inv: { [string]: number } = self.Inventories[player]
+	if not Inventory.canAdd(inv, itemId, amount) then
+		return false
+	end
+	inv[itemId] = (inv[itemId] or 0) + amount
+	Events.InventoryChanged.Fire(player, inv)
+	return true
+end
+
+return InventoryService`;
+renderCode(document.getElementById('codeService'), serviceSrc, {
+  cur: 33,
+  git: { 21: 'mod', 22: 'mod', 23: 'mod', 24: 'mod', 25: 'mod', 26: 'mod', 27: 'mod', 31: 'add', 32: 'add', 33: 'add', 34: 'add', 35: 'add', 36: 'add', 37: 'add', 38: 'add', 39: 'add' },
+  decorate: {
+    4: h => h.replace('RunService</span>', 'RunService</span>').replace(/^(<span class="k">local<\/span> )RunService/, '$1<span class="squig" style="opacity:.6">RunService</span>'),
+    33: h => { const i = h.indexOf('<span class="k">self</span>'); return h.slice(0, i) + '<span class="squig">' + h.slice(i) + '</span><span class="caret"></span>'; },
+  },
+  extra: `<div class="hover-card" style="left:120px;top:${32 * 20 - 124}px">
+    <div class="hc-code"><span class="k">local</span> inv<span class="o">:</span> { [<span class="t">string</span>]<span class="o">:</span> <span class="t">number</span> }</div>
+    <div class="hc-body"><svg class="i sm" style="color:var(--warn);margin-top:2px"><use href="#i-warn"/></svg><span>Type <code class="mono" style="color:var(--fg)">{ [string]: number }?</code> could not be converted into <code class="mono" style="color:var(--fg)">{ [string]: number }</code>. <span style="color:var(--fg-faint)">luau-lsp(TypeMismatch)</span></span></div>
+    <div class="hc-foot"><a>Quick fix… ⌘.</a><a>Ask Assistant ⌘L</a><a style="color:var(--fg-muted);margin-left:auto">Peek problem</a></div>
+  </div>`,
+});
+renderCode(document.getElementById('codeController'), `
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+
+local Inventory = require(ReplicatedStorage.Shared.Features.Inventory)
+local Events = require(ReplicatedStorage.Shared.events.client)
+
+local InventoryController = {}
+
+function InventoryController:Init(janitor)
+	janitor:Add(Events.InventoryChanged.On(function(inv)
+		-- push into Charm atom for the Vide UI
+	end))
+end
+
+function InventoryController:Start()
+end
+
+return InventoryController`, { cur: 10 });
+renderCode(document.getElementById('codeBlink'), `
+option ClientOutput = "src/shared/events/client.luau"
+option ServerOutput = "src/server/events/server.luau"
+
+event EquipItem {
+	From: Client,
+	Type: Reliable,
+	Call: SingleSync,
+	Data: string
+}
+
+event ItemEquipped {
+	From: Server,
+	Type: Reliable,
+	Call: SingleSync,
+	Data: struct { player: Instance(Player), itemId: string }
+}
+
+event InventoryChanged {
+	From: Server,
+	Type: Reliable,
+	Call: SingleSync,
+	Data: map { [string]: u16 }
+}`, { cur: 12 });
+renderCode(document.getElementById('codeLoader'), `
+--!nocheck
+
+local Players = game:GetService("Players")
+local ReplicatedStorage = game:GetService("ReplicatedStorage")
+local RunService = game:GetService("RunService")
+local Janitor = require(ReplicatedStorage.Packages.Janitor)
+
+local ModuleLoader = {}
+ModuleLoader.Janitors = {}
+ModuleLoader.Modules = {}
+
+function ModuleLoader.InitFolder(Folder: Folder)
+	for _, v in Folder:GetDescendants() do
+		if v:IsA("ModuleScript") then
+			ModuleLoader.Modules[v.Name] = require(v)
+		end
+	end
+	for _, module in ModuleLoader.Modules do
+		if type(module) == "table" and module.Init then
+			local janitor = Janitor.new()
+			ModuleLoader.Janitors[module] = janitor
+			module:Init(janitor)
+		end
+	end
+end`, { cur: 1 });
+// minimap
+document.querySelectorAll('.minimap').forEach(mm => {
+  let h = ''; const src = serviceSrc.split('\n');
+  src.forEach(l => { const ind = l.match(/^\t*/)[0].length; const w = Math.min(54, l.trim().length * 1.1); h += `<i style="width:${w}px;margin-left:${8 + ind * 4}px;${!l.trim() ? 'opacity:0' : ''}"></i>`; });
+  mm.innerHTML = `<div class="slider"></div>${h}<span class="mk" style="top:${8 + 31 * 3}px;background:var(--warn)"></span><span class="mk" style="top:${8 + 21 * 3}px;height:20px;background:var(--info);opacity:.6"></span>`;
+});
+
+/* ===================== Breadcrumbs ===================== */
+const CRUMBS = {
+  service: { path: [['game', 'Workspace'], ['ServerScriptService', 'Service'], ['Server', 'Folder'], ['Features', 'Folder'], ['Inventory', 'Script'], ['InventoryService', 'ModuleScript', 'server']], realm: 'server', file: 'src/server/Features/Inventory/InventoryService.luau', pos: 'Ln 33, Col 58' },
+  controller: { path: [['game', 'Workspace'], ['StarterPlayer', 'Player'], ['StarterPlayerScripts', 'Folder'], ['Client', 'LocalScript'], ['Controllers', 'Folder'], ['InventoryController', 'ModuleScript', 'client']], realm: 'client', file: 'src/client/Client/Controllers/InventoryController/init.luau', pos: 'Ln 10, Col 1' },
+  blink: { path: [['events.blink', 'Blink']], realm: 'shared', file: '→ shared/events/client.luau · server/events/server.luau', pos: 'Ln 12, Col 7', blink: true },
+  loader: { path: [['game', 'Workspace'], ['ReplicatedStorage', 'Service'], ['Shared', 'Folder'], ['Modules', 'Folder'], ['ModuleLoader', 'ModuleScript', 'shared']], realm: 'shared', file: 'src/shared/Modules/ModuleLoader.luau', pos: 'Ln 1, Col 1' },
+  welcome: null,
+};
+function setCrumbs(tab) {
+  const el = document.getElementById('crumbs'); const c = CRUMBS[tab];
+  if (!c) { el.style.display = 'none'; document.getElementById('sbRealm').style.display = 'none'; return; }
+  el.style.display = '';
+  document.getElementById('sbRealm').style.display = '';
+  el.innerHTML = c.path.map((p, i) => `<span class="crumb${i === c.path.length - 1 ? ' last' : ''}">${glyph(p[1] === 'Workspace' ? 'Service' : p[1], p[2])}${p[0]}</span>`).join('<span class="sep">›</span>')
+    + (c.blink ? `<span class="realm tag" style="color:var(--realm-client);background:var(--realm-client-soft)">BLINK</span>` : `<span class="realm tag ${c.realm}">${c.realm.toUpperCase()}</span>`)
+    + `<span class="right-meta"><span>${c.file}</span></span>`;
+  document.getElementById('sbRealm').innerHTML = c.blink ? `<span class="realm-pill tag" style="color:var(--realm-client);background:var(--realm-client-soft)">BLINK</span>` : `<span class="realm-pill tag ${c.realm}">${c.realm.toUpperCase()}</span>`;
+  document.getElementById('sbPos').textContent = c.pos;
+}
+setCrumbs('service');
+
+/* ===================== Tabs ===================== */
+const tabsEl = document.getElementById('tabs');
+function activate(name) {
+  tabsEl.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === name));
+  document.querySelectorAll('.editor-area .view').forEach(v => v.classList.toggle('on', v.dataset.view === name));
+  setCrumbs(name);
+}
+tabsEl.addEventListener('click', e => {
+  const tab = e.target.closest('.tab'); if (!tab) return;
+  if (e.target.closest('.x')) {
+    const wasOn = tab.classList.contains('on');
+    tab.classList.add('closing');
+    tab.addEventListener('animationend', () => {
+      const next = tab.nextElementSibling?.classList.contains('tab') ? tab.nextElementSibling : tab.previousElementSibling;
+      tab.remove();
+      if (wasOn && next?.classList.contains('tab')) activate(next.dataset.tab);
+      else if (!tabsEl.querySelector('.tab')) activate('welcome');
+    }, { once: true });
+    return;
+  }
+  activate(tab.dataset.tab);
+});
+tabsEl.addEventListener('auxclick', e => { if (e.button === 1) e.target.closest('.tab')?.querySelector('.x')?.click(); });
+
+/* ===================== Services (welcome) + logs ===================== */
+const SVCS = [
+  ['Rojo', ':34872 · 214 instances', 'ok', 'running', [6,7,6,8,7,9,8,7,8,9]],
+  ['Dev watcher', 'features · 1 tracked', 'ok', 'running', [3,3,4,3,3,5,3,3,4,3]],
+  ['Blink', '3 events → 2 outputs', 'ok', 'running', [2,2,2,6,2,2,2,2,2,2]],
+  ['Luau LSP', 'sourcemap ok · 3 warnings', 'ok', 'ready', [4,6,5,7,5,4,6,5,6,5]],
+  ['Studio Sync', '', 'warn', 'connecting', null],
+];
+document.getElementById('svcList').innerHTML = SVCS.map(([n, d, s, st, pts], i) => {
+  const path = pts ? pts.map((v, j) => `${j ? 'L' : 'M'}${j * 7} ${16 - v * 1.5}`).join(' ') : '';
+  return `<div class="svc" style="animation-delay:${i * 35}ms"><span class="led ${s}"></span><span><div class="sn">${n}</div>${d ? `<div class="sd">${d}</div>` : `<div class="skel" style="width:140px;margin-top:5px"></div>`}</span>
+    ${pts ? `<svg class="spark-line" viewBox="0 0 64 18"><path d="${path}" fill="none" stroke="${s === 'ok' ? 'var(--ok)' : 'var(--warn)'}" stroke-width="1.3" opacity=".7"/></svg>` : `<span class="skel" style="width:64px;height:12px"></span>`}
+    <span class="st ${s}">${st}</span></div>`;
+}).join('');
+const LOGS = [
+  ['12:04:31', 'rojo', 'Rojo server listening on <b>127.0.0.1:34872</b> · project GenTree'],
+  ['12:04:40', 'watcher', '<span class="add">add</span>  src/shared/Features/Inventory/init.luau'],
+  ['12:04:40', 'watcher', '<span class="add">add</span>  src/server/Features/Inventory/InventoryService.luau'],
+  ['12:04:40', 'watcher', '<span class="add">add</span>  src/server/Features/Inventory/init.server.luau'],
+  ['12:04:40', 'watcher', '<span class="add">add</span>  src/client/Client/Controllers/InventoryController/init.luau'],
+  ['12:04:41', 'blink', 'compiled events.blink → 2 outputs (3 events) in 38ms'],
+  ['12:04:41', 'lsp', 'sourcemap.json regenerated (214 instances) · 3 diagnostics'],
+  ['12:05:02', 'rojo', 'synced 4 files → Studio (place “GenTree Dev”)'],
+  ['12:05:09', 'studio', '<span class="warnt">plugin handshake timed out, retrying in 2s…</span>'],
+];
+const logView = document.getElementById('logView');
+logView.innerHTML = LOGS.map(([t, s, m]) => `<div class="log"><span class="ts">${t}</span><span class="src ${s}">${s === 'lsp' ? 'luau-lsp' : s}</span><span>${m}</span></div>`).join('');
+
+/* ===================== Bottom tabs ===================== */
+document.querySelectorAll('.btab').forEach(b => b.addEventListener('click', () => {
+  document.querySelectorAll('.btab').forEach(x => x.classList.toggle('on', x === b));
+  document.querySelectorAll('.bview').forEach(v => v.classList.toggle('on', v.dataset.b === b.dataset.b));
+  document.getElementById('svcChips').style.visibility = b.dataset.b === 'output' ? 'visible' : 'hidden';
+}));
+document.getElementById('svcChips').addEventListener('click', e => {
+  const c = e.target.closest('.svc-chip'); if (!c) return;
+  document.querySelectorAll('.svc-chip').forEach(x => x.classList.toggle('on', x === c));
+});
+
+/* ===================== Panels ===================== */
+const app = document.getElementById('app');
+function toggle(which) {
+  app.classList.toggle(which + '-off');
+  document.querySelectorAll(`.tb-btn[data-toggle="${which}"]`).forEach(b => b.classList.toggle('on', !app.classList.contains(which + '-off')));
+}
+document.querySelectorAll('[data-toggle]').forEach(b => b.addEventListener('click', () => toggle(b.dataset.toggle)));
+// resizers
+document.querySelectorAll('.resizer').forEach(r => {
+  const which = r.dataset.resize;
+  const v = { side: ['--side-w', 200, 480, 268], right: ['--right-w', 300, 560, 360], bottom: ['--bottom-h', 120, 520, 214] }[which];
+  r.addEventListener('dblclick', () => document.documentElement.style.setProperty(v[0], v[3] + 'px'));
+  r.addEventListener('pointerdown', e => {
+    e.preventDefault(); r.setPointerCapture(e.pointerId);
+    const start = which === 'bottom' ? e.clientY : e.clientX;
+    const cur = parseFloat(getComputedStyle(document.documentElement).getPropertyValue(v[0]));
+    document.body.style.cursor = which === 'bottom' ? 'row-resize' : 'col-resize';
+    document.querySelectorAll('.side,.right,.bottom').forEach(p => p.style.transition = 'none');
+    const move = ev => {
+      const d = (which === 'bottom' ? ev.clientY : ev.clientX) - start;
+      let n = which === 'side' ? cur + d : cur - d;
+      n = Math.max(v[1], Math.min(v[2], n));
+      document.documentElement.style.setProperty(v[0], n + 'px');
+    };
+    const up = () => { r.removeEventListener('pointermove', move); document.body.style.cursor = ''; document.querySelectorAll('.side,.right,.bottom').forEach(p => p.style.transition = ''); };
+    r.addEventListener('pointermove', move); r.addEventListener('pointerup', up, { once: true });
+  });
+});
+
+/* ===================== Activity bar tooltip ===================== */
+const tip = document.getElementById('tip');
+document.querySelectorAll('.act').forEach(a => {
+  a.addEventListener('mouseenter', () => { const r = a.getBoundingClientRect(); tip.innerHTML = `${a.dataset.tip}${a.dataset.kb ? `<kbd>${a.dataset.kb}</kbd>` : ''}`; tip.style.left = r.right + 8 + 'px'; tip.style.top = r.top + 8 + 'px'; tip.style.display = 'flex'; tip.style.animation = 'rf-fade-in 120ms var(--ease-out)'; });
+  a.addEventListener('mouseleave', () => tip.style.display = 'none');
+  a.addEventListener('click', () => {
+    if (a.classList.contains('on')) { toggle('side'); return; }
+    document.querySelectorAll('.act').forEach(x => x.classList.toggle('on', x === a));
+    document.getElementById('sideTitle').textContent = a.dataset.tip.replace(' &amp; ', ' & ');
+    if (app.classList.contains('side-off')) toggle('side');
+  });
+});
+
+/* ===================== Command palette ===================== */
+const CMDS = [
+  ['Create', [
+    ['i-trio', 'New Feature…', 'shared + Service + Controller', ['⌘', '⇧', 'N']],
+    ['g:ModuleScript', 'New ModuleScript…', 'in selected folder', ['⌘', 'N']],
+    ['g:Script', 'New Script…', 'server', []],
+    ['g:LocalScript', 'New LocalScript…', 'client', []],
+    ['i-bolt', 'New Blink event…', 'appends to events.blink', []],
+  ]],
+  ['Services', [
+    ['i-restart', 'Restart Rojo', ':34872', []],
+    ['i-sync', 'Sync with collaborators', '↓2 · 1 Studio conflict', ['⌘', '⇧', 'S']],
+  ]],
+  ['Assistant & agents', [
+    ['i-agents', 'Run test agents…', 'Studio play-test', ['⌘', '⇧', 'A']],
+    ['i-hammer', 'Ask Assistant about this file', '', ['⌘', 'L']],
+  ]],
+];
+function renderPalette(q = 'new') {
+  let html = '', idx = 0;
+  const mark = s => q ? s.replace(new RegExp('(' + q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + ')', 'i'), '<mark>$1</mark>') : s;
+  for (const [g, items] of CMDS) {
+    const f = items.filter(it => !q || (it[1] + ' ' + it[2]).toLowerCase().includes(q.toLowerCase()) || g === 'Services' && false);
+    const show = q === 'new' ? (g === 'Create' ? items : g === 'Services' ? [] : []) : f;
+    if (!show.length) continue;
+    html += `<div class="pal-group">${g}</div>`;
+    show.forEach(([ic, t, d, k]) => {
+      const icon = ic.startsWith('g:') ? glyph(ic.slice(2)) : `<svg class="i"><use href="#${ic}"/></svg>`;
+      html += `<div class="pal-item${idx === 0 ? ' on' : ''}" style="animation-delay:${idx * 18}ms"><span class="pi">${icon}</span><span>${mark(t)}</span><span class="pd">${d}</span><span class="pk">${k.map(x => `<kbd>${x}</kbd>`).join('')}</span></div>`;
+      idx++;
+    });
+  }
+  if (q === 'new') {
+    html += `<div class="pal-group">Recently used</div>`;
+    [['i-sync', 'Sync with collaborators', '↓2', ['⌘', '⇧', 'S']], ['i-restart', 'Restart Rojo', '', []], ['i-panel-r', 'Toggle Assistant', '', ['⌘', 'L']]].forEach(([ic, t, d, k]) => {
+      html += `<div class="pal-item" style="animation-delay:${idx * 18}ms"><span class="pi"><svg class="i"><use href="#${ic}"/></svg></span><span>${t}</span><span class="pd">${d}</span><span class="pk">${k.map(x => `<kbd>${x}</kbd>`).join('')}</span></div>`; idx++;
+    });
+  }
+  document.getElementById('palList').innerHTML = html;
+}
+const pal = document.getElementById('palette'), scrim = document.getElementById('scrim'), palInput = document.getElementById('palInput');
+function openPalette() { renderPalette(palInput.value); pal.classList.add('on'); scrim.classList.add('on'); setTimeout(() => palInput.focus(), 0); }
+function closeAll() { pal.classList.remove('on'); scrim.classList.remove('on'); hideMenus(); }
+palInput.addEventListener('input', () => renderPalette(palInput.value));
+palInput.addEventListener('keydown', e => {
+  const items = [...document.querySelectorAll('.pal-item')]; let i = items.findIndex(x => x.classList.contains('on'));
+  if (e.key === 'ArrowDown' || e.key === 'ArrowUp') { e.preventDefault(); items[i]?.classList.remove('on'); i = (i + (e.key === 'ArrowDown' ? 1 : -1) + items.length) % items.length; items[i].classList.add('on'); items[i].scrollIntoView({ block: 'nearest' }); }
+  if (e.key === 'Enter') { closeAll(); toast('ok', 'Feature “Shop” created', 'shared/Features/Shop · ShopService · ShopController'); }
+});
+document.getElementById('omni').addEventListener('click', openPalette);
+scrim.addEventListener('click', closeAll);
+
+/* ===================== Context menu ===================== */
+const ctx = document.getElementById('ctx'), ctxNew = document.getElementById('ctxNew');
+let ctxNode = null;
+function hideMenus() { ctx.classList.remove('on'); ctxNew.classList.remove('on'); }
+function showCtx(x, y, node) {
+  ctxNode = node;
+  treeEl.querySelectorAll('.row.focus-outline').forEach(r => r.classList.remove('focus-outline'));
+  node?.querySelector(':scope > .row').classList.add('focus-outline');
+  ctx.style.left = x + 'px'; ctx.style.top = y + 'px'; ctx.classList.add('on');
+}
+function showNew() {
+  const r = document.getElementById('miNew').getBoundingClientRect();
+  ctxNew.style.left = r.right + 4 + 'px'; ctxNew.style.top = r.top - 4 + 'px'; ctxNew.classList.add('on');
+}
+treeEl.addEventListener('contextmenu', e => { e.preventDefault(); const node = e.target.closest('.node'); hideMenus(); showCtx(e.clientX, e.clientY, node); });
+document.getElementById('miNew').addEventListener('mouseenter', showNew);
+document.getElementById('newBtn').addEventListener('click', e => { const r = e.currentTarget.getBoundingClientRect(); showCtx(r.left, r.bottom + 4, document.querySelector('[data-id="features"]')); showNew(); });
+ctx.querySelectorAll('.mi:not(#miNew)').forEach(m => m.addEventListener('mouseenter', () => ctxNew.classList.remove('on')));
+document.addEventListener('mousedown', e => { if (!e.target.closest('.menu')) hideMenus(); });
+document.getElementById('miDelete').addEventListener('click', () => {
+  hideMenus(); if (!ctxNode) return;
+  const name = ctxNode.dataset.name, parent = ctxNode.parentElement, next = ctxNode.nextSibling, n = ctxNode;
+  n.style.transition = 'opacity 160ms var(--ease-in)'; n.style.opacity = 0;
+  setTimeout(() => { n.remove(); }, 160);
+  toast('del', `Deleted ${name}`, 'Moved to trash · Rojo will remove it from Studio', () => { parent.insertBefore(n, next); n.style.opacity = 1; n.querySelector('.row').classList.add('flash'); });
+});
+ctxNew.querySelectorAll('.mi').forEach(m => m.addEventListener('click', () => {
+  hideMenus(); const kind = m.dataset.new; const target = ctxNode || document.querySelector('[data-id="features"]');
+  target.classList.add('open');
+  const inner = target.querySelector(':scope > .kids > .kids-inner'); if (!inner) return;
+  const d = +target.querySelector(':scope > .row').style.getPropertyValue('--d') + 1;
+  const wrap = document.createElement('div'); wrap.className = 'node'; wrap.style.animation = 'rf-item-in 180ms var(--ease-out)';
+  wrap.innerHTML = `<div class="row sel" style="--d:${d}"><span class="tw leaf"></span>${kind === 'Feature' ? glyph('Folder') : glyph(kind === 'Blink' ? 'Blink' : kind, 'shared')}<input class="rename-input" value="${kind === 'Feature' ? 'NewFeature' : 'New' + kind}"></div>`;
+  inner.prepend(wrap); const inp = wrap.querySelector('input'); inp.focus(); inp.select();
+  const commit = () => { const v = inp.value; inp.outerHTML = `<span class="name">${v}</span>`; if (kind === 'Feature') toast('ok', `Feature “${v}” forged`, `+ ${v}Service · + ${v}Controller`); };
+  inp.addEventListener('keydown', e => { if (e.key === 'Enter') commit(); if (e.key === 'Escape') wrap.remove(); });
+  inp.addEventListener('blur', commit, { once: true });
+}));
+
+/* ===================== Toasts ===================== */
+function toast(kind, title, sub, undo) {
+  const el = document.createElement('div'); el.className = 'toast';
+  el.innerHTML = `<span class="ti ${kind}"><svg class="i sm"><use href="#${kind === 'del' ? 'i-trash' : 'i-check'}"/></svg></span><span class="tt">${title}<small>${sub}</small></span>${undo ? `<button class="mini-btn"><svg class="i xs"><use href="#i-undo"/></svg>Undo <kbd style="margin-left:2px">⌘Z</kbd></button>` : ''}<button class="icon-btn"><svg class="i sm"><use href="#i-x"/></svg></button><span class="timer"></span>`;
+  document.getElementById('toasts').appendChild(el);
+  const dismiss = () => { el.classList.add('out'); el.addEventListener('animationend', () => el.remove(), { once: true }); };
+  el.querySelector('.icon-btn').onclick = dismiss;
+  if (undo) el.querySelector('.mini-btn').onclick = () => { undo(); dismiss(); };
+  let t = setTimeout(dismiss, 6000);
+  el.addEventListener('mouseenter', () => { clearTimeout(t); el.querySelector('.timer').style.animationPlayState = 'paused'; });
+  el.addEventListener('mouseleave', () => { t = setTimeout(dismiss, 2500); el.querySelector('.timer').style.animationPlayState = 'running'; });
+  return el;
+}
+
+/* ===================== Sparks: tiny ember burst on primary actions ===================== */
+function sparks(el) {
+  if (matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+  const r = el.getBoundingClientRect();
+  for (let i = 0; i < 9; i++) {
+    const s = document.createElement('span'); s.className = 'spark';
+    const a = (Math.PI * (1.1 + Math.random() * .8)), d = 14 + Math.random() * 18;
+    s.style.left = r.left + r.width * (.2 + Math.random() * .6) + 'px'; s.style.top = r.top + 4 + 'px';
+    s.style.setProperty('--sx', Math.cos(a) * d + 'px'); s.style.setProperty('--sy', Math.sin(a) * d + 'px');
+    s.style.animationDelay = i * 12 + 'ms';
+    document.body.appendChild(s); s.addEventListener('animationend', () => s.remove());
+  }
+}
+document.getElementById('serveBtn').addEventListener('click', e => { sparks(e.currentTarget); toast('ok', 'Rojo restarted', 'serving :34872 · 214 instances'); });
+document.querySelectorAll('.qa-card.primary, .send, .mini-btn.hot').forEach(b => b.addEventListener('click', () => sparks(b)));
+document.getElementById('syncBtn').addEventListener('click', () => { toast('ok', 'Synced with origin/main', 'pulled 2 commits · 1 Studio conflict to review'); });
+
+/* ===================== Keyboard ===================== */
+document.addEventListener('keydown', e => {
+  const mod = e.metaKey || e.ctrlKey, k = e.key.toLowerCase();
+  if (mod && (k === 'k' || k === 'p')) { e.preventDefault(); palInput.value = k === 'p' ? '' : 'new'; document.querySelector('.pal-in .mode').textContent = k === 'p' ? '⌕' : '>'; openPalette(); }
+  else if (mod && k === 'b') { e.preventDefault(); toggle('side'); }
+  else if (mod && k === 'j') { e.preventDefault(); toggle('bottom'); }
+  else if (mod && k === 'l') { e.preventDefault(); toggle('right'); }
+  else if (e.key === 'Escape') closeAll();
+  else if (e.key === 'F2') { const r = treeEl.querySelector('.row.sel .name'); if (r) { const v = r.textContent; r.outerHTML = `<input class="rename-input" value="${v}">`; const i = treeEl.querySelector('.rename-input'); i.focus(); i.setSelectionRange(0, v.length); i.addEventListener('keydown', ev => { if (ev.key === 'Enter' || ev.key === 'Escape') i.outerHTML = `<span class="name">${ev.key === 'Enter' ? i.value : v}</span>`; }); } }
+});
+
+/* ===================== Theme ===================== */
+document.getElementById('themeBtn').addEventListener('click', () => {
+  const html = document.documentElement; const light = html.dataset.theme !== 'light';
+  html.dataset.theme = light ? 'light' : 'dark';
+  document.querySelector('#themeBtn use').setAttribute('href', light ? '#i-moon' : '#i-sun');
+});
+
+/* ===================== Screenshot states via hash ===================== */
+function applyHash() {
+  const h = new Set(location.hash.slice(1).split(',').filter(Boolean));
+  if (h.has('light')) { document.documentElement.dataset.theme = 'light'; document.querySelector('#themeBtn use').setAttribute('href', '#i-moon'); }
+  if (h.has('welcome')) activate('welcome');
+  if (h.has('blink')) activate('blink');
+  if (h.has('problems')) document.querySelector('.btab[data-b="problems"]').click();
+  if (h.has('nohover')) document.querySelector('.hover-card')?.remove();
+  if (h.has('nobottom')) toggle('bottom');
+  if (h.has('palette')) openPalette();
+  if (h.has('ctx')) {
+    const row = document.querySelector('[data-id="features"] > .row'); const r = row.getBoundingClientRect();
+    showCtx(r.left + 150, r.top + r.height / 2, row.parentElement); showNew();
+  }
+  if (h.has('toast')) toast('del', 'Deleted InventoryController', 'Moved to trash · Rojo will remove it from Studio', () => {});
+}
+document.fonts.ready.then(() => { document.getElementById('codeService').scrollTop = 208; applyHash(); });
+</script>
+</body>
+</html>

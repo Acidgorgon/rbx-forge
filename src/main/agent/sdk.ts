@@ -5,6 +5,7 @@ import { randomUUID } from 'node:crypto'
 import type { McpStdioServerConfig, Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatMessage } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
+import { bundledClaudeExecutable } from '../services/sdkBinary.ts'
 
 export const DEFAULT_MODEL = 'claude-opus-5-5'
 export const STUDIO_SERVER = 'studio'
@@ -19,6 +20,12 @@ export const sdkQuery: QueryFn = (params) => {
     yield* query(params)
   }
   return iter()
+}
+
+// Packaged builds: the SDK's CLI binary is unpacked outside app.asar (see services/sdkBinary.ts).
+export function executableOption(): Pick<Options, 'pathToClaudeCodeExecutable'> {
+  const exe = bundledClaudeExecutable()
+  return exe ? { pathToClaudeCodeExecutable: exe } : {}
 }
 
 export interface StudioMcpSetting {
@@ -60,6 +67,10 @@ Working rules:
 - Studio edits sync back into the repo via studio-sync; conflicts are listed by studio_conflicts.
 - If mcp__studio__* tools are available they act on the live Roblox Studio (run Luau, play tests).
 - Be concise in replies.`
+
+// Appended to SYSTEM_PROMPT on OpenAI-compatible providers, where tools have bare names.
+export const OPENAI_TOOLS_NOTE = `
+On this provider the gentree tools are named without the mcp__gentree__ prefix (project_overview, read_script, edit_script, ...). There are no generic file tools, no shell and no Studio tools.`
 
 // Short, one-line summary of a tool call's input for the UI.
 export function summarizeInput(input: unknown): string {

@@ -1,0 +1,11 @@
+// Collaboration services (main process only). See CONTRACT.md for the IPC surface.
+export * from './activity.ts'
+export * from './blame.ts'
+export * from './branches.ts'
+export * from './claims.ts'
+export * from './classify.ts'
+export * from './config.ts'
+export * from './incoming.ts'
+export * from './join.ts'
+export * from './quality.ts'
+export { collabEnv, userName, type CollabDeps } from './git.ts'

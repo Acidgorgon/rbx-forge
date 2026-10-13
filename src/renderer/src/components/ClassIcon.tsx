@@ -26,6 +26,10 @@ const glyphs: Record<string, Glyph> = {
   ModuleScript: G('M', '#a58be0', 'doc'),
   Script: G('S', '#6f9fe8', 'doc'),
   LocalScript: G('L', '#5fb8a5', 'doc'),
+  // Networking (Blink events.blink)
+  RemoteEvent: G('E', '#e0b25a', 'diamond'),
+  UnreliableRemoteEvent: G('U', '#d98f5a', 'diamond'),
+  RemoteFunction: G('F', '#e08a8a', 'diamond'),
   // Parts & assets
   Part: G('', '#9aa3ad', 'square'),
   MeshPart: G('', '#b0a59a', 'diamond'),

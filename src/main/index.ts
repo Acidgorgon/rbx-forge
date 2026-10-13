@@ -1,14 +1,17 @@
-import { app, BrowserWindow, dialog, ipcMain } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, session } from 'electron'
 import { existsSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import {
   INVOKE_PREFIX,
+  type BlinkModel,
   type GitStatus,
   type HarnessEvents,
   type LogLine,
   type ProjectInfo,
   type ServiceId,
-  type SyncSettings
+  type SyncSettings,
+  type WallyAddSpec,
+  type WallyRealm
 } from '../shared/types.ts'
 import type { HarnessContext } from './context.ts'
 import { registerAgentIpc } from './agent/index.ts'
@@ -19,7 +22,40 @@ import { Project } from './services/project.ts'
 import { Settings } from './services/settings.ts'
 import { StudioConflicts } from './services/studioConflicts.ts'
 import { Supervisor } from './services/supervisor.ts'
-import { findTool, run } from './services/tools.ts'
+import { Packages } from './services/packages.ts'
+import { BlinkWatcher } from './services/blink.ts'
+import { findTool, loadLoginShellPath, run } from './services/tools.ts'
+import iconPath from '../../build/icon.png?asset'
+import { PRODUCTION_CSP } from './csp.ts'
+
+// Name and data folder. The data folder stays "rbx-forge" (what development builds have always
+// used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
+app.setName('RBX Forge')
+app.setPath('userData', join(app.getPath('appData'), 'rbx-forge'))
+
+// One window per user: a second launch (double-clicking the app again) focuses the first.
+if (!app.requestSingleInstanceLock()) {
+  app.quit()
+  process.exit(0)
+}
+app.on('second-instance', () => {
+  const window = BrowserWindow.getAllWindows()[0]
+  if (!window) return
+  if (window.isMinimized()) window.restore()
+  window.show()
+  window.focus()
+})
+
+// Content Security Policy for the packaged renderer (see csp.ts). Development (the Vite dev server
+// with HMR) is left alone.
+function installCsp(): void {
+  if (!app.isPackaged && process.env.ELECTRON_RENDERER_URL) return
+  session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: { ...details.responseHeaders, 'Content-Security-Policy': [PRODUCTION_CSP] }
+    })
+  })
+}
 
 function emit<K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]): void {
   for (const window of BrowserWindow.getAllWindows()) {
@@ -50,9 +86,19 @@ const lsp = new LspBridge({
 })
 
 let project: Project | null = null
+
+// Wally deps and Rokit tools of the open project (Packages drawer).
+const packages = new Packages({
+  root: () => project?.info.root ?? null,
+  devRunning: () => supervisor.statuses().some((s) => s.id === 'dev' && s.state === 'running'),
+  log: (line) => logs.push(line),
+  emit: (payload) => emit('packages:changed', payload)
+})
 let git: GitSync | null = null
 let conflicts: StudioConflicts | null = null
 let remoteTimer: ReturnType<typeof setInterval> | null = null
+let blink: BlinkWatcher | null = null
+const EMPTY_BLINK: BlinkModel = { file: null, events: [], types: [], options: {}, diagnostics: [] }
 
 function syncSettings(): SyncSettings {
   return { ...DEFAULT_SYNC, ...settings.get<Partial<SyncSettings>>('sync', {}) }
@@ -70,6 +116,8 @@ function requireProject(): Project {
 async function closeProject(): Promise<void> {
   project?.close()
   conflicts?.close()
+  blink?.close()
+  blink = null
   git?.dispose()
   if (remoteTimer) clearInterval(remoteTimer)
   remoteTimer = null
@@ -77,6 +125,7 @@ async function closeProject(): Promise<void> {
   git = null
   conflicts = null
   await supervisor.setRoot(null)
+  lsp.setDataModel(null)
   await lsp.setRoot(null)
 }
 
@@ -107,7 +156,10 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
 
   opened.watch((change) => {
     if (change.info) emit('project:changed', opened.info)
-    if (change.tree) emit('tree:changed', opened.tree)
+    if (change.tree) {
+      emit('tree:changed', opened.tree)
+      lsp.setDataModel(opened.tree)
+    }
     if (change.scripts) emit('scripts:changed', opened.scripts)
     void git?.refresh()
   })
@@ -122,12 +174,18 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   void git.refresh(true)
   remoteTimer = setInterval(() => void git?.refresh(true), 2 * 60 * 1000)
 
+  // events.blink: parse on change, compile a temp copy, report errors (Events tab + dev log).
+  blink = new BlinkWatcher({ root: full, log: (line) => logs.push(line), onChange: (model) => emit('blink:changed', model) })
+  void blink.start().catch((error) => harnessLog(`blink: ${error}`, 'stderr'))
+
   conflicts = new StudioConflicts(full)
   conflicts.watch((list) => emit('studio:conflicts', list))
 
   emit('project:changed', opened.info)
   emit('tree:changed', opened.tree)
   emit('scripts:changed', opened.scripts)
+  // Live Studio instances -> luau-lsp ($/plugin/full), for DataModel autocomplete.
+  lsp.setDataModel(opened.tree)
 
   await supervisor.setRoot(full)
   void lsp.setRoot(full).catch((error) => harnessLog(`luau-lsp: ${error}`, 'stderr'))
@@ -190,7 +248,19 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   getStudioConflicts: () => ctx.studioConflicts(),
   resolveStudioConflict: (path: string, take: 'studio' | 'repo') => ctx.resolveStudioConflict(path, take),
 
-  lspStart: () => lsp.start()
+  getBlink: () => blink?.model ?? EMPTY_BLINK,
+  lspStart: () => lsp.start(),
+
+  searchWally: (query: string) => packages.search(query),
+  wallyPackage: (id: string) => packages.metadata(id),
+  listWallyDeps: () => packages.listDeps(),
+  addWallyDep: (spec: WallyAddSpec) => packages.addDep(spec),
+  removeWallyDep: (alias: string, realm: WallyRealm) => packages.removeDep(alias, realm),
+  updateWallyDep: (alias: string, realm: WallyRealm, version?: string) => packages.updateDep(alias, realm, version),
+  listRokitTools: () => packages.listTools(),
+  addRokitTool: (repo: string, version?: string) => packages.addTool(repo, version),
+  updateRokitTool: (name: string) => packages.updateTool(name),
+  curatedTools: () => packages.curated()
 }
 
 for (const [name, handler] of Object.entries(handlers)) {
@@ -213,6 +283,9 @@ function createWindow(): BrowserWindow {
     height: 900,
     show: false,
     backgroundColor: '#0f0f10',
+    title: 'RBX Forge',
+    // Windows/Linux window and taskbar icon; macOS uses the app bundle's icon.
+    ...(process.platform === 'darwin' ? {} : { icon: iconPath }),
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'default',
     webPreferences: {
       preload: preloadPath(),
@@ -231,7 +304,12 @@ function createWindow(): BrowserWindow {
 }
 
 app.whenReady().then(async () => {
+  installCsp()
+  if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(iconPath)
   createWindow()
+  // Finder-launched apps miss the login shell's PATH (Homebrew, nvm, ~/.rokit/bin from .zprofile).
+  // Read it before starting any tools; bounded by a 3 s timeout.
+  if (process.platform === 'darwin') await loadLoginShellPath().catch(() => null)
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })

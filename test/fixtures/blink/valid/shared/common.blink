@@ -1,0 +1,11 @@
+-- Shared types
+type PlayerId = f64
+struct Vec2 {
+    X: f32,
+    Y: f32
+}
+event Ping {
+    From: Client,
+    Type: Unreliable,
+    Call: SingleSync
+}

@@ -3,77 +3,13 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import type { HarnessContext } from '../src/main/context.ts'
 import type { TreeNode } from '../src/shared/types.ts'
-import type { ToolFs } from '../src/main/agent/tools.ts'
+import { fakeContext, type Fake } from './agentFake.ts'
 import { gentreeTools, normalizeRepoPath, parseInstancePath, WRITE_TOOLS } from '../src/main/agent/tools.ts'
 import { chatPermissions, ChatManager } from '../src/main/agent/chat.ts'
 import { TestAgentRunner } from '../src/main/agent/testAgents.ts'
 import { Credentials } from '../src/main/agent/credentials.ts'
 import { toChatMessages, type QueryFn } from '../src/main/agent/sdk.ts'
-
-interface Fake {
-  ctx: HarnessContext
-  files: Map<string, string>
-  dirs: Set<string>
-  settings: Map<string, unknown>
-  events: { event: string; payload: any }[]
-  fs: ToolFs
-}
-
-function fakeContext(opts: { tree?: TreeNode[]; files?: Record<string, string>; dirs?: string[] } = {}): Fake {
-  const files = new Map(Object.entries(opts.files ?? {}))
-  const dirs = new Set(opts.dirs ?? ['src', 'src/shared', 'src/server', 'src/client', 'src/shared/Features'])
-  const settings = new Map<string, unknown>()
-  const events: { event: string; payload: any }[] = []
-
-  const ctx: HarnessContext = {
-    project: () => ({ root: '/fake/project', name: 'Fake', placeIds: [1] }),
-    tree: () => opts.tree ?? [],
-    scripts: () => [],
-    async readFile(path) {
-      if (path === 'default.project.json' && !files.has(path)) throw new Error('missing')
-      const v = files.get(path)
-      if (v === undefined) throw new Error(`ENOENT ${path}`)
-      return v
-    },
-    async writeFile(path, contents) {
-      files.set(path, contents)
-    },
-    async listFiles() {
-      return []
-    },
-    services: () => [{ id: 'dev', label: 'dev', state: 'running', restarts: 0 }],
-    async restartService() {},
-    logs: () => [],
-    async gitStatus() {
-      return { isRepo: true, hasRemote: false, ahead: 0, behind: 0, dirty: 0, conflicts: [] }
-    },
-    async syncNow() {
-      return { isRepo: true, hasRemote: false, ahead: 0, behind: 0, dirty: 0, conflicts: [] }
-    },
-    async studioConflicts() {
-      return []
-    },
-    async resolveStudioConflict() {},
-    getSetting: <T,>(key: string, fallback: T) => (settings.has(key) ? (settings.get(key) as T) : fallback),
-    setSetting: (key, value) => void settings.set(key, value),
-    emit: (event, payload) => void events.push({ event, payload }),
-    log: () => {}
-  }
-
-  const fs: ToolFs = {
-    async exists(rel) {
-      return dirs.has(rel) || files.has(rel)
-    },
-    async mkdir(rel) {
-      const parts = rel.split('/')
-      for (let i = 1; i <= parts.length; i++) dirs.add(parts.slice(0, i).join('/'))
-    }
-  }
-
-  return { ctx, files, dirs, settings, events, fs }
-}
 
 // ---- helpers ----
 
@@ -238,7 +174,7 @@ test('chat streams messages, stores the SDK session id and resumes it', async ()
       yield { type: 'result', subtype: 'success', is_error: false, result: 'Done.', session_id: 'sdk-1' } as any
     })()
   }
-  const credentials = new Credentials(fake.ctx, async () => null, {})
+  const credentials = new Credentials(fake.ctx, async () => null, { ANTHROPIC_API_KEY: 'sk-env', CLAUDE_CODE_OAUTH_TOKEN: 'oauth' })
   const chats = new ChatManager(fake.ctx, { queryFn, credentials, makeServer: () => ({ type: 'stdio', command: 'none' }) })
   const chat = chats.create()
   await chats.send(chat.id, 'Read a.luau')
@@ -248,6 +184,9 @@ test('chat streams messages, stores the SDK session id and resumes it', async ()
   assert.deepEqual(msgs[1].tool, { name: 'read_script', input: 'path=src/a.luau' })
   assert.equal(seen[0].resume, undefined)
   assert.equal(seen[0].model, 'claude-opus-5-5')
+  // The API key goes to the SDK subprocess; a Claude Code OAuth token does not.
+  assert.equal(seen[0].env.ANTHROPIC_API_KEY, 'sk-env')
+  assert.equal(seen[0].env.CLAUDE_CODE_OAUTH_TOKEN, undefined)
   await chats.send(chat.id, 'again')
   while (chats.busy(chat.id)) await new Promise((r) => setTimeout(r, 5))
   assert.equal(seen[1].resume, 'sdk-1')
@@ -265,7 +204,7 @@ test('toChatMessages maps errors to system messages', () => {
 
 // ---- credentials ----
 
-test('setApiKey encrypts with safeStorage and exports the env var', async () => {
+test('setApiKey encrypts with safeStorage and passes the key to the SDK env', async () => {
   const fake = fakeContext()
   const env: Record<string, string | undefined> = {}
   const safe = {
@@ -278,11 +217,14 @@ test('setApiKey encrypts with safeStorage and exports the env var', async () => 
   const stored = fake.settings.get('anthropicApiKey') as any
   assert.equal(stored.enc, 'safe')
   assert.ok(!Buffer.from(stored.data, 'base64').toString().startsWith('sk-'))
-  assert.equal(env.ANTHROPIC_API_KEY, 'sk-test')
   assert.equal(await creds.storedKey(), 'sk-test')
   assert.equal(await creds.hasApiKey(), true)
-  await creds.setApiKey('')
+  const auth = await creds.anthropicAuth()
+  assert.equal(auth.env?.ANTHROPIC_API_KEY, 'sk-test')
+  // process.env itself is not modified.
   assert.equal(env.ANTHROPIC_API_KEY, undefined)
+  await creds.setApiKey('')
+  assert.equal(await creds.hasApiKey(), false)
 })
 
 // ---- test agents ----

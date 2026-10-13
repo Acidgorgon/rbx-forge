@@ -8,26 +8,47 @@
 // every agent is a static reviewer.
 //
 // Every agent must end by calling report_result(status, summary); that call decides passed/failed.
+//
+// A run uses one provider/model for all its agents. On anthropic each agent is an Agent SDK query;
+// on the other providers it is runOpenAiLoop with the read-only gentree tools plus report_result.
+// Studio MCP tools are only wired into the SDK path, so non-anthropic agents are static reviewers.
 
 import { randomUUID } from 'node:crypto'
-import { tool } from '@anthropic-ai/claude-agent-sdk'
-import type { McpServerConfig, Options, SdkMcpToolDefinition } from '@anthropic-ai/claude-agent-sdk'
-import { createSdkMcpServer } from '@anthropic-ai/claude-agent-sdk'
+import type { McpServerConfig, Options } from '@anthropic-ai/claude-agent-sdk'
 import { z } from 'zod'
-import type { ChatMessage, TestAgent } from '@shared/types'
+import type { ChatMessage, ModelChoice, TestAgent } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
-import type { Credentials } from './credentials.ts'
-import { allowServer, model, sdkQuery, studioMcp, STUDIO_SERVER, SYSTEM_PROMPT, systemMessage, toChatMessages, type QueryFn } from './sdk.ts'
-import { gentreeTools, mcpToolName, SERVER_NAME } from './tools.ts'
+import type { AnthropicAuth } from './credentials.ts'
+import { runOpenAiLoop, type FetchFn } from './openaiLoop.ts'
+import { extraBody, isProviderId, type Providers } from './providers.ts'
+import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
+import {
+  allowServer,
+  executableOption,
+  model,
+  OPENAI_TOOLS_NOTE,
+  sdkQuery,
+  studioMcp,
+  STUDIO_SERVER,
+  SYSTEM_PROMPT,
+  systemMessage,
+  toChatMessages,
+  type QueryFn
+} from './sdk.ts'
+import { defineTool, gentreeTools, mcpToolName, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
 
 const MAX_KEPT = 50
 const MAX_MESSAGES = 300
 
 export interface TestAgentDeps {
   queryFn?: QueryFn
-  credentials?: Pick<Credentials, 'apply'>
+  // Anthropic auth (env for the SDK subprocess); without it the SDK inherits process.env.
+  credentials?: { anthropicAuth(): Promise<AnthropicAuth> }
   // Wraps tool definitions in an MCP server (tests capture the tools to call report_result).
-  makeServer?: (tools: SdkMcpToolDefinition<any>[]) => McpServerConfig
+  makeServer?: (tools: GentreeTool<any>[]) => McpServerConfig
+  providers?: Providers
+  fetchFn?: FetchFn
+  toolFs?: ToolFs
 }
 
 interface Run {
@@ -36,17 +57,19 @@ interface Run {
   messages: ChatMessage[]
   report?: { status: 'passed' | 'failed'; summary: string }
   usesStudio: boolean
+  choice: ModelChoice
 }
 
-function agentPrompt(role: 'playtester' | 'reviewer'): string {
+function agentPrompt(role: 'playtester' | 'reviewer', openai = false): string {
   const how =
     role === 'playtester'
       ? 'You have the live Roblox Studio tools (mcp__studio__*). Use them to run the game or Luau and observe behaviour, alongside reading the code.'
       : 'You are a static reviewer: no live Studio access. Read the relevant code and reason carefully about whether the scenario works, citing file paths and lines.'
-  return `${SYSTEM_PROMPT}
+  const report = openai ? 'report_result' : mcpToolName('report_result')
+  return `${SYSTEM_PROMPT}${openai ? OPENAI_TOOLS_NOTE : ''}
 
 You are a test agent. You will be given one scenario to verify. You cannot edit files. ${how}
-Stay focused on the scenario and keep tool calls few. When done, call ${mcpToolName('report_result')} exactly once with status "passed" or "failed" and a short summary (what you checked, evidence, and the cause of any failure).`
+Stay focused on the scenario and keep tool calls few. When done, call ${report} exactly once with status "passed" or "failed" and a short summary (what you checked, evidence, and the cause of any failure).`
 }
 
 export class TestAgentRunner {
@@ -71,14 +94,19 @@ export class TestAgentRunner {
   }
 
   // Queues one agent per scenario and returns their initial state; they run in the background.
-  run(scenarios: string[]): TestAgent[] {
+  run(scenarios: string[], choice?: ModelChoice): TestAgent[] {
+    const pick: ModelChoice =
+      choice && isProviderId(choice.provider) && typeof choice.model === 'string' && choice.model.trim()
+        ? { provider: choice.provider, model: choice.model.trim() }
+        : (this.deps.providers?.defaultModel() ?? { provider: 'anthropic', model: model(this.ctx) })
     const created: Run[] = []
     for (const scenario of scenarios.map((s) => s.trim()).filter(Boolean)) {
       const run: Run = {
-        agent: { id: `t-${randomUUID().slice(0, 8)}`, scenario, state: 'queued' },
+        agent: { id: `t-${randomUUID().slice(0, 8)}`, scenario, state: 'queued', provider: pick.provider, model: pick.model },
         abort: new AbortController(),
         messages: [],
-        usesStudio: false
+        usesStudio: false,
+        choice: pick
       }
       created.push(run)
       this.runs.push(run)
@@ -129,8 +157,9 @@ export class TestAgentRunner {
     }
   }
 
-  private buildOptions(run: Run, root: string): Options {
-    const reportTool = tool(
+  // Read-only gentree tools plus report_result, which records the verdict on the run.
+  private agentTools(run: Run): GentreeTool<any>[] {
+    const reportTool = defineTool(
       'report_result',
       'Finish the test: report whether the scenario passed or failed, with a short summary.',
       { status: z.enum(['passed', 'failed']), summary: z.string() },
@@ -139,10 +168,12 @@ export class TestAgentRunner {
         return { content: [{ type: 'text', text: 'recorded; stop now' }] }
       }
     )
-    const tools = [...gentreeTools(this.ctx, { readOnly: true }), reportTool]
-    const makeServer =
-      this.deps.makeServer ??
-      ((t: SdkMcpToolDefinition<any>[]) => createSdkMcpServer({ name: SERVER_NAME, version: '1.0.0', alwaysLoad: true, tools: t }))
+    return [...gentreeTools(this.ctx, { readOnly: true, ...(this.deps.toolFs ? { fs: this.deps.toolFs } : {}) }), reportTool]
+  }
+
+  private buildOptions(run: Run, root: string, env?: Record<string, string | undefined>): Options {
+    const tools = this.agentTools(run)
+    const makeServer = this.deps.makeServer ?? wrapInSdkServer
 
     const mcpServers: Record<string, McpServerConfig> = { [SERVER_NAME]: makeServer(tools) }
     const allowedTools = [...allowServer(SERVER_NAME), 'Read', 'Glob', 'Grep']
@@ -155,8 +186,10 @@ export class TestAgentRunner {
     }
     return {
       cwd: root,
-      model: model(this.ctx),
+      model: run.choice.model,
       systemPrompt: agentPrompt(run.usesStudio ? 'playtester' : 'reviewer'),
+      ...(env ? { env } : {}),
+      ...executableOption(),
       abortController: run.abort,
       mcpServers,
       strictMcpConfig: true,
@@ -166,8 +199,12 @@ export class TestAgentRunner {
       permissionMode: 'dontAsk',
       settingSources: [],
       persistSession: false,
-      maxTurns: Number(this.ctx.getSetting('agentMaxTurns', 40)) || 40
+      maxTurns: this.maxTurns()
     }
+  }
+
+  private maxTurns(): number {
+    return Number(this.ctx.getSetting('agentMaxTurns', 40)) || 40
   }
 
   private async execute(run: Run): Promise<void> {
@@ -176,34 +213,75 @@ export class TestAgentRunner {
     if (!root) return this.finish(run, 'error', 'No project open')
     run.agent.state = 'running'
     run.agent.startedAt = Date.now()
-    const options = this.buildOptions(run, root)
-    this.changed()
-    const queryFn = this.deps.queryFn ?? sdkQuery
-    try {
-      await this.deps.credentials?.apply()
-      const prompt = `Scenario to verify:\n${run.agent.scenario}`
-      for await (const m of queryFn({ prompt, options })) {
-        for (const cm of toChatMessages(m, run.agent.id)) this.push(run, cm)
-        if (m.type === 'result') break
+    const prompt = `Scenario to verify:\n${run.agent.scenario}`
+    if (run.choice.provider !== 'anthropic') {
+      this.changed()
+      const error = await this.executeOpenAi(run, prompt)
+      if (error !== null && !run.abort.signal.aborted && !run.report) return this.finish(run, 'error', error)
+    } else {
+      let env: Record<string, string | undefined> | undefined
+      if (this.deps.credentials) {
+        const auth = await this.deps.credentials.anthropicAuth()
+        if (!auth.ready) return this.finish(run, 'error', auth.error ?? 'Anthropic is not set up')
+        env = auth.env
       }
-    } catch (e) {
-      if (!run.abort.signal.aborted) return this.finish(run, 'error', (e as Error).message)
+      const options = this.buildOptions(run, root, env)
+      this.changed()
+      const queryFn = this.deps.queryFn ?? sdkQuery
+      try {
+        for await (const m of queryFn({ prompt, options })) {
+          for (const cm of toChatMessages(m, run.agent.id)) this.push(run, cm)
+          if (m.type === 'result') break
+        }
+      } catch (e) {
+        if (!run.abort.signal.aborted) return this.finish(run, 'error', (e as Error).message)
+      }
     }
     if (run.abort.signal.aborted) return this.finish(run, 'cancelled', 'Cancelled')
     if (run.report) return this.finish(run, run.report.status, run.report.summary)
     this.finish(run, 'error', 'Agent finished without calling report_result')
   }
 
+  // Runs one agent through the OpenAI-compatible loop. Returns an error message, or null.
+  private async executeOpenAi(run: Run, prompt: string): Promise<string | null> {
+    const { provider, model: modelId } = run.choice
+    const ep = this.deps.providers ? await this.deps.providers.endpoint(provider) : { error: 'Providers are not available.' }
+    if ('error' in ep) return ep.error
+    const result = await (usesResponsesApi(provider, modelId) ? runResponsesLoop : runOpenAiLoop)({
+      baseUrl: ep.baseUrl,
+      headers: ep.headers,
+      model: modelId,
+      system: agentPrompt('reviewer', true),
+      history: [{ role: 'user', content: prompt }],
+      tools: this.agentTools(run),
+      maxTurns: this.maxTurns(),
+      signal: run.abort.signal,
+      agentId: run.agent.id,
+      emit: (m) => this.push(run, m),
+      extraBody: extraBody(provider, modelId),
+      stop: () => !!run.report,
+      fetchFn: this.deps.fetchFn
+    })
+    if (result.outcome === 'error') return result.error ?? 'request failed'
+    if (result.outcome === 'max_turns') return 'Agent hit the turn limit without calling report_result'
+    return null
+  }
+
   private finish(run: Run, state: TestAgent['state'], summary: string): void {
     run.agent.state = state
     run.agent.summary = summary
     run.agent.finishedAt = Date.now()
-    if (state === 'error' || state === 'cancelled') this.push(run, systemMessage(run.agent.id, summary))
+    // The loop already posted its own error line; do not repeat it.
+    const last = run.messages[run.messages.length - 1]
+    const repeated = last?.role === 'system' && last.text.includes(summary)
+    if ((state === 'error' || state === 'cancelled') && !repeated) this.push(run, systemMessage(run.agent.id, summary))
     this.changed()
   }
 
   private push(run: Run, m: ChatMessage): void {
-    run.messages.push(m)
+    const i = run.messages.findIndex((x) => x.id === m.id)
+    if (i >= 0) run.messages[i] = m
+    else run.messages.push(m)
     if (run.messages.length > MAX_MESSAGES) run.messages.shift()
     this.ctx.emit('chat:message', m)
   }

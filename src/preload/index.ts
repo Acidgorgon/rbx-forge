@@ -7,8 +7,14 @@ const methods = [
   'getGitStatus', 'syncNow', 'initGit', 'getSyncSettings', 'setSyncSettings',
   'getStudioConflicts', 'resolveStudioConflict',
   'listChats', 'newChat', 'getChat', 'sendChat', 'stopChat', 'hasApiKey', 'setApiKey',
+  'addGuest', 'removeGuest', 'setGuestTools', 'startRoundtable', 'planToChecklist',
+  'listProviders', 'setProviderKey', 'setProviderConfig', 'listModels', 'setChatModel',
+  'getDefaultModel', 'setDefaultModel', 'getAnthropicUseClaudeLogin', 'setAnthropicUseClaudeLogin',
   'getAgents', 'runAgents', 'cancelAgent',
-  'lspStart'
+  'lspStart',
+  'getBlink',
+  'searchWally', 'wallyPackage', 'listWallyDeps', 'addWallyDep', 'removeWallyDep', 'updateWallyDep',
+  'listRokitTools', 'addRokitTool', 'updateRokitTool', 'curatedTools'
 ] as const
 
 const api: Record<string, unknown> = {}

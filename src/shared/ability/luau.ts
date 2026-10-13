@@ -17,10 +17,11 @@
 import { fmt } from '../vfx/sequence.ts'
 import type { Rgb, Vec3 } from '../vfx/types.ts'
 import { resolveAbility, type EventLengths } from './timing.ts'
-import type { Ability, AbilityEvent } from './types.ts'
+import { partForRig } from './rig.ts'
+import type { Ability, AbilityEvent, AbilityRig } from './types.ts'
 
 export const RUNNER_MODULE = 'AbilityRunner'
-export const RUNNER_VERSION = 1
+export const RUNNER_VERSION = 2
 export const RUNNER_SENTINEL = 'rbx-forge-ability-runner'
 
 export function isOwnRunner(src: string): boolean {
@@ -35,13 +36,15 @@ const cfOffset = (o: Vec3, r: Vec3) => {
   return r.some((x) => x !== 0) ? `${base} * CFrame.Angles(math.rad(${fmt(r[0])}), math.rad(${fmt(r[1])}), math.rad(${fmt(r[2])}))` : base
 }
 
-function eventTable(ev: AbilityEvent, at: number, indent: string): string | null {
+// Parts are written for the clip's rig (an R15 part on an R6 clip becomes the R6 part holding it); the
+// runner still falls back between R15 and R6 names, so a module plays on either kind of character.
+function eventTable(ev: AbilityEvent, at: number, indent: string, rig: AbilityRig = 'R15'): string | null {
   const bits = [`Id = ${str(ev.id)}`, `At = ${fmt(at)}`]
   if (ev.at.marker) bits.push(`Marker = ${str(ev.at.marker)}`, `MarkerOffset = ${fmt(ev.at.at)}`)
   switch (ev.kind) {
     case 'vfx':
       bits.splice(1, 0, `Kind = "Vfx"`)
-      bits.push(`Effect = ${str(ev.effectName)}`, `Part = ${str(ev.part)}`)
+      bits.push(`Effect = ${str(ev.effectName)}`, `Part = ${str(partForRig(ev.part, rig))}`)
       if (ev.attachment) bits.push(`Attachment = ${str(ev.attachment)}`)
       bits.push(`Offset = ${cfOffset(ev.offset, ev.rotation)}`)
       break
@@ -49,7 +52,7 @@ function eventTable(ev: AbilityEvent, at: number, indent: string): string | null
       if (ev.source.kind !== 'asset' || !ev.source.id) return null
       bits.splice(1, 0, `Kind = "Sound"`)
       bits.push(`SoundId = ${str(ev.source.id)}`, `Volume = ${fmt(ev.volume)}`, `Pitch = ${fmt(ev.pitch)}`)
-      if (ev.part) bits.push(`Part = ${str(ev.part)}`)
+      if (ev.part) bits.push(`Part = ${str(partForRig(ev.part, rig))}`)
       break
     case 'shake':
       bits.splice(1, 0, `Kind = "Shake"`)
@@ -86,13 +89,13 @@ export function abilityModule(ability: Ability, lengths: EventLengths = {}): { s
   const skipped: string[] = []
   const rows: string[] = []
   for (const e of r.events) {
-    const row = eventTable(e.event, e.start, '\t\t')
+    const row = eventTable(e.event, e.start, '\t\t', ability.animation?.rig ?? 'R15')
     if (row) rows.push(row)
     else skipped.push(`${e.id}: sound without a Roblox asset id`)
   }
   for (const e of ability.events) if (e.muted) skipped.push(`${e.id}: muted`)
   const a = ability.animation
-  const anim = a ? `{ Id = ${str(a.assetId ?? '')}, Name = ${str(a.name)}, Clip = ${str(a.clip)}, Speed = ${fmt(a.speed)}, FadeIn = ${fmt(a.fadeIn)}, Start = ${fmt(a.start)}, Length = ${fmt(a.duration)} }` : 'nil'
+  const anim = a ? `{ Id = ${str(a.assetId ?? '')}, Name = ${str(a.name)}, Clip = ${str(a.clip)}, Speed = ${fmt(a.speed)}, FadeIn = ${fmt(a.fadeIn)}, Start = ${fmt(a.start)}, Length = ${fmt(a.duration)}, Rig = ${str(a.rig ?? 'R15')} }` : 'nil'
   const markers = r.markers.map((m) => `{ Name = ${str(m.name)}, At = ${fmt(m.t)} }`)
   const source = `local ${RUNNER_MODULE} = require(script.Parent:WaitForChild("${RUNNER_MODULE}"))
 
@@ -181,6 +184,45 @@ local function falloff(kind: string, u: number): number
 	return math.exp(-4.5 * u) * (1 - u)
 end
 
+local PART_ALIASES: { [string]: { string } } = {
+	Torso = { "UpperTorso", "LowerTorso" },
+	["Right Arm"] = { "RightHand", "RightLowerArm", "RightUpperArm" },
+	["Left Arm"] = { "LeftHand", "LeftLowerArm", "LeftUpperArm" },
+	["Right Leg"] = { "RightFoot", "RightLowerLeg", "RightUpperLeg" },
+	["Left Leg"] = { "LeftFoot", "LeftLowerLeg", "LeftUpperLeg" },
+	UpperTorso = { "Torso" },
+	LowerTorso = { "Torso" },
+	RightUpperArm = { "Right Arm" },
+	RightLowerArm = { "Right Arm" },
+	RightHand = { "Right Arm" },
+	LeftUpperArm = { "Left Arm" },
+	LeftLowerArm = { "Left Arm" },
+	LeftHand = { "Left Arm" },
+	RightUpperLeg = { "Right Leg" },
+	RightLowerLeg = { "Right Leg" },
+	RightFoot = { "Right Leg" },
+	LeftUpperLeg = { "Left Leg" },
+	LeftLowerLeg = { "Left Leg" },
+	LeftFoot = { "Left Leg" },
+}
+
+local function findPart(character: Model, name: string?): BasePart?
+	local key = name or "HumanoidRootPart"
+	local direct = character:FindFirstChild(key)
+	if direct and direct:IsA("BasePart") then
+		return direct
+	end
+	for _, alias in PART_ALIASES[key] or {} do
+		local part = character:FindFirstChild(alias)
+		if part and part:IsA("BasePart") then
+			return part
+		end
+	end
+	return nil
+end
+
+AbilityRunner.findPart = findPart
+
 local Handle = {}
 Handle.__index = Handle
 
@@ -216,14 +258,14 @@ end
 
 function Handle:_partCFrame(partName: string?, attachmentName: string?): CFrame?
 	if attachmentName then
-		local part = partName and self.character:FindFirstChild(partName)
+		local part = partName and findPart(self.character, partName)
 		local att = (part and part:FindFirstChild(attachmentName)) or self.character:FindFirstChild(attachmentName, true)
 		if att and att:IsA("Attachment") then
 			return att.WorldCFrame
 		end
 	end
-	local part = self.character:FindFirstChild(partName or "HumanoidRootPart")
-	if part and part:IsA("BasePart") then
+	local part = findPart(self.character, partName)
+	if part then
 		return part.CFrame
 	end
 	return nil
@@ -313,7 +355,7 @@ function Handle:_fire(ev: any)
 		sound.SoundId = ev.SoundId
 		sound.Volume = ev.Volume
 		sound.PlaybackSpeed = ev.Pitch
-		local part = ev.Part and self.character:FindFirstChild(ev.Part)
+		local part = ev.Part and findPart(self.character, ev.Part)
 		sound.Parent = if part then part else SoundService
 		sound:Play()
 		sound.Ended:Once(function()

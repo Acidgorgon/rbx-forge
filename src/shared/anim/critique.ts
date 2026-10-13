@@ -36,6 +36,18 @@ Joints: Root Waist Neck LeftShoulder LeftElbow LeftWrist RightShoulder RightElbo
 Answer with JSON only:
 {"scores":{"silhouette":n,"timing":n,"weight":n,"arcs":n,"appeal":n,"cleanliness":n},"summary":"two sentences","changes":[...]}`
 
+// The critic's system prompt for a rig. On R6 the frames show the R6 dummy and the joints are the
+// six R6 Motor6Ds (changes may name them as R6 Motor6Ds or as their R15 equivalents).
+export function animCriticSystem(rig: 'R15' | 'R6' = 'R15'): string {
+  if (rig !== 'R6') return ANIM_CRITIC_SYSTEM
+  return ANIM_CRITIC_SYSTEM.replace('reviewing an R15 Roblox character animation', 'reviewing an R6 Roblox character animation')
+    .replace('frames of a blocky R15 dummy', 'frames of a blocky R6 dummy (Head, Torso, one straight part per arm and leg)')
+    .replace(
+      'Joints: Root Waist Neck LeftShoulder LeftElbow LeftWrist RightShoulder RightElbow RightWrist LeftHip LeftKnee LeftAnkle RightHip RightKnee RightAnkle.',
+      'Joints (R6 has no waist, elbows, wrists, knees or ankles; judge it as R6, where straight limbs and a leaning root are the style): RootJoint Neck "Right Shoulder" "Left Shoulder" "Right Hip" "Left Hip" (Shoulder / Hip X+ raises the limb forward, the same conventions as R15).'
+    )
+}
+
 export function animOverall(scores: Record<AnimRubricKey, number>): number {
   let s = 0
   for (const k of ANIM_RUBRIC_KEYS) s += (scores[k] ?? 0) * ANIM_RUBRIC_WEIGHTS[k]

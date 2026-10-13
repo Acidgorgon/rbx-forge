@@ -4,18 +4,20 @@
 // joint keys, IK, look-at, root motion, holds, markers and beats, then the post passes (spring
 // overlap, foot plants, mirror) and patches from the critic. Errors carry the script line.
 
-import { ANIM_PRIORITIES, POSE_EASING_DIRECTIONS, POSE_EASING_STYLES, R15_JOINTS, type AnimBeat, type AnimClip, type AnimKey, type AnimPriority, type LearnedPose, type PoseEasingDirection, type PoseEasingStyle, type R15Joint } from './model.ts'
+import { ANIM_PRIORITIES, POSE_EASING_DIRECTIONS, POSE_EASING_STYLES, R15_JOINTS, type AnimBeat, type AnimClip, type AnimKey, type AnimPriority, type LearnedPose, type PoseEasingDirection, type PoseEasingStyle, type R15Joint, type RigType } from './model.ts'
 import type { AnimMarker } from './types.ts'
 import { cfToXf, qeulerDeg, qmul, xfToCf, type V3, type Xf } from './math.ts'
 import { findKitPose, KIT_GROUPS, KIT_POSES, resolveKitPose, type KitPose } from './kit.ts'
 import { forwardKinematics, isJoint, LIMBS, mirrorJoint, mirrorXf, type LimbName } from './r15.ts'
-import { lookAtRotation, solveTwoBone } from './ik.ts'
+import { aimLimbR6, lookAtRotation, solveTwoBone } from './ik.ts'
+import { collapsePose, jointAlias, r6TracksFromView } from './convert.ts'
+import { R6_CAPABLE, R6_JOINT_DEFS, R6_OF_R15 } from './r6.ts'
 import { keyXf, normalizeKeys, samplePose } from './sample.ts'
-import { footLockPass, overlapPass, plantPass, settleFeet, Tracks } from './passes.ts'
+import { footLockPass, footLockPassR6, overlapPass, plantPass, settleFeet, settleFeetR6, Tracks } from './passes.ts'
 import { applyAnimChanges } from './patch.ts'
 
 export interface AnimOp {
-  op: 'pose' | 'joint' | 'ik' | 'plant' | 'look' | 'root' | 'hold' | 'overlap' | 'marker' | 'beat' | 'mirror' | 'feet' | 'duration' | 'loop' | 'priority' | 'name' | 'ease'
+  op: 'pose' | 'joint' | 'ik' | 'plant' | 'look' | 'root' | 'hold' | 'overlap' | 'marker' | 'beat' | 'mirror' | 'feet' | 'duration' | 'loop' | 'priority' | 'name' | 'ease' | 'rig'
   at: number
   line?: number
   name?: string
@@ -126,21 +128,39 @@ function suggest(name: string, names: string[]): string {
   return near.length ? ` (did you mean ${near.join(', ')}?)` : ` (one of: ${names.join(', ')})`
 }
 
-function jointOf(v: unknown, line?: number): R15Joint {
+const R6_NAMES = R6_JOINT_DEFS.map((d) => d.name)
+const R6_NO_JOINT: Partial<Record<R15Joint, string>> = {
+  Waist: 'R6 has one Torso (no Waist); turn or lean the body with a:root',
+  LeftElbow: 'R6 arms have no elbow; aim the whole arm with "Left Shoulder" or a:ik("LeftArm", target)',
+  RightElbow: 'R6 arms have no elbow; aim the whole arm with "Right Shoulder" or a:ik("RightArm", target)',
+  LeftWrist: 'R6 has no LeftWrist (no hands)',
+  RightWrist: 'R6 has no RightWrist (no hands)',
+  LeftKnee: 'R6 legs have no knee; aim the whole leg with "Left Hip" or a:ik("LeftLeg", target)',
+  RightKnee: 'R6 legs have no knee; aim the whole leg with "Right Hip" or a:ik("RightLeg", target)',
+  LeftAnkle: 'R6 has no LeftAnkle (no feet)',
+  RightAnkle: 'R6 has no RightAnkle (no feet)'
+}
+
+// A joint name in a script: the R15 name, or the R6 Motor6D / part name ("Right Shoulder",
+// "RootJoint", "Torso"...), always resolved to the R15 name the kit and IK work with.
+function jointOf(v: unknown, line?: number, rig: RigType = 'R15'): R15Joint {
   const s = String(v ?? '')
-  const hit = R15_JOINTS.find((j) => j.toLowerCase() === s.toLowerCase())
-  if (!hit) throw new AnimCompileError(`no R15 joint "${s}"${suggest(s, [...R15_JOINTS])}`, line)
+  const hit = R15_JOINTS.find((j) => j.toLowerCase() === s.toLowerCase()) ?? jointAlias(s)
+  if (!hit) {
+    const names = rig === 'R6' ? [...R6_NAMES, ...R6_CAPABLE] : [...R15_JOINTS]
+    throw new AnimCompileError(`no ${rig} joint "${s}"${suggest(s, names)}`, line)
+  }
   return hit
 }
 
-function groupOf(v: unknown, line?: number): R15Joint[] {
-  if (Array.isArray(v)) return v.map((x) => jointOf(x, line))
-  if (v && typeof v === 'object') return Object.values(v as Record<string, unknown>).map((x) => jointOf(x, line))
+function groupOf(v: unknown, line?: number, rig: RigType = 'R15'): R15Joint[] {
+  if (Array.isArray(v)) return v.map((x) => jointOf(x, line, rig))
+  if (v && typeof v === 'object') return Object.values(v as Record<string, unknown>).map((x) => jointOf(x, line, rig))
   const s = String(v ?? 'all')
   const g = Object.entries(KIT_GROUPS).find(([k]) => k.toLowerCase() === s.toLowerCase())
   if (g) return g[1]
   if (isJoint(s)) return [s]
-  return [jointOf(s, line)]
+  return [jointOf(s, line, rig)]
 }
 
 // ------------------------------------------------------------------ learned poses as kit poses
@@ -154,10 +174,18 @@ export function learnedKitPoses(learned: LearnedPose[] = []): KitPose[] {
 export interface CompileOptions {
   name?: string
   learned?: LearnedPose[]
+  // Rig the clip is made for (default R15). On R6: no elbows / knees (IK aims the whole limb), kit
+  // poses are collapsed, feet are planted by moving the root, and the clip stores R6 Motor6D tracks.
+  rig?: RigType
 }
 
 export function compileAnim(ops: AnimOp[], script: string, opts: CompileOptions = {}): { clip: AnimClip; warnings: string[] } {
   if (ops.length > MAX_ANIM_OPS) throw new AnimCompileError(`the script made ${ops.length} calls; the limit is ${MAX_ANIM_OPS}`)
+  // a:rig("R6") in the script wins over the rig the caller asks for.
+  const scripted = [...ops].reverse().find((o) => o.op === 'rig')?.value
+  const rig: RigType = (scripted ?? opts.rig) === 'R6' ? 'R6' : 'R15'
+  const r6 = rig === 'R6'
+  const r6Folded = new Set<R15Joint>()
   const tracks = new Tracks()
   const warnings: string[] = []
   const markers: AnimMarker[] = []
@@ -178,6 +206,9 @@ export function compileAnim(ops: AnimOp[], script: string, opts: CompileOptions 
   for (const op of ops) {
     const t = at(op)
     switch (op.op) {
+      case 'rig':
+        if (op.value !== 'R6' && op.value !== 'R15') throw new AnimCompileError('rig: expected "R15" or "R6"', op.line)
+        break
       case 'name':
         name = String(op.value ?? name).replace(/[^\w ]/g, '').slice(0, 50) || name
         break
@@ -207,8 +238,8 @@ export function compileAnim(ops: AnimOp[], script: string, opts: CompileOptions 
         if (!kp) throw new AnimCompileError(`no pose "${op.name}"${suggest(String(op.name ?? ''), [...KIT_POSES.map((p) => p.name), ...extraKit.map((p) => p.name)])}`, op.line)
         const side = op.opts?.side === undefined ? undefined : String(op.opts.side).toLowerCase()
         if (side !== undefined && side !== 'left' && side !== 'right') throw new AnimCompileError('pose: side must be "left" or "right"', op.line)
-        const only = op.opts?.only !== undefined ? groupOf(op.opts.only, op.line) : undefined
-        const r = resolveKitPose(kp, { side: side as 'left' | 'right' | undefined, amount: op.opts?.amount === undefined ? 1 : Number(op.opts.amount), only })
+        const only = op.opts?.only !== undefined ? groupOf(op.opts.only, op.line, rig) : undefined
+        const r = resolveKitPose(kp, { side: side as 'left' | 'right' | undefined, amount: op.opts?.amount === undefined ? 1 : Number(op.opts.amount), only, rig })
         const e = keyEase(op)
         // A pose's root offset is relative to where the character has travelled (a:root moves it), so
         // a pose after a dash does not snap back to the start.
@@ -217,11 +248,15 @@ export function compileAnim(ops: AnimOp[], script: string, opts: CompileOptions 
           tracks.set(j, t, j === 'Root' ? { p: [travel[0] + x.p[0], x.p[1], travel[2] + x.p[2]], q: x.q } : x, e.style, e.dir)
         }
         const grounded = op.opts?.grounded === undefined ? true : !!op.opts.grounded
-        if (grounded && (!only || only.includes('Root'))) settleFeet(tracks, t, r.feet, e.style, e.dir)
+        if (grounded && (!only || only.includes('Root'))) (r6 ? settleFeetR6 : settleFeet)(tracks, t, r.feet, e.style, e.dir)
         break
       }
       case 'joint': {
-        const j = jointOf(op.joint, op.line)
+        const j = jointOf(op.joint, op.line, rig)
+        if (r6 && !R6_OF_R15[j] && !r6Folded.has(j)) {
+          r6Folded.add(j)
+          warnings.push(`line ${op.line ?? '?'}: ${R6_NO_JOINT[j] ?? `R6 has no ${j}`}; its rotation only changes the direction of the R6 part`)
+        }
         const e = keyEase(op)
         const cfv = cframeOf(op.rot)
         let x: Xf
@@ -249,6 +284,19 @@ export function compileAnim(ops: AnimOp[], script: string, opts: CompileOptions 
         const limb = Object.keys(LIMBS).find((l) => l.toLowerCase() === String(op.limb ?? '').toLowerCase()) as LimbName | undefined
         if (!limb) throw new AnimCompileError(`ik: limb must be one of ${Object.keys(LIMBS).join(', ')}`, op.line)
         const target = vec3(op.target, 'ik target', op.line)
+        if (r6) {
+          // The whole limb aims at the target (no elbow / knee); the R15 tracks get a straight limb so
+          // the final collapse keeps exactly this direction.
+          const a = aimLimbR6(collapsePose(tracks.pose(t)), limb, target)
+          if (!a.reached) warnings.push(`line ${op.line ?? '?'}: ik ${limb}: an R6 limb cannot bend, so it is aimed at the target (the ${limb.endsWith('Arm') ? 'hand' : 'foot'} ends at ${a.end.map((v) => v.toFixed(1)).join(', ')})`)
+          const e = keyEase(op)
+          const L = LIMBS[limb]
+          // Arms hang from the torso (UpperTorso = the R6 Torso); legs from LowerTorso, so undo the waist.
+          const q = limb.endsWith('Arm') ? a.upper : qmul(tracks.sample('Waist', t).q, a.upper)
+          tracks.set(L.upper, t, { p: tracks.sample(L.upper, t).p, q }, e.style, e.dir)
+          tracks.set(L.lower, t, { p: [0, 0, 0], q: [0, 0, 0, 1] }, e.style, e.dir)
+          break
+        }
         const pole = op.opts?.pole !== undefined ? vec3(op.opts.pole, 'ik pole', op.line) : undefined
         const parts = forwardKinematics(tracks.pose(t))
         const r = solveTwoBone(parts, limb, target, { pole })
@@ -283,13 +331,14 @@ export function compileAnim(ops: AnimOp[], script: string, opts: CompileOptions 
         const from = op.opts?.from !== undefined ? Number(op.opts.from) : t
         const to = Number(op.until)
         if (!Number.isFinite(to) || to <= from) throw new AnimCompileError('plant: expected plant(foot, from, to) with to > from', op.line)
-        plants.push({ foot: f === 'left' ? 'Left' : 'Right', from, to, line: op.line })
+        if (r6) warnings.push(`line ${op.line ?? '?'}: a:plant has no effect on R6 (legs have no knees to keep a foot still); the root sets the height instead`)
+        else plants.push({ foot: f === 'left' ? 'Left' : 'Right', from, to, line: op.line })
         break
       }
       case 'overlap': {
         const o = op.opts ?? {}
         overlaps.push({
-          joints: groupOf(op.group ?? 'arms', op.line).filter((j) => j !== 'Root'),
+          joints: groupOf(op.group ?? 'arms', op.line, rig).filter((j) => j !== 'Root'),
           o: {
             delay: Math.max(0, Math.min(0.3, Number(o.delay ?? 0.04))),
             freq: Math.max(0.5, Math.min(12, Number(o.freq ?? 4))),
@@ -323,7 +372,7 @@ export function compileAnim(ops: AnimOp[], script: string, opts: CompileOptions 
   // Key times of the body and legs before the passes add per-frame keys (the foot-lock beats).
   const lockTimes = (['Root', 'LeftHip', 'RightHip', 'LeftKnee', 'RightKnee', 'LeftAnkle', 'RightAnkle'] as R15Joint[]).flatMap((j) => (tracks.map.get(j) ?? []).map((k) => k.t))
   for (const ov of overlaps) overlapPass(tracks, ov.joints, D, ov.o)
-  if (feetLock) footLockPass(tracks, D, lockTimes)
+  if (feetLock) (r6 ? footLockPassR6 : footLockPass)(tracks, D, lockTimes)
   for (const p of plants) {
     if (p.from >= D) {
       warnings.push(`line ${p.line ?? '?'}: plant starts after the clip ends`)
@@ -340,10 +389,13 @@ export function compileAnim(ops: AnimOp[], script: string, opts: CompileOptions 
   }
   markers.sort((a, b) => a.t - b.t)
   beats.sort((a, b) => a.at - b.at)
+  let finalTracks: AnimClip['tracks'] = out
+  // R6: the whole R15 result collapses onto the six R6 joints (limbs keep their overall direction).
+  if (r6) finalTracks = r6TracksFromView(out)
   if (!markers.length) warnings.push('no a:marker(...): add markers (e.g. "hit", "release") so game code and VFX can sync to the clip')
   if (!beats.length) warnings.push('no a:beat(...): label the anticipation / action / recovery beats so the timeline and the critic can follow them')
   for (const m of markers) if (m.t > D + 1e-4) warnings.push(`marker "${m.name}" at ${m.t.toFixed(2)} s is after the end (${D.toFixed(2)} s)`)
-  const clip: AnimClip = { name, duration: D, looped, priority, tracks: out, markers: markers.filter((m) => m.t <= D + 1e-4), beats, script, source: 'script' }
+  const clip: AnimClip = { name, duration: D, looped, priority, ...(r6 ? { rig: 'R6' as const } : {}), tracks: finalTracks, markers: markers.filter((m) => m.t <= D + 1e-4), beats, script, source: 'script' }
   return { clip, warnings }
 }
 
@@ -369,18 +421,19 @@ export function finishAnimRun(rec: AnimRecordResult, script: string, opts: Compi
 export function clipSummary(clip: AnimClip, maxLines = 60): string {
   const times = new Map<number, string[]>()
   const r = (t: number) => Math.round(t * 100) / 100
-  for (const [j, keys] of Object.entries(clip.tracks) as [R15Joint, AnimKey[]][]) {
+  for (const [j, keys] of Object.entries(clip.tracks) as [string, AnimKey[]][]) {
     for (const k of keys) {
       const list = times.get(r(k.t)) ?? []
       list.push(j)
       times.set(r(k.t), list)
     }
   }
-  const lines = [`${clip.name}: ${clip.duration.toFixed(2)} s${clip.looped ? ', looped' : ''}, priority ${clip.priority}, ${Object.keys(clip.tracks).length} joints`]
+  const all = clip.rig === 'R6' ? R6_JOINT_DEFS.length : R15_JOINTS.length
+  const lines = [`${clip.name}: ${clip.rig ?? 'R15'}, ${clip.duration.toFixed(2)} s${clip.looped ? ', looped' : ''}, priority ${clip.priority}, ${Object.keys(clip.tracks).length} joints`]
   if (clip.beats?.length) lines.push(`beats: ${clip.beats.map((b) => `${b.label} @ ${b.at.toFixed(2)}`).join(', ')}`)
   if (clip.markers.length) lines.push(`markers: ${clip.markers.map((m) => `${m.name} @ ${m.t.toFixed(2)}`).join(', ')}`)
   const sorted = [...times.entries()].sort((a, b) => a[0] - b[0])
-  for (const [t, joints] of sorted.slice(0, maxLines)) lines.push(`${t.toFixed(2)}s  ${joints.length === R15_JOINTS.length ? 'all joints' : joints.join(' ')}`)
+  for (const [t, joints] of sorted.slice(0, maxLines)) lines.push(`${t.toFixed(2)}s  ${joints.length === all ? 'all joints' : joints.join(' ')}`)
   if (sorted.length > maxLines) lines.push(`... ${sorted.length - maxLines} more key times`)
   return lines.join('\n')
 }

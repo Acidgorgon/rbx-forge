@@ -67,7 +67,7 @@ export function draftAbility(input: DraftInput): Ability {
     tags: [...new Set([...(charged ? ['charge'] : []), ...(big ? ['heavy'] : []), ...(hand ? ['melee'] : [])])],
     // When the effect's build-up is longer than the clip's lead-in, the clip starts later so the
     // release stage can still land on the release marker (the effect starts at 0).
-    animation: clip ? { clip: clip.id, name: clip.name, duration: clip.duration, looped: clip.looped, markers: clip.markers, speed: 1, start: rel && stage && stage.at > rel.t ? round(stage.at - rel.t) : 0, fadeIn: 0.1 } : null,
+    animation: clip ? { clip: clip.id, name: clip.name, duration: clip.duration, looped: clip.looped, markers: clip.markers, speed: 1, start: rel && stage && stage.at > rel.t ? round(stage.at - rel.t) : 0, fadeIn: 0.1, ...(clip.rig === 'R6' ? { rig: 'R6' as const } : {}) } : null,
     events
   })
   return draft

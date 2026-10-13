@@ -1,7 +1,7 @@
 // IPC types for the Animation Lab (main/services/anim). HarnessApi / HarnessEvents extend these.
 
 import type { AnimClipRef } from './anim/types.ts'
-import type { AnimCheckReport, AnimClip, AnimEntry, AnimExportResult, AnimImportResult, AnimLabStatus, AnimRefineOptions, AnimRefineProgress, AnimScope, AnimScriptResult, AnimStyle, AnimUploadResult } from './anim/model.ts'
+import type { AnimCheckReport, AnimClip, AnimEntry, AnimExportResult, AnimImportResult, AnimLabStatus, AnimRefineOptions, AnimRefineProgress, AnimScope, AnimScriptResult, AnimStyle, AnimUploadResult, RigType } from './anim/model.ts'
 import type { LabModels } from './labModels.ts'
 
 export type * from './anim/model.ts'
@@ -18,6 +18,8 @@ export interface AnimImportOptions {
   tags?: string[]
   // Tag suggestions only (nothing is saved): the import dialog shows them as editable pills.
   dryRun?: boolean
+  // Convert every imported clip to this rig. Absent: each clip keeps its own rig (R6 stays R6).
+  convert?: RigType
 }
 
 export interface AnimImportPreview {
@@ -27,6 +29,7 @@ export interface AnimImportPreview {
   looped: boolean
   markers: number
   suggestedTags: string[]
+  rig?: RigType
   error?: string
 }
 
@@ -45,12 +48,18 @@ export interface AnimApi {
   animLearn(): Promise<{ style: AnimStyle; saved: string[]; errors: string[] }>
   animStyle(): Promise<AnimStyle | null>
   animCoverage(): Promise<AnimCoverage>
-  animCompose(request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope }): Promise<AnimScriptResult>
-  animRunScript(script: string, opts?: { id?: string; save?: boolean; prompt?: string }): Promise<AnimScriptResult>
+  // rig: R15 or R6 (default: the project's rig).
+  animCompose(request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType }): Promise<AnimScriptResult>
+  animRunScript(script: string, opts?: { id?: string; save?: boolean; prompt?: string; rig?: RigType }): Promise<AnimScriptResult>
+  // The rig new clips use (project setting, .forge/anim/settings.json; app default without a project).
+  animGetRig(): Promise<RigType>
+  animSetRig(rig: RigType): Promise<RigType>
+  // Converts a clip to the other rig (in place, or as a copy). R15 -> R6 loses elbow / knee / waist bends.
+  animConvert(id: string, to: RigType, opts?: { copy?: boolean }): Promise<{ entry: AnimEntry; warning: string }>
   animRefine(id: string, opts?: AnimRefineOptions): Promise<void>
   animCancel(id: string): Promise<void>
   animChecks(id: string): Promise<AnimCheckReport>
-  animExamples(): Promise<{ key: string; name: string; description: string; tags: string[] }[]>
+  animExamples(): Promise<{ key: string; name: string; description: string; tags: string[]; rig: RigType }[]>
   animAddExample(key: string): Promise<AnimEntry>
   animFile(id: string, file: string): Promise<string | null>
   animSaveThumb(id: string, pngDataUrl: string): Promise<AnimEntry>
@@ -60,7 +69,9 @@ export interface AnimApi {
   animUpload(id: string): Promise<AnimUploadResult>
   // CONTRACT (shared with the Ability Composer).
   listAnimClips(): Promise<AnimClipRef[]>
-  // Motor6D.Transform per joint name (Root, Waist, Neck, ...) as 12 numbers; null for an unknown id.
+  // Motor6D.Transform per joint name as 12 numbers; null for an unknown id. R15 clips: Root, Waist,
+  // Neck, ...; R6 clips (AnimClipRef.rig = "R6"): RootJoint, Neck, "Right Shoulder", ... in the R6
+  // Motor6Ds' own frames.
   getAnimPose(id: string, t: number): Promise<Record<string, number[]> | null>
   // Labs model tiers (Settings > Labs), shared with the VFX Lab and the Ability Composer.
   getLabModels(): Promise<LabModels>

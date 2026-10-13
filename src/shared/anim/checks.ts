@@ -8,7 +8,9 @@ import { R15_JOINTS } from './model.ts'
 import { DEG, eulerDegOf, qeulerDeg, vdot, vsub, xpoint, type V3, type Xf } from './math.ts'
 import { measureClip, restSpreadValue, sampleFrames, spreadOf } from './measure.ts'
 import { jointWorld, PARTS, type R15Part } from './r15.ts'
-import { sampleTrack } from './sample.ts'
+import { clipRig, sampleR6, sampleTrack } from './sample.ts'
+import { r15View } from './convert.ts'
+import { r6ForwardKinematics, r6LimbEnd, r6LowestFoot, r6Wording } from './r6.ts'
 
 // ------------------------------------------------------------------ joint limits
 
@@ -31,9 +33,20 @@ export const JOINT_LIMITS: Record<R15Joint, [Range, Range, Range] | null> = {
   LeftAnkle: [[-55, 45], [-35, 35], [-30, 30]]
 }
 
+// R6 (read through the R15 view): the Torso is one part, so RootJoint carries the waist's lean and
+// turn too, and a hip measured from that Torso has the waist's range on top of its own.
+export const JOINT_LIMITS_R6: Record<R15Joint, [Range, Range, Range] | null> = {
+  ...JOINT_LIMITS,
+  Root: [[-150, 140], [-180, 180], [-95, 95]],
+  RightHip: [[-105, 180], [-90, 90], [-70, 115]],
+  LeftHip: [[-105, 180], [-90, 90], [-115, 70]]
+}
+
+export type LimitTable = Record<R15Joint, [Range, Range, Range] | null>
+
 // Degrees past the limit (0 = inside) for one joint rotation.
-export function limitExcess(j: R15Joint, euler: V3): { excess: number; axis: number } {
-  const lim = JOINT_LIMITS[j]
+export function limitExcess(j: R15Joint, euler: V3, table: LimitTable = JOINT_LIMITS): { excess: number; axis: number } {
+  const lim = table[j]
   if (!lim) return { excess: 0, axis: -1 }
   let worst = 0
   let axis = -1
@@ -48,8 +61,8 @@ export function limitExcess(j: R15Joint, euler: V3): { excess: number; axis: num
   return { excess: worst, axis }
 }
 
-export function clampToLimits(j: R15Joint, euler: V3): V3 {
-  const lim = JOINT_LIMITS[j]
+export function clampToLimits(j: R15Joint, euler: V3, table: LimitTable = JOINT_LIMITS): V3 {
+  const lim = table[j]
   if (!lim) return euler
   return [0, 1, 2].map((a) => Math.max(lim[a][0], Math.min(lim[a][1], euler[a]))) as V3
 }
@@ -167,7 +180,61 @@ function footSole(parts: Record<R15Part, Xf>, part: 'LeftFoot' | 'RightFoot'): {
 
 const score = (v: number) => Math.round(Math.max(0, Math.min(10, v)) * 10) / 10
 
+// R6 clips are checked on their R15 view (straight limbs on the R6 joints; no elbow / knee limits to
+// break) and the issues are worded with R6 names (Right Shoulder, Left Leg, Torso...).
 export function runChecks(clip: AnimClip, profile?: AnimStyleProfile | null): AnimCheckReport {
+  if (clipRig(clip) === 'R6') {
+    const r = runChecksR15(r15View(clip), profile, JOINT_LIMITS_R6)
+    // Sliding is measured on the real R6 legs (their hip pivots sit at the Torso's outer edge, unlike
+    // R15's), the rest on the R15 view.
+    const slide = r6Sliding(clip)
+    const issues = [...r.issues.filter((i) => i.check !== 'sliding').map((i) => ({ ...i, message: r6Wording(i.message), ...(i.joint ? { joint: r6Wording(i.joint) } : {}) })), ...slide.issues]
+    const scores = { ...r.scores, sliding: score(10 - slide.total * 14) }
+    return { ...r, scores, overall: overallOf(scores), issues, slideStuds: Math.round(slide.total * 1000) / 1000 }
+  }
+  return runChecksR15(clip, profile)
+}
+
+const overallOf = (scores: AnimCheckReport['scores']) => Math.round(((scores.sliding + scores.limits + scores.penetration) * 0.2 + scores.readability * 0.22 + scores.timing * 0.18) * 10) / 10
+
+const R6_SWING = 3
+
+function r6Sliding(clip: AnimClip): { total: number; issues: AnimCheckIssue[] } {
+  const issues: AnimCheckIssue[] = []
+  const fps = 30
+  const n = Math.max(1, Math.round(clip.duration * fps))
+  const frames = Array.from({ length: n + 1 }, (_, i) => {
+    const t = Math.min(clip.duration, i / fps)
+    return { t, parts: r6ForwardKinematics(sampleR6({ ...clip, looped: false }, t)) }
+  })
+  let total = 0
+  for (const leg of ['Left Leg', 'Right Leg'] as const) {
+    let window: { from: number; dist: number } | null = null
+    const close = (to?: number) => {
+      if (window && window.dist > 0.08) issues.push({ check: 'sliding', severity: window.dist > 0.3 ? 'error' : 'warn', message: `${leg} slides ${window.dist.toFixed(2)} studs while planted (${window.from.toFixed(2)}${to !== undefined ? `-${to.toFixed(2)}` : '+'} s); keep the root still while both feet are down, or lift the leg`, joint: leg, at: window.from })
+      window = null
+    }
+    for (let i = 1; i < frames.length; i++) {
+      const a = frames[i - 1].parts
+      const b = frames[i].parts
+      const planted = r6LowestFoot(a, [leg]) < FOOT_PLANTED_Y && r6LowestFoot(b, [leg]) < FOOT_PLANTED_Y
+      const pa = r6LimbEnd(a, leg)
+      const pb = r6LimbEnd(b, leg)
+      const d = Math.hypot(pb[0] - pa[0], pb[2] - pa[2])
+      // A straight R6 leg brushes the floor as it swings through a step; a sole moving faster than
+      // R6_SWING studs per second is swinging, not sliding.
+      if (planted && d > 0.01 && d * fps < R6_SWING) {
+        total += d
+        window ??= { from: frames[i - 1].t, dist: 0 }
+        window.dist += d
+      } else close(frames[i].t)
+    }
+    close()
+  }
+  return { total, issues }
+}
+
+function runChecksR15(clip: AnimClip, profile?: AnimStyleProfile | null, limits: LimitTable = JOINT_LIMITS): AnimCheckReport {
   const frames = sampleFrames(clip, 30)
   const issues: AnimCheckIssue[] = []
   // Sliding: a foot on the floor in two frames in a row should not move sideways.
@@ -202,7 +269,7 @@ export function runChecks(clip: AnimClip, profile?: AnimStyleProfile | null): An
     if (!keys?.length) continue
     for (let t = 0; t <= clip.duration + 1e-6; t += 1 / 30) {
       const x = sampleTrack(keys, t)!
-      const ex = limitExcess(j, eulerDegOf(x.q))
+      const ex = limitExcess(j, eulerDegOf(x.q), limits)
       if (ex.excess > (limitHits.get(j)?.excess ?? 0)) limitHits.set(j, { excess: ex.excess, at: t, axis: ex.axis })
     }
   }

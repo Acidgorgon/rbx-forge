@@ -159,15 +159,15 @@ export function keyBeats(ability: Ability): { label: string; t: number }[] {
   ]
 }
 
-export const ABILITY_CRITIC_SYSTEM = `You are a senior combat designer and animator reviewing a Roblox ability ("move"): an R15 character animation with VFX, camera shake, screen effects (flash, bloom, colour correction, blur) and hit-stop on one timeline.
-You get frames from an approximate WebGL preview (grey R15 dummy facing away from the camera toward -Z, dark floor grid, screen effects as overlays), the timeline as text and the results of automatic timing checks.
+export const ABILITY_CRITIC_SYSTEM = `You are a senior combat designer and animator reviewing a Roblox ability ("move"): an R15 or R6 character animation with VFX, camera shake, screen effects (flash, bloom, colour correction, blur) and hit-stop on one timeline.
+You get frames from an approximate WebGL preview (grey R15 or R6 dummy, as the clip's rig, facing away from the camera toward -Z, dark floor grid, screen effects as overlays), the timeline as text and the results of automatic timing checks.
 Score each 0-10 (7 = shippable in a good Roblox game, 9 = front-page quality):
 - anticipation: a readable wind-up that telegraphs the move without feeling laggy.
 - impact: the release frame hits hard: the flash, shake, hit-stop and the effect's peak land together.
 - sync: VFX attach to the right body parts and follow the pose; nothing fires early or late.
 - readability: the silhouette and effect read at gameplay distance; screen effects do not hide the action.
 - followThrough: the move settles: recovery pose, effect dissipates, effects fade out cleanly.
-Then propose at most 6 concrete changes as event field edits. Fields: at ({"marker":"release","at":-0.05} or {"at":seconds}), duration, amplitude, frequency, timeScale, attack, hold, release, values.opacity, values.intensity, offset [x,y,z], part (R15 part name), volume. Use event ids from the timeline.
+Then propose at most 6 concrete changes as event field edits. Fields: at ({"marker":"release","at":-0.05} or {"at":seconds}), duration, amplitude, frequency, timeScale, attack, hold, release, values.opacity, values.intensity, offset [x,y,z], part (a body part of the clip's rig: R15 names, or R6 Torso / "Right Arm"... when the clip is R6), volume. Use event ids from the timeline.
 Answer with JSON only:
 {"scores":{"anticipation":n,"impact":n,"sync":n,"readability":n,"followThrough":n},"summary":"two sentences","changes":[{"event":"id","field":"at","value":...,"why":"short"}]}`
 

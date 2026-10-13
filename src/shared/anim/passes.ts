@@ -3,13 +3,15 @@
 // and spring overlap (follow-through) on joint chains.
 
 import { R15_JOINTS, type AnimKey, type PoseEasingDirection, type PoseEasingStyle, type R15Joint } from './model.ts'
-import { qfromAxes, qrot, qslerp, vcross, vnorm, xfToCf, type Quat, type V3, type Xf } from './math.ts'
+import { qfromAxes, qmul, qrot, qslerp, vcross, vnorm, xfToCf, type Quat, type V3, type Xf } from './math.ts'
 import { forwardKinematics, jointWorld, LIMBS, type LimbName, type Pose } from './r15.ts'
-import { solveTwoBone, springFollow } from './ik.ts'
+import { aimLimbR6, solveTwoBone, springFollow } from './ik.ts'
 import { normalizeKeys, sampleTrack } from './sample.ts'
 import { clampToLimits } from './checks.ts'
 import { eulerDegOf, qeulerDeg } from './math.ts'
 import { reduceKeys } from './reduce.ts'
+import { r6ForwardKinematicsNeutral, r6LimbEnd, r6LowestFoot } from './r6.ts'
+import { collapsePose } from './convert.ts'
 
 export class Tracks {
   map = new Map<R15Joint, AnimKey[]>()
@@ -74,6 +76,18 @@ export function settleFeet(tracks: Tracks, t: number, feet: 'both' | 'left' | 'r
     if (r.end) tracks.set(L.end, t, { p: [0, 0, 0], q: r.end }, ease, dir)
     parts = forwardKinematics(tracks.pose(t))
   }
+}
+
+// R6: legs cannot bend, so planting only moves the root up or down until the lowest planted leg
+// touches the floor.
+export function settleFeetR6(tracks: Tracks, t: number, feet: 'both' | 'left' | 'right' | 'none', ease: PoseEasingStyle, dir: PoseEasingDirection): void {
+  if (feet === 'none') return
+  const legs: ('Left Leg' | 'Right Leg')[] = feet === 'both' ? ['Left Leg', 'Right Leg'] : feet === 'left' ? ['Left Leg'] : ['Right Leg']
+  const low = r6LowestFoot(r6ForwardKinematicsNeutral(collapsePose(tracks.pose(t))), legs)
+  const dy = Math.max(-1.4, Math.min(0.6, -low))
+  if (Math.abs(dy) < 1e-4) return
+  const root = tracks.sample('Root', t)
+  tracks.set('Root', t, { p: [root.p[0], root.p[1] + dy, root.p[2]], q: root.q }, ease, dir)
 }
 
 const FRAME = 1 / 30
@@ -207,5 +221,69 @@ export function footLockPass(tracks: Tracks, duration: number, keyTimesIn: numbe
       if (f.end) tracks.set(L.end, f.t, { p: [0, 0, 0], q: f.end }, 'Linear', 'In')
     }
     for (const j of [L.upper, L.lower, L.end]) tracks.map.set(j, reduceKeys(tracks.map.get(j)!, 0.4))
+  }
+}
+
+// R6 foot contacts. An R6 leg is one straight part hinged at the hip, so a grounded foot drifts
+// whenever the root moves (R15 bends the knee instead). Between two key times where a leg is on the
+// floor, the leg is re-aimed every frame so its sole stays where the span started (the straight leg may
+// lift its sole a little instead of sliding). A move of more than a stud is a step: the sole travels
+// to the new spot on a low arc, aimed at a lifted target so it leaves the floor.
+const R6_STEP_MIN = 1
+
+export function footLockPassR6(tracks: Tracks, duration: number, keyTimesIn: number[]): void {
+  const times = [...new Set([0, ...keyTimesIn.filter((t) => t > 0 && t < duration), duration].map((t) => Math.round(t * 10000) / 10000))].sort((a, b) => a - b)
+  if (times.length < 2) return
+  const legs = [
+    { limb: 'LeftLeg' as const, part: 'Left Leg' as const, hip: 'LeftHip' as const, knee: 'LeftKnee' as const },
+    { limb: 'RightLeg' as const, part: 'Right Leg' as const, hip: 'RightHip' as const, knee: 'RightKnee' as const }
+  ]
+  for (const leg of legs) {
+    const at = times.map((t) => {
+      const parts = r6ForwardKinematicsNeutral(collapsePose(tracks.pose(t)))
+      return { t, sole: r6LimbEnd(parts, leg.part), low: r6LowestFoot(parts, [leg.part]) }
+    })
+    const segs: { from: number; to: number; anchor: V3; next?: V3 }[] = []
+    let anchor: V3 | null = null
+    for (let i = 0; i + 1 < at.length; i++) {
+      const a = at[i]
+      const b = at[i + 1]
+      const grounded = a.low < 0.15 && b.low < 0.15
+      if (!grounded) {
+        anchor = null
+        continue
+      }
+      anchor ??= a.sole
+      const d = Math.hypot(b.sole[0] - anchor[0], b.sole[2] - anchor[2])
+      if (d < R6_STEP_MIN) segs.push({ from: a.t, to: b.t, anchor })
+      else {
+        segs.push({ from: a.t, to: b.t, anchor, next: b.sole })
+        anchor = b.sole
+      }
+    }
+    if (!segs.length) continue
+    const frames: { t: number; q: Quat }[] = []
+    for (const s of segs) {
+      const n = Math.max(1, Math.round((s.to - s.from) / FRAME))
+      for (let i = 0; i <= n; i++) {
+        const t = s.from + ((s.to - s.from) * i) / n
+        const u = i / n
+        let target = s.anchor
+        if (s.next) {
+          const e = u * u * (3 - 2 * u)
+          const lift = Math.sin(Math.PI * u) * 0.6
+          target = [s.anchor[0] + (s.next[0] - s.anchor[0]) * e, s.anchor[1] + (s.next[1] - s.anchor[1]) * e + lift, s.anchor[2] + (s.next[2] - s.anchor[2]) * e]
+        }
+        const r = aimLimbR6(collapsePose(tracks.pose(t)), leg.limb, target)
+        // Hips hang from LowerTorso in the R15 tracks; the R6 Torso follows UpperTorso (undo the waist).
+        frames.push({ t, q: qmul(tracks.sample('Waist', t).q, r.upper) })
+      }
+    }
+    for (const j of [leg.hip, leg.knee]) tracks.map.set(j, (tracks.map.get(j) ?? []).filter((k) => !segs.some((s) => k.t >= s.from - 1e-4 && k.t <= s.to + 1e-4)))
+    for (const f of frames) {
+      tracks.set(leg.hip, f.t, { p: [0, 0, 0], q: f.q }, 'Linear', 'In')
+      tracks.set(leg.knee, f.t, { p: [0, 0, 0], q: [0, 0, 0, 1] }, 'Linear', 'In')
+    }
+    for (const j of [leg.hip, leg.knee]) tracks.map.set(j, reduceKeys(tracks.map.get(j)!, 0.4))
   }
 }

@@ -3,7 +3,7 @@
 
 import { join } from 'node:path'
 import { findRuntimeDir, luneStatus } from '../tests/lune.ts'
-import type { AnimClip, AnimEntry, AnimRefineOptions, AnimScope } from '../../../shared/anim/model.ts'
+import type { AnimClip, AnimEntry, AnimRefineOptions, AnimScope, RigType } from '../../../shared/anim/model.ts'
 import type { AnimImportOptions } from '../../../shared/animTypes.ts'
 import { LAB_MODELS_SETTING, normalizeLabModels, type LabModels, type LabTier } from '../../../shared/labModels.ts'
 import { AnimService, type AnimCaptureRequest, type MemoryLike, type ModelFn } from './service.ts'
@@ -29,6 +29,8 @@ export interface AnimWiring {
   tools: () => { read: AnimTool[]; write: AnimTool[] }
 }
 
+export const ANIM_RIG_SETTING = 'anim.rig'
+
 export function createAnimWiring(deps: AnimWireDeps): AnimWiring {
   const lunePath = () => deps.settings.get<string | null>('tests.lunePath', null)
   const service = new AnimService({
@@ -45,8 +47,13 @@ export function createAnimWiring(deps: AnimWireDeps): AnimWiring {
     memory: deps.memory,
     openCloud: deps.openCloud,
     emit: deps.emit,
-    log: deps.log
+    log: deps.log,
+    defaultRig: {
+      get: () => (deps.settings.get<string>(ANIM_RIG_SETTING, 'R15') === 'R6' ? 'R6' : 'R15'),
+      set: (rig) => deps.settings.set(ANIM_RIG_SETTING, rig)
+    }
   })
+  const rigOf = (r: unknown): RigType | undefined => (r === 'R6' || r === 'R15' ? r : undefined)
   const scope = (s: unknown): AnimScope => (s === 'project' ? 'project' : 'user')
   const id = (x: unknown) => String(x ?? '')
   const handlers: Record<string, (...args: any[]) => unknown> = {
@@ -63,12 +70,15 @@ export function createAnimWiring(deps: AnimWireDeps): AnimWiring {
     animStyle: () => service.style(),
     animCoverage: () => service.coverage(),
     // The background refinement promise stays in main (not serialisable).
-    animCompose: async (request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope }) => {
-      const { refined: _refined, ...r } = await service.compose(String(request ?? ''), { ...(opts ?? {}), wait: false })
+    animCompose: async (request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType }) => {
+      const { refined: _refined, ...r } = await service.compose(String(request ?? ''), { ...(opts ?? {}), rig: rigOf(opts?.rig), wait: false })
       return r
     },
-    animRunScript: (script: string, opts?: { id?: string; save?: boolean; prompt?: string }) =>
-      service.runScript(String(script ?? ''), { id: opts?.id ? String(opts.id) : undefined, save: !!opts?.save, prompt: opts?.prompt ? String(opts.prompt) : undefined }),
+    animRunScript: (script: string, opts?: { id?: string; save?: boolean; prompt?: string; rig?: RigType }) =>
+      service.runScript(String(script ?? ''), { id: opts?.id ? String(opts.id) : undefined, save: !!opts?.save, prompt: opts?.prompt ? String(opts.prompt) : undefined, rig: rigOf(opts?.rig) }),
+    animGetRig: () => service.rig(),
+    animSetRig: (rig: unknown) => service.setRig(rigOf(rig) ?? 'R15'),
+    animConvert: (x: string, to: unknown, opts?: { copy?: boolean }) => service.convert(id(x), rigOf(to) ?? 'R15', { copy: !!opts?.copy }),
     animRefine: async (x: string, opts?: AnimRefineOptions) => {
       void service.refine(id(x), opts ?? {}).catch((e) => deps.log?.(`anim: refine: ${(e as Error).message}`, 'stderr'))
     },

@@ -3,6 +3,9 @@
 // React imports. The cross-feature contract (AnimMarker, AnimClipRef) lives in ./types.ts.
 
 import type { AnimMarker } from './types.ts'
+import type { R6Joint } from './r6.ts'
+
+export type { R6Joint }
 
 export type { AnimMarker, AnimClipRef } from './types.ts'
 
@@ -25,6 +28,13 @@ export const R15_JOINTS = [
   'RightAnkle'
 ] as const
 export type R15Joint = (typeof R15_JOINTS)[number]
+
+// The character rig a clip animates. R15 (15 Motor6Ds) or R6 (6 Motor6Ds: RootJoint, Neck, Left /
+// Right Shoulder, Left / Right Hip). Clips without a rig are R15 (everything made before R6 support).
+export const RIG_TYPES = ['R15', 'R6'] as const
+export type RigType = (typeof RIG_TYPES)[number]
+// A track key: an R15 joint on R15 clips, an R6 Motor6D name on R6 clips.
+export type AnimJoint = R15Joint | R6Joint
 
 // Enum.PoseEasingStyle / Enum.PoseEasingDirection item names. A Pose's easing shapes the move from
 // that keyframe to the next one (PoseBase.EasingStyle: "the easing style to use to reach the next
@@ -58,7 +68,9 @@ export interface AnimClip {
   duration: number
   looped: boolean
   priority: AnimPriority
-  tracks: Partial<Record<R15Joint, AnimKey[]>>
+  // R15 when absent. R6 clips key their tracks by R6 Motor6D name with the native R6 Transforms.
+  rig?: RigType
+  tracks: Partial<Record<AnimJoint, AnimKey[]>>
   markers: AnimMarker[]
   beats?: AnimBeat[]
   // Timeline script (Luau, the anim API) that produced the clip.
@@ -136,6 +148,8 @@ export interface LearnedPose {
 // Style profile for one move type (attack, cast, dash, idle, hit, sign...), learned from the library.
 export interface AnimStyleProfile {
   tag: string
+  // Which rig's clips it was learned from (R15 when absent).
+  rig?: RigType
   samples: number
   liked: number
   timing: { duration: Pct; anticipation: Pct; action: Pct; recovery: Pct; holds: Pct }
@@ -153,6 +167,8 @@ export interface AnimStyle {
   profiles: AnimStyleProfile[]
   // Profile over every clip (fallback when a tag has no examples).
   overall: AnimStyleProfile | null
+  // Profiles learned from the R6 clips (profiles / overall above are the R15 ones).
+  r6?: { profiles: AnimStyleProfile[]; overall: AnimStyleProfile | null }
 }
 
 // ------------------------------------------------------------------ automatic checks
@@ -245,6 +261,8 @@ export interface AnimLabStatus {
   upload: boolean
   entries: { user: number; project: number }
   profiles: number
+  // The rig new clips use (project setting, or the app default without a project).
+  rig: RigType
 }
 
 export interface AnimExportResult {

@@ -2,7 +2,7 @@
 // "imported" clips built from kit poses (one marked avoid), style profiles and coverage from the real
 // shared code, and a fake refine loop driven by the numbers-only critic, so the Animation Lab page
 // renders without Electron, Lune or a model.
-import type { AnimApi, AnimClip, AnimEntry, AnimIteration, AnimKey, AnimStyle, HarnessEvents, LabModels, R15Joint } from '@shared/types'
+import type { AnimApi, AnimClip, AnimEntry, AnimIteration, AnimKey, AnimStyle, HarnessEvents, LabModels, R15Joint, RigType } from '@shared/types'
 import { compileAnim, type AnimOp } from '@shared/anim/compile'
 import { ANIM_EXAMPLES, animExample } from '@shared/anim/examples'
 import { ANIM_RECORDED } from '@shared/anim/examples.recorded'
@@ -13,7 +13,8 @@ import { measureClip } from '@shared/anim/measure'
 import { runChecks } from '@shared/anim/checks'
 import { autoTags, buildStyle, coverage, profileFor, promptTags } from '@shared/anim/style'
 import { animRefineLoop, beatFrameTimes, heuristicAnimCritique } from '@shared/anim/critique'
-import { poseCFrames } from '@shared/anim/sample'
+import { clipRig, poseCFrames } from '@shared/anim/sample'
+import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
 import { clipSummary } from '@shared/anim/compile'
 import { normalizeLabModels } from '@shared/labModels'
 import { figureDataUrl } from './pages/anim/figure'
@@ -56,7 +57,7 @@ function entry(clip: AnimClip, o: Partial<AnimEntry> & { id: string }): AnimEntr
 
 function exampleEntry(key: string, id = `example-${key}`): AnimEntry {
   const ex = animExample(key)!
-  const { clip } = compileAnim(ANIM_RECORDED[key] ?? [], ex.script, { name: ex.name })
+  const { clip } = compileAnim(ANIM_RECORDED[key] ?? [], ex.script, { name: ex.name, rig: ex.rig ?? 'R15' })
   return entry(clip, { id, kind: 'generated', origin: `example:${key}`, description: ex.description, tags: [...ex.tags, 'example'] })
 }
 
@@ -67,6 +68,7 @@ export function animMock(emit: Emit): AnimApi {
     { ...exampleEntry('sign-push'), rating: 'up', quality: 'good', updatedAt: t0 + 9000 },
     exampleEntry('dash-punch'),
     exampleEntry('hit-reaction'),
+    exampleEntry('sign-push-r6'),
     entry(kitClip('Jab_Heavy', [[0, 'guard'], [0.28, 'windup'], [0.38, 'punch_extend', 1.15], [0.5, 'punch_extend'], [0.95, 'guard']]), { id: 'jab-heavy-a1', tags: ['attack'], rating: 'up', notes: 'Good snap on the extend; the hold sells the weight.' }),
     entry(kitClip('Kick_Round', [[0, 'guard'], [0.25, 'kick_chamber'], [0.36, 'kick_extend'], [0.52, 'kick_extend'], [1.0, 'guard']]), { id: 'kick-round-b2', tags: ['kick', 'attack'] }),
     entry(kitClip('Idle_Breathe', [[0, 'idle'], [1.2, 'idle', 0.7], [2.4, 'idle']], true), { id: 'idle-breathe-c3', tags: ['idle'] }),
@@ -84,6 +86,7 @@ export function animMock(emit: Emit): AnimApi {
     return e
   }
   let seq = 0
+  let rig: RigType = 'R15'
 
   async function refine(e: AnimEntry, max: number) {
     const ref = e.reference ? entries.find((x) => x.id === e.reference)?.clip : undefined
@@ -105,7 +108,8 @@ export function animMock(emit: Emit): AnimApi {
         critique: async (clip, _f, _t, n) => {
           emit('anim:progress', { entryId: e.id, iteration: base + n, phase: 'critique' })
           await delay(400)
-          return heuristicAnimCritique(clip, runChecks(clip, profileFor(style, e.tags)), profileFor(style, e.tags))
+          const p = profileFor(style, e.tags, clipRig(clip))
+          return heuristicAnimCritique(clip, runChecks(clip, p), p)
         },
         onIteration: (it) => {
           const iteration: AnimIteration = { n: base + it.n, at: Date.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique }
@@ -128,7 +132,7 @@ export function animMock(emit: Emit): AnimApi {
 
   return {
     async animStatus() {
-      return { projectRoot: '/demo/game', lune: { available: true, version: '0.11.0' }, vision: true, upload: false, entries: { user: entries.filter((e) => e.scope === 'user').length, project: entries.filter((e) => e.scope === 'project').length }, profiles: style.profiles.length }
+      return { projectRoot: '/demo/game', lune: { available: true, version: '0.11.0' }, vision: true, upload: false, entries: { user: entries.filter((e) => e.scope === 'user').length, project: entries.filter((e) => e.scope === 'project').length }, profiles: style.profiles.length + (style.r6?.profiles.length ?? 0), rig }
     },
     async animList() {
       return [...entries].sort((a, b) => b.updatedAt - a.updatedAt)
@@ -136,17 +140,18 @@ export function animMock(emit: Emit): AnimApi {
     async animGet(id) {
       return find(id)
     },
-    async animPreviewImport(paths) {
+    async animPreviewImport(paths, opts?: { convert?: RigType }) {
       return paths.map((p, i) => {
         const name = p.split(/[\\/]/).pop()!.replace(/\.\w+$/, '')
         const clip = kitClip(name, [[0, 'guard'], [0.3, i % 2 ? 'kick_chamber' : 'windup'], [0.42, i % 2 ? 'kick_extend' : 'punch_extend'], [0.9, 'guard']])
-        return { file: p, name, duration: clip.duration, looped: false, markers: 0, suggestedTags: autoTags(clip, name) }
+        return { file: p, name, duration: clip.duration, looped: false, markers: 0, suggestedTags: autoTags(clip, name), rig: opts?.convert ?? 'R15' as RigType }
       })
     },
     async animImport(paths, scope, opts) {
       const added = paths.map((p, i) => {
         const name = p.split(/[\\/]/).pop()!.replace(/\.\w+$/, '')
-        const clip = kitClip(name, [[0, 'guard'], [0.3, i % 2 ? 'kick_chamber' : 'windup'], [0.42, i % 2 ? 'kick_extend' : 'punch_extend'], [0.9, 'guard']])
+        const raw = kitClip(name, [[0, 'guard'], [0.3, i % 2 ? 'kick_chamber' : 'windup'], [0.42, i % 2 ? 'kick_extend' : 'punch_extend'], [0.9, 'guard']])
+        const clip = opts?.convert === 'R6' ? convertClip(raw, 'R6') : raw
         const e = entry(clip, { id: `${name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}-${(seq++).toString(36)}`, scope, createdAt: Date.now(), updatedAt: Date.now(), ...(opts?.tags?.length ? { tags: opts.tags } : {}), ...(opts?.quality ? { quality: opts.quality } : {}), ...(opts?.quality === 'avoid' ? { rating: 'down' as const } : {}) })
         entries.push(e)
         return e
@@ -200,7 +205,8 @@ export function animMock(emit: Emit): AnimApi {
     async animCompose(request, opts) {
       await delay(500)
       const arch = archetypeFor(request)
-      const key = arch === 'sign_push' || arch === 'cast' ? 'sign-push' : arch === 'hit' ? 'hit-reaction' : 'dash-punch'
+      const r6 = (opts?.rig ?? rig) === 'R6'
+      const key = (arch === 'sign_push' || arch === 'cast' ? 'sign-push' : arch === 'hit' ? 'hit-reaction' : 'dash-punch') + (r6 ? '-r6' : '')
       const base = exampleEntry(key, `composed-${(seq++).toString(36)}`)
       const e: AnimEntry = { ...base, origin: request, description: request, tags: [...new Set([...promptTags(request), ...base.tags.filter((t) => t !== 'example')])], createdAt: Date.now(), updatedAt: Date.now() }
       entries.push(e)
@@ -222,7 +228,8 @@ export function animMock(emit: Emit): AnimApi {
         }
       }
       if (!ex) return { ok: false, error: { message: 'The browser preview has no Lune: only the built-in example scripts run here.', line: 1 }, prints: [], warnings: [], summary: '' }
-      const { clip, warnings } = compileAnim(ANIM_RECORDED[ex.key], ex.script, { name: ex.name })
+      const target = opts?.id ? clipRig(find(opts.id).clip) : opts?.rig ?? rig
+      const { clip, warnings } = compileAnim(ANIM_RECORDED[ex.key], ex.script, { name: ex.name, rig: target })
       if (opts?.save && opts.id) {
         const e = find(opts.id)
         e.clip = clip
@@ -239,10 +246,36 @@ export function animMock(emit: Emit): AnimApi {
     },
     async animChecks(id) {
       const e = find(id)
-      return runChecks(e.clip, profileFor(style, e.tags))
+      return runChecks(e.clip, profileFor(style, e.tags, clipRig(e.clip)))
+    },
+    async animGetRig() {
+      return rig
+    },
+    async animSetRig(r) {
+      rig = r === 'R6' ? 'R6' : 'R15'
+      changed()
+      return rig
+    },
+    async animConvert(id, to, opts) {
+      const e = find(id)
+      const target: RigType = to === 'R6' ? 'R6' : 'R15'
+      if (clipRig(e.clip) === target) return { entry: e, warning: `already ${target}` }
+      const clip = convertClip(e.clip, target)
+      if (opts?.copy) {
+        const copy = entry({ ...clip, name: `${clip.name}${target}` }, { id: `${e.id}-${target.toLowerCase()}-${(seq++).toString(36)}`, kind: e.kind, tags: e.tags, origin: e.origin, description: e.description, notes: `Converted from ${clipRig(e.clip)} to ${target}.`, createdAt: Date.now(), updatedAt: Date.now() })
+        entries.push(copy)
+        changed()
+        return { entry: copy, warning: RIG_CONVERT_WARNING[target] }
+      }
+      e.clip = clip
+      e.stats = measureClip(clip)
+      e.iterations = []
+      e.updatedAt = Date.now()
+      changed()
+      return { entry: e, warning: RIG_CONVERT_WARNING[target] }
     },
     async animExamples() {
-      return ANIM_EXAMPLES.map(({ key, name, description, tags }) => ({ key, name, description, tags }))
+      return ANIM_EXAMPLES.map(({ key, name, description, tags, rig: r }) => ({ key, name, description, tags, rig: r ?? 'R15' }))
     },
     async animAddExample(key) {
       const prev = entries.find((e) => e.origin === `example:${key}`)
@@ -268,7 +301,7 @@ export function animMock(emit: Emit): AnimApi {
       throw new Error('No Open Cloud API key with asset:read + asset:write. Add one on the Art page.')
     },
     async listAnimClips() {
-      return entries.filter((e) => e.quality !== 'avoid').map((e) => ({ id: e.id, name: e.name, duration: e.clip.duration, looped: e.clip.looped, markers: e.clip.markers, scope: e.scope }))
+      return entries.filter((e) => e.quality !== 'avoid').map((e) => ({ id: e.id, name: e.name, duration: e.clip.duration, looped: e.clip.looped, markers: e.clip.markers, scope: e.scope, rig: clipRig(e.clip) }))
     },
     async getAnimPose(id, t) {
       const e = entries.find((x) => x.id === id)

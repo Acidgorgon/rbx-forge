@@ -5,18 +5,23 @@
 import type { AnimChange, AnimClip, AnimKey, R15Joint } from './model.ts'
 import { POSE_EASING_DIRECTIONS, POSE_EASING_STYLES, R15_JOINTS } from './model.ts'
 import { cfToXf, eulerDegOf, qeulerDeg, qmul, xfToCf } from './math.ts'
-import { clampToLimits, penetration, runChecks } from './checks.ts'
+import { clampToLimits, JOINT_LIMITS_R6, penetration, runChecks } from './checks.ts'
 import { plantPass, trackRecord, tracksOf } from './passes.ts'
 import { forwardKinematics } from './r15.ts'
-import { normalizeKeys, samplePose, sampleTrack } from './sample.ts'
+import { clipRig, normalizeKeys, samplePose, sampleTrack } from './sample.ts'
+import { jointAlias, r15View, r6TracksFromView } from './convert.ts'
+import { R6_OF_R15 } from './r6.ts'
 
 export class AnimPatchError extends Error {}
 
 const isJoint = (j: unknown): j is R15Joint => typeof j === 'string' && (R15_JOINTS as readonly string[]).includes(j)
 
-// Raw JSON from a model -> a valid change (throws AnimPatchError with the reason).
+// Raw JSON from a model -> a valid change (throws AnimPatchError with the reason). Joint names may be
+// R15 names or R6 Motor6D names ("Right Shoulder", "RootJoint"); they are stored as R15 names.
 export function normalizeChange(raw: unknown): AnimChange {
-  const c = (raw ?? {}) as Record<string, unknown>
+  const c0 = (raw ?? {}) as Record<string, unknown>
+  const alias = typeof c0.joint === 'string' && !isJoint(c0.joint) ? jointAlias(c0.joint) : null
+  const c = alias ? { ...c0, joint: alias } : c0
   const why = c.why ? String(c.why).slice(0, 200) : undefined
   const n = (v: unknown, what: string) => {
     const x = Number(v)
@@ -69,7 +74,7 @@ const near = (keys: AnimKey[], t: number, tol = 0.06) => {
   return best
 }
 
-function applyOne(clip: AnimClip, ch: AnimChange): AnimClip {
+function applyOne(clip: AnimClip, ch: AnimChange, r6 = false): AnimClip {
   switch (ch.kind) {
     case 'offset': {
       const keys = [...(clip.tracks[ch.joint] ?? [])]
@@ -116,7 +121,7 @@ function applyOne(clip: AnimClip, ch: AnimChange): AnimClip {
         for (const [j, keys] of Object.entries(clip.tracks) as [R15Joint, AnimKey[]][]) {
           tracks[j] = keys.map((k) => {
             const x = cfToXf(k.cf)
-            return { ...k, cf: xfToCf({ p: x.p, q: qeulerDeg(clampToLimits(j, eulerDegOf(x.q))) }) }
+            return { ...k, cf: xfToCf({ p: x.p, q: qeulerDeg(clampToLimits(j, eulerDegOf(x.q), r6 ? JOINT_LIMITS_R6 : undefined)) }) }
           })
         }
         return { ...clip, tracks }
@@ -159,15 +164,26 @@ function applyOne(clip: AnimClip, ch: AnimChange): AnimClip {
   }
 }
 
-// Applies changes in order; bad ones are rejected with a reason, the rest still apply.
+// Applies changes in order; bad ones are rejected with a reason, the rest still apply. R6 clips are
+// edited through their R15 view (R6 joint names map onto Root, Neck, shoulders and hips) and turned
+// back into R6 tracks; changes to joints R6 does not have are rejected.
 export function applyAnimChanges(clip: AnimClip, changes: unknown[]): { clip: AnimClip; applied: AnimChange[]; rejected: { change: unknown; reason: string }[] } {
+  if (clipRig(clip) === 'R6') {
+    const r = applyR15(r15View(clip), changes, true)
+    return { ...r, clip: { ...r.clip, rig: 'R6', tracks: r6TracksFromView(r.clip.tracks) } }
+  }
+  return applyR15(clip, changes, false)
+}
+
+function applyR15(clip: AnimClip, changes: unknown[], r6: boolean): { clip: AnimClip; applied: AnimChange[]; rejected: { change: unknown; reason: string }[] } {
   let out = clip
   const applied: AnimChange[] = []
   const rejected: { change: unknown; reason: string }[] = []
   for (const raw of changes) {
     try {
       const ch = normalizeChange(raw)
-      out = applyOne(out, ch)
+      if (r6 && 'joint' in ch && ch.joint && !R6_OF_R15[ch.joint]) throw new AnimPatchError(`${ch.joint}: R6 has no such joint (use RootJoint, Neck, Left/Right Shoulder, Left/Right Hip)`)
+      out = applyOne(out, ch, r6)
       applied.push(ch)
     } catch (e) {
       rejected.push({ change: raw, reason: (e as Error).message })

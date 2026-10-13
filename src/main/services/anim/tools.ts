@@ -6,10 +6,15 @@
 //   anim_run_script      write  record a timeline script (Lune) -> errors with lines + key summary + checks
 //   anim_set_script      write  same, and save it on the entry (library, preview, project files)
 //   anim_critique        write  automatic checks + render the key beats + critic; refine: loop to the threshold
+//   anim_convert_rig     write  convert a clip between R15 and R6 (in place or as a copy; R15 -> R6 loses bends)
+//
+// Every tool that makes or reads clips takes an optional rig ("R15" | "R6"); without it the project's
+// rig (the Animation Lab header toggle) is used, and an existing clip keeps its own rig.
 
 import { z } from 'zod'
-import type { AnimEntry, AnimScriptResult } from '../../../shared/anim/model.ts'
-import { ANIM_API, ANIM_GUIDE, kitReferenceText } from '../../../shared/anim/draft.ts'
+import type { AnimEntry, AnimScriptResult, RigType } from '../../../shared/anim/model.ts'
+import { ANIM_API, ANIM_API_R6, ANIM_GUIDE, kitReferenceText } from '../../../shared/anim/draft.ts'
+import { clipRig } from '../../../shared/anim/sample.ts'
 import { ANIM_EXAMPLES } from '../../../shared/anim/examples.ts'
 import { profileFor, profileText, promptTags } from '../../../shared/anim/style.ts'
 import { runChecks } from '../../../shared/anim/checks.ts'
@@ -26,7 +31,9 @@ export interface AnimTool {
 }
 
 export const ANIM_READ_TOOLS = ['anim_kit', 'anim_search_library'] as const
-export const ANIM_WRITE_TOOLS = ['anim_compose', 'anim_run_script', 'anim_set_script', 'anim_critique'] as const
+export const ANIM_WRITE_TOOLS = ['anim_compose', 'anim_run_script', 'anim_set_script', 'anim_critique', 'anim_convert_rig'] as const
+
+const rigArg = z.enum(['R15', 'R6']).optional()
 
 const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }] })
 const fail = (text: string): ToolResult => ({ content: [{ type: 'text', text }], isError: true })
@@ -41,7 +48,7 @@ async function guard(fn: () => Promise<string>): Promise<ToolResult> {
 
 function line(e: AnimEntry): string {
   const mark = e.quality === 'avoid' || e.rating === 'down' ? ' AVOID' : e.rating === 'up' ? ' liked' : ''
-  return `${e.id} [${e.scope} ${e.kind}${mark}] ${e.name} (${e.tags.join(', ')}; ${e.clip.duration.toFixed(2)} s${e.clip.looped ? ', looped' : ''}): ${e.description.slice(0, 240)}${e.notes ? ` Notes: ${e.notes.slice(0, 160)}` : ''}`
+  return `${e.id} [${e.scope} ${e.kind} ${clipRig(e.clip)}${mark}] ${e.name} (${e.tags.join(', ')}; ${e.clip.duration.toFixed(2)} s${e.clip.looped ? ', looped' : ''}): ${e.description.slice(0, 240)}${e.notes ? ` Notes: ${e.notes.slice(0, 160)}` : ''}`
 }
 
 export function animScriptReport(r: AnimScriptResult, script?: string): string {
@@ -65,18 +72,21 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
     {
       name: 'anim_kit',
       description:
-        'Reference for making R15 Roblox animations in the Animation Lab: the Luau timeline API (a:pose / joint / ik / plant / look / root / hold / overlap / marker / beat / mirror), the pose kit (guard, windup, punch_extend, palm_push, two_finger_sign, crouch, land, recoil...), the animation guide (anticipation, action, recovery, arcs, overlap), the learned style for a move type, and the built-in example scripts. Read it before writing a timeline script.',
-      inputSchema: { tags: z.string().max(120).optional(), example: z.string().max(40).optional() },
-      handler: (args: { tags?: string; example?: string }) =>
+        'Reference for making Roblox animations (R15 or R6) in the Animation Lab: the Luau timeline API (a:pose / joint / ik / plant / look / root / hold / overlap / marker / beat / mirror / rig), the pose kit (guard, windup, punch_extend, palm_push, two_finger_sign, crouch, land, recoil...) and its R6 versions, the animation guide (anticipation, action, recovery, arcs, overlap), the learned style for a move type on that rig, and the built-in example scripts. rig defaults to the project rig. Read it before writing a timeline script.',
+      inputSchema: { tags: z.string().max(120).optional(), example: z.string().max(40).optional(), rig: rigArg },
+      handler: (args: { tags?: string; example?: string; rig?: RigType }) =>
         guard(async () => {
+          const rig = args.rig ?? (await service.rig())
           const ex = args.example ? ANIM_EXAMPLES.find((e) => e.key === args.example || e.name.toLowerCase() === args.example!.toLowerCase()) : null
-          const profile = profileFor(await service.style(), promptTags(args.tags ?? ''))
+          const profile = profileFor(await service.style(), promptTags(args.tags ?? ''), rig)
           return [
+            `Rig: ${rig}${rig === 'R6' ? '' : ' (pass rig: "R6" for the R6 notes)'}`,
             ANIM_API,
-            kitReferenceText(),
+            ...(rig === 'R6' ? [ANIM_API_R6] : []),
+            kitReferenceText(rig),
             ANIM_GUIDE,
             profile ? profileText(profile) : 'No learned style yet (import reference clips on the Animation Lab page).',
-            ex ? `## Example: ${ex.name}\n\`\`\`lua\n${ex.script}\`\`\`` : `## Examples (pass example to read one)\n${ANIM_EXAMPLES.map((e) => `- ${e.key}: ${e.description}`).join('\n')}`
+            ex ? `## Example: ${ex.name} (${ex.rig ?? 'R15'})\n\`\`\`lua\n${ex.script}\`\`\`` : `## Examples (pass example to read one)\n${ANIM_EXAMPLES.map((e) => `- ${e.key} (${e.rig ?? 'R15'}): ${e.description}`).join('\n')}`
           ].join('\n\n')
         })
     },
@@ -84,14 +94,15 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
       name: 'anim_search_library',
       description:
         "Search the user's animation library (imported KeyframeSequences / BVH and generated clips) by move type tags (attack, kick, cast, sign, dash, idle, hit, block, jump...) or words. Liked clips rank first; clips the user marked AVOID are listed separately as what not to do. Returns ids, timing, markers and notes.",
-      inputSchema: { query: z.string().min(1).max(200), limit: z.number().int().min(1).max(10).optional() },
-      handler: (args: { query: string; limit?: number }) =>
+      inputSchema: { query: z.string().min(1).max(200), limit: z.number().int().min(1).max(10).optional(), rig: rigArg },
+      handler: (args: { query: string; limit?: number; rig?: RigType }) =>
         guard(async () => {
-          const hits = await service.search(args.query, { limit: args.limit ?? 5 })
+          const all = await service.search(args.query, { limit: 20 })
+          const hits = (args.rig ? all.filter((e) => clipRig(e.clip) === args.rig) : all).slice(0, args.limit ?? 5)
           const bad = (await service.search(args.query, { limit: 20, includeAvoid: true })).filter((e) => e.quality === 'avoid' || e.rating === 'down').slice(0, 3)
           const parts = hits.length ? hits.map(line) : ['(no library clips match; the user can import references on the Animation Lab page)']
           if (bad.length) parts.push('', 'Marked AVOID by the user (never copy):', ...bad.map(line))
-          const profile = profileFor(await service.style(), promptTags(args.query))
+          const profile = profileFor(await service.style(), promptTags(args.query), args.rig ?? (await service.rig()))
           if (profile) parts.push('', profileText(profile))
           return parts.join('\n').slice(0, 12000)
         })
@@ -101,27 +112,27 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
     {
       name: 'anim_compose',
       description:
-        'Make an R15 animation from a request (a heavy punch, a hand sign into a palm push, a dodge roll, a hit reaction, an idle...): drafts a Luau timeline script with the pose kit in the learned style of the user\'s library, records it into keyframes, runs the automatic checks (foot sliding, joint limits, interpenetration, readability, timing), saves it to the Animation Lab library and refines it in the background (render the key beats + critique). Pass script to use your own timeline script. Add a:marker(...) at the moments game code or VFX should sync to. Iterate with anim_set_script and anim_critique.',
-      inputSchema: { request: z.string().min(3).max(500), script: z.string().max(60000).optional(), refine: z.boolean().optional() },
-      handler: (args: { request: string; script?: string; refine?: boolean }) =>
+        'Make an R15 or R6 animation (rig, default: the project rig) from a request (a heavy punch, a hand sign into a palm push, a dodge roll, a hit reaction, an idle...): drafts a Luau timeline script with the pose kit in the learned style of the user\'s library, records it into keyframes, runs the automatic checks (foot sliding, joint limits, interpenetration, readability, timing), saves it to the Animation Lab library and refines it in the background (render the key beats + critique). Pass script to use your own timeline script. Add a:marker(...) at the moments game code or VFX should sync to. Iterate with anim_set_script and anim_critique.',
+      inputSchema: { request: z.string().min(3).max(500), script: z.string().max(60000).optional(), refine: z.boolean().optional(), rig: rigArg },
+      handler: (args: { request: string; script?: string; refine?: boolean; rig?: RigType }) =>
         guard(async () => {
-          const r = await service.compose(args.request, { script: args.script, refine: args.refine })
+          const r = await service.compose(args.request, { script: args.script, refine: args.refine, rig: args.rig })
           return animScriptReport(r, args.script) + (r.ok && r.refined ? '\nrefining in the background (watch the Animation Lab, or call anim_critique with refine to wait for it)' : '')
         })
     },
     {
       name: 'anim_run_script',
       description:
-        'Dry-run an animation timeline script (return function(a) ... end; see anim_kit) without saving: records it with Lune, compiles the keyframes and runs the automatic checks. Returns the error with its line number, or the keys per time, markers, check scores and issues.',
-      inputSchema: { script: z.string().min(1).max(60000) },
-      handler: (args: { script: string }) => guard(async () => animScriptReport(await service.runScript(args.script), args.script))
+        'Dry-run an animation timeline script (return function(a) ... end; see anim_kit) without saving: records it with Lune for the rig (R15 or R6, default the project rig; a:rig in the script wins), compiles the keyframes and runs the automatic checks. Returns the error with its line number, or the keys per time, markers, check scores and issues.',
+      inputSchema: { script: z.string().min(1).max(60000), rig: rigArg },
+      handler: (args: { script: string; rig?: RigType }) => guard(async () => animScriptReport(await service.runScript(args.script, { rig: args.rig }), args.script))
     },
     {
       name: 'anim_set_script',
       description:
         "Set a clip's timeline script (by id; without id, creates a new clip) and save it: the library entry, the Animation Lab preview and Script tab, and the project files when it was exported. Returns errors with line numbers or the keys, markers and checks.",
-      inputSchema: { script: z.string().min(1).max(60000), id: z.string().optional(), prompt: z.string().max(500).optional() },
-      handler: (args: { script: string; id?: string; prompt?: string }) => guard(async () => animScriptReport(await service.runScript(args.script, { id: args.id, save: true, prompt: args.prompt }), args.script))
+      inputSchema: { script: z.string().min(1).max(60000), id: z.string().optional(), prompt: z.string().max(500).optional(), rig: rigArg },
+      handler: (args: { script: string; id?: string; prompt?: string; rig?: RigType }) => guard(async () => animScriptReport(await service.runScript(args.script, { id: args.id, save: true, prompt: args.prompt, rig: args.rig }), args.script))
     },
     {
       name: 'anim_critique',
@@ -140,7 +151,7 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
             ].join('\n')
           }
           const entry = await service.get(args.id)
-          const checks = runChecks(entry.clip, profileFor(await service.style(), entry.tags))
+          const checks = runChecks(entry.clip, profileFor(await service.style(), entry.tags, clipRig(entry.clip)))
           const times = beatFrameTimes(entry.clip, 6)
           const frames = service.canRender() ? await service.renderClip(entry.clip, times).catch(() => [] as Buffer[]) : []
           const c = await service.critique(entry, entry.clip, frames, times, (entry.iterations?.length ?? 0) + 1, null)
@@ -152,6 +163,17 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
         })
     }
   ]
+  write.push({
+    name: 'anim_convert_rig',
+    description:
+      'Convert an Animation Lab clip (by id) to the other rig. R15 -> R6 merges the torso into one part and each arm / leg into one straight part that keeps the overall limb direction: waist, elbow, wrist, knee and ankle bends are lost. R6 -> R15 maps RootJoint / Neck / shoulders / hips onto R15 (lossless; the new joints start at rest). copy: true keeps the original and saves the converted clip as a new entry.',
+    inputSchema: { id: z.string().min(1), to: z.enum(['R15', 'R6']), copy: z.boolean().optional() },
+    handler: (args: { id: string; to: RigType; copy?: boolean }) =>
+      guard(async () => {
+        const r = await service.convert(args.id, args.to, { copy: args.copy })
+        return `${r.entry.id}: ${r.entry.name} is now ${clipRig(r.entry.clip)}${args.copy ? ' (a copy; the original is unchanged)' : ''}.\nWarning: ${r.warning}`
+      })
+  })
   return { read, write }
 }
 

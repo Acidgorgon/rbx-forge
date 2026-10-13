@@ -3,17 +3,19 @@
 // Click or drag to scrub; arrow keys step one frame at 30 fps (shift: 1/4 s), PageUp / PageDown jump
 // between keys, Home / End jump to the ends. The strip is a slider for screen readers.
 import { useMemo, useRef } from 'react'
-import type { AnimClip, R15Joint } from '@shared/types'
+import type { AnimClip } from '@shared/types'
 
-const GROUPS: { label: string; joints: R15Joint[] }[] = [
-  { label: 'body', joints: ['Root', 'Waist', 'Neck'] },
-  { label: 'arms', joints: ['LeftShoulder', 'LeftElbow', 'LeftWrist', 'RightShoulder', 'RightElbow', 'RightWrist'] },
-  { label: 'legs', joints: ['LeftHip', 'LeftKnee', 'LeftAnkle', 'RightHip', 'RightKnee', 'RightAnkle'] }
+// R15 joint names plus the R6 Motor6D names, so both rigs fill the same three rows.
+const GROUPS: { label: string; joints: string[] }[] = [
+  { label: 'body', joints: ['Root', 'Waist', 'Neck', 'RootJoint'] },
+  { label: 'arms', joints: ['LeftShoulder', 'LeftElbow', 'LeftWrist', 'RightShoulder', 'RightElbow', 'RightWrist', 'Left Shoulder', 'Right Shoulder'] },
+  { label: 'legs', joints: ['LeftHip', 'LeftKnee', 'LeftAnkle', 'RightHip', 'RightKnee', 'RightAnkle', 'Left Hip', 'Right Hip'] }
 ]
 
-function keyTimesOf(clip: AnimClip, joints: R15Joint[]): number[] {
+function keyTimesOf(clip: AnimClip, joints: string[]): number[] {
   const set = new Set<number>()
-  for (const j of joints) for (const k of clip.tracks[j] ?? []) set.add(Math.round(k.t * 100) / 100)
+  const tracks = clip.tracks as Record<string, { t: number }[] | undefined>
+  for (const j of joints) for (const k of tracks[j] ?? []) set.add(Math.round(k.t * 100) / 100)
   return [...set].sort((a, b) => a - b)
 }
 

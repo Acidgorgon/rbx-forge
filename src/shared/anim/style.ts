@@ -4,11 +4,12 @@
 // clips count double; disliked ones never feed the numbers and become "avoid" notes instead. The
 // profile goes into the compose prompt, the critic, the timing check and a memory skill per tag.
 
-import type { AnimClip, AnimEntry, AnimStyle, AnimStyleProfile, LearnedPose, Pct, R15Joint } from './model.ts'
+import type { AnimClip, AnimEntry, AnimStyle, AnimStyleProfile, LearnedPose, Pct, R15Joint, RigType } from './model.ts'
 import { R15_JOINTS } from './model.ts'
 import { eulerDegOf, qangle, qnorm, round, type Quat } from './math.ts'
 import { measureClip, speedCurve } from './measure.ts'
-import { samplePose } from './sample.ts'
+import { clipRig, samplePose } from './sample.ts'
+import { r15View } from './convert.ts'
 
 // Move types the Lab knows (tags), with the words that suggest them.
 export const MOVE_TAGS: Record<string, RegExp> = {
@@ -41,7 +42,7 @@ export function promptTags(text: string): string[] {
 export function autoTags(clip: AnimClip, fileName = ''): string[] {
   const tags = new Set(promptTags(`${clip.name} ${fileName}`))
   const s = measureClip(clip)
-  const root = clip.tracks.Root ?? []
+  const root = r15View(clip).tracks.Root ?? []
   let travel = 0
   if (root.length > 1) {
     const a = root[0].cf
@@ -220,20 +221,42 @@ export function buildProfile(tag: string, entries: AnimEntry[]): AnimStyleProfil
   }
 }
 
-export function buildStyle(entries: AnimEntry[], now = Date.now()): AnimStyle {
+function buildRigProfiles(entries: AnimEntry[], rig: RigType): { profiles: AnimStyleProfile[]; overall: AnimStyleProfile | null } {
+  const mine = entries.filter((e) => clipRig(e.clip) === rig)
   const tags = new Set<string>()
-  for (const e of entries) for (const t of e.tags) if (MOVE_TAGS[t]) tags.add(t)
-  const profiles = [...tags].sort().map((t) => buildProfile(t, entries)).filter((p): p is AnimStyleProfile => !!p)
-  return { updatedAt: now, profiles, overall: buildProfile('*', entries) }
+  for (const e of mine) for (const t of e.tags) if (MOVE_TAGS[t]) tags.add(t)
+  const tagRig = (p: AnimStyleProfile | null) => (p && rig === 'R6' ? { ...p, rig, poses: p.poses.map((x) => ({ ...x, id: `r6-${x.id}` })) } : p)
+  const profiles = [...tags].sort().map((t) => tagRig(buildProfile(t, mine))).filter((p): p is AnimStyleProfile => !!p)
+  return { profiles, overall: tagRig(buildProfile('*', mine)) }
 }
 
-export function profileFor(style: AnimStyle | null, tags: string[]): AnimStyleProfile | null {
+// Profiles are kept per rig: R15 clips feed profiles / overall, R6 clips feed r6. Timing transfers
+// between rigs, poses do not (an R6 pose has no elbows or knees), so each rig learns from its own clips.
+export function buildStyle(entries: AnimEntry[], now = Date.now()): AnimStyle {
+  const r15 = buildRigProfiles(entries, 'R15')
+  const r6 = buildRigProfiles(entries, 'R6')
+  return { updatedAt: now, profiles: r15.profiles, overall: r15.overall, ...(r6.profiles.length || r6.overall ? { r6 } : {}) }
+}
+
+// The profile for a move type on a rig. An R6 request uses the R6 profiles first and falls back to
+// the R15 ones (their timing still applies; their poses are collapsed when used on R6).
+export function profileFor(style: AnimStyle | null, tags: string[], rig: RigType = 'R15'): AnimStyleProfile | null {
   if (!style) return null
-  for (const t of tags) {
-    const p = style.profiles.find((x) => x.tag === t && x.samples > 0)
-    if (p) return p
+  const sets = rig === 'R6' ? [style.r6 ?? { profiles: [], overall: null }, style] : [style]
+  for (const set of sets) {
+    for (const t of tags) {
+      const p = set.profiles.find((x) => x.tag === t && x.samples > 0)
+      if (p) return p
+    }
   }
-  return style.overall && style.overall.samples > 0 ? style.overall : null
+  for (const set of sets) if (set.overall && set.overall.samples > 0) return set.overall
+  return null
+}
+
+// Every profile of a style (both rigs).
+export function allProfiles(style: AnimStyle | null): AnimStyleProfile[] {
+  if (!style) return []
+  return [...style.profiles, ...(style.overall ? [style.overall] : []), ...(style.r6?.profiles ?? []), ...(style.r6?.overall ? [style.r6.overall] : [])]
 }
 
 const f2 = (p: Pct) => `${p.p10.toFixed(2)}-${p.p90.toFixed(2)} s (median ${p.median.toFixed(2)})`
@@ -241,7 +264,7 @@ const f2 = (p: Pct) => `${p.p10.toFixed(2)}-${p.p90.toFixed(2)} s (median ${p.me
 // The profile as prompt text (compose, critic, memory skill).
 export function profileText(p: AnimStyleProfile): string {
   const lines = [
-    `Learned style for "${p.tag === '*' ? 'all moves' : p.tag}" (${p.samples} reference clip${p.samples === 1 ? '' : 's'}${p.liked ? `, ${p.liked} liked` : ''}):`,
+    `Learned ${p.rig ?? 'R15'} style for "${p.tag === '*' ? 'all moves' : p.tag}" (${p.samples} reference clip${p.samples === 1 ? '' : 's'}${p.liked ? `, ${p.liked} liked` : ''}):`,
     `- timing: anticipation ${f2(p.timing.anticipation)}, action ${f2(p.timing.action)}, recovery ${f2(p.timing.recovery)}, holds ${f2(p.timing.holds)}, whole clip ${f2(p.timing.duration)}`,
     `- overshoot ${Math.round(p.overshoot.median * 100)}% (p90 ${Math.round(p.overshoot.p90 * 100)}%), silhouette spread ${p.spread.median.toFixed(2)}x standing, ${p.keyRate.median.toFixed(1)} key times per second`,
     p.easing.length ? `- easing: ${p.easing.map((e) => `${e.style} ${Math.round(e.share * 100)}%`).join(', ')}` : '',
@@ -256,9 +279,10 @@ export const PROFILE_SKILL_PREFIX = 'anim-style-'
 
 export function profileSkill(p: AnimStyleProfile, examples: string[] = []): { name: string; description: string; body: string } {
   const tag = p.tag === '*' ? 'overall' : p.tag
+  const r6 = p.rig === 'R6'
   return {
-    name: `${PROFILE_SKILL_PREFIX}${tag}`,
-    description: `Learned R15 animation style for ${tag} moves (timing, easing, key poses) from the user's Animation Lab library`,
+    name: `${PROFILE_SKILL_PREFIX}${r6 ? 'r6-' : ''}${tag}`,
+    description: `Learned ${r6 ? 'R6' : 'R15'} animation style for ${tag} moves (timing, easing, key poses) from the user's Animation Lab library`,
     body: [
       profileText(p),
       examples.length ? `\nReference clips:\n${examples.map((e) => `- ${e}`).join('\n')}` : '',

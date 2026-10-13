@@ -7,6 +7,7 @@ import { R15_JOINTS } from './model.ts'
 import { qangle, vdist, vsub, xpoint, type V3, type Xf } from './math.ts'
 import { forwardKinematics, jointWorld, type R15Part } from './r15.ts'
 import { keyCount, keyTimes, samplePose, sampleTrack } from './sample.ts'
+import { r15View } from './convert.ts'
 
 export const MEASURE_FPS = 30
 
@@ -15,6 +16,8 @@ export interface Frame {
   parts: Record<R15Part, Xf>
 }
 
+// Measures read R6 clips through their R15 view (convert.ts): the six R6 joints on Root, Neck,
+// shoulders and hips, straight limbs.
 export function sampleFrames(clip: AnimClip, fps = MEASURE_FPS): Frame[] {
   const n = Math.max(1, Math.round(clip.duration * fps))
   const out: Frame[] = []
@@ -44,7 +47,8 @@ const WEIGHT: Record<R15Joint, number> = {
 }
 
 // Weighted angular speed (degrees per second, summed over joints) plus root travel, per frame.
-export function speedCurve(clip: AnimClip, fps = MEASURE_FPS): { t: number[]; v: number[] } {
+export function speedCurve(clipIn: AnimClip, fps = MEASURE_FPS): { t: number[]; v: number[] } {
+  const clip = r15View(clipIn)
   const n = Math.max(1, Math.round(clip.duration * fps))
   const ts: number[] = []
   const vs: number[] = []
@@ -122,7 +126,8 @@ export function phases(clip: AnimClip, curve = speedCurve(clip)): Phases {
 }
 
 // How far the most active joints swing past where they settle after the action (0..1 of travel).
-export function overshoot(clip: AnimClip, ph = phases(clip)): number {
+export function overshoot(clipIn: AnimClip, ph = phases(clipIn)): number {
+  const clip = r15View(clipIn)
   if (ph.action <= 0) return 0
   const travel = R15_JOINTS.map((j) => {
     const keys = clip.tracks[j]

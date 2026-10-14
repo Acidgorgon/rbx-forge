@@ -377,12 +377,15 @@ export class ChatCommands {
   async checkpoint(chat: CmdChat, userMessage: ChatMessage | undefined): Promise<void> {
     const root = this.host.ctx.project()?.root
     if (!root || !userMessage || !this.host.checkpoints) return
+    // One per user message (a cross-check fix turn reuses the message's checkpoint).
+    if (chat.checkpoints?.some((c) => c.messageId === userMessage.id)) return
     try {
-      const commit = await this.host.checkpoints(root).create(`before: ${userMessage.text.slice(0, 80)}`)
+      const cps = this.host.checkpoints(root)
+      const commit = await cps.create(`before: ${userMessage.text.slice(0, 80)}`)
       const list = (chat.checkpoints ??= [])
-      if (list.some((c) => c.messageId === userMessage.id)) return
       list.push({ id: randomUUID(), at: Date.now(), messageId: userMessage.id, label: userMessage.text.replace(/\s+/g, ' ').slice(0, 80) || '(message)', commit })
-      if (list.length > 50) list.splice(0, list.length - 50)
+      // Older ones fall off the list; their snapshots are dropped from the shadow repo too.
+      if (list.length > 50) await cps.drop(list.splice(0, list.length - 50).map((c) => c.commit)).catch(() => undefined)
     } catch (e) {
       this.host.ctx.log({ service: 'agent', stream: 'stderr', text: `checkpoint skipped: ${(e as Error).message}` })
     }
@@ -410,6 +413,9 @@ export class ChatCommands {
       }
       // Checkpoints after this one belong to removed turns.
       chat.checkpoints = cps.filter((c) => c.at < cp.at)
+      const root = this.host.ctx.project()?.root
+      const gone = cps.filter((c) => c.at >= cp.at).map((c) => c.commit)
+      if (root && this.host.checkpoints && gone.length) await this.host.checkpoints(root).drop(gone).catch(() => undefined)
       chat.sdkSessionId = undefined
       chat.oaiHistory = undefined
       const transcript = conversationText(chat.messages, { tools: false })

@@ -2,6 +2,7 @@
 // flows share one app instance, so later flows may rely on state earlier ones left (the open project,
 // the configured fake provider). Keep no-key flows before 'fake-provider'.
 import { coreFlows } from './core.ts'
+import { editorAssistFlows } from './editorAssist.ts'
 import { pageFlows } from './pages.ts'
 import { labFlows } from './labs.ts'
 import { studioFlows, syncFlows } from './sync.ts'
@@ -11,4 +12,4 @@ import type { Flow } from './types.ts'
 
 export type { Flow, FlowCtx } from './types.ts'
 
-export const FLOWS: Flow[] = [...coreFlows, ...syncFlows, ...labFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...aiFlows, ...providerQolFlows, ...webglOffFlows]
+export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...syncFlows, ...labFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...aiFlows, ...providerQolFlows, ...webglOffFlows]

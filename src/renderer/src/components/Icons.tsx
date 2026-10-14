@@ -42,6 +42,7 @@ const PATHS = {
   terminal: <><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" /><path d="m4.5 6.5 2 1.8-2 1.8M8 10.2h3.5" /></>,
   studio: <><path d="m3 3.5 9.5 2.5-2.5 9.5L.5 13z" transform="translate(1.5 -1)" /><rect x="6.3" y="6.3" width="3" height="3" transform="rotate(15 7.8 7.8)" /></>,
   bell: <><path d="M4 11V7.5a4 4 0 0 1 8 0V11l1 1.5H3z" /><path d="M6.5 14h3" /></>,
+  bug: <><rect x="5" y="5" width="6" height="8" rx="3" /><path d="M6.2 4.2 5 3M9.8 4.2 11 3M5 8H2.5M13.5 8H11M5 11l-2 1.5M11 11l2 1.5M5 6.5 3 5M11 6.5l2-1.5M8 7v6" /></>,
   sun: <><circle cx="8" cy="8" r="2.8" /><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" /></>,
   moon: <path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" />,
   monitor: <><rect x="2" y="2.8" width="12" height="8.4" rx="1.2" /><path d="M6 13.8h4M8 11.2v2.6" /></>,

@@ -1,0 +1,61 @@
+/* Quality of life: bug report dialog, "since you were away" card. Terminal style, theme tokens only. */
+
+/* ---- bug report ---- */
+.qol-field { margin-bottom: 10px; }
+.qol-field textarea { font-family: inherit; min-height: 44px; }
+.qol-checks { display: flex; flex-direction: column; gap: 6px; margin: 4px 0 10px; }
+.qol-check { display: flex; align-items: flex-start; gap: 8px; font-size: 12px; color: var(--fg-2); cursor: pointer; }
+.qol-check input { margin-top: 2px; accent-color: var(--ember); }
+.qol-check .faint { color: var(--fg-faint); }
+.qol-facts { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; margin: 6px 0 4px; }
+.qol-facts .badge-o { max-width: 100%; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qol-facts .link-btn { font-size: 11.5px; margin-left: auto; }
+.qol-preview { margin: 8px 0 0; max-height: 240px; overflow: auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-editor); color: var(--fg-2); font-family: 'JetBrains Mono', ui-monospace, monospace; font-size: 11px; line-height: 1.5; white-space: pre-wrap; word-break: break-word; }
+.qol-path { padding: 6px 8px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); color: var(--fg-2); font-size: 11.5px; overflow-wrap: anywhere; }
+
+/* ---- since you were away ---- */
+.qol-digest {
+  position: fixed; z-index: 45;
+  top: calc(var(--titlebar-h) + var(--tabs-h) + 10px);
+  right: calc(var(--toast-right, 0px) + 16px);
+  width: min(430px, calc(100vw - 32px));
+  max-height: min(70vh, 560px);
+  display: flex; flex-direction: column;
+  background: var(--bg-overlay);
+  border: 1px solid var(--line-strong);
+  border-radius: var(--r-lg);
+  box-shadow: var(--sh-3);
+  animation: rf-pop-in var(--dur-base) var(--ease-out);
+  transition: right var(--dur-panel) var(--ease-out);
+}
+.qol-digest-head { display: flex; align-items: flex-start; gap: 8px; padding: 10px 10px 8px 12px; border-bottom: 1px solid var(--line); color: var(--ember-text); }
+.qol-digest-head > .i { margin-top: 2px; flex: none; }
+.qol-digest-head .grow { flex: 1; min-width: 0; }
+.qol-digest-title { color: var(--fg); font-size: 12.5px; font-weight: 500; }
+.qol-digest-sub { color: var(--fg-muted); font-size: 11.5px; margin-top: 2px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qol-digest-list { list-style: none; margin: 0; padding: 4px 0; overflow: auto; min-height: 0; }
+.qol-digest-row {
+  display: grid; grid-template-columns: auto minmax(0, 1fr) auto; grid-template-areas: 'kind text at' 'kind detail at';
+  column-gap: 8px; align-items: center; width: 100%; padding: 5px 12px; text-align: left; color: var(--fg-2); font-size: 12px;
+  border-radius: 0; transition: background var(--dur-fast);
+}
+.qol-digest-row:hover:not(:disabled) { background: var(--bg-hover); color: var(--fg); }
+.qol-digest-row:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--line-focus); }
+.qol-digest-row:disabled { cursor: default; }
+.qol-kind { grid-area: kind; align-self: start; margin-top: 1px; display: inline-flex; align-items: center; gap: 4px; min-width: 74px; height: 18px; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 999px; color: var(--fg-muted); font-size: 10.5px; text-transform: lowercase; }
+.qol-kind.warn { color: var(--warn); border-color: var(--warn-line); background: var(--warn-fill); }
+.qol-kind.err { color: var(--err); border-color: var(--err-line); background: var(--err-fill); }
+.qol-kind.ok { color: var(--ok); border-color: var(--ok-line); background: var(--ok-fill); }
+.qol-digest-text { grid-area: text; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qol-digest-detail { grid-area: detail; color: var(--fg-faint); font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.qol-digest-at { grid-area: at; color: var(--fg-faint); font-size: 10.5px; white-space: nowrap; }
+.qol-digest-list li.sub .qol-digest-row { grid-template-columns: 74px minmax(0, 1fr) auto; grid-template-areas: '. text at'; padding-top: 2px; padding-bottom: 2px; color: var(--fg-muted); font-size: 11.5px; }
+.qol-digest-foot { display: flex; align-items: center; gap: 8px; padding: 8px 12px; border-top: 1px solid var(--line); }
+.qol-digest-foot .link-btn { font-size: 11.5px; }
+.qol-digest-foot .grow { flex: 1; }
+
+@media (max-width: 760px) {
+  .qol-digest { right: 16px; left: 16px; width: auto; }
+  .qol-kind { min-width: 0; }
+  .qol-digest-list li.sub .qol-digest-row { grid-template-columns: 0 minmax(0, 1fr) auto; padding-left: 28px; }
+}

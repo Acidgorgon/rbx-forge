@@ -45,6 +45,8 @@ import type { RestateApi, RestateCard } from './restateTypes.ts'
 export type * from './restateTypes.ts'
 import type { ThumbsApi, ThumbsEvents } from './thumbs/types.ts'
 export type * from './thumbs/types.ts'
+import type { QolApi, QolEvents } from './qol/types.ts'
+export type * from './qol/types.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -483,7 +485,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -508,7 +510,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

@@ -4,6 +4,7 @@
 // live preview, the timeline, the editor, the critique (timing rules + vision critic) and the client
 // Luau export. The labs stay separate: moves reference their items by id.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { usePersisted } from '../../qol/sessionStore'
 import { timingChecks } from '@shared/ability/critique'
 import { applyPatch } from '@shared/ability/model'
 import { ABILITY_RUBRIC, type Ability, type AbilityEntry, type AbilityExportResult, type AbilityStatus, type TimeRef } from '@shared/ability/types'
@@ -409,11 +410,12 @@ export function AbilityPage() {
   const [status, setStatus] = useState<AbilityStatus | null>(null)
   const [entries, setEntries] = useState<AbilityEntry[]>([])
   const [vfxEntries, setVfxEntries] = useState<VfxEntry[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
+  // Selection and library tab survive restarts (qol/sessionStore).
+  const [selected, setSelected] = usePersisted<string | null>('ability.selected', null)
   const [query, setQuery] = useState('')
   const [prompt, setPrompt] = useState('')
   const [making, setMaking] = useState(false)
-  const [view, setView] = useState<'moves' | 'priorities'>('moves')
+  const [view, setView] = usePersisted<'moves' | 'priorities'>('ability.view', 'moves')
 
   const load = useCallback(async () => {
     try {

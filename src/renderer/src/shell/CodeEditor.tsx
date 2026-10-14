@@ -7,6 +7,7 @@ import { languageForPath, monaco } from '../monaco'
 import { useAppearance } from '../theme'
 import { startLuauLsp } from '../lsp'
 import { setCursor } from '../lib/cursor'
+import { markCursorUsed, rememberCursor, takeCursor } from '../qol/sessionStore'
 
 const pathOf = (model: monaco.editor.ITextModel) => model.uri.path.replace(/^\/+/, '')
 
@@ -26,6 +27,8 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
   const pathRef = useRef(path)
   pathRef.current = path
   const pendingReveal = useRef<{ path: string; position: { lineNumber: number; column: number } } | null>(null)
+  const stateReveal = useRef(state.reveal)
+  stateReveal.current = state.reveal
   const smooth = appearance.motion === 'full' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
   const revealPending = () => {
@@ -44,6 +47,7 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
     const model = editor?.getModel()
     const pos = editor?.getPosition()
     if (!editor || !model || !pos) return setCursor(null)
+    rememberCursor(pathOf(model), { line: pos.lineNumber, column: pos.column })
     const opts = model.getOptions()
     const sel = editor.getSelection()
     setCursor({ line: pos.lineNumber, column: pos.column, tabSize: opts.tabSize, insertSpaces: opts.insertSpaces, selected: sel && !sel.isEmpty() ? model.getValueLengthInRange(sel) : 0 })
@@ -52,7 +56,20 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
     editor.onDidChangeCursorSelection(publishCursor)
-    editor.onDidChangeModel(() => setTimeout(publishCursor))
+    // A file's first showing this session goes back to its saved cursor (unless a reveal is pending).
+    const restoreCursor = () => {
+      const model = editor.getModel()
+      if (!model) return
+      const p = pathOf(model)
+      if (pendingReveal.current?.path === p || stateReveal.current?.path === p) return markCursorUsed(p)
+      const pos = takeCursor(p)
+      if (pos && pos.line <= model.getLineCount()) {
+        editor.setPosition({ lineNumber: pos.line, column: pos.column })
+        editor.revealPositionInCenter({ lineNumber: pos.line, column: pos.column })
+      }
+    }
+    editor.onDidChangeModel(() => setTimeout(() => (restoreCursor(), publishCursor())))
+    restoreCursor()
     publishCursor()
     startLuauLsp(monaco, {
       openPath: (p, position) => {

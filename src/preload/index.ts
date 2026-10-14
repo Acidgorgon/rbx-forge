@@ -87,6 +87,9 @@ const methods = [
   'thumbProfiles', 'thumbSaveProfile', 'thumbDeleteProfile', 'thumbBases', 'thumbAddBases', 'thumbCaptureStudio', 'thumbDeleteBase',
   'thumbEstimate', 'thumbGenerate', 'thumbCritique', 'thumbRefine', 'thumbList', 'thumbRate', 'thumbShip', 'thumbNotes', 'thumbDelete',
   'thumbAddCtr', 'thumbRemoveCtr', 'thumbUpload', 'thumbSetExperience', 'thumbTaste', 'thumbFile',
+  // Quality of life (bug reports, notifications, session restore, away digest)
+  'qolGetSettings', 'qolSetSettings', 'qolBugReportStart', 'qolBugReport', 'qolBugReportPreview', 'qolRevealPath', 'qolReportError',
+  'qolLoadSession', 'qolSaveSession', 'qolDigest', 'qolSeen', 'qolTestNotify',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

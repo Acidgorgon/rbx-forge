@@ -262,6 +262,37 @@ The VFX Lab, the Animation Lab and the Ability Composer have a **Compare** butto
 ![Ability Composer compare in the light theme](docs/screenshots/205-compare-ability-light.png)
 
 The compare is generic. `CompareView` / `CompareDialog` (`src/renderer/src/components/compare/`) take a list of `CompareItem`s and a `renderPane(item, ctx)`. A canvas lab wraps its scene class in `<ScenePane create load loadKey />`, and other renderers use `useCompareTime(ctx, draw)`. The data side is in `src/shared/compare/` (`flattenParams`, `diffParams`, score and principle deltas, `defaultPair`, the shared clock), so another lab only needs an item builder like the ones in `labs.ts`.
+#### Bug reports, notifications, restore and digest
+
+![Since your last session: Studio edits, commits by others, a finished lab run, a conflict and failing tests](docs/screenshots/190-qol-away-digest-dark.png)
+
+- **Report a bug**: use the bug button in the title bar, the palette (*Report a bug…*) or Settings > Notifications. Forge takes a screenshot of its window, then asks what happened and what you expected. The report adds the open page, the app and OS versions, the project **name** (the full path only if you tick it), recent renderer and main-process errors and the last 300 log lines from every service. Anything that looks like a key, token, password, cookie or webhook is replaced with `[REDACTED]`, and your home folder shows as `~`. Forge saves `report.md` and `screenshot.png` under `<userData>/bug-reports/<time>/` and copies the markdown to your clipboard; **Reveal** opens the folder. Nothing is uploaded.
+- **Done notifications**: you get an OS notification, with optional sound, when a long task finishes or needs you:
+  - lab compose / refine / critique runs (VFX, Animation, Ability, plus any lab that sends `<lab>:progress` events);
+  - team runs and their change requests;
+  - chat replies that took over 30 s;
+  - Lune tests, test agents and releases;
+  - new Forge Sync conflicts.
+
+  Clicking a notification brings Forge forward on the right page. In **Settings > Notifications** you choose *In background* (default), *Always* or *Off*, and turn each category on or off.
+- **Pick up where you left off**: Forge saves your session to `<userData>/session-state.json` (versioned) and reopens it on start and after an auto-update restart:
+  - open tabs and the active tab;
+  - panel layout;
+  - chat drafts and scroll position;
+  - the selected entry and tab in each lab;
+  - editor cursors.
+
+  Files or entries you deleted in the meantime are skipped.
+- **Since you were away**: a card that shows when you open a project, and when you come back after an hour idle. It lists:
+  - teammate edits Forge Sync pulled from Studio;
+  - new git commits by other people (since the HEAD you last saw);
+  - lab runs that finished;
+  - open Studio conflicts and held places;
+  - failing tests from the last run.
+
+  Each line opens its place in Forge. You can dismiss the card, and turn it off in Settings.
+
+![Report a bug dialog with the redacted report preview](docs/screenshots/192-qol-bug-report-dark.png)
 
 ## Install
 

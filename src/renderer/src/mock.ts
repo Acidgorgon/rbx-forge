@@ -42,6 +42,7 @@ import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
 import { restateMock } from './mockRestate'
+import { qolMock } from './mockQol'
 import { BLINK_OUTPUTS, eventsBlink, generatedClient, generatedServer, mockBlinkModel } from './mockBlink'
 
 type Handler = (payload: never) => void
@@ -913,6 +914,8 @@ const api: HarnessApi = {
   ...gatingMock(emit),
   // Thumbnail Lab (mockThumbs.ts): canvas-drawn references, bases and variations measured with the shared code.
   ...thumbsMock(emit),
+  // Quality of life (mockQol.ts): bug report, settings, session file, away digest; ?digest=none.
+  ...qolMock(emit, () => logs.slice(), () => project),
 
   on(event, handler) {
     let set = listeners.get(event)

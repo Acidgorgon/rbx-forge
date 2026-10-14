@@ -7,6 +7,8 @@ import { instancePathOfFile, featuresOf, scriptsFlat, realmOfFile } from '../lib
 import { sparks } from '../lib/sparks'
 import { newTerminal, requestFocus, runTask, startTerminals, termStore } from '../terminal/session'
 import { requestPack } from '../pages/memory/MemoryPack'
+import { requestBugReport, requestDigest } from '../qol/QolRoot'
+import { openNotificationSettings } from '../qol/QolSettings'
 
 export interface Command {
   id: string
@@ -157,6 +159,11 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('View', 'motion.full', 'Motion: Full', () => setMotionMode('full'), { icon: <Icon name="eye" /> })
   add('View', 'motion.reduced', 'Motion: Reduced', () => setMotionMode('reduced'), { icon: <Icon name="eye" /> })
   add('View', 'motion.off', 'Motion: Off', () => setMotionMode('off'), { icon: <Icon name="eye" /> })
+
+  // Help (qol/)
+  add('Help', 'help.bug', 'Report a bug…', requestBugReport, { icon: <Icon name="bug" />, detail: 'screenshot + logs, redacted, saved locally' })
+  add('Help', 'help.digest', 'Show what changed since my last session', requestDigest, { icon: <Icon name="clock" />, detail: 'Studio edits, commits, lab runs, conflicts' })
+  add('Help', 'help.notifications', 'Notification settings', () => openNotificationSettings(() => actions.openPage('settings')), { icon: <Icon name="bell" /> })
 
   // File
   if (active) add('File', 'file.save', 'Save', () => void actions.saveFile(active), { keys: 'mod+s', icon: <Icon name="download" /> })

@@ -13,6 +13,7 @@ import { UpdatesSection } from '../updates/UpdatesSection'
 import { ForgeSyncSettings } from './ForgeSyncSettings'
 import { LabsSettings } from './LabsSettings'
 import { RestateSettingRow } from './RestateSettings'
+import { QolSettings } from '../qol/QolSettings'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -35,6 +36,7 @@ const SECTIONS = [
   ['places', 'Places'],
   ['sync', 'Sync'],
   ['toolchain', 'Toolchain'],
+  ['notifications', 'Notifications'],
   ['updates', 'Updates']
 ] as const
 
@@ -415,6 +417,11 @@ export function SettingsPage() {
         <section className="set-sec" id="set-toolchain">
           <h2>Toolchain</h2>
           <ToolchainSection />
+        </section>
+
+        <section className="set-sec" id="set-notifications">
+          <h2>Notifications</h2>
+          <QolSettings />
         </section>
 
         <section className="set-sec" id="set-updates">

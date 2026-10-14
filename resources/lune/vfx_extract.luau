@@ -102,6 +102,9 @@ local function extract(roots)
 				if v == nil and prop == "MeshId" then
 					v = read(inst, "MeshContent")
 				end
+				if v == nil and prop == "ColorMap" then
+					v = read(inst, "ColorMapContent")
+				end
 				if v ~= nil then
 					local c = convert(v, ids)
 					if c ~= nil then

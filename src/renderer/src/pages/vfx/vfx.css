@@ -70,6 +70,12 @@
 .vfx-transport .seg button { flex: none; padding: 0 6px; }
 .vfx-scrub { min-width: 80px; accent-color: var(--ember); }
 .vfx-honest { margin: 0; font-size: 11px; }
+.vfx-mesh-notice { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; font-size: 11.5px; padding: 6px 8px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.vfx-mesh-notice > span { display: inline-flex; align-items: center; gap: 6px; }
+.vfx-mesh-notice.warn > span { color: var(--warn); }
+.vfx-mesh-notice .note { flex-basis: 100%; margin: 0; font-size: 11px; }
+.vfx-mesh-reasons { flex-basis: 100%; margin: 0; padding-left: 18px; font-size: 11px; color: var(--muted, inherit); overflow-wrap: anywhere; }
+.vfx-mesh-note { margin: 0; font-size: 11px; color: var(--warn); }
 
 /* Parameter editor */
 .vfx-params { display: flex; flex-direction: column; gap: 10px; }

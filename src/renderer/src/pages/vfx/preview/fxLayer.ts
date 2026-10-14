@@ -10,9 +10,11 @@
 import * as THREE from 'three'
 import { emitterRole } from '@shared/vfx/analyze'
 import { prop } from '@shared/vfx/schema'
-import { flipbookGrid, prepareEffect, simulate, type PreparedEffect, type SimFrame } from '@shared/vfx/simulate'
+import { flipbookGrid, prepareEffect, simulate, type PreparedEffect, type PreparedMesh, type SimFrame } from '@shared/vfx/simulate'
+import { NORMALS } from '@shared/vfx/cframe'
 import type { Rgb, Vec3, VfxEffect, VfxNode } from '@shared/vfx/types'
 import type { PlaceholderKind } from './textures'
+import { sharedMeshes, type MeshFn, type MeshGeometry } from './meshes'
 
 export type TextureFn = (ref: string, kind: PlaceholderKind, grid: [number, number]) => Promise<THREE.Texture>
 
@@ -54,6 +56,59 @@ void main() {
   }
   if (a < 0.003) discard;
   gl_FragColor = vec4(c * a, a * (rim > 0.5 ? 0.0 : 0.7));
+}
+`
+
+// Real meshes with Neon / ForceField: Neon is a bright, half-additive core with a soft edge (Roblox
+// draws it opaque and blooms it; the preview has no bloom); ForceField shows the texture's
+// brightness tinted by Color, additively, plus a fresnel rim (no texture: rim only).
+export const MESH_VS = /* glsl */ `
+varying vec3 vN;
+varying vec3 vV;
+varying vec2 vUv;
+void main() {
+  vec4 mv = modelViewMatrix * vec4(position, 1.0);
+  vN = normalize(normalMatrix * normal);
+  vV = normalize(-mv.xyz);
+  #ifdef USE_UV_ATTR
+  vUv = uv;
+  #else
+  vUv = vec2(0.0);
+  #endif
+  gl_Position = projectionMatrix * mv;
+}
+`
+
+export const MESH_FS = /* glsl */ `
+uniform vec3 color;
+uniform float opacity;
+uniform float mode;
+uniform float hasMap;
+uniform sampler2D map;
+varying vec3 vN;
+varying vec3 vV;
+varying vec2 vUv;
+void main() {
+  float facing = clamp(abs(dot(normalize(vN), normalize(vV))), 0.0, 1.0);
+  vec4 t = hasMap > 0.5 ? texture2D(map, vUv) : vec4(1.0);
+  vec3 c;
+  float a;
+  float keep;
+  if (mode > 1.5) {
+    // ForceField
+    float rimv = pow(1.0 - facing, 2.0);
+    float lum = hasMap > 0.5 ? dot(t.rgb, vec3(0.299, 0.587, 0.114)) * t.a : 0.0;
+    a = clamp(lum + rimv * (hasMap > 0.5 ? 0.6 : 1.3), 0.0, 1.0) * opacity;
+    c = color * (0.7 + 0.8 * lum + 0.6 * rimv);
+    keep = 0.0;
+  } else {
+    // Neon
+    a = opacity * t.a * (0.75 + 0.25 * smoothstep(0.0, 0.6, facing));
+    c = min(color * t.rgb * 1.35 + 0.15 * pow(facing, 3.0), vec3(1.0));
+    keep = 0.5;
+  }
+  if (a < 0.003) discard;
+  gl_FragColor = vec4(c * a, a * keep);
 }
 `
 
@@ -201,6 +256,35 @@ interface EmitterView {
   attrs: Record<'iPos' | 'iSize' | 'iRot' | 'iColor' | 'iFrame' | 'iVel', THREE.InstancedBufferAttribute>
 }
 
+interface DecalView {
+  mesh: THREE.Mesh
+  mat: THREE.MeshBasicMaterial
+  decal: PreparedMesh['decals'][number]
+  normal: Vec3
+  tiled?: THREE.Texture
+}
+
+interface PartView {
+  id: string
+  holder: THREE.Group
+  mesh: THREE.Mesh
+  faces: THREE.Group
+  glow: boolean
+  real: boolean
+  decals: DecalView[]
+  outline: THREE.Mesh | null
+  // Proxy geometry belongs to the view; real mesh geometry to the shared mesh cache.
+  ownsGeometry: boolean
+}
+
+export interface MeshInfo {
+  // Mesh asset refs the effect uses (MeshPart MeshId, FileMesh SpecialMesh MeshId).
+  files: string[]
+  // Those drawn with their real geometry (the rest are proxies).
+  loaded: string[]
+  textures: { total: number; placeholders: number }
+}
+
 interface StripView {
   id: string
   node: VfxNode
@@ -259,16 +343,20 @@ export class FxLayer {
   private emitters: EmitterView[] = []
   private strips: StripView[] = []
   private lights: THREE.PointLight[] = []
-  private meshes: { id: string; mesh: THREE.Mesh; glow: boolean }[] = []
+  private meshes: PartView[] = []
   prepared: PreparedEffect | null = null
   effect: VfxEffect | null = null
   frame: SimFrame | null = null
   private camera: THREE.Camera
   private texture: TextureFn
+  private meshFn: MeshFn
+  // What the last load drew: real meshes vs proxies (the Lab's "Load meshes" notice).
+  meshInfo: MeshInfo = { files: [], loaded: [], textures: { total: 0, placeholders: 0 } }
 
-  constructor(camera: THREE.Camera, texture: TextureFn) {
+  constructor(camera: THREE.Camera, texture: TextureFn, meshes: MeshFn = sharedMeshes.get) {
     this.camera = camera
     this.texture = texture
+    this.meshFn = meshes
   }
 
   // Builds a mesh per emitter / beam / trail and resolves textures (resolves when all are ready).
@@ -285,24 +373,116 @@ export class FxLayer {
       this.lights.push(light)
       this.group.add(light)
     }
+    const files = new Set<string>()
+    const loaded = new Set<string>()
     for (const m of this.prepared.meshes) {
-      const c = prop<Rgb>(m.node, 'Color')
-      const material = m.material
-      // Unit geometry scaled by the (possibly tweened) size every frame. Roblox cylinders run along X;
-      // wedges slope down towards -Z (front) like WedgePart; meshes are ellipsoid proxies.
-      const geo = m.shape === 'ball' || m.shape === 'ellipsoid' ? new THREE.SphereGeometry(0.5, 40, 24) : m.shape === 'cylinder' ? new THREE.CylinderGeometry(0.5, 0.5, 1, 40).rotateZ(Math.PI / 2) : m.shape === 'wedge' ? wedgeGeometry() : new THREE.BoxGeometry(1, 1, 1)
-      const glow = material === 'Neon' || material === 'ForceField'
-      const look = MATERIAL_LOOK[material] ?? MATERIAL_LOOK.Plastic
-      const opacity = (1 - prop<number>(m.node, 'Transparency')) * (m.shape === 'ellipsoid' ? 0.85 : 1)
-      const mat = glow
-        ? blendMaterial(PART_VS, PART_FS, { color: { value: new THREE.Color(c[0], c[1], c[2]) }, opacity: { value: opacity }, rim: { value: material === 'ForceField' ? 1 : 0 } })
-        : new THREE.MeshStandardMaterial({ color: new THREE.Color(c[0], c[1], c[2]), transparent: true, opacity: material === 'Glass' ? Math.min(opacity, 0.45) : opacity, depthWrite: opacity > 0.99, roughness: look.roughness, metalness: look.metalness, flatShading: m.shape === 'wedge', side: m.shape === 'wedge' ? THREE.DoubleSide : THREE.FrontSide })
-      const mesh = new THREE.Mesh(geo, mat)
-      mesh.renderOrder = glow ? 4 : 0
-      this.meshes.push({ id: m.id, mesh, glow })
-      this.group.add(mesh)
+      if (m.file) files.add(m.file.meshId)
+      waits.push(
+        this.addPart(m).then((real) => {
+          if (real && m.file) loaded.add(m.file.meshId)
+        })
+      )
     }
+    this.meshInfo = { files: [...files], loaded: [], textures: { total: 0, placeholders: 0 } }
     await Promise.all(waits)
+    this.meshInfo.loaded = [...loaded]
+  }
+
+  // One part: the real mesh when its geometry is cached, else the proxy shape; decals on its faces
+  // and a Highlight on it. Resolves true when the real mesh is drawn.
+  private async addPart(m: PreparedMesh): Promise<boolean> {
+    const c = prop<Rgb>(m.node, 'Color')
+    const material = m.material
+    const holder = new THREE.Group()
+    this.group.add(holder)
+    const geom: MeshGeometry | null = m.file ? await this.meshFn(m.file.meshId).catch(() => null) : null
+    if (this.prepared?.meshes.indexOf(m) === -1) return false
+    const real = !!geom
+    // Proxy: unit geometry scaled by the (possibly tweened) size every frame. Roblox cylinders run
+    // along X; wedges slope down towards -Z (front) like WedgePart; unloaded meshes are ellipsoids.
+    const geo = geom ? (m.file!.mode === 'part' ? geom.fitted : geom.raw) : m.shape === 'ball' || m.shape === 'ellipsoid' ? new THREE.SphereGeometry(0.5, 40, 24) : m.shape === 'cylinder' ? new THREE.CylinderGeometry(0.5, 0.5, 1, 40).rotateZ(Math.PI / 2) : m.shape === 'wedge' ? wedgeGeometry() : new THREE.BoxGeometry(1, 1, 1)
+    let map: THREE.Texture | null = null
+    if (geom && m.file?.textureId) {
+      const t = await this.texture(m.file.textureId, 'soft', [1, 1]).catch(() => null)
+      this.meshInfo.textures.total++
+      if (t && !t.userData.placeholder) map = t
+      else this.meshInfo.textures.placeholders++
+    }
+    const glow = material === 'Neon' || material === 'ForceField'
+    const look = MATERIAL_LOOK[material] ?? MATERIAL_LOOK.Plastic
+    const opacity = (1 - prop<number>(m.node, 'Transparency')) * (m.shape === 'ellipsoid' && !real ? 0.85 : 1)
+    let mat: THREE.Material
+    if (glow && real) {
+      mat = blendMaterial(MESH_VS, MESH_FS, { color: { value: new THREE.Color(c[0], c[1], c[2]) }, opacity: { value: opacity }, mode: { value: material === 'ForceField' ? 2 : 1 }, hasMap: { value: map ? 1 : 0 }, map: { value: map } })
+      if (geo.getAttribute('uv')) (mat as THREE.ShaderMaterial).defines = { USE_UV_ATTR: '' }
+    } else if (glow) {
+      mat = blendMaterial(PART_VS, PART_FS, { color: { value: new THREE.Color(c[0], c[1], c[2]) }, opacity: { value: opacity }, rim: { value: material === 'ForceField' ? 1 : 0 } })
+    } else {
+      // A MeshPart's texture replaces its Color (Color shows where the texture is transparent:
+      // approximated by tinting white); a SpecialMesh's texture is tinted by VertexColor.
+      mat = new THREE.MeshStandardMaterial({
+        color: map ? new THREE.Color(1, 1, 1) : new THREE.Color(c[0], c[1], c[2]),
+        map,
+        transparent: true,
+        alphaTest: map ? 0.02 : 0,
+        opacity: material === 'Glass' ? Math.min(opacity, 0.45) : opacity,
+        depthWrite: opacity > 0.99 && !map,
+        roughness: look.roughness,
+        metalness: look.metalness,
+        flatShading: m.shape === 'wedge' && !real,
+        side: real || m.shape === 'wedge' ? THREE.DoubleSide : THREE.FrontSide
+      })
+    }
+    if (glow && real) (mat as THREE.ShaderMaterial).side = THREE.DoubleSide
+    const mesh = new THREE.Mesh(geo, mat)
+    mesh.renderOrder = glow ? 4 : 0
+    holder.add(mesh)
+    // Decals / Textures: a unit quad per face inside a box scaled by the part Size.
+    const faces = new THREE.Group()
+    holder.add(faces)
+    const decals: DecalView[] = []
+    for (const d of m.decals) {
+      const plane = new THREE.PlaneGeometry(1, 1)
+      const n = NORMALS[d.face] ?? NORMALS.Front
+      const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(n[0], n[1], n[2]))
+      plane.applyQuaternion(q)
+      plane.translate(n[0] * 0.502, n[1] * 0.502, n[2] * 0.502)
+      const dm = new THREE.MeshBasicMaterial({ color: new THREE.Color(d.color[0], d.color[1], d.color[2]), transparent: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 })
+      const dmesh = new THREE.Mesh(plane, dm)
+      dmesh.renderOrder = 3
+      faces.add(dmesh)
+      const view: DecalView = { mesh: dmesh, mat: dm, decal: d, normal: n }
+      decals.push(view)
+      void this.texture(d.texture, 'soft', [1, 1]).then((t) => {
+        if (t.userData.placeholder) return
+        const tex = d.tile ? t.clone() : t
+        if (d.tile) tex.needsUpdate = true
+        dm.map = tex
+        dm.needsUpdate = true
+        view.tiled = d.tile ? tex : undefined
+      })
+    }
+    // Highlight on the part: fill tint + an outline shell (back faces, slightly larger).
+    let outline: THREE.Mesh | null = null
+    if (m.highlight && prop<boolean>(m.highlight, 'Enabled') !== false) {
+      const h = m.highlight
+      const out = prop<Rgb>(h, 'OutlineColor')
+      const outA = 1 - prop<number>(h, 'OutlineTransparency')
+      const fill = prop<Rgb>(h, 'FillColor')
+      const fillA = 1 - prop<number>(h, 'FillTransparency')
+      if (fillA > 0.01 && mat instanceof THREE.MeshStandardMaterial) mat.emissive = new THREE.Color(fill[0] * fillA, fill[1] * fillA, fill[2] * fillA)
+      if (outA > 0.01) {
+        outline = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: new THREE.Color(out[0], out[1], out[2]), side: THREE.BackSide, transparent: true, opacity: outA, depthWrite: false }))
+        outline.scale.setScalar(1.05)
+        mesh.add(outline)
+      }
+    }
+    this.meshes.push({ id: m.id, holder, mesh, faces, glow, real, decals, outline, ownsGeometry: !geom })
+    return real
+  }
+
+  get meshesLoaded(): number {
+    return this.meshInfo.loaded.length
   }
 
   get duration(): number {
@@ -437,20 +617,41 @@ export class FxLayer {
       const pm = this.prepared.meshes.find((x) => x.id === m.id)
       if (!pm) continue
       const c = pm.at(t)
-      m.mesh.position.set(c[0], c[1], c[2])
-      m.mesh.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(c[3], c[4], c[5], 0, c[6], c[7], c[8], 0, c[9], c[10], c[11], 0, 0, 0, 0, 1))
+      m.holder.position.set(c[0], c[1], c[2])
+      m.holder.quaternion.setFromRotationMatrix(new THREE.Matrix4().set(c[3], c[4], c[5], 0, c[6], c[7], c[8], 0, c[9], c[10], c[11], 0, 0, 0, 0, 1))
       const look = pm.look(t)
-      m.mesh.scale.set(Math.max(1e-3, look.size[0]), Math.max(1e-3, look.size[1]), Math.max(1e-3, look.size[2]))
+      const size = look.size.map((v) => Math.max(1e-3, v)) as Vec3
+      if (m.real && pm.file?.mode === 'special') {
+        // FileMesh: mesh units x Scale, moved by Offset (part space).
+        const sc = look.scale ?? [1, 1, 1]
+        const off = pm.file.offset(t)
+        m.mesh.scale.set(Math.max(1e-3, sc[0]), Math.max(1e-3, sc[1]), Math.max(1e-3, sc[2]))
+        m.mesh.position.set(off[0], off[1], off[2])
+      } else m.mesh.scale.set(size[0], size[1], size[2])
+      m.faces.scale.set(size[0], size[1], size[2])
       const opacity = 1 - Math.max(0, Math.min(1, look.transparency))
       m.mesh.visible = opacity > 0.003
       const mat = m.mesh.material as THREE.ShaderMaterial | THREE.MeshStandardMaterial
+      const vc = m.real && pm.file?.mode === 'special' ? pm.file.vertexColor(t) : null
       if (m.glow) {
         const u = (mat as THREE.ShaderMaterial).uniforms
         u.opacity.value = opacity
         ;(u.color.value as THREE.Color).setRGB(look.color[0], look.color[1], look.color[2])
       } else {
-        ;(mat as THREE.MeshStandardMaterial).opacity = opacity
-        ;(mat as THREE.MeshStandardMaterial).color.setRGB(look.color[0], look.color[1], look.color[2])
+        const sm = mat as THREE.MeshStandardMaterial
+        sm.opacity = sm.map ? opacity : opacity
+        if (sm.map) sm.color.setRGB(vc ? vc[0] : 1, vc ? vc[1] : 1, vc ? vc[2] : 1)
+        else sm.color.setRGB(look.color[0], look.color[1], look.color[2])
+      }
+      for (const d of m.decals) {
+        const dop = (1 - Math.max(0, Math.min(1, d.decal.transparency(t)))) * opacity
+        d.mat.opacity = d.mat.map ? dop : 0
+        d.mesh.visible = !!d.mat.map && dop > 0.003
+        if (d.tiled && d.decal.tile) {
+          // Texture: repeats every StudsPerTile studs across the face.
+          const axes = [0, 1, 2].filter((k) => Math.abs(d.normal[k]) < 0.5)
+          d.tiled.repeat.set(size[axes[0]] / d.decal.tile[0], size[axes[1]] / d.decal.tile[1])
+        }
       }
     }
     return { particles, emitters: f.emitters.length, drawCalls: this.emitters.length + this.strips.length }
@@ -541,8 +742,14 @@ export class FxLayer {
       s.mat.dispose()
     }
     for (const m of this.meshes) {
-      m.mesh.geometry.dispose()
+      if (m.ownsGeometry) m.mesh.geometry.dispose()
       ;(m.mesh.material as THREE.Material).dispose()
+      if (m.outline) (m.outline.material as THREE.Material).dispose()
+      for (const d of m.decals) {
+        d.mesh.geometry.dispose()
+        d.mat.dispose()
+        if (d.tiled) d.tiled.dispose()
+      }
     }
     this.group.clear()
     this.emitters = []

@@ -1,22 +1,27 @@
 // Turns an imported instance tree into a VfxEffect (VFX nodes only, cues from scripts), and measures
 // it: stats, tags, layer roles, curve shapes and the performance guard.
 
-import { CONTAINER_CLASSES, PART_CLASSES, prop, SCRIPT_CLASSES, VFX_CLASSES } from './schema.ts'
+import { CONTAINER_CLASSES, PART_CLASSES, PART_DECOR_CLASSES, prop, SCRIPT_CLASSES, VFX_CLASSES } from './schema.ts'
+import { revealedByCues, tweenCuesFromScripts } from './scriptTweens.ts'
 import { curveShape, evalColorSequence, hex, sequenceMax, type CurveShape } from './sequence.ts'
 import { emitterBudget, flipbookFrames, MAX_RATE, prepareEffect, simulate } from './simulate.ts'
 import type { ColorSequence, NumberRange, NumberSequence, Rgb, VfxCue, VfxEffect, VfxNode, VfxStats } from './types.ts'
 
 // Keeps VFX instances, their containers, scripts and visible parts (drawn in the preview); drops
-// everything else (terrain, UI, sounds...).
-export function pruneToVfx(nodes: VfxNode[]): VfxNode[] {
-  const keep = (n: VfxNode): VfxNode | null => {
-    const kids = n.children.map(keep).filter((x): x is VfxNode => !!x)
-    const visiblePart = PART_CLASSES.has(n.className) && (n.props.Transparency === undefined || Number(n.props.Transparency) < 1)
-    const own = VFX_CLASSES.has(n.className) || SCRIPT_CLASSES.has(n.className) || visiblePart
+// everything else (terrain, UI, sounds...). A part counts as visible when it is not fully
+// transparent as authored, or when a script makes it visible during the play (`revealed`: ids a
+// tween / set brings below Transparency 1, see scriptTweens.ts). A visible part keeps its
+// SpecialMesh / Decal / Texture / SurfaceAppearance children.
+export function pruneToVfx(nodes: VfxNode[], revealed: Set<string> = new Set()): VfxNode[] {
+  const keep = (n: VfxNode, parentVisible: boolean): VfxNode | null => {
+    const visiblePart = PART_CLASSES.has(n.className) && (n.props.Transparency === undefined || Number(n.props.Transparency) < 1 || revealed.has(n.id))
+    const kids = n.children.map((c) => keep(c, visiblePart)).filter((x): x is VfxNode => !!x)
+    const decor = parentVisible && PART_DECOR_CLASSES.has(n.className)
+    const own = VFX_CLASSES.has(n.className) || SCRIPT_CLASSES.has(n.className) || visiblePart || decor
     if (own || (CONTAINER_CLASSES.has(n.className) && kids.some((k) => !SCRIPT_CLASSES.has(k.className) || k.children.length))) return { ...n, children: kids }
     return null
   }
-  return nodes.map(keep).filter((x): x is VfxNode => !!x)
+  return nodes.map((n) => keep(n, false)).filter((x): x is VfxNode => !!x)
 }
 
 export function walk(nodes: VfxNode[], fn: (n: VfxNode, parent: VfxNode | null) => void, parent: VfxNode | null = null): void {
@@ -102,6 +107,8 @@ export function effectDuration(nodes: VfxNode[], cues: VfxCue[]): number {
     }
     if (n.className === 'Trail') end = Math.max(end, Math.min(6, prop<number>(n, 'Lifetime')))
   }
+  // Tweens and sets read from scripts (part growth / fades) end where they end.
+  for (const c of cues) if (c.action === 'tween' || c.action === 'set') end = Math.max(end, c.at + (c.duration ?? 0) + 0.2)
   return Math.max(1, Math.min(10, round(end || 2)))
 }
 
@@ -193,26 +200,38 @@ export function importNotes(raw: VfxNode[], effect: VfxEffect, attrs: Map<string
   const all = allNodes(raw)
   const scripts = all.filter((n) => SCRIPT_CLASSES.has(n.className))
   if (attrs.size) notes.push(`${attrs.size} emitter${attrs.size === 1 ? '' : 's'} timed by EmitCount / EmitDelay / EmitDuration attributes.`)
-  const logic = scripts.filter((s) => s.source && /TweenService|RunService|while\s|repeat\s|require\s*\(|Heartbeat|RenderStepped|:Connect\s*\(|math\.random|CFrame\s*=|Position\s*=/.test(s.source))
-  if (logic.length) notes.push(`Script logic the preview cannot run (${logic.slice(0, 3).map((s) => s.name).join(', ')}${logic.length > 3 ? ' ...' : ''}): only Emit / Enabled / wait lines were read; tweens, loops and movement are not played.`)
-  else if (scripts.length && !effect.cues.length) notes.push('Scripts were found but no Emit / Enabled lines in them; emitters use their own settings.')
-  const meshes = all.filter((n) => n.className === 'MeshPart' || n.className === 'UnionOperation' || (n.className === 'SpecialMesh' && n.props.MeshType === 'FileMesh'))
-  if (meshes.length) notes.push(`${meshes.length} mesh${meshes.length === 1 ? '' : 'es'} drawn as tinted proxies (mesh files are not downloaded).`)
+  const tweens = effect.cues.filter((c) => c.action === 'tween' || c.action === 'set').length
+  if (tweens) notes.push(`${tweens} tween${tweens === 1 ? '' : 's'} / set${tweens === 1 ? '' : 's'} read from scripts (TweenService:Create with literal goals, property sets) play in the preview.`)
+  const logic = scripts.filter((s) => s.source && /RunService|while\s|repeat\s|require\s*\(|Heartbeat|RenderStepped|math\.random|:Connect\s*\(|GetAttribute/.test(s.source))
+  if (logic.length) notes.push(`Script logic the preview cannot run (${logic.slice(0, 3).map((s) => s.name).join(', ')}${logic.length > 3 ? ' ...' : ''}): event handlers, attribute reads, loops, random values and per-frame movement are not played.`)
+  else if (scripts.length && !effect.cues.length) notes.push('Scripts were found but no Emit / Enabled / tween lines in them; emitters use their own settings.')
+  const meshes = allNodes(effect.roots).filter((n) => n.className === 'MeshPart' || (n.className === 'SpecialMesh' && n.props.MeshType === 'FileMesh'))
+  if (meshes.length) notes.push(`${meshes.length} mesh${meshes.length === 1 ? '' : 'es'}: the preview loads the mesh files from Roblox Studio or Open Cloud ("Load meshes"); until then they draw as proxies.`)
+  const unions = allNodes(effect.roots).filter((n) => n.className === 'UnionOperation')
+  if (unions.length) notes.push(`${unions.length} union${unions.length === 1 ? '' : 's'} drawn as proxy shapes (union geometry is not readable outside Studio).`)
   const skipped = new Set<string>()
-  for (const n of all) if (['Sound', 'Decal', 'Texture', 'SurfaceGui', 'BillboardGui', 'Humanoid', 'Fire', 'Smoke', 'Sparkles', 'Explosion'].includes(n.className)) skipped.add(n.className)
+  for (const n of all) if (['Sound', 'SurfaceGui', 'BillboardGui', 'Humanoid', 'Fire', 'Smoke', 'Sparkles', 'Explosion'].includes(n.className)) skipped.add(n.className)
   if (skipped.size) notes.push(`Not shown: ${[...skipped].join(', ')}.`)
   const flip = all.filter((n) => n.className === 'ParticleEmitter' && typeof n.props.Texture === 'string' && /^rbxassetid:|^http/.test(String(n.props.Texture)))
   if (flip.length) notes.push('Uploaded textures load from Roblox when online; offline they show as a placeholder.')
   return notes
 }
 
+// Bumped when the importer keeps more of a model than before (2: script-revealed parts, meshes,
+// decals and script tweens), so older library entries offer "Re-import".
+export const IMPORT_VERSION = 2
+
 export function effectFromNodes(name: string, nodes: VfxNode[]): VfxEffect {
-  const roots = pruneToVfx(nodes)
+  // Part tweens / sets from scripts first (on the full tree, so script.Parent paths resolve): they
+  // decide which fully transparent parts become visible during the play.
+  const tweens = tweenCuesFromScripts(nodes)
+  const roots = pruneToVfx(nodes, revealedByCues(tweens))
+  const kept = new Set(allNodes(roots).map((n) => n.id))
   const attrs = emitAttributes(roots)
   // Attribute-driven nodes: the attributes are the timeline (script reads would be the generic
   // emit loop guessing 16 for every emitter).
   const scripted = cuesFromScripts(roots).filter((c) => !attrs.has(c.target))
-  const cues = defaultCues(roots, [...cuesFromAttributes(roots, attrs), ...scripted])
+  const cues = defaultCues(roots, [...cuesFromAttributes(roots, attrs), ...scripted, ...tweens.filter((c) => kept.has(c.target))])
   const hasTrail = allNodes(roots).some((n) => n.className === 'Trail')
   return { name, roots, cues, duration: effectDuration(roots, cues), motion: hasTrail ? 'swing' : 'static' }
 }
@@ -468,6 +487,22 @@ export function perfWarnings(effect: VfxEffect): PerfWarning[] {
   if (stats.emitters > PERF.emittersWarn && !isSequence(effect)) out.push({ level: 'info', message: `${stats.emitters} emitters; most good effects use 3 to 6 layers.` })
   if (isSequence(effect) && stats.emitters > 40) out.push({ level: 'info', message: `${stats.emitters} emitters across the sequence; reuse rigs (tween them) instead of spawning new ones per beat.` })
   return out
+}
+
+// Same message on several layers (e.g. "FlipbookFramerate above 30..." on 12 emitters) -> one line
+// with the count and the layer names.
+export function dedupeWarnings(list: PerfWarning[]): PerfWarning[] {
+  const by = new Map<string, { w: PerfWarning; nodes: string[] }>()
+  for (const w of list) {
+    const k = `${w.level}|${w.message}`
+    const e = by.get(k)
+    if (e) {
+      if (w.node && !e.nodes.includes(w.node)) e.nodes.push(w.node)
+    } else by.set(k, { w, nodes: w.node ? [w.node] : [] })
+  }
+  return [...by.values()].map(({ w, nodes }) =>
+    nodes.length > 1 ? { level: w.level, node: nodes.join(', '), message: `${w.message} (${nodes.length} layers: ${nodes.slice(0, 4).join(', ')}${nodes.length > 4 ? ', ...' : ''})` } : w
+  )
 }
 
 // 0..10 performance score from the stats (used in the rubric next to the critic's judgement).

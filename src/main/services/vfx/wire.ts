@@ -19,6 +19,7 @@ import type { ImageBackend } from '../../../shared/artTypes.ts'
 import type { Rgba } from '../../../shared/vfx/tex/image.ts'
 import { normalizePolicy, TEXTURE_POLICY_SETTING, DEFAULT_TEXTURE_POLICY } from '../../../shared/vfx/tex/reuse.ts'
 import type { StudioHarvestDeps } from './textures/importer.ts'
+import { MeshService } from './meshes.ts'
 
 export interface VfxWireDeps {
   // Principle priorities (services/principles): weights for the critics, ratings feed them.
@@ -28,7 +29,7 @@ export interface VfxWireDeps {
   userDataDir: string
   root: () => string | null
   settings: { get<T>(key: string, fallback: T): T; set?(key: string, value: unknown): void }
-  emit: (event: 'vfx:changed' | 'vfx:progress' | 'vfx:textures', payload: unknown) => void
+  emit: (event: 'vfx:changed' | 'vfx:progress' | 'vfx:textures' | 'vfx:meshes', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   memory?: MemoryLike
   vision?: (tier?: LabTier) => VisionFn | null
@@ -49,6 +50,7 @@ export interface VfxWireDeps {
 export interface VfxWiring {
   service: VfxService
   textures: TextureService
+  meshes: MeshService
   handlers: Record<string, (...args: any[]) => unknown>
   tools: () => { read: VfxTool[]; write: VfxTool[] }
 }
@@ -75,6 +77,14 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     decodeImage: deps.decodeImage,
     vision: deps.vision ? () => deps.vision!('cheap') : undefined,
     studio: deps.studioTextures
+  })
+  // Mesh files for the preview: Studio (Forge Bridge, EditableMesh) then Open Cloud asset delivery.
+  const meshes = new MeshService({
+    userDir: join(deps.userDataDir, 'vfx'),
+    robloxKey: deps.openCloud?.key,
+    bridge: deps.studioTextures?.bridge,
+    emit: deps.emit,
+    log: deps.log
   })
   const service = new VfxService({
     principles: deps.principles,
@@ -118,6 +128,11 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     vfxSaveThumb: (id: string, url: string) => service.saveThumb(String(id ?? ''), String(url ?? '')),
     vfxResolveTexture: (ref: string) => service.resolveTexture(String(ref ?? '')),
     vfxTestInStudio: (id: string) => service.testInStudio(String(id ?? '')),
+    vfxReimport: (id: string) => service.reimport(String(id ?? '')),
+    vfxMeshGet: (refs: unknown) => meshes.get(Array.isArray(refs) ? refs.map(String).slice(0, 200) : []),
+    vfxMeshLoad: (refs: unknown, opts?: { studio?: boolean; cloud?: boolean; retry?: boolean }) =>
+      meshes.load(Array.isArray(refs) ? refs.map(String).slice(0, 200) : [], { studio: opts?.studio !== false, cloud: opts?.cloud !== false, retry: !!opts?.retry }),
+    vfxMeshStatus: () => meshes.status(),
     vfxRunScript: (script: string, opts?: { id?: string; save?: boolean; prompt?: string }) =>
       service.runScript(String(script ?? ''), { id: opts?.id ? String(opts.id) : undefined, save: !!opts?.save, prompt: opts?.prompt ? String(opts.prompt) : undefined }),
     // The background refinement promise stays in main (not serialisable).
@@ -151,5 +166,5 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     const t = textureTools(textures, { chatImage: deps.chatImage })
     return { read: [...v.read, ...t.read], write: [...v.write, ...t.write] }
   }
-  return { service, textures, handlers, tools: () => (tools ??= withTextures()) }
+  return { service, textures, meshes, handlers, tools: () => (tools ??= withTextures()) }
 }

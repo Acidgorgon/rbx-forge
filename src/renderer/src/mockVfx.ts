@@ -13,6 +13,7 @@ import { RECORDED } from '@shared/vfx/examples.recorded'
 import { timelineSummary } from '@shared/vfx/timeline'
 import type { VfxScriptResult } from '@shared/types'
 import { mockResolveTexture } from './mockVfxTextures'
+import { mockMeshGet, mockMeshLoad } from './mockMeshes'
 import { genRef } from '@shared/vfx/tex/textures'
 import { withVfxPrinciples } from '@shared/principles/attach'
 import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
@@ -269,6 +270,27 @@ export function vfxMock(emit: Emit): VfxApi {
     },
     async vfxResolveTexture(ref) {
       return mockResolveTexture(String(ref ?? ''))
+    },
+    // Meshes: a few demo ids have procedural geometry "in Studio" (mockMeshes.ts); the cache starts
+    // empty so the "Load meshes" flow shows.
+    async vfxMeshGet(refs) {
+      return mockMeshGet(refs)
+    },
+    async vfxMeshLoad(refs, opts) {
+      await delay(400)
+      const r = mockMeshLoad(refs, opts)
+      if (r.results.some((x) => x.state === 'loaded')) emit('vfx:meshes', { at: Date.now(), ids: r.results.filter((x) => x.state === 'loaded').map((x) => x.id) })
+      return r
+    },
+    async vfxMeshStatus() {
+      return { studio: true, cloudKey: false }
+    },
+    async vfxReimport(id) {
+      const e = find(id)
+      e.importVersion = 2
+      e.updatedAt = Date.now()
+      changed()
+      return e
     },
     async vfxRunScript(script, opts) {
       await delay(250)

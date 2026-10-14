@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePersisted } from '../../qol/sessionStore'
 import type { VfxEffect, VfxEntry, VfxLabStatus, VfxRecipe, VfxRefineProgress, VfxScope } from '@shared/types'
 import { RUBRIC_KEYS } from '@shared/vfx/types'
-import { perfWarnings } from '@shared/vfx/analyze'
+import { dedupeWarnings, IMPORT_VERSION, perfWarnings } from '@shared/vfx/analyze'
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
@@ -204,7 +204,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
     timer.current = setTimeout(() => void flush(), 600)
   }
 
-  const warnings = useMemo(() => (draft ? perfWarnings(draft) : []), [draft])
+  const warnings = useMemo(() => (draft ? dedupeWarnings(perfWarnings(draft)) : []), [draft])
   const refining = !!progress && progress.phase !== 'done' && progress.phase !== 'error'
   const recipe = recipes.find((r) => entry.tags.includes(r.tag))
 
@@ -240,6 +240,20 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
       actions.toast({ text: 'Refine failed', detail: errorText(e), kind: 'err' })
     }
   }
+  const [reimporting, setReimporting] = useState(false)
+  const reimport = async () => {
+    setReimporting(true)
+    try {
+      const e = await h.vfxReimport(entry.id)
+      pendingRef.current = null
+      setDraft(e.effect)
+      actions.toast({ text: `${e.name} re-imported`, detail: e.importNotes?.slice(0, 2).join(' · '), kind: 'ok', ms: 3500 })
+    } catch (err) {
+      actions.toast({ text: 'Re-import failed', detail: errorText(err), kind: 'err' })
+    } finally {
+      setReimporting(false)
+    }
+  }
   const remove = async () => {
     if (!confirm(`Delete ${entry.name} from the ${entry.scope} library?`)) return
     await h.vfxDelete(entry.id).catch((e) => actions.toast({ text: 'Delete failed', detail: errorText(e), kind: 'err' }))
@@ -266,7 +280,17 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
         </button>
       </div>
 
-      {draft ? <VfxPreview effect={draft} autoSnapshot={!entry.thumbs.length} onSnapshot={(png) => void h.vfxSaveThumb(entry.id, png).catch(() => undefined)} /> : <Media entry={entry} />}
+      {entry.kind === 'model' && (entry.importVersion ?? 1) < IMPORT_VERSION && (
+        <div className="vfx-mesh-notice warn" role="status">
+          <span>
+            <Icon name="info" size={11} /> Imported with an older version of the VFX Lab: parts revealed by scripts, meshes, decals and script tweens may be missing.
+          </span>
+          <button className="btn small" onClick={() => void reimport()} disabled={reimporting}>
+            {reimporting ? 'Re-importing…' : 'Re-import'}
+          </button>
+        </div>
+      )}
+      {draft ? <VfxPreview key={`${entry.id}:${entry.importVersion ?? 1}`} effect={draft} autoSnapshot={!entry.thumbs.length} onSnapshot={(png) => void h.vfxSaveThumb(entry.id, png).catch(() => undefined)} /> : <Media entry={entry} />}
 
       {draft && (
         <div className="vfx-actions">

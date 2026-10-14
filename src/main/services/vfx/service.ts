@@ -12,7 +12,9 @@ import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
 import { composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, emitAttributes, importNotes, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
+import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, emitAttributes, importNotes, IMPORT_VERSION, perfWarnings, pruneToVfx, type PerfWarning } from '../../../shared/vfx/analyze.ts'
+import { revealedByCues, tweenCuesFromScripts } from '../../../shared/vfx/scriptTweens.ts'
+import { PART_CLASSES } from '../../../shared/vfx/schema.ts'
 import { CRITIC_SYSTEM, critiquePrompt, DEFAULT_MAX_ITERATIONS, DEFAULT_THRESHOLD, heuristicCritique, parseCritique, refineLoop, stageFrameTimes, type RefineResult } from '../../../shared/vfx/critique.ts'
 import { CHOREOGRAPHY_GUIDE, draftScript, kitReference, TIMELINE_API } from '../../../shared/vfx/choreo.ts'
 import { compileTimeline, finishRun } from '../../../shared/vfx/compile.ts'
@@ -319,6 +321,58 @@ export class VfxService {
     return out
   }
 
+  // .rbxm / .rbxmx -> instance trees (Lune; .rbxmx also without Lune).
+  private async extractModels(models: string[]): Promise<Map<string, { roots?: import('../../../shared/vfx/types.ts').VfxNode[]; error?: string }>> {
+    const extracted = new Map<string, { roots?: import('../../../shared/vfx/types.ts').VfxNode[]; error?: string }>()
+    if (!models.length) return extracted
+    const lune = await this.deps.lune().catch((e) => ({ error: (e as Error).message }))
+    const runtime = this.deps.runtimeDir()
+    if (!('error' in lune) && runtime) {
+      for (const r of await luneExtract(models, { lune: lune.path, runtimeDir: runtime, run: this.deps.luneRun })) extracted.set(r.file, r)
+    }
+    for (const f of models) {
+      const prev = extracted.get(f)
+      if (prev?.roots) continue
+      if (extname(f).toLowerCase() === '.rbxmx') {
+        try {
+          extracted.set(f, { roots: readRbxmx(await readFile(f, 'utf8')) })
+        } catch (e) {
+          extracted.set(f, { error: `could not read the XML: ${(e as Error).message}` })
+        }
+      } else if (!prev) {
+        extracted.set(f, { error: `binary .rbxm needs Lune to be read (${'error' in lune ? lune.error : 'the Lune runtime scripts are missing'}); install Lune (Settings > Tests) or save the model as .rbxmx in Studio` })
+      }
+    }
+    return extracted
+  }
+
+  // Rebuilds an imported model entry from the model file stored with it (entries imported by an
+  // older Forge miss parts, meshes and script tweens). Keeps id, name, tags, rating and notes;
+  // drops the old thumbnail so the preview takes a new one.
+  async reimport(id: string): Promise<VfxEntry> {
+    const hit = await this.find(id)
+    if (!hit) throw new VfxError(`no VFX entry "${id}"`)
+    const e = hit.entry
+    if (e.kind !== 'model') throw new VfxError('Only imported models can be re-imported.')
+    const mediaDir = join(hit.store.entryDir(id), 'media')
+    const files = (await readdir(mediaDir).catch(() => [] as string[])).filter((f) => MODEL_EXT.has(extname(f).toLowerCase()))
+    if (!files.length) throw new VfxError('The original model file is not stored with this entry (files over 20 MB are not kept): import the .rbxm / .rbxmx again.')
+    const file = join(mediaDir, files.find((f) => basename(f, extname(f)) === basename(e.origin, extname(e.origin))) ?? files[0])
+    const r = (await this.extractModels([file])).get(file)
+    if (!r?.roots) throw new VfxError(`Could not read ${basename(file)}: ${r?.error ?? 'unreadable'}`)
+    const groups = splitEffects(r.roots)
+    const g = groups.find((x) => x.name === e.name) ?? (groups.length === 1 ? groups[0] : null)
+    if (!g) throw new VfxError(groups.length ? `The model file holds ${groups.length} effects and none is named "${e.name}".` : 'No effect found in the stored model file.')
+    const effect = effectFromNodes(e.name, g.nodes)
+    const notes = importNotes(g.nodes, effect, emitAttributes(effect.roots))
+    const next: VfxEntry = { ...e, effect, stats: effectStats(effect), description: describeEffect(effect), importVersion: IMPORT_VERSION, updatedAt: this.now(), thumbs: [] }
+    if (notes.length) next.importNotes = notes
+    else delete next.importNotes
+    const saved = await hit.store.save(next)
+    this.changed()
+    return saved
+  }
+
   async import(paths: string[], scope: VfxScope = 'user'): Promise<VfxImportResult> {
     const store = this.store(scope)
     const files = await this.expand(Array.isArray(paths) ? paths : [])
@@ -326,27 +380,7 @@ export class VfxService {
     if (!files.length) return result
     const models = files.filter((f) => MODEL_EXT.has(extname(f).toLowerCase()))
     const media = files.filter((f) => !MODEL_EXT.has(extname(f).toLowerCase()))
-    const extracted = new Map<string, { roots?: import('../../../shared/vfx/types.ts').VfxNode[]; error?: string }>()
-    if (models.length) {
-      const lune = await this.deps.lune().catch((e) => ({ error: (e as Error).message }))
-      const runtime = this.deps.runtimeDir()
-      if (!('error' in lune) && runtime) {
-        for (const r of await luneExtract(models, { lune: lune.path, runtimeDir: runtime, run: this.deps.luneRun })) extracted.set(r.file, r)
-      }
-      for (const f of models) {
-        const prev = extracted.get(f)
-        if (prev?.roots) continue
-        if (extname(f).toLowerCase() === '.rbxmx') {
-          try {
-            extracted.set(f, { roots: readRbxmx(await readFile(f, 'utf8')) })
-          } catch (e) {
-            extracted.set(f, { error: `could not read the XML: ${(e as Error).message}` })
-          }
-        } else if (!prev) {
-          extracted.set(f, { error: `binary .rbxm needs Lune to be read (${'error' in lune ? lune.error : 'the Lune runtime scripts are missing'}); install Lune (Settings > Tests) or save the model as .rbxmx in Studio` })
-        }
-      }
-    }
+    const extracted = await this.extractModels(models)
     for (const f of models) {
       const r = extracted.get(f)
       if (!r?.roots) {
@@ -355,7 +389,7 @@ export class VfxService {
       }
       const groups = splitEffects(r.roots)
       if (!groups.length) {
-        result.skipped.push({ file: f, reason: 'no ParticleEmitter, Beam, Trail or light found' })
+        result.skipped.push({ file: f, reason: 'no ParticleEmitter, Beam, Trail, light or visible part found' })
         continue
       }
       for (const g of groups) {
@@ -379,6 +413,7 @@ export class VfxService {
           stats: effectStats(effect),
           thumbs: [],
           quality: 'reference',
+          importVersion: IMPORT_VERSION,
           ...(notes.length ? { importNotes: notes } : {})
         }
         const bytes = await readFile(f)
@@ -1146,22 +1181,36 @@ async function exists(p: string): Promise<boolean> {
 }
 
 // One effect per file, or one per child when the file is a pack (a Folder / Model of several
-// effects, or several top-level effects).
+// effects, or several top-level effects). Geometry counts as an effect too: a model of visible
+// parts / meshes with no emitters (a slash mesh tweened by a script) is imported, and in a pack a
+// child holding only geometry is its own entry.
 export function splitEffects(roots: import('../../../shared/vfx/types.ts').VfxNode[]): { name: string; nodes: import('../../../shared/vfx/types.ts').VfxNode[] }[] {
-  const hasVfx = (n: import('../../../shared/vfx/types.ts').VfxNode) => allNodes([n]).some((x) => ['ParticleEmitter', 'Beam', 'Trail', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight'].includes(x.className))
+  type N = import('../../../shared/vfx/types.ts').VfxNode
+  const hasVfx = (n: N) => allNodes([n]).some((x) => ['ParticleEmitter', 'Beam', 'Trail', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight'].includes(x.className))
+  // Visible geometry (as authored or revealed by a script's tween / set).
+  const revealed = revealedByCues(tweenCuesFromScripts(roots))
+  const hasGeometry = (n: N) => pruneToVfx([n], revealed).some((k) => allNodes([k]).some((x) => PART_CLASSES.has(x.className)))
+  const hasContent = (n: N) => hasVfx(n) || hasGeometry(n)
   const withVfx = roots.filter(hasVfx)
+  const isGroup = (n: N) => n.className === 'Model' || n.className === 'Folder'
   // Several Models / Folders: a pack of separate effects. Loose parts selected together in Studio
   // (several Parts at the top) are one effect: they keep their relative positions.
-  if (withVfx.length > 1 && withVfx.every((n) => n.className === 'Model' || n.className === 'Folder')) return withVfx.map((n) => ({ name: n.name, nodes: [n] }))
+  if (withVfx.length > 1 && withVfx.every(isGroup)) return roots.filter((n) => isGroup(n) && hasContent(n)).map((n) => ({ name: n.name, nodes: [n] }))
   if (withVfx.length > 1) return [{ name: withVfx[0].name, nodes: roots }]
   if (withVfx.length === 1) {
     const only = withVfx[0]
     const kids = only.children.filter(hasVfx)
-    if ((only.className === 'Folder' || only.className === 'Model') && kids.length > 1 && kids.every((k) => k.className === 'Model' || k.className === 'Folder')) {
-      return kids.map((k) => ({ name: k.name, nodes: [k] }))
+    if (isGroup(only) && kids.length > 1 && kids.every(isGroup)) {
+      return only.children.filter((k) => isGroup(k) && hasContent(k)).map((k) => ({ name: k.name, nodes: [k] }))
     }
-    return [{ name: only.name, nodes: [only] }]
+    // Visible geometry next to the effect (loose parts selected with it) stays in it.
+    const extra = roots.filter((r) => r !== only && hasGeometry(r))
+    return [{ name: only.name, nodes: [only, ...extra] }]
   }
+  // No emitters at all: the visible geometry is the effect (one entry).
+  const geo = roots.filter(hasGeometry)
+  if (geo.length === 1) return [{ name: geo[0].name, nodes: geo }]
+  if (geo.length > 1) return [{ name: geo[0].name, nodes: roots }]
   return []
 }
 

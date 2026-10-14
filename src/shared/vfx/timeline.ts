@@ -94,6 +94,12 @@ export const TWEENABLE: Record<string, Record<string, TweenKind>> = {
   Attachment: { Position: 'vec3', CFrame: 'cframe', ...RIG },
   Part: { Position: 'vec3', CFrame: 'cframe', Size: 'vec3', Transparency: 'number', Color: 'color3', ...RIG },
   MeshPart: { Position: 'vec3', CFrame: 'cframe', Size: 'vec3', Transparency: 'number', Color: 'color3', ...RIG },
+  WedgePart: { Position: 'vec3', CFrame: 'cframe', Size: 'vec3', Transparency: 'number', Color: 'color3', ...RIG },
+  UnionOperation: { Position: 'vec3', CFrame: 'cframe', Size: 'vec3', Transparency: 'number', Color: 'color3', ...RIG },
+  // A Part's SpecialMesh (shockwave rings and spheres often tween Scale instead of Size).
+  SpecialMesh: { Scale: 'vec3', Offset: 'vec3', VertexColor: 'vec3' },
+  Decal: { Transparency: 'number', Color3: 'color3' },
+  Texture: { Transparency: 'number', Color3: 'color3' },
   ParticleEmitter: { Rate: 'number', LightEmission: 'number', LightInfluence: 'number', Brightness: 'number', Drag: 'number', TimeScale: 'number', ZOffset: 'number', Acceleration: 'vec3', Color: 'tint', ...RIG },
   Beam: { Width0: 'number', Width1: 'number', CurveSize0: 'number', CurveSize1: 'number', LightEmission: 'number', Brightness: 'number', TextureSpeed: 'number', TextureLength: 'number', Color: 'tint', ...RIG },
   Trail: { LightEmission: 'number', Brightness: 'number', MaxLength: 'number', MinLength: 'number', Color: 'tint', ...RIG },

@@ -2,7 +2,7 @@
 // shared/vfx/simulate.ts the way Roblox draws ParticleEmitters, Beams and Trails, closely enough to
 // judge an effect. It approximates Roblox; it does not match it exactly (no engine lighting model,
 // no bloom or post-processing, placeholder textures when an asset cannot be fetched, MeshParts drawn
-// as boxes). Timeline tweens (shared/vfx/timeline.ts) move parts and attachments and drive emitter,
+// as proxies until their mesh files are loaded (preview/meshes.ts)). Timeline tweens (shared/vfx/timeline.ts) move parts and attachments and drive emitter,
 // beam, light and part properties every frame; Neon parts glow and ForceField parts are rim-lit.
 // The drawables live in fxLayer.ts (shared with the Ability Composer preview).
 
@@ -11,7 +11,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { prop } from '@shared/vfx/schema'
 import type { SimFrame } from '@shared/vfx/simulate'
 import type { Rgb, VfxEffect } from '@shared/vfx/types'
-import { FxLayer, type LayerStats } from './fxLayer'
+import { FxLayer, type LayerStats, type MeshInfo } from './fxLayer'
 import { placeholderTexture, type PlaceholderKind } from './textures'
 
 export type Background = 'dark' | 'grey'
@@ -64,6 +64,18 @@ export class TextureCache {
 
   usesPlaceholders(): Promise<boolean> {
     return Promise.all([...this.textures.values()]).then((ts) => ts.some((t) => t.userData.placeholder))
+  }
+
+  // Uploaded textures (rbxassetid / numeric ids) asked for, and how many fell back to a placeholder.
+  async uploadedStats(): Promise<{ total: number; missing: string[] }> {
+    const refs = new Map<string, boolean>()
+    for (const [key, p] of this.textures) {
+      const ref = key.split('|')[0]
+      if (!/^(?:rbxassetid:\/\/)?\d+$/i.test(ref) && !/roblox\.com\/asset/i.test(ref)) continue
+      const t = await p.catch(() => null)
+      refs.set(ref, (refs.get(ref) ?? false) || !t || !!t.userData.placeholder)
+    }
+    return { total: refs.size, missing: [...refs].filter(([, miss]) => miss).map(([r]) => r) }
   }
 
   dispose(): void {
@@ -218,6 +230,15 @@ export class VfxScene {
 
   usesPlaceholders(): Promise<boolean> {
     return this.textures.usesPlaceholders()
+  }
+
+  textureStats(): Promise<{ total: number; missing: string[] }> {
+    return this.textures.uploadedStats()
+  }
+
+  // Meshes the effect uses and which of them draw with real geometry.
+  get meshInfo(): MeshInfo {
+    return this.layer.meshInfo
   }
 
   dispose(): void {

@@ -64,7 +64,7 @@ const methods = [
   // VFX Lab (library, recipes, render / critique / refine)
   'vfxStatus', 'vfxList', 'vfxGet', 'vfxSearch', 'vfxImport', 'vfxChooseImport', 'vfxUpdate', 'vfxDelete', 'vfxRate',
   'vfxLearn', 'vfxRecipes', 'vfxMake', 'vfxRefine', 'vfxCancel', 'vfxCreate', 'vfxFile', 'vfxSaveThumb', 'vfxResolveTexture', 'vfxTestInStudio',
-  'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample',
+  'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample', 'vfxMeshGet', 'vfxMeshLoad', 'vfxMeshStatus', 'vfxReimport',
   'vfxTexStatus', 'vfxTexList', 'vfxTexGenerate', 'vfxTexPreview', 'vfxTexUpdate', 'vfxTexRate', 'vfxTexDelete', 'vfxTexUpload', 'vfxTexCheck', 'vfxTexFile',
   'vfxTexImportPick', 'vfxTexImportScan', 'vfxTexImportIds', 'vfxTexImportStudio', 'vfxTexImportCommit', 'vfxTexSetPolicy',
   // Animation Lab (services/anim) + Labs model tiers

@@ -3,6 +3,7 @@
 
 import { BrowserWindow, dialog } from 'electron'
 import { captureFrames, rendererUrl } from '../capture/offscreen.ts'
+import { captureSetup } from '../capture/ready.ts'
 import type { AbilityWireDeps } from './wire.ts'
 
 export function abilityElectronDeps(preload: string): Pick<AbilityWireDeps, 'capture' | 'chooseSounds'> {
@@ -16,7 +17,7 @@ export function abilityElectronDeps(preload: string): Pick<AbilityWireDeps, 'cap
         height: req.height,
         frames: req.times.length,
         preload,
-        setup: `window.__abilityCapture.load(${JSON.stringify(req.ability)}, ${JSON.stringify(req.effects)})`,
+        setup: captureSetup('__abilityCapture', `window.__abilityCapture.load(${JSON.stringify(req.ability)}, ${JSON.stringify(req.effects)})`),
         setupTimeoutMs: 30_000,
         frameScript: (i) => `window.__abilityCapture.at(${Number(req.times[i]) || 0})`,
         timeoutMs: 120_000

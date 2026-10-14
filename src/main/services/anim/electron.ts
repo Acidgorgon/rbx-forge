@@ -3,6 +3,7 @@
 
 import { BrowserWindow, dialog } from 'electron'
 import { captureFrames, rendererUrl } from '../capture/offscreen.ts'
+import { captureSetup } from '../capture/ready.ts'
 import type { AnimWireDeps } from './wire.ts'
 
 export function animElectronDeps(preload: string): Pick<AnimWireDeps, 'capture' | 'chooseImport'> {
@@ -16,7 +17,7 @@ export function animElectronDeps(preload: string): Pick<AnimWireDeps, 'capture' 
         height: req.height,
         frames: req.times.length,
         preload,
-        setup: `window.__animCapture.load(${JSON.stringify(req.clip)}, ${JSON.stringify({ reference: req.reference ?? null })})`,
+        setup: captureSetup('__animCapture', `window.__animCapture.load(${JSON.stringify(req.clip)}, ${JSON.stringify({ reference: req.reference ?? null })})`),
         setupTimeoutMs: 20_000,
         frameScript: (i) => `window.__animCapture.at(${Number(req.times[i]) || 0})`,
         timeoutMs: 90_000

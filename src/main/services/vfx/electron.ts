@@ -3,6 +3,7 @@
 
 import { BrowserWindow, dialog } from 'electron'
 import { captureFrames, rendererUrl } from '../capture/offscreen.ts'
+import { captureSetup } from '../capture/ready.ts'
 import type { VfxWireDeps } from './wire.ts'
 
 export function vfxElectronDeps(preload: string): Pick<VfxWireDeps, 'capture' | 'chooseImport'> {
@@ -16,7 +17,7 @@ export function vfxElectronDeps(preload: string): Pick<VfxWireDeps, 'capture' | 
         height: req.height,
         frames: req.times.length,
         preload,
-        setup: `window.__vfxCapture.load(${JSON.stringify(req.effect)}, ${JSON.stringify({ background: req.background ?? 'dark' })})`,
+        setup: captureSetup('__vfxCapture', `window.__vfxCapture.load(${JSON.stringify(req.effect)}, ${JSON.stringify({ background: req.background ?? 'dark' })})`),
         setupTimeoutMs: 20_000,
         frameScript: (i) => `window.__vfxCapture.at(${Number(req.times[i]) || 0})`,
         timeoutMs: 90_000

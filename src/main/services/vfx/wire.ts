@@ -16,6 +16,9 @@ import type { TextureGenerateInput } from '../../../shared/vfxTextureTypes.ts'
 import type { ArtFetch } from '../art/openaiImages.ts'
 import type { CodexImages } from '../art/imageBackend.ts'
 import type { ImageBackend } from '../../../shared/artTypes.ts'
+import type { Rgba } from '../../../shared/vfx/tex/image.ts'
+import { normalizePolicy, TEXTURE_POLICY_SETTING, DEFAULT_TEXTURE_POLICY } from '../../../shared/vfx/tex/reuse.ts'
+import type { StudioHarvestDeps } from './textures/importer.ts'
 
 export interface VfxWireDeps {
   // Principle priorities (services/principles): weights for the critics, ratings feed them.
@@ -24,13 +27,17 @@ export interface VfxWireDeps {
   gate?: LabGate
   userDataDir: string
   root: () => string | null
-  settings: { get<T>(key: string, fallback: T): T }
+  settings: { get<T>(key: string, fallback: T): T; set?(key: string, value: unknown): void }
   emit: (event: 'vfx:changed' | 'vfx:progress' | 'vfx:textures', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   memory?: MemoryLike
   vision?: (tier?: LabTier) => VisionFn | null
   capture?: (req: CaptureRequest) => Promise<Buffer[]>
   chooseImport?: () => Promise<string[]>
+  // Texture import: file / folder picker and JPEG decoding (electron), Studio sources.
+  chooseTextures?: (what: 'files' | 'folder') => Promise<string[]>
+  decodeImage?: (bytes: Buffer, ext: string) => Rgba | null
+  studioTextures?: StudioHarvestDeps
   rojo?: { running(): boolean; start(): Promise<void> }
   chatImage?: (absPath: string, name: string) => Promise<string | null>
   // Custom textures: OpenAI images (Art page key, model, budget) and the Open Cloud upload.
@@ -60,7 +67,14 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     fetch: deps.fetch,
     memory: deps.memory,
     emit: deps.emit,
-    log: deps.log
+    log: deps.log,
+    policy: {
+      get: () => normalizePolicy(deps.settings.get<string>(TEXTURE_POLICY_SETTING, DEFAULT_TEXTURE_POLICY)),
+      set: (p) => deps.settings.set?.(TEXTURE_POLICY_SETTING, p)
+    },
+    decodeImage: deps.decodeImage,
+    vision: deps.vision ? () => deps.vision!('cheap') : undefined,
+    studio: deps.studioTextures
   })
   const service = new VfxService({
     principles: deps.principles,
@@ -123,7 +137,13 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     vfxTexDelete: (id: string) => textures.remove(String(id ?? '')),
     vfxTexUpload: (id: string) => textures.upload(String(id ?? '')),
     vfxTexCheck: (id: string) => textures.checkModeration(String(id ?? '')),
-    vfxTexFile: (id: string, which: unknown) => textures.file(String(id ?? ''), which === 'preview' ? 'preview' : 'texture')
+    vfxTexFile: (id: string, which: unknown) => textures.file(String(id ?? ''), which === 'preview' ? 'preview' : 'texture'),
+    vfxTexImportPick: async (what: unknown) => (deps.chooseTextures ? deps.chooseTextures(what === 'folder' ? 'folder' : 'files') : []),
+    vfxTexImportScan: (paths: unknown, opts?: { vision?: boolean }) => textures.importFiles(Array.isArray(paths) ? paths.map(String).slice(0, 500) : [], { vision: !!opts?.vision }),
+    vfxTexImportIds: (text: unknown, opts?: { vision?: boolean }) => textures.importIds(String(text ?? '').slice(0, 200_000), { vision: !!opts?.vision }),
+    vfxTexImportStudio: (opts?: { vision?: boolean }) => textures.importStudio({ vision: !!opts?.vision }),
+    vfxTexImportCommit: (input: Parameters<TextureService['importCommit']>[0]) => textures.importCommit(input),
+    vfxTexSetPolicy: async (p: unknown) => textures.setPolicy(p)
   }
   let tools: { read: VfxTool[]; write: VfxTool[] } | null = null
   const withTextures = () => {

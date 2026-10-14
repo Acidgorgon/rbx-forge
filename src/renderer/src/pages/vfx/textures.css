@@ -75,6 +75,38 @@
 .tex-pick-builtins .badge-o { height: 20px; font-size: 11px; }
 .tex-pick > .note { margin: 0; font-size: 10.5px; }
 
+/* Texture setting (reuse first) + import */
+.tex-policy { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin-bottom: 10px; font-size: 11px; }
+.tex-policy .seg button { flex: none; padding: 0 9px; }
+.tex-policy .note { font-size: 11px; flex: 1 1 260px; min-width: 0; }
+.tex-imp { display: flex; flex-direction: column; gap: 8px; margin-bottom: 12px; }
+.tex-imp-drop .faint { font-size: 11px; }
+.tex-imp-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tex-imp-bar .btn.on { color: var(--ember-text); background: var(--ember-fill); border-color: var(--ember-lo); }
+.tex-imp-vision { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-2); }
+.tex-imp-paste { display: flex; align-items: flex-start; gap: 8px; }
+.tex-imp-paste textarea { flex: 1; min-width: 0; font-size: 11.5px; resize: vertical; }
+.tex-imp-review { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px dashed var(--line); }
+.tex-imp-review > .row { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; font-size: 11.5px; }
+.tex-imp-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; max-height: 420px; overflow-y: auto; }
+.tex-imp-row { display: flex; align-items: flex-start; gap: 8px; padding: 6px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-panel); }
+.tex-imp-row.off { opacity: .6; }
+.tex-imp-row.err { border-color: var(--err); }
+.tex-imp-row > input[type='checkbox'] { margin-top: 18px; accent-color: var(--ember); }
+.tex-imp-thumb { flex: none; width: 52px; height: 52px; display: grid; place-items: center; background: #0c0c0e; border: 1px solid var(--line); border-radius: var(--r-sm); color: #555; overflow: hidden; }
+.tex-imp-thumb img { width: 100%; height: 100%; object-fit: contain; }
+.tex-imp-main { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 4px; }
+.tex-imp-line { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; }
+.tex-imp-line .input { height: 24px; font-size: 11.5px; }
+.tex-imp-line input.input { flex: 1 1 140px; min-width: 0; }
+.tex-imp-line select.input { width: auto; }
+.tex-imp-tags { height: 22px; font-size: 11px; }
+.tex-imp-fb { display: inline-flex; align-items: center; gap: 4px; font-size: 11px; color: var(--fg-2); }
+.tex-imp-label { font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; display: flex; align-items: center; gap: 4px; }
+.tex-imp-swatch { display: inline-block; width: 9px; height: 9px; border-radius: 2px; border: 1px solid var(--line); }
+.tex-imp-main .note { font-size: 10.5px; margin: 0; }
+.tex-imp-scope { height: 26px; width: auto; font-size: 11.5px; }
+
 @container (max-width: 860px) {
   .tex-gen-body { flex-direction: column; }
   .tex-live { width: 140px; }

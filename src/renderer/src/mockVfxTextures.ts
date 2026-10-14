@@ -1,7 +1,7 @@
 // Browser-preview mock of VfxTextureApi: a small texture library drawn with the real procedural
 // generators (shared/vfx/tex), PNGs made on a canvas, fake AI generation (procedural stand-ins),
 // fake upload with a moderation state that clears on "Check".
-import type { HarnessEvents, TextureGenerateInput, TextureStatus, VfxTexture, VfxTextureApi } from '@shared/types'
+import type { HarnessEvents, TextureGenerateInput, TextureImportRow, TextureImportScan, TexturePolicy, TextureStatus, VfxTexture, VfxTextureApi } from '@shared/types'
 import { generateProcedural, PROCEDURAL_INFO, PROCEDURAL_TYPES, type ProceduralType } from '@shared/vfx/tex/procedural'
 import { premultipliedPreview, type Rgba } from '@shared/vfx/tex/image'
 import { kindFromText, parseTexRef, texturePreset, type TextureKind } from '@shared/vfx/tex/textures'
@@ -86,10 +86,64 @@ export function vfxTexturesMock(emit: Emit): VfxTextureApi {
     return t
   }
   let spent = 0.42
+  let policy: TexturePolicy = 'library-first'
+  // Browser mock of an import review: three procedural "files", one a 4x4 flipbook.
+  const mockScan = (from: TextureImportRow['from'], n: number): TextureImportScan => ({
+    scanId: `scan-${Date.now()}`,
+    notes: from === 'studio' ? ['Mock: ids as Studio would report them.'] : [],
+    rows: Array.from({ length: n }, (_, i) => {
+      const type = (['smoke', 'spark', 'ring', 'glow'] as ProceduralType[])[i % 4]
+      const fb = from === 'file' && i === 0
+      return {
+        key: `m${i}`,
+        from,
+        label: from === 'file' ? `pack/${type}_${i}${fb ? '_4x4' : ''}.png` : String(1234567 + i),
+        name: `${type[0].toUpperCase()}${type.slice(1)} ${i + 1}`,
+        kind: type as TextureKind,
+        tags: [type, 'white', 'soft', from === 'file' ? 'imported' : 'asset'],
+        description: `White ${type}, soft edges.`,
+        flipbook: fb ? { layout: 'Grid4x4' as const, frames: 16, cols: 4, rows: 4, source: 'name' } : null,
+        preview: dataUrl(premultipliedPreview(generateProcedural({ type, size: 96, frames: fb ? 16 : 1, tint: 'white' }).image)),
+        notes: [],
+        ...(from !== 'file' ? { assetId: String(1234567 + i) } : {}),
+        ...(i === 2 ? { duplicateOf: items[0]?.id ?? 'glow' } : {})
+      }
+    })
+  })
   return {
+    async vfxTexImportPick() {
+      return ['/mock/textures']
+    },
+    async vfxTexImportScan(paths) {
+      await delay(400)
+      return mockScan('file', Math.min(6, 3 + paths.length))
+    },
+    async vfxTexImportIds(text) {
+      await delay(400)
+      return mockScan('asset', Math.max(1, Math.min(4, text.split(/[\s,]+/).filter(Boolean).length)))
+    },
+    async vfxTexImportStudio() {
+      await delay(600)
+      return mockScan('studio', 3)
+    },
+    async vfxTexImportCommit(input) {
+      const out: VfxTexture[] = []
+      for (const r of input.rows) {
+        const t = addProcedural('glow', { name: r.name, scope: input.scope ?? 'project', kind: r.kind })
+        Object.assign(t, { source: 'imported', tags: r.tags ?? t.tags, description: r.description ?? '' })
+        out.push(t)
+      }
+      changed()
+      return out
+    },
+    async vfxTexSetPolicy(p) {
+      policy = p
+      changed()
+      return p
+    },
     async vfxTexStatus(): Promise<TextureStatus> {
       seed()
-      return { project: true, openaiKey: true, robloxKey: true, creator: true, model: 'gpt-image-2.5-flare', perImageUsd: 0.013, spentTodayUsd: spent, dailyCapUsd: 5, counts: { user: items.filter((t) => t.scope === 'user').length, project: items.filter((t) => t.scope === 'project').length } }
+      return { project: true, openaiKey: true, robloxKey: true, creator: true, model: 'gpt-image-2.5-flare', perImageUsd: 0.013, spentTodayUsd: spent, dailyCapUsd: 5, counts: { user: items.filter((t) => t.scope === 'user').length, project: items.filter((t) => t.scope === 'project').length }, policy, vision: true, studio: { connected: true, liveTree: false } }
     },
     async vfxTexList() {
       seed()

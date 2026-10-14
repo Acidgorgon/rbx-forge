@@ -66,6 +66,7 @@ const methods = [
   'vfxLearn', 'vfxRecipes', 'vfxMake', 'vfxRefine', 'vfxCancel', 'vfxCreate', 'vfxFile', 'vfxSaveThumb', 'vfxResolveTexture', 'vfxTestInStudio',
   'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample',
   'vfxTexStatus', 'vfxTexList', 'vfxTexGenerate', 'vfxTexPreview', 'vfxTexUpdate', 'vfxTexRate', 'vfxTexDelete', 'vfxTexUpload', 'vfxTexCheck', 'vfxTexFile',
+  'vfxTexImportPick', 'vfxTexImportScan', 'vfxTexImportIds', 'vfxTexImportStudio', 'vfxTexImportCommit', 'vfxTexSetPolicy',
   // Animation Lab (services/anim) + Labs model tiers
   'animStatus', 'animList', 'animGet', 'animImport', 'animPreviewImport', 'animChooseImport', 'animUpdate', 'animDelete', 'animRate',
   'animLearn', 'animStyle', 'animCoverage', 'animCompose', 'animRunScript', 'animGetRig', 'animSetRig', 'animConvert', 'animRefine', 'animCancel', 'animChecks', 'animExamples',

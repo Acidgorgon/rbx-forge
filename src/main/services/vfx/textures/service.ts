@@ -10,7 +10,7 @@ import { generateImages, type ArtFetch, type Sleep } from '../../art/openaiImage
 import { estimateImageUsd, formatUsd, round } from '../../art/pricing.ts'
 import { uploadImageAsset, ASSETS_BASE, AssetUploadError } from '../../art/robloxAssets.ts'
 import { dayOf } from '../../art/store.ts'
-import { assembleFlipbook, layoutForFrames, premultipliedPreview, prepareSprite, isPow2, type Rgba, type TintMode } from '../../../../shared/vfx/tex/image.ts'
+import { assembleFlipbook, layoutForFrames, premultipliedPreview, prepareSprite, isPow2, resample, type Rgba, type TintMode } from '../../../../shared/vfx/tex/image.ts'
 import { evolveFrames, generateProcedural, PROCEDURAL_INFO, PROCEDURAL_TYPES, resolveParams, type ProceduralType } from '../../../../shared/vfx/tex/procedural.ts'
 import {
   applyFlipbookLayouts,
@@ -37,6 +37,9 @@ import { decodePng, encodePng } from './png.ts'
 import { PROJECT_TEXTURE_DIR, TextureError, TextureStore, textureId } from './store.ts'
 import { assertSpend, chargeSpend } from '../../spend/gate.ts'
 import { codexBackend, type CodexImages } from '../../art/imageBackend.ts'
+import { applyTexturePolicy, libraryPromptLines, normalizePolicy, roleTextures, DEFAULT_TEXTURE_POLICY, type TexturePolicy } from '../../../../shared/vfx/tex/reuse.ts'
+import { analyzeTexture, summary } from '../../../../shared/vfx/tex/analyze.ts'
+import { TextureImporter, type BytesFetch, type StudioHarvestDeps, type VisionFn } from './importer.ts'
 import { CODEX_IMAGE_MODEL, type ImageBackend } from '../../../../shared/artTypes.ts'
 
 export interface TextureMemory {
@@ -62,12 +65,22 @@ export interface TextureServiceDeps {
   memory?: TextureMemory
   emit?: (event: 'vfx:textures', payload: { at: number }) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
+  // VFX Lab setting "Textures" (shared/vfx/tex/reuse.ts): read and written through the app settings.
+  policy?: { get(): TexturePolicy; set(p: TexturePolicy): void }
+  // Import: JPEG decoding (electron nativeImage), downloads with bytes, the cheap vision model and
+  // the Studio sources for "From Studio".
+  decodeImage?: (bytes: Buffer, ext: string) => Rgba | null
+  bytesFetch?: BytesFetch
+  vision?: () => VisionFn | null
+  studio?: StudioHarvestDeps
 }
 
 // AI textures are made at 1024 (the cheapest square size) and downscaled.
 const AI_SIZE = '1024x1024'
 const AI_QUALITY_DEFAULT = 'medium'
 export const AGENT_MAX_AI_VARIANTS = 4
+
+const resample512 = (img: Rgba) => resample(img, 512, 512)
 
 export function normalizeModeration(state: string | undefined): ModerationState {
   const s = String(state ?? '').toLowerCase()
@@ -88,11 +101,56 @@ export class TextureService {
   private projectStore: { root: string; store: TextureStore } | null = null
   private genCache = new Map<string, string>()
   private now: () => number
+  private localPolicy: TexturePolicy = DEFAULT_TEXTURE_POLICY
+  readonly importer: TextureImporter
 
   constructor(deps: TextureServiceDeps) {
     this.deps = deps
     this.user = new TextureStore('user', join(deps.userDir, 'textures'))
     this.now = deps.now ?? Date.now
+    this.importer = new TextureImporter({
+      storeFor: (scope) => this.storeFor(scope),
+      list: () => this.list(),
+      changed: () => this.changed(),
+      decodeImage: deps.decodeImage,
+      fetch: deps.bytesFetch,
+      vision: deps.vision,
+      studio: deps.studio,
+      now: deps.now,
+      log: deps.log
+    })
+  }
+
+  // ------------------------------------------------------------ texture policy (reuse first)
+
+  policy(): TexturePolicy {
+    return normalizePolicy(this.deps.policy ? this.deps.policy.get() : this.localPolicy)
+  }
+
+  setPolicy(p: unknown): TexturePolicy {
+    const v = normalizePolicy(p)
+    if (this.deps.policy) this.deps.policy.set(v)
+    else this.localPolicy = v
+    this.changed()
+    return v
+  }
+
+  // ------------------------------------------------------------ import
+
+  importFiles(paths: string[], opts: { vision?: boolean } = {}) {
+    return this.importer.scanFiles(paths, opts)
+  }
+
+  importIds(text: string, opts: { vision?: boolean } = {}) {
+    return this.importer.scanIds(text, opts)
+  }
+
+  importStudio(opts: { vision?: boolean } = {}) {
+    return this.importer.scanStudio(opts)
+  }
+
+  importCommit(input: Parameters<TextureImporter['commit']>[0]): Promise<VfxTexture[]> {
+    return this.importer.commit(input, (store, base, img) => this.saveImage(store, base, img))
   }
 
   get userLibraryDir(): string {
@@ -187,7 +245,10 @@ export class TextureService {
       perImageUsd: estimateImageUsd(s.model, s.quality, AI_SIZE),
       spentTodayUsd: await this.spentToday(),
       dailyCapUsd: s.dailyCapUsd,
-      counts: { user: (await this.user.list()).length, project: p ? (await p.list()).length : 0 }
+      counts: { user: (await this.user.list()).length, project: p ? (await p.list()).length : 0 },
+      policy: this.policy(),
+      vision: !!this.deps.vision?.(),
+      studio: { connected: !!(this.deps.studio?.bridge?.listening && this.deps.studio.bridge.connected()), liveTree: !!this.deps.studio?.liveTree?.() }
     }
   }
 
@@ -385,6 +446,7 @@ export class TextureService {
     const hit = await this.find(id)
     if (!hit) throw new TextureError(`no texture "${id}"`)
     if (!hit.tex.roblox) throw new TextureError('This texture is not uploaded yet.')
+    if (hit.tex.source === 'asset') return this.refreshAsset(hit.tex, hit.store)
     const key = await this.deps.robloxKey?.()
     if (!key) throw new TextureError('No Open Cloud API key. Add one on the Art page.')
     const fetch = this.deps.fetch ?? (globalThis.fetch as unknown as ArtFetch)
@@ -399,6 +461,28 @@ export class TextureService {
     }
     const t: VfxTexture = { ...hit.tex, updatedAt: this.now(), roblox: { ...hit.tex.roblox, moderation: normalizeModeration(state), checkedAt: this.now() } }
     const saved = await hit.store.save(t)
+    this.changed()
+    return saved
+  }
+
+  // An asset-id texture (not ours to query through Open Cloud): the public thumbnail's state, and
+  // its preview image when the library has none yet.
+  private async refreshAsset(tex: VfxTexture, store: TextureStore): Promise<VfxTexture> {
+    const id = tex.roblox!.assetId
+    const thumbs = await this.importer.thumbnails([id])
+    if (!thumbs) throw new TextureError('Roblox could not be reached; try again when online.')
+    const th = thumbs.get(id)
+    const moderation: ModerationState = th?.state === 'Completed' ? 'Approved' : th?.state === 'Blocked' ? 'Rejected' : th?.state === 'Pending' ? 'Reviewing' : 'Unknown'
+    let t: VfxTexture = { ...tex, updatedAt: this.now(), roblox: { ...tex.roblox!, moderation, checkedAt: this.now() } }
+    if (tex.origin?.noPreview && th?.url) {
+      const img = await this.importer.fetchImage(th.url)
+      if (img) {
+        const saved = await this.saveImage(store, { ...t, origin: { ...tex.origin, noPreview: false }, analysis: summary(analyzeTexture(img)) }, resample512(img))
+        this.changed()
+        return saved
+      }
+    }
+    const saved = await store.save(t)
     this.changed()
     return saved
   }
@@ -429,7 +513,15 @@ export class TextureService {
   // Turns forgetex://gen/... requests into library items (one per distinct request; an existing item
   // with the same recipe is reused) and rewrites the effect to forgetex://<id>; then flipbook textures
   // set their layout on the emitters that use them.
-  async prepareEffect(effect: VfxEffect, scope?: TextureScope): Promise<VfxEffect> {
+  // reuse: the effect came from the composer / drafter / critic: the texture policy applies first
+  // (library textures instead of new ones, disliked ones swapped, built-in defaults replaced by the
+  // user's imported / liked textures of the same kind). Manual edits pass reuse false.
+  async prepareEffect(effect: VfxEffect, scope?: TextureScope, opts: { reuse?: boolean } = {}): Promise<VfxEffect> {
+    if (opts.reuse) {
+      const r = applyTexturePolicy(effect, await this.list(), this.policy(), { replaceBuiltins: true })
+      for (const p of r.picks) this.deps.log?.(`textures: ${p.node}: ${p.why}`)
+      effect = r.effect
+    }
     const refs = texRefsIn(effect)
     if (!refs.length) return effect
     const map: Record<string, string> = {}
@@ -462,11 +554,15 @@ export class TextureService {
     })
   }
 
-  // For the composer and the tools: liked first, never disliked.
-  async promptList(limit = 12): Promise<string[]> {
-    const all = (await this.list()).filter((t) => t.rating !== 'down')
-    all.sort((a, b) => (b.rating === 'up' ? 1 : 0) - (a.rating === 'up' ? 1 : 0) || b.updatedAt - a.updatedAt)
-    return all.slice(0, limit).map(textureLine)
+  // For the composer and the drafter: the policy instruction and the library by kind (imported and
+  // liked first, never disliked).
+  async promptList(limit = 40): Promise<string[]> {
+    return libraryPromptLines(await this.list(), this.policy(), { max: limit })
+  }
+
+  // Draft layer roles -> library textures (empty under "generate freely").
+  async roleTextures(): Promise<Record<string, string>> {
+    return roleTextures(await this.list(), this.policy())
   }
 
   async ensureDirs(): Promise<void> {

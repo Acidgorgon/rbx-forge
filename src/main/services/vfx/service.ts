@@ -86,9 +86,11 @@ export interface VfxServiceDeps {
 
 export interface VfxTextureHooks {
   resolve(ref: string): Promise<string | null>
-  prepareEffect(effect: VfxEffect, scope?: VfxScope): Promise<VfxEffect>
+  prepareEffect(effect: VfxEffect, scope?: VfxScope, opts?: { reuse?: boolean }): Promise<VfxEffect>
   exportEffect(effect: VfxEffect): Promise<ExportPlan>
   promptList(limit?: number): Promise<string[]>
+  // Draft layer roles -> library textures under the texture policy (reuse first).
+  roleTextures?(): Promise<Record<string, string>>
 }
 
 const MODEL_EXT = new Set(['.rbxm', '.rbxmx'])
@@ -126,7 +128,7 @@ A complete example (a charge-and-slash):
 ${'$'}{EXAMPLE}\`\`\``
   .replace('${API}', kitReference())
   .replace('${GUIDE}', CHOREOGRAPHY_GUIDE)
-  .replace('${TEXTURES}', `${PROCEDURAL_GUIDE} When none of the built-in textures fits a layer (a ring that should be a ring, smoke that should be a puff, a crack, a slash crescent), pass texture = "forgetex://gen/<type>" in the spawn options; prefer the user's liked library textures when they fit.`)
+  .replace('${TEXTURES}', `${PROCEDURAL_GUIDE} Reuse first: the request lists the user's texture library by kind and the texture policy. For each particle, beam and trail layer, pass texture = "forgetex://<id>" from that list when a library texture fits the layer's kind (imported and liked ones first). Only when none fits (and the policy allows it) ask for a procedural one by shape with texture = "forgetex://gen/<type>" (a ring that should be a ring, smoke that should be a puff, a crack, a slash crescent).`)
   .replace('${EXAMPLE}', CHARGE_SLASH)
 
 const EMPTY_BASE = (name: string): VfxEffect => ({ name, roots: [], cues: [], duration: 2 })
@@ -568,12 +570,14 @@ export class VfxService {
   // Saves an effect as a generated entry (new, or replacing `id`) and writes it into the project.
   // Writes src/shared/VFX/<Name> too, except for built-in examples (writeProject: false, and later
   // saves of an example not written yet): those reach the project only through Export / Add to game.
-  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string; restatement?: Restatement; writeProject?: boolean } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string; restatement?: Restatement; writeProject?: boolean; reuseTextures?: boolean } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
     const spec = { name: raw.name, description: opts.description, tags: opts.tags }
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new VfxError(`no VFX entry "${opts.id}"`)
     const store = prev?.store ?? this.project() ?? this.user
-    const effect = await this.prepareTextures(raw, store.scope)
+    // Composed / drafted / scripted effects: the texture policy applies (reuse library textures);
+    // built-in examples keep their textures.
+    const effect = await this.prepareTextures(raw, store.scope, opts.reuseTextures ?? opts.writeProject !== false)
     const now = this.now()
     const tags = [...new Set([...(spec.tags ?? []).map((t) => String(t).toLowerCase()), ...autoTags(effect, opts.prompt ?? '')])].slice(0, 10)
     const entry: VfxEntry = {
@@ -649,9 +653,9 @@ export class VfxService {
     return out
   }
 
-  private async prepareTextures(effect: VfxEffect, scope?: VfxScope): Promise<VfxEffect> {
+  private async prepareTextures(effect: VfxEffect, scope?: VfxScope, reuse = false): Promise<VfxEffect> {
     if (!this.deps.textures) return effect
-    return this.deps.textures.prepareEffect(effect, scope).catch((e) => {
+    return this.deps.textures.prepareEffect(effect, scope, { reuse }).catch((e) => {
       this.deps.log?.(`vfx: textures: ${(e as Error).message}`, 'stderr')
       return effect
     })
@@ -833,7 +837,7 @@ export class VfxService {
       // Keep the best iteration as the effect.
       const current = (await hit.store.read(id)) ?? hit.entry
       const bestFrames = result.best.frames
-      const bestEffect = await this.prepareTextures(result.best.effect, hit.store.scope)
+      const bestEffect = await this.prepareTextures(result.best.effect, hit.store.scope, true)
       let entry = await hit.store.save({
         ...current,
         effect: bestEffect,
@@ -860,7 +864,7 @@ export class VfxService {
     const tags = promptTags(prompt)
     const recipe = await this.recipeFor(tags.length ? tags : prompt.toLowerCase().split(/\W+/))
     const entries = await this.list()
-    const fallback = draftSpec(prompt, { recipe, textures: libraryTextures(entries) })
+    const fallback = draftSpec(prompt, { recipe, textures: { ...libraryTextures(entries), ...((await this.deps.textures?.roleTextures?.().catch(() => ({}))) ?? {}) } })
     const vision = this.deps.vision?.('default')
     if (!vision) return { spec: fallback, source: 'draft' }
     const refs = await this.references(tags, prompt)
@@ -1040,8 +1044,8 @@ export class VfxService {
   // ------------------------------------------------------------ textures
 
   private async textureLines(): Promise<string[]> {
-    const list = (await this.deps.textures?.promptList(10).catch(() => [])) ?? []
-    return list.length ? [`Custom textures in the user's library (forgetex:// refs; liked ones first):\n${list.join('\n')}`] : []
+    const list = (await this.deps.textures?.promptList(40).catch(() => [])) ?? []
+    return list.length ? [list.join('\n')] : []
   }
 
   // rbxassetid:// -> PNG data URL via the public thumbnails API (no auth); a local file path (Art

@@ -440,8 +440,10 @@ test('texture service: procedural items, gen-ref materialisation (deduped), rati
   assert.ok(memory.saved.some((m) => m.name === 'vfx-textures-liked' && m.body.includes(texRef(ring.id))))
   assert.ok(memory.saved.some((m) => m.name === 'vfx-textures-avoid' && m.body.includes('smoke')))
   const lines = await svc.promptList()
-  assert.ok(lines[0].includes(ring.id), 'liked first')
-  assert.ok(!lines.some((l) => l.includes(mine.id)), 'disliked never offered')
+  // Policy line first, then the library by kind (liked first); disliked only in the "never use" line.
+  assert.match(lines[0], /LIBRARY FIRST/)
+  assert.ok(lines.find((l) => /^\w+: forgetex:\/\//.test(l))!.includes(ring.id), 'liked first')
+  assert.ok(!lines.some((l) => l.includes(mine.id) && !l.startsWith('Never use')), 'disliked never offered')
   assert.equal((await svc.update(ring.id, { tags: ['Shock', 'ring'] })).tags.join(','), 'shock,ring')
   assert.equal(await svc.remove(mine.id), true)
 })

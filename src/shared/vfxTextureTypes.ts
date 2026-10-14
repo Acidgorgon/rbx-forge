@@ -4,8 +4,51 @@
 import type { TintMode } from './vfx/tex/image.ts'
 import type { ProceduralParams, ProceduralType } from './vfx/tex/procedural.ts'
 import type { TextureKind, TextureScope, VfxTexture } from './vfx/tex/textures.ts'
+import type { TexturePolicy } from './vfx/tex/reuse.ts'
+import type { FlipbookLayout } from './vfx/tex/image.ts'
 
-export type { TintMode, ProceduralParams, ProceduralType, TextureKind, TextureScope, VfxTexture }
+export type { TintMode, ProceduralParams, ProceduralType, TextureKind, TextureScope, VfxTexture, TexturePolicy }
+
+// One texture offered for import (files, pasted asset ids, or ids harvested from Studio), with what
+// the analysis suggests; the review edits name / kind / tags / flipbook before committing.
+export interface TextureImportRow {
+  key: string
+  from: 'file' | 'asset' | 'studio'
+  // File path relative to what was picked / dropped (files), or the asset id.
+  label: string
+  name: string
+  kind: TextureKind
+  tags: string[]
+  description: string
+  // Detected or hinted flipbook (null = a single texture). The review can switch it off.
+  flipbook: { layout: FlipbookLayout; frames: number; cols: number; rows: number; source: string } | null
+  // Small preview (PNG data URL on black), when there is one.
+  preview?: string
+  color?: string
+  edge?: 'soft' | 'hard'
+  notes: string[]
+  // A texture already in the library (or earlier in this batch) with the same pixels / asset id.
+  duplicateOf?: string
+  assetId?: string
+  // Studio: where the id is used.
+  paths?: string[]
+  error?: string
+  // Names / description came from the vision model.
+  vision?: boolean
+}
+
+export interface TextureImportScan {
+  scanId: string
+  rows: TextureImportRow[]
+  // Why some sources were skipped (Studio not connected, offline thumbnails, too many files ...).
+  notes: string[]
+}
+
+export interface TextureImportCommit {
+  scanId: string
+  scope?: TextureScope
+  rows: { key: string; name?: string; kind?: TextureKind; tags?: string[]; description?: string; flipbook?: boolean }[]
+}
 
 export interface TextureGenerateInput {
   kind?: TextureKind
@@ -40,6 +83,12 @@ export interface TextureStatus {
   counts: { user: number; project: number }
   // Set when the Art page's image backend is Codex (ChatGPT plan): no key, cost or cap applies.
   codex?: { ready: boolean; detail: string }
+  // VFX Lab setting: how effects pick textures (library only / library first / generate freely).
+  policy?: TexturePolicy
+  // A vision model is configured (import names textures with the cheap tier).
+  vision?: boolean
+  // Studio sources for "From Studio".
+  studio?: { connected: boolean; liveTree: boolean }
 }
 
 export interface VfxTextureApi {
@@ -58,6 +107,14 @@ export interface VfxTextureApi {
   vfxTexCheck(id: string): Promise<VfxTexture>
   // texture.png or preview.png as a data URL.
   vfxTexFile(id: string, which: 'texture' | 'preview'): Promise<string | null>
+  // Import: scan files / folders (recursive), pasted asset ids, or the ids used in the open Studio
+  // place; then commit the reviewed rows.
+  vfxTexImportPick(what: 'files' | 'folder'): Promise<string[]>
+  vfxTexImportScan(paths: string[], opts?: { vision?: boolean }): Promise<TextureImportScan>
+  vfxTexImportIds(text: string, opts?: { vision?: boolean }): Promise<TextureImportScan>
+  vfxTexImportStudio(opts?: { vision?: boolean }): Promise<TextureImportScan>
+  vfxTexImportCommit(input: TextureImportCommit): Promise<VfxTexture[]>
+  vfxTexSetPolicy(policy: TexturePolicy): Promise<TexturePolicy>
 }
 
 export interface VfxTextureEvents {

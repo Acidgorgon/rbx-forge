@@ -40,6 +40,10 @@ import {
   type QueryFn
 } from './sdk.ts'
 import { createGentreeServer, gentreeTools, SERVER_NAME, type ToolFs } from './tools.ts'
+import type { Restater } from './restate.ts'
+import { parseRestateCommand } from '../../shared/restate/heuristic.ts'
+import { formatRestatement, withRestatement } from '../../shared/restate/prompt.ts'
+import { normalizeRestatement, type Restatement } from '../../shared/restate/types.ts'
 
 const SETTING = 'chats'
 const MAX_MESSAGES = 500
@@ -97,6 +101,8 @@ export interface ChatDeps {
   meter?: Meter
   // Team mode (orchestrator); without it every message runs on the single chat agent.
   team?: TeamRunner
+  // "Restate first" (agent/restate.ts); without it big requests run straight away.
+  restater?: Restater
 }
 
 // OpenAI-compatible chats: compact the history at 80% of this window, down to 40%.
@@ -260,12 +266,98 @@ export class ChatManager {
     const user = userMessage('main', text)
     if (images.length) user.images = images
     this.push(chat, user)
+    // "/restate <request>" forces the restatement card; the request is the rest of the line.
+    const cmd = parseRestateCommand(text)
+    if (cmd.forced) text = cmd.text
     if (chat.title === 'New chat') chat.title = text.replace(/\s+/g, ' ').trim().slice(0, 48) || 'Chat'
     if (!root) {
       this.push(chat, systemMessage('main', 'Open a project first.'))
       return
     }
+    // A new message answers any card still waiting.
+    this.dismissRestateCards(chat)
+    if (cmd.forced && !text) {
+      this.push(chat, systemMessage('main', 'Add the request after /restate, e.g. /restate add a daily reward system.'))
+      return
+    }
+    const restater = this.deps.restater
+    if (restater && !chat.guests?.length) {
+      const d = restater.decide('chat', text, { effort: chat.effort, force: cmd.forced })
+      if (d.restate) return this.restateFirst(chat, text, user, d.reason, images)
+    }
+    return this.turn(chat, text, images)
+  }
 
+  // ---- restate first ----
+
+  // Writes the restatement (cheap tier) and posts the card; the turn waits for confirmRestate.
+  // When the restatement cannot be written the request runs as usual.
+  private async restateFirst(chat: StoredChat, text: string, user: ChatMessage, reason: string, images: ChatImage[]): Promise<void> {
+    const abort = new AbortController()
+    this.running.set(chat.id, abort)
+    this.ctx.emit('chat:busy', { sessionId: chat.id, busy: true })
+    let draft: Restatement | null = null
+    try {
+      draft = await this.deps.restater!.generate('chat', text)
+    } catch (e) {
+      this.ctx.log({ service: 'agent', stream: 'stderr', text: `restate skipped: ${(e as Error).message}` })
+    } finally {
+      this.running.delete(chat.id)
+      this.ctx.emit('chat:busy', { sessionId: chat.id, busy: false })
+    }
+    if (abort.signal.aborted) {
+      this.push(chat, systemMessage('main', 'Stopped.'))
+      return
+    }
+    if (!draft) return this.turn(chat, text, images)
+    this.push(chat, {
+      id: randomUUID(),
+      role: 'assistant',
+      text: formatRestatement(draft),
+      at: Date.now(),
+      agentId: 'main',
+      card: 'restate',
+      restate: { request: text, draft, state: 'pending', reason, userMessageId: user.id }
+    })
+    this.save()
+  }
+
+  // "Yes, go" (edited: the person's edit of the card). Saves the confirmed reading on the card, notes
+  // a substantial correction in memory, then runs the request with the reading attached.
+  async confirmRestate(id: string, messageId: string, edited?: Restatement): Promise<void> {
+    const chat = this.find(id)
+    if (!chat) throw new Error(`unknown chat ${id}`)
+    if (this.running.has(id)) throw new Error('chat is busy')
+    const card = chat.messages.find((m) => m.id === messageId)
+    if (!card?.restate) throw new Error('no restatement card')
+    if (card.restate.state !== 'pending') throw new Error(`the restatement is already ${card.restate.state}`)
+    const confirmed = normalizeRestatement(edited) ?? card.restate.draft
+    let result = { confirmed, edited: false, substantial: false }
+    if (this.deps.restater) result = await this.deps.restater.confirm({ kind: 'chat', request: card.restate.request, draft: card.restate.draft, confirmed })
+    else result.edited = JSON.stringify(confirmed) !== JSON.stringify(card.restate.draft)
+    this.push(chat, {
+      ...card,
+      text: formatRestatement(result.confirmed),
+      restate: { ...card.restate, state: 'confirmed', confirmed: result.confirmed, ...(result.edited ? { edited: true } : {}), ...(result.substantial ? { substantial: true } : {}) }
+    })
+    const images = chat.messages.find((m) => m.id === card.restate!.userMessageId)?.images ?? []
+    return this.turn(chat, withRestatement(card.restate.request, result.confirmed, result.edited), images)
+  }
+
+  private dismissRestateCards(chat: StoredChat): void {
+    for (const m of chat.messages) {
+      if (m.restate?.state === 'pending') this.push(chat, { ...m, restate: { ...m.restate, state: 'dismissed' } })
+    }
+  }
+
+  // One turn of the chat agent (or the team / a guest) for a request already in the transcript.
+  private async turn(chat: StoredChat, text: string, images: ChatImage[]): Promise<void> {
+    const id = chat.id
+    const root = this.ctx.project()?.root
+    if (!root) {
+      this.push(chat, systemMessage('main', 'Open a project first.'))
+      return
+    }
     // Budget: a hard cap stops the turn; a soft cap adds a one-time note.
     const meter = this.deps.meter
     if (meter) {

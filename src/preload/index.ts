@@ -72,6 +72,8 @@ const methods = [
   'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile',
   // Video references (VFX Lab + Animation Lab: "make it like this")
   'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
+  // Restate first (chat cards, Labs briefs)
+  'getRestateSettings', 'setRestateSettings', 'restateBrief', 'restateConfirm', 'confirmChatRestate',
   // Principle priorities (learned from Labs ratings)
   'principlesView', 'principlesReset',
   // Self-update (electron-updater)

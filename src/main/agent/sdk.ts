@@ -71,6 +71,7 @@ Working rules:
 - Never edit Packages/ or generated files. Keep edits minimal and in the existing style.
 - Studio edits sync back into the repo via studio-sync; conflicts are listed by studio_conflicts.
 - If mcp__studio__* tools are available they act on the live Roblox Studio (run Luau, play tests).
+- A message may end with [Confirmed restatement ...]: Forge restated a big request and the user approved (or corrected) that reading. Treat it as the agreed goal, problem and assumptions; do not restate it again, start the work.
 - Be concise in replies.`
 
 // Appended to SYSTEM_PROMPT on OpenAI-compatible providers, where tools have bare names.

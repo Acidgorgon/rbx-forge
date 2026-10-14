@@ -28,6 +28,8 @@ import { entryId, PROJECT_VFX_DIR, safeFileName, VfxLibraryError, VfxStore } fro
 import { PROCEDURAL_GUIDE, isTexRef, type ExportPlan } from '../../../shared/vfx/tex/textures.ts'
 import { loadPinnedRef, type PinnedRef } from '../videoref/refs.ts'
 import { blendMatch, parseMatch, REF_MATCH_TEXT } from '../../../shared/videoref/prompt.ts'
+import { criticBrief, restatementBlock } from '../../../shared/restate/prompt.ts'
+import { normalizeRestatement, type Restatement } from '../../../shared/restate/types.ts'
 import { vfxNumericMatch } from '../../../shared/videoref/match.ts'
 import { luneExtract, luneTimeline, type LuneRun } from './lune.ts'
 import { principleIds, scoresForRating, vfxCriticPrinciples, withVfxPrinciples } from '../../../shared/principles/attach.ts'
@@ -559,7 +561,7 @@ export class VfxService {
   }
 
   // Saves an effect as a generated entry (new, or replacing `id`) and writes it into the project.
-  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string; restatement?: Restatement } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
     const spec = { name: raw.name, description: opts.description, tags: opts.tags }
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new VfxError(`no VFX entry "${opts.id}"`)
@@ -579,7 +581,8 @@ export class VfxService {
       origin: opts.prompt ?? prev?.entry.origin ?? effect.name,
       effect,
       stats: effectStats(effect),
-      ...(opts.refId ? { refId: opts.refId } : {})
+      ...(opts.refId ? { refId: opts.refId } : {}),
+      ...(opts.restatement ? { restatement: opts.restatement } : {})
     } as VfxEntry
     let saved = await store.save(entry)
     if (this.deps.projectRoot()) saved = await this.writeProjectFiles(saved)
@@ -716,13 +719,13 @@ export class VfxService {
     const pinned = entry.refId ? await this.pinnedRef(entry.refId).catch(() => null) : null
     const vision = this.deps.vision?.('critic')
     const weights = await this.principleWeights()
-    const request = entry.origin || entry.description
+    const request = criticBrief(entry.origin || entry.description, entry.restatement)
     const principled = (c: VfxCritique, raw?: string) => withVfxPrinciples(c, effect, { request, raw, weights })
     if (!vision) {
       const c = principled(heuristicCritique(effect, recipe, refNames))
       return pinned ? this.withMatch(c, effect, pinned) : c
     }
-    const prompt = `${critiquePrompt({ prompt: entry.origin, effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })}\n\n${vfxCriticPrinciples(effect, request, { weights, focus: previous?.focus })}`
+    const prompt = `${critiquePrompt({ prompt: criticBrief(entry.origin, entry.restatement), effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })}\n\n${vfxCriticPrinciples(effect, request, { weights, focus: previous?.focus })}`
     // Pinned reference: its key frames follow the rendered frames (compared side by side).
     const extra = pinned ? pinned.images : await this.referenceImages(refs, tags)
     const images: ImagePayload[] = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...extra]
@@ -903,7 +906,8 @@ export class VfxService {
   // Saved as a new entry; refined in the background when frames can be rendered (refine: false skips).
   // reference: the id of a video reference in this library; its beats, palette, vision summary and key
   // frames go into the prompt, and the result keeps it pinned (the critic scores the match).
-  async compose(request: string, opts: VfxRefineOptions & { wait?: boolean; refine?: boolean; script?: string; reference?: string } = {}): Promise<VfxScriptResult & { refined?: Promise<unknown> }> {
+  async compose(request: string, opts: VfxRefineOptions & { wait?: boolean; refine?: boolean; script?: string; reference?: string; restatement?: Restatement } = {}): Promise<VfxScriptResult & { refined?: Promise<unknown> }> {
+    const restatement = normalizeRestatement(opts.restatement) ?? undefined
     const pinned = opts.reference ? await this.pinnedRef(opts.reference) : null
     const text = String(request ?? '').trim() || (pinned ? `an effect like the reference video ${pinned.name}` : '')
     if (text.length < 3) throw new VfxError('Describe the effect, e.g. "a fireball that charges, flies forward and explodes".')
@@ -917,6 +921,7 @@ export class VfxService {
       const avoid = (await this.list()).filter((e) => e.quality === 'avoid' && e.effect?.script && e.tags.some((t) => tags.includes(t))).slice(0, 3)
       const lines = [
         `Make: ${text}`,
+        restatementBlock(restatement),
         ...liked.map((e) => `The user liked this related sequence ("${e.origin}"); reuse what fits:\n\`\`\`lua\n${e.effect!.script!.slice(0, 4000)}\n\`\`\``),
         ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : []),
         ...(await this.textureLines()),
@@ -955,7 +960,7 @@ export class VfxService {
     }
     const refTags = pinned ? ((await this.find(pinned.id))?.entry.tags ?? []).filter((t) => t !== 'video') : []
     const tags = [...new Set([...promptTags(text), ...refTags, 'sequence'])]
-    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})`, ...(pinned ? { refId: pinned.id } : {}) })
+    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})`, ...(pinned ? { refId: pinned.id } : {}), ...(restatement ? { restatement } : {}) })
     await this.ensureChoreographySkill()
     const out: VfxScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source }
     if (opts.refine !== false && this.deps.capture) {

@@ -25,6 +25,8 @@ import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './im
 import { executableOption, OPENAI_TOOLS_NOTE, sdkQuery, type QueryFn } from './sdk.ts'
 import { SERVICE_WRITE_TOOLS } from './serviceTools.ts'
 import { TestAgentRunner } from './testAgents.ts'
+import { Restater } from './restate.ts'
+import { normalizeRestatement, type RestateLab } from '../../shared/restate/types.ts'
 import { gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type ToolFs } from './tools.ts'
 
 export interface AgentLayer {
@@ -36,6 +38,8 @@ export interface AgentLayer {
   orchestrator: Orchestrator
   // Starts an orchestration for a chat message (also used by ChatManager's team mode).
   team: TeamRunner
+  // "Restate first" (chat cards and Labs briefs).
+  restater: Restater
   // One-shot, tool-less answer from the default provider's cheap tier (summaries).
   oneShot(system: string, prompt: string, opts?: { tier?: LabTier }): Promise<string>
   // One-shot answer about images (VFX critique) on the default model, which should see images.
@@ -83,12 +87,22 @@ export function createAgentLayer(
   const orchestrator = createOrchestrator(ctx, { ...opts, credentials, providers, rules, meter })
   const team = teamRunner(ctx, orchestrator)
   let chats: ChatManager
+  // Restatements are written on the Labs cheap tier (layer is assigned below, before any call).
+  let layer: AgentLayer
+  const restater = new Restater({
+    getSetting: (k, f) => ctx.getSetting(k, f),
+    setSetting: (k, v) => ctx.setSetting(k, v),
+    oneShot: (system, prompt) => layer.oneShot(system, prompt, { tier: 'cheap' }),
+    ...(opts.memory?.remember ? { remember: (input, source) => opts.memory!.remember!(input, source) } : {}),
+    log: (text, stream = 'info') => ctx.log({ service: 'agent', stream, text })
+  })
   // Background reflection: a chat that goes idle is reviewed by the memory layer (debounced there).
   const chatCtx = opts.memory ? tapChatBusy(ctx, opts.memory, (id) => chats.messages(id) ?? null) : ctx
-  chats = new ChatManager(chatCtx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team })
+  chats = new ChatManager(chatCtx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team, restater })
   const agents = new TestAgentRunner(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter })
-  const layer: AgentLayer = {
+  layer = {
     chats,
+    restater,
     agents,
     credentials,
     providers,
@@ -287,6 +301,11 @@ async function projectContext(ctx: HarnessContext): Promise<string | undefined> 
   }
 }
 
+function restateLab(v: unknown): RestateLab {
+  if (v === 'vfx' || v === 'anim' || v === 'ability') return v
+  throw new Error(`unknown lab ${String(v)}`)
+}
+
 function provider(p: unknown): ProviderId {
   if (!isProviderId(p)) throw new Error(`unknown provider ${String(p)}`)
   return p
@@ -316,7 +335,7 @@ export function registerAgentIpc(
   const layer = createAgentLayer(ctx, { memory: opts.memory })
   // Chat images live under userData/chat-images (history keeps only references).
   setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))
-  const { chats, agents, credentials, providers, meter, orchestrator, team } = layer
+  const { chats, agents, credentials, providers, meter, orchestrator, team, restater } = layer
 
   const providersChanged = async () => {
     providers.forgetReachability()
@@ -433,6 +452,19 @@ export function registerAgentIpc(
     setOrchestrateMode: (chatId: unknown, mode: unknown) => {
       chats.setOrchestrateMode(String(chatId ?? ''), (['auto', 'single', 'team'].includes(String(mode)) ? mode : 'auto') as OrchestrateMode)
     },
+
+    // Restate first (agent/restate.ts).
+    getRestateSettings: () => restater.settings(),
+    setRestateSettings: (patch: unknown) => restater.setSettings(patch && typeof patch === 'object' ? (patch as any) : {}),
+    restateBrief: (lab: unknown, brief: unknown, o?: { force?: unknown }) => restater.brief(restateLab(lab), String(brief ?? ''), { force: o?.force === true }),
+    restateConfirm: (input: unknown) => {
+      const i = (input && typeof input === 'object' ? input : {}) as Record<string, unknown>
+      const draft = normalizeRestatement(i.draft)
+      if (!draft) throw new Error('nothing to confirm')
+      const kind = i.kind === 'chat' ? 'chat' : restateLab(i.kind)
+      return restater.confirm({ kind, request: String(i.request ?? ''), draft, confirmed: normalizeRestatement(i.confirmed) ?? undefined })
+    },
+    confirmChatRestate: (id: unknown, messageId: unknown, edited?: unknown) => chats.confirmRestate(String(id ?? ''), String(messageId ?? ''), normalizeRestatement(edited) ?? undefined),
 
     getAgents: () => agents.list(),
     runAgents: (scenarios: string[], c?: unknown) => agents.run(Array.isArray(scenarios) ? scenarios : [], choice(c)),

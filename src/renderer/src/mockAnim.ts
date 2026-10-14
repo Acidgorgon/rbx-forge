@@ -212,7 +212,7 @@ export function animMock(emit: Emit): AnimApi {
       const r6 = (opts?.rig ?? rig) === 'R6'
       const key = (arch === 'sign_push' || arch === 'cast' ? 'sign-push' : arch === 'hit' ? 'hit-reaction' : 'dash-punch') + (r6 ? '-r6' : '')
       const base = exampleEntry(key, `composed-${(seq++).toString(36)}`)
-      const e: AnimEntry = { ...base, origin: request, description: request, tags: [...new Set([...promptTags(request), ...base.tags.filter((t) => t !== 'example')])], createdAt: Date.now(), updatedAt: Date.now() }
+      const e: AnimEntry = { ...base, ...(opts?.restatement ? { restatement: opts.restatement } : {}), origin: request, description: request, tags: [...new Set([...promptTags(request), ...base.tags.filter((t) => t !== 'example')])], createdAt: Date.now(), updatedAt: Date.now() }
       entries.push(e)
       changed()
       if (opts?.refine !== false) void refine(e, opts?.maxIterations ?? 2)

@@ -8,6 +8,7 @@
 
 import type { VideoRef } from '../videoref/types.ts'
 import type { PrincipleScore } from '../principles/types.ts'
+import type { Restatement } from '../restate/types.ts'
 
 export type Vec2 = [number, number]
 export type Vec3 = [number, number, number]
@@ -149,6 +150,8 @@ export interface VfxEntry {
   notes?: string
   // Generated effects: the video reference pinned with "make it like this" (critic compares to it).
   refId?: string
+  // "Restate first": the reading of the brief the user confirmed (compose prompt + critic judge against it).
+  restatement?: Restatement
 }
 
 // Result of running a timeline script (vfx_run_script, the Script tab, vfx_compose).

@@ -24,6 +24,8 @@ import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '..
 import { principleLabel } from '@shared/principles/catalog'
 import '../vfx/vfx.css'
 import './anim.css'
+import { useRestateGate } from '../../components/useRestateGate'
+import { RestatedBrief } from '../../components/RestateCard'
 
 const IMPORT_HINT = '.rbxm · .rbxmx (KeyframeSequence) · .bvh (mocap; FBX: export BVH from Blender) · folders · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['heavy overhead punch', 'quick jab', 'roundhouse kick', 'dodge roll back', 'fireball cast', 'stagger from a hit', 'combat idle']
@@ -612,6 +614,14 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
             )}
             <dt>origin</dt>
             <dd className="mono">{entry.origin}</dd>
+            {entry.restatement && (
+              <>
+                <dt>confirmed brief</dt>
+                <dd>
+                  <RestatedBrief r={entry.restatement} />
+                </dd>
+              </>
+            )}
             {entry.written && (
               <>
                 <dt>files</dt>
@@ -828,12 +838,16 @@ export function AnimLabPage() {
       setBusy(null)
     }
   }
+  const restate = useRestateGate('anim')
   const make = async () => {
     const what = prompt.trim()
     if (!what || making) return
     setMaking(true)
     try {
-      const r = await h.animCompose(what, { maxIterations: iters, threshold, scope, rig, ...(pin ? { reference: pin.id } : {}) })
+      // Restate first: the confirmed reading of the brief goes into compose (null = cancelled).
+      const g = await restate.gate(what)
+      if (!g) return
+      const r = await h.animCompose(what, { maxIterations: iters, threshold, scope, rig, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
       if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the script did not compile')
       await load()
       setSelected(r.entry.id)
@@ -930,9 +944,10 @@ export function AnimLabPage() {
               </span>
             )}
             <button className="btn primary" disabled={!prompt.trim() || making}>
-              {making ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
+              {making && !restate.waiting ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
             </button>
           </form>
+          {restate.node}
           <div className="vfx-make-opts">
             <label className="art-opt">
               <span>iterations</span>

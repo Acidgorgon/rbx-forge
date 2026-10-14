@@ -20,6 +20,8 @@ import { isRefFile } from '../videoref/decode'
 import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 import { principleLabel } from '@shared/principles/catalog'
 import './vfx.css'
+import { useRestateGate } from '../../components/useRestateGate'
+import { RestatedBrief } from '../../components/RestateCard'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['sword slash', 'fire aura', 'lightning impact', 'heal burst', 'dash trail', 'energy beam']
@@ -342,6 +344,14 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
             </dd>
             <dt>origin</dt>
             <dd className="mono">{entry.origin}</dd>
+            {entry.restatement && (
+              <>
+                <dt>confirmed brief</dt>
+                <dd>
+                  <RestatedBrief r={entry.restatement} />
+                </dd>
+              </>
+            )}
             {entry.stats && (
               <>
                 <dt>layers</dt>
@@ -491,13 +501,17 @@ export function VfxLabPage() {
       setBusy(null)
     }
   }
+  const restate = useRestateGate('vfx')
   const make = async () => {
     const what = prompt.trim()
     if (!what || making) return
     setMaking(true)
     try {
       if (mode === 'sequence' || pin) {
-        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, ...(pin ? { reference: pin.id } : {}) })
+        // Restate first: the confirmed reading of the brief goes into compose (null = cancelled).
+        const g = await restate.gate(what)
+        if (!g) return
+        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
         if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the timeline did not compile')
         await load()
         setSelected(r.entry.id)
@@ -595,9 +609,10 @@ export function VfxLabPage() {
               </button>
             </div>
             <button className="btn primary" disabled={!prompt.trim() || making}>
-              {making ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
+              {making && !restate.waiting ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
             </button>
           </form>
+          {restate.node}
           <div className="vfx-make-opts">
             <label className="art-opt">
               <span>iterations</span>

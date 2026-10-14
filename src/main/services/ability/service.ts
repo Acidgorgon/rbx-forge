@@ -33,6 +33,8 @@ export interface ImagePayload {
 export type ModelFn = (system: string, prompt: string, images: ImagePayload[]) => Promise<string>
 export type { LabTier } from '../../../shared/labModels.ts'
 import type { LabTier } from '../../../shared/labModels.ts'
+import { criticBrief, restatementBlock } from '../../../shared/restate/prompt.ts'
+import { normalizeRestatement, type Restatement } from '../../../shared/restate/types.ts'
 
 export interface MemoryLike {
   remember(input: { scope: 'user' | 'project'; kind?: 'memory' | 'skill'; type?: 'user' | 'project' | 'feedback' | 'reference'; name: string; description: string; body: string }, source?: 'agent' | 'reflection' | 'style' | 'user'): Promise<{ entry: { name: string } }>
@@ -193,7 +195,7 @@ export class AbilityService {
   }
 
   // Saves an ability (new, or replacing `id`). New entries go to the project library when a project is open.
-  async save(raw: unknown, opts: { id?: string; origin?: string; scope?: AbilityScope } = {}): Promise<AbilityEntry> {
+  async save(raw: unknown, opts: { id?: string; origin?: string; scope?: AbilityScope; restatement?: Restatement } = {}): Promise<AbilityEntry> {
     const ability = normalizeAbility(raw)
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new AbilityServiceError(`no ability "${opts.id}"`)
@@ -208,6 +210,7 @@ export class AbilityService {
       tags: ability.tags ?? prev?.entry.tags ?? [],
       updatedAt: now,
       ...(opts.origin ? { origin: opts.origin } : {}),
+      ...(opts.restatement ? { restatement: opts.restatement } : {}),
       ability
     } as AbilityEntry
     const saved = await store.save(entry)
@@ -368,8 +371,9 @@ export class AbilityService {
     return { clip: ph.find((c) => c.id === pick)!, source: 'placeholder' }
   }
 
-  async compose(request: string): Promise<AbilityComposeResult> {
+  async compose(request: string, opts: { restatement?: Restatement } = {}): Promise<AbilityComposeResult> {
     const text = String(request ?? '').trim()
+    const restatement = normalizeRestatement(opts.restatement) ?? undefined
     if (text.length < 3) throw new AbilityServiceError('Describe the move, e.g. "a charged palm blast that knocks the caster back".')
     const notes: string[] = []
     const vfx = await this.pickVfx(text, notes)
@@ -385,6 +389,7 @@ export class AbilityService {
       const liked = (await this.list()).filter((e) => e.rating === 'up').slice(0, 2)
       const prompt = [
         `Move: ${text}`,
+        restatementBlock(restatement),
         `Draft: ${JSON.stringify(ability)}`,
         `Timeline:\n${timelineText(ability, ctx)}`,
         `Timing checks:\n${timingChecks(ability, ctx).map((c) => `- ${c.ok ? 'ok' : c.level}: ${c.message}`).join('\n')}`,
@@ -409,7 +414,7 @@ export class AbilityService {
         this.deps.log?.(`ability: compose model: ${(e as Error).message}`, 'stderr')
       }
     }
-    const entry = await this.save(ability, { origin: text })
+    const entry = await this.save(ability, { origin: text, ...(restatement ? { restatement } : {}) })
     await this.ensureSkill()
     return {
       entry,
@@ -444,7 +449,7 @@ export class AbilityService {
     let vision: AbilityCritique['vision']
     const model = opts.vision === false ? null : this.deps.model?.('critic')
     const weights = await this.principleWeights()
-    const request = hit.entry.origin || hit.entry.description
+    const request = criticBrief(hit.entry.origin || hit.entry.description, hit.entry.restatement)
     const mainEffect = this.mainEffect(ability, effects)
     let raw: string | undefined
     if (model && (this.deps.capture || opts.frames?.length)) {
@@ -456,7 +461,7 @@ export class AbilityService {
           await hit.store.writeFile(id, f, png)
           frames.push(f)
         }
-        raw = await model(ABILITY_CRITIC_SYSTEM, `${critiquePrompt({ request: hit.entry.origin, timeline: timelineText(ability, ctx), checks, beats })}\n\n${abilityCriticPrinciples(ability, ctx, request, { weights, focus: hit.entry.critique?.focus, effect: mainEffect })}` + studioFramesNote(pngs), pngs.map((p) => ({ mime: 'image/png', base64: p.toString('base64') })))
+        raw = await model(ABILITY_CRITIC_SYSTEM, `${critiquePrompt({ request: criticBrief(hit.entry.origin, hit.entry.restatement), timeline: timelineText(ability, ctx), checks, beats })}\n\n${abilityCriticPrinciples(ability, ctx, request, { weights, focus: hit.entry.critique?.focus, effect: mainEffect })}` + studioFramesNote(pngs), pngs.map((p) => ({ mime: 'image/png', base64: p.toString('base64') })))
         vision = parseVisionCritique(raw)
       } catch (e) {
         this.deps.log?.(`ability: vision critique unavailable (${(e as Error).message}); timing rules only`, 'stderr')

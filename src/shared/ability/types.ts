@@ -10,6 +10,7 @@
 import type { AnimMarker } from '../anim/types.ts'
 import type { EasingStyle, Rgb, Vec3 } from '../vfx/types.ts'
 import type { PrincipleScore } from '../principles/types.ts'
+import type { Restatement } from '../restate/types.ts'
 
 export type { AnimMarker }
 
@@ -233,6 +234,8 @@ export interface AbilityEntry {
   // Where the game export wrote it.
   written?: { module: string; runner: string }
   thumbs: string[]
+  // "Restate first": the reading of the brief the user confirmed (compose prompt + critic judge against it).
+  restatement?: Restatement
 }
 
 export interface AbilityStatus {

@@ -1,10 +1,10 @@
 // Workbench basics: launch, project, explorer + editor, palette, terminal, scripts, source control.
 
-import { existsSync, readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { git, INVENTORY_SERVICE } from '../lib/project.ts'
 import { write } from '../../fixture.ts'
-import { bodyText, check, CENTER, mod, showSide, SkipFlow, waitText } from '../lib/ui.ts'
+import { bodyText, check, CENTER, dismissToasts, mod, showSide, SkipFlow, waitText } from '../lib/ui.ts'
 import type { Flow } from './types.ts'
 
 const MARK = '-- forge-e2e edit'
@@ -191,6 +191,38 @@ export const coreFlows: Flow[] = [
       await page.waitForFunction(() => ![...document.querySelectorAll('.tab')].some((t) => t.textContent?.includes('E2eRenamed')), undefined, { timeout: 5000 })
       await page.waitForFunction(() => ![...document.querySelectorAll('aside.side [role="treeitem"]')].some((t) => t.textContent?.includes('E2eRenamed')), undefined, { timeout: 10_000 })
       await filter.fill('')
+    }
+  },
+  {
+    name: 'explorer-new-story',
+    title: 'Explorer New > UI > Story / Storybook writes UI Labs files; a story outside any storybook gets a hint',
+    timeoutMs: 45_000,
+    async run({ page, root }) {
+      await showSide(page, 'Explorer')
+      const side = page.locator('aside.side')
+      const filter = side.locator('input').first()
+      const menuItem = (name: RegExp) => page.locator('.menu [role="menuitem"]', { hasText: name }).first()
+      const create = async (label: RegExp, name: string, path: string) => {
+        await filter.fill('')
+        await side.locator('[role="treeitem"]', { hasText: /^\s*Shared\s*$/ }).first().click({ button: 'right' })
+        await menuItem(/^New/).hover()
+        await menuItem(label).click()
+        const input = side.locator('input.inline-input')
+        await input.waitFor({ state: 'visible', timeout: 5000 })
+        await input.fill(name)
+        await input.press('Enter')
+        for (let i = 0; i < 50 && !existsSync(join(root, path)); i++) await page.waitForTimeout(100)
+        check(existsSync(join(root, path)), `${path} was not written`)
+        return readFileSync(join(root, path), 'utf8')
+      }
+      const story = await create(/^Story/, 'E2eCard', 'src/shared/E2eCard.story.luau')
+      check(story.includes('vide = Vide,') && story.includes('Text = "E2eCard"'), 'the story template is wrong')
+      await waitText(page, 'no storybook covers this folder', { timeout: 20_000 })
+      const book = await create(/^Storybook/, 'E2eBook', 'src/shared/E2eBook.storybook.luau')
+      check(book.includes('script.Parent,'), 'the storybook does not root at its folder')
+      rmSync(join(root, 'src/shared/E2eCard.story.luau'))
+      rmSync(join(root, 'src/shared/E2eBook.storybook.luau'))
+      await dismissToasts(page)
     }
   },
   {

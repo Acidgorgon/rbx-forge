@@ -9,6 +9,7 @@ import type { UiControl, UiDevice, UiNode, UiStoryEntry, UiStoryList, UiValue } 
 import type { LayoutResult } from '@shared/uiPreview/layout'
 import { luauLiteral } from '@shared/uiPreview/protocol'
 import { askAiPrompt } from '@shared/uiPreview/edit'
+import { storyFilesKey } from '@shared/storyTemplates'
 import { describeChange, diffDocs, forgeDoc, forgeSvg, parseForgeDoc, type DocDiff, type PropChange } from '@shared/uiPreview/figma'
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
@@ -191,6 +192,15 @@ export function UiPreviewPage() {
     void refresh()
     return () => session.close()
   }, [state.project?.root])
+
+  // New, renamed or removed story files (Explorer > New > Story) show up without a manual refresh.
+  const storiesKey = useMemo(() => storyFilesKey(state.tree), [state.tree])
+  const seenStories = useRef(storiesKey)
+  useEffect(() => {
+    if (seenStories.current === storiesKey) return
+    seenStories.current = storiesKey
+    void refresh()
+  }, [storiesKey])
 
   // Open the chosen story (or the first one) once the list is in.
   useEffect(() => {

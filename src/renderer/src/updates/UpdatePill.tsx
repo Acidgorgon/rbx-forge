@@ -6,12 +6,12 @@ import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { useRestartForUpdate, useUpdate } from './useUpdate'
+import { showSettingsSection } from '../pages/settingsNav'
 import './updates.css'
 
 export function openUpdateSettings(openPage: (kind: 'settings') => void): void {
   openPage('settings')
-  // The page mounts on the next frame; scroll once it is there.
-  setTimeout(() => document.getElementById('set-updates')?.scrollIntoView({ block: 'start' }), 60)
+  showSettingsSection('updates')
 }
 
 export function UpdatePill() {

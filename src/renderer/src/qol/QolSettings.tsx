@@ -5,6 +5,7 @@ import type { NotifyCategory, NotifyMode, QolSettings as Settings, QolSettingsPa
 import { useStore } from '../store'
 import { errorText } from '../lib/format'
 import { Icon } from '../components/Icons'
+import { showSettingsSection } from '../pages/settingsNav'
 import { requestBugReport } from './QolRoot'
 
 const MODES: [NotifyMode, string][] = [
@@ -35,7 +36,7 @@ function Row({ title, desc, children, id }: { title: string; desc?: string; chil
 
 export function openNotificationSettings(openSettings: () => void): void {
   openSettings()
-  setTimeout(() => document.getElementById('set-notifications')?.scrollIntoView({ block: 'start' }), 80)
+  showSettingsSection('notifications')
 }
 
 export function QolSettings() {

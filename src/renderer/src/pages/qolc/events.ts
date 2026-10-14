@@ -3,6 +3,7 @@
 // Other labs (UI Motion, Thumbnails) call openAddToGame('<their lab id>', id) once they register an
 // adapter in main (services/addToGame).
 import type { Actions } from '../../store'
+import { showSettingsSection } from '../settingsNav'
 
 export const DOCTOR_EVENT = 'forge:doctor'
 export const ADD_TO_GAME_EVENT = 'forge:add-to-game'
@@ -21,7 +22,7 @@ export function goTo(target: string, actions: Actions): void {
   const arg = rest.join(':')
   if (kind === 'settings') {
     actions.openPage('settings')
-    setTimeout(() => document.getElementById(arg)?.scrollIntoView({ block: 'start' }), 80)
+    showSettingsSection(arg)
   } else if (kind === 'page') actions.openPage(arg as never)
   else if (kind === 'side') actions.showSide(arg as never)
   else if (kind === 'file') void actions.openFile(arg)

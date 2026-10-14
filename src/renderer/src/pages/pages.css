@@ -16,7 +16,51 @@
 .set-text { flex: 1; min-width: 0; }
 .set-title { font-size: 12.5px; color: var(--fg); margin-bottom: 2px; }
 .set-ctl { display: flex; align-items: center; gap: 6px; flex: none; flex-wrap: wrap; justify-content: flex-end; max-width: 60%; }
-.set-nav { display: flex; gap: 6px; flex-wrap: wrap; margin: -8px 0 16px; }
+
+/* Settings: category rail (sticky) + one category of sections at a time. Narrow: the rail stacks on top. */
+.page-inner.settings { max-width: 1080px; container-type: inline-size; }
+.set-layout { display: grid; grid-template-columns: 168px minmax(0, 1fr); gap: 18px; align-items: start; }
+.set-rail { position: sticky; top: 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; max-height: calc(100vh - 140px); overflow-y: auto; scrollbar-width: thin; }
+.set-main { min-width: 0; }
+.set-cat[hidden] { display: none; }
+.set-search { display: flex; align-items: center; gap: 6px; border: 1px solid var(--line-strong); border-radius: var(--r-md); padding: 0 8px; color: var(--fg-faint); background: var(--bg-panel); }
+.set-search:focus-within { border-color: var(--line-focus); }
+.set-search input.input, .set-search input.input:focus { border: 0; background: transparent; height: 26px; padding: 0; flex: 1; min-width: 0; font-size: 12px; box-shadow: none; }
+.set-search .input::-webkit-search-cancel-button { filter: grayscale(1); opacity: .5; }
+.set-nav { display: flex; flex-direction: column; gap: 8px; }
+.set-group { display: flex; flex-direction: column; gap: 1px; }
+.set-group-h { font: 500 10px/1.2 var(--font-ui); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-faint); padding: 0 9px 3px; }
+.set-group.on .set-group-h { color: var(--fg-muted); }
+.set-link, .set-hit { display: flex; align-items: center; width: 100%; text-align: left; background: none; border: 1px solid transparent; border-radius: var(--r-pill); padding: 2px 9px; font: 400 12px/1.5 var(--font-ui); letter-spacing: var(--track); color: var(--fg-muted); cursor: pointer; min-width: 0;
+  transition: background var(--dur-fast) var(--ease-out), color var(--dur-fast) var(--ease-out), border-color var(--dur-fast) var(--ease-out); }
+.set-link:hover, .set-hit:hover { background: var(--bg-hover); color: var(--fg); }
+.set-link:focus-visible, .set-hit:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.set-link.in { color: var(--fg-2); }
+.set-link.on { color: var(--fg); border-color: var(--line-strong); background: var(--bg-selected); }
+.set-hits { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 1px; }
+.set-hit { flex-direction: column; align-items: flex-start; border-radius: var(--r-md); padding: 4px 9px; }
+.set-hit-t { color: var(--fg); max-width: 100%; }
+.set-hit-p { font-size: 10.5px; color: var(--fg-faint); max-width: 100%; }
+.set-hits-none { padding: 4px 9px; }
+@container (max-width: 600px) {
+  /* Narrow: search on top, then every section in one horizontally scrolling row (category labels inline). */
+  .set-layout { grid-template-columns: minmax(0, 1fr); gap: 12px; }
+  .set-rail { position: static; max-height: none; overflow: visible; }
+  .set-nav { flex-direction: row; flex-wrap: nowrap; gap: 14px; overflow-x: auto; scrollbar-width: none; padding-bottom: 2px; }
+  .set-nav::-webkit-scrollbar { display: none; }
+  .set-group { flex-direction: row; align-items: center; gap: 2px; flex: none; }
+  .set-group-h { padding: 0 4px 0 0; white-space: nowrap; }
+  .set-link { width: auto; white-space: nowrap; }
+}
+
+/* Collapsible detail inside a section (Labs > Saving tokens). */
+.set-more { margin-top: 6px; border-top: 1px solid var(--line); }
+.set-more > summary { list-style: none; cursor: pointer; display: flex; align-items: center; gap: 6px; padding: 9px 0 3px; font-size: 12px; color: var(--fg-muted); }
+.set-more > summary::-webkit-details-marker { display: none; }
+.set-more > summary::before { content: '\25B8'; font-size: 10px; color: var(--fg-faint); transition: transform var(--dur-fast) var(--ease-out); }
+.set-more[open] > summary::before { transform: rotate(90deg); }
+.set-more > summary:hover { color: var(--fg); }
+.set-more > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); border-radius: var(--r-sm); }
 
 .unit-input { display: inline-flex; align-items: center; border: 1px solid var(--line-strong); border-radius: var(--r-md); height: 26px; overflow: hidden; }
 .unit-input .input { border: 0; width: 84px; height: 24px; background: transparent; text-align: right; }

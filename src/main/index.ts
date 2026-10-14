@@ -302,6 +302,9 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   project = opened
   settings.setLastProject(full)
   harnessLog(`opened ${full}`)
+  // Before project:changed reaches the renderer: its "since you were away" request (3.5 s later)
+  // must not run against the previous project's last-seen state while sync and services start.
+  await qol.service.onProjectOpen(full).catch(() => undefined)
 
   opened.watch((change) => {
     if (change.info) emit('project:changed', opened.info)
@@ -365,7 +368,6 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   await integrations.onProjectOpen(full).catch((error) => harnessLog(`integrations: ${error}`, 'stderr'))
   setup.onProjectOpen(full)
   void memory.onProjectOpen()
-  await qol.service.onProjectOpen(full).catch(() => undefined)
   return opened.info
 }
 

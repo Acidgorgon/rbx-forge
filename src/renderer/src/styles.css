@@ -364,7 +364,7 @@ input[type="checkbox"]:not(.switch) { accent-color: var(--fg-muted); }
 .side-seg { margin: 0 8px 8px; flex: none; }
 
 /* center card */
-.center { flex: 1; min-width: 360px; display: flex; flex-direction: column; background: var(--bg-editor); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; }
+.center { flex: 1; min-width: 360px; display: flex; flex-direction: column; background: var(--bg-editor); border: 1px solid var(--line); border-radius: var(--r-lg); overflow: hidden; overflow: clip; }
 .editor-area { flex: 1; min-height: 0; min-width: 0; display: flex; flex-direction: column; }
 .tabs { height: var(--tabs-h); flex: none; display: flex; align-items: stretch; background: var(--bg-panel); border-bottom: 1px solid var(--line); min-width: 0; }
 .tabs-scroll { display: flex; align-items: stretch; overflow-x: auto; overflow-y: hidden; min-width: 0; flex: 0 1 auto; scrollbar-width: none; }

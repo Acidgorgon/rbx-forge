@@ -353,10 +353,15 @@ export function ReleasePage() {
                 <div className="set-title">Post to Discord on</div>
                 <div className="row" style={{ flexWrap: 'wrap', gap: 6, marginTop: 6 }}>
                   {(Object.keys(NOTIFY_LABEL) as (keyof NotificationToggles)[]).map((k) => (
-                    <label key={k} className={`chip${settings.notifications[k] ? ' on' : ''}`}>
-                      <input type="checkbox" className="sr-only" checked={settings.notifications[k]} onChange={async (e) => setSettings(await h.releaseSetSettings({ notifications: { ...settings.notifications, [k]: e.target.checked } }))} />
+                    <button
+                      key={k}
+                      type="button"
+                      className={`chip${settings.notifications[k] ? ' on' : ''}`}
+                      aria-pressed={settings.notifications[k]}
+                      onClick={async () => setSettings(await h.releaseSetSettings({ notifications: { ...settings.notifications, [k]: !settings.notifications[k] } }))}
+                    >
                       {NOTIFY_LABEL[k]}
-                    </label>
+                    </button>
                   ))}
                 </div>
               </div>

@@ -286,6 +286,7 @@ npm run dist:win    # Windows x64 + arm64 (run on Windows; NSIS needs Windows or
 npm run dist:dir    # unpacked app only, quickest check
 npm run build       # production build into out/; npm start runs it
 npm test            # node --test suites; npm run typecheck for tsc
+npm run test:app    # real-app click-through suite (Playwright + xvfb), see test/e2e-app/README.md
 ```
 
 Then click **Open project** and pick a game folder (one with `default.project.json`), or create a **New project**. Forge remembers the folder. To preview the UI in a browser with sample data, run `npx vite --config src/renderer/vite.preview.config.ts`.
@@ -328,4 +329,5 @@ src/renderer        React UI: shell, views, pages, assistant, terminal, Monaco +
 src/shared          types shared by all three
 resources/lune      Lune test runtime (world, testkit, expect)
 test                node --test suites (npm test)
+test/e2e-app        real-app click-through suite (npm run test:app): Playwright drives the built app
 ```

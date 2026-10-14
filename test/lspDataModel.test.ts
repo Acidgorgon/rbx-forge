@@ -232,3 +232,29 @@ test('bridge without a server ignores DataModel updates', async () => {
   assert.equal(await bridge.start(), false)
   await bridge.dispose()
 })
+
+test('plugin DataModel payload leaves out Wally/pesde _Index internals', () => {
+  const mod = (name: string) => ({ name, className: 'ModuleScript', origin: 'studio' as const, children: [] })
+  const index = (pkgs: string[]) => ({
+    name: '_Index',
+    className: 'Folder',
+    origin: 'studio' as const,
+    children: pkgs.map((p) => ({ name: p, className: 'Folder', origin: 'studio' as const, children: [{ ...mod(p.split('_')[1].split('@')[0]), children: [mod('011_preregistering_component')] }] }))
+  })
+  const tree = [
+    {
+      name: 'ReplicatedStorage',
+      className: 'ReplicatedStorage',
+      origin: 'both' as const,
+      children: [{ name: 'Packages', className: 'Folder', origin: 'studio' as const, children: [mod('Vide'), index(['centau_vide@0.4.0', 'ukendio_jecs@0.5.0'])] }]
+    },
+    { name: 'ServerScriptService', className: 'ServerScriptService', origin: 'both' as const, children: [{ name: 'ServerPackages', className: 'Folder', origin: 'studio' as const, children: [index(['a_b@1.0.0'])] }] }
+  ]
+  const { root, count } = toPluginDataModel(tree)
+  const text = JSON.stringify(root)
+  assert.ok(!text.includes('centau_vide') && !text.includes('011_preregistering_component') && !text.includes('a_b@1.0.0'))
+  const packages = root.Children[0].Children[0]
+  assert.deepEqual(packages.Children.map((c) => c.Name), ['Vide', '_Index'], 'top-level re-exports and the _Index folder itself stay')
+  assert.deepEqual(packages.Children[1].Children, [])
+  assert.equal(count, 7)
+})

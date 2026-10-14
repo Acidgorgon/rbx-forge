@@ -32,6 +32,7 @@
 // window.harness.readFile / writeFile); the bridge's file watcher tells the server.
 
 import type * as Monaco from 'monaco-editor'
+import { COMMON_SERVICES, filterCompletionItems } from './completionFilter.ts'
 import { Connection, ResponseError, ErrorCodes, type CancelToken, type Transport } from './connection.ts'
 import {
   applyTextEdits,
@@ -131,13 +132,17 @@ export function defaultSettings(): Record<string, unknown> {
       imports: {
         enabled: true,
         suggestServices: true,
-        includedServices: [],
+        // Only the services people actually import; the full list (~340, most engine-internal)
+        // floods every completion. game:GetService("…") still completes every service.
+        includedServices: [...COMMON_SERVICES],
         excludedServices: [],
         suggestRequires: true,
         // auto | alwaysRelative | alwaysAbsolute | nearestAbsolute (1.70+)
         requireStyle: 'auto',
         stringRequires: { enabled: false },
         separateGroupsWithLine: false,
+        // Wally/pesde internals: import the top-level Packages.X re-export instead. Only applies to
+        // modules with a file path; completionFilter.ts drops the rest client-side.
         ignoreGlobs: ['**/_Index/**']
       }
     },
@@ -638,7 +643,7 @@ class LuauLspClient {
               token
             )
             if (!result) return { suggestions: [] }
-            const items: any[] = Array.isArray(result) ? result : result.items ?? []
+            const items: any[] = filterCompletionItems(Array.isArray(result) ? result : result.items ?? [])
             const defaults = Array.isArray(result) ? undefined : result.itemDefaults
             const word = model.getWordUntilPosition(position)
             const defaultRange = {

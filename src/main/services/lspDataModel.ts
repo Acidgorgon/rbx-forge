@@ -36,6 +36,15 @@ export interface PluginNode {
 // (luau-lsp.studioPlugin.maximumRequestBodySize). ~60 bytes a node keeps us well under that.
 export const MAX_DATAMODEL_NODES = 40_000
 
+// Wally/pesde package internals (Packages/_Index, ServerPackages/_Index, ...). The folder itself
+// is sent, its contents are not: plugin nodes have no FilePaths, so luau-lsp can neither type
+// them nor match them against completion.imports.ignoreGlobs, and every one became an
+// auto-import suggestion (`011_preregistering_component (…Packages._Index["…"])`) while making
+// each completion request walk thousands of extra nodes. File-backed copies from sourcemap.json
+// are unaffected (the server keeps sourcemap nodes), and code requires the top-level
+// Packages.X re-exports anyway.
+export const PRUNED_CHILDREN = new Set(['_Index'])
+
 // Merged tree nodes may carry origin/props/filePath; only name and class matter here.
 type Node = Pick<TreeNode, 'name' | 'className'> & { origin?: TreeNode['origin']; children?: Node[] }
 
@@ -57,7 +66,7 @@ export function toPluginDataModel(tree: Node[] | null | undefined, maxNodes = MA
       const out: PluginNode = { Name: node.name, ClassName: node.className, Children: [] }
       parent.Children.push(out)
       count++
-      if (Array.isArray(node.children) && node.children.length) queue.push([node.children, out])
+      if (Array.isArray(node.children) && node.children.length && !PRUNED_CHILDREN.has(node.name)) queue.push([node.children, out])
     }
   }
   return { root, count, truncated }

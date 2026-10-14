@@ -389,7 +389,7 @@ function service(b: StudioBridge, session: FakeSession, labs: Record<string, Stu
     settings: settingsStore(opts.prefer ? { [STUDIO_PREFER_SETTING]: true } : {}),
     plugin: {
       dir: () => (opts.dir === undefined ? '/Users/acid/Documents/Roblox/Plugins' : opts.dir),
-      template: async () => '-- forge-bridge-version: __FORGE_BRIDGE_VERSION__\nlocal URL = "http://127.0.0.1:__FORGE_PORT__/forge-bridge"\n',
+      template: async () => '-- forge-bridge-version: __FORGE_BRIDGE_VERSION__\n-- forge-bridge-template: ' + PLUGIN_VERSION + '\nlocal URL = "http://127.0.0.1:__FORGE_PORT__/forge-bridge"\n',
       read: async (p) => written.get(p) ?? null,
       write: async (p, text) => void written.set(p, text)
     },

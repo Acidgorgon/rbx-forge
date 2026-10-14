@@ -1,5 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
+-- forge-bridge-template: 7
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -14,10 +15,15 @@
 --
 -- Forge Sync (plugin version 2; 3 adds the unsynced-reference report; 5 watches for late roots): in edit mode the plugin also streams the scripts and instances under
 -- the project's Rojo-mapped roots to Forge (a chunked snapshot, then debounced change events), so Forge
--- can reconcile Studio with disk before Rojo serves. It only reads: it never changes the DataModel.
+-- can reconcile Studio with disk before Rojo serves. Sync only reads the DataModel.
 -- Version 5 adds the Game-tab outline: names and classes (no properties but a few asset ids) of what
 -- else sits in the services the project maps, e.g. ReplicatedStorage.Assets, so Forge can show
 -- Studio-only instances. Debounced, capped, and re-sent only when it changed.
+-- Version 7: the outline keeps up with deletes (it is no longer starved by a busy change stream, and a
+-- session Forge forgot starts over instead of failing quietly), and the one write the plugin makes to
+-- the place: "Delete in Studio" from the Game tab, which the user confirms in Forge. It removes one
+-- Studio-only instance (never a service, a Rojo-mapped root or anything Forge Sync streams to files)
+-- inside a ChangeHistoryService recording, so Ctrl+Z in Studio brings it back.
 --
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
@@ -1433,10 +1439,13 @@ local function syncLoop()
 			end
 		end
 		now = os.clock()
+		-- The outline waits for a pending change flush, but not for longer than OUTLINE_MAX_WAIT: a steady
+		-- stream of edits under the roots (typing, a plugin nudging values) used to hold it back for good,
+		-- so instances deleted outside the roots stayed in the Game tab.
 		if
 			sync.session
-			and not sync.dirty
 			and #sync.outline > 0
+			and (not sync.dirty or now - sync.outlineFirst >= OUTLINE_MAX_WAIT or now - sync.outlineScan >= OUTLINE_RESCAN)
 			and (
 				(sync.outlineDirty and (now - sync.outlineLast >= OUTLINE_DEBOUNCE or now - sync.outlineFirst >= OUTLINE_MAX_WAIT))
 				or now - sync.outlineScan >= OUTLINE_RESCAN
@@ -1457,6 +1466,144 @@ local function syncLoop()
 		end
 	end
 	stopSync()
+end
+
+-- ------------------------------------------------------------ Delete in Studio (version 7)
+--
+-- The only change the plugin makes to the place: the Game tab's "Delete in Studio", confirmed by the
+-- user in Forge, for an instance that exists only in Studio. Refused for services, default containers,
+-- same-name siblings (the path would be ambiguous), and anything Forge Sync streams to files: a mapped
+-- root, something inside one, or something that holds one (those are files; delete the file instead).
+-- The instance is parented to nil inside a ChangeHistoryService recording (Creator Hub:
+-- TryBeginRecording / FinishRecording), the way Studio's own Delete works, so Ctrl+Z restores it.
+
+local function isPrefix(prefix: { string }, path: { string }): boolean
+	if #prefix > #path then
+		return false
+	end
+	for i, name in prefix do
+		if path[i] ~= name then
+			return false
+		end
+	end
+	return true
+end
+
+-- The instance at `path` and nil, or nil and why it cannot be deleted.
+local function deleteTarget(path: any, className: any): (Instance?, string?)
+	if type(path) ~= "table" or #path < 1 then
+		return nil, "no instance path"
+	end
+	local dotted = table.concat(path, ".")
+	if #path < 2 then
+		return nil, dotted .. " is a service; services cannot be deleted"
+	end
+	if not sync.session then
+		return nil, "Forge Sync is not running in this Studio, so the plugin cannot tell what is synced; reconnect and try again"
+	end
+	local node: Instance = game
+	for i, name in path do
+		if type(name) ~= "string" or name == "" then
+			return nil, "bad instance path"
+		end
+		local found, count = nil, 0
+		for _, child in node:GetChildren() do
+			if child.Name == name then
+				found = found or child
+				count += 1
+			end
+		end
+		local here = table.concat(path, ".", 1, i)
+		if count == 0 then
+			return nil, here .. " is not in Studio (already deleted?)"
+		elseif count > 1 then
+			return nil, "Studio has " .. count .. " instances named " .. here .. "; delete the right one in Studio's Explorer"
+		end
+		node = found
+	end
+	if node.Parent == game then
+		return nil, dotted .. " is a service; services cannot be deleted"
+	end
+	if type(className) == "string" and className ~= "" and node.ClassName ~= className then
+		return nil, dotted .. " is a " .. node.ClassName .. " in Studio now, not a " .. className .. "; refresh and try again"
+	end
+	for _, r in sync.roots do
+		if node == r or node:IsDescendantOf(r) then
+			return nil, dotted .. " is synced to a file (a Rojo $path); delete the file in Forge instead"
+		end
+		if r:IsDescendantOf(node) then
+			return nil, dotted .. " holds " .. table.concat(pathOf(r), ".") .. ", which is synced to files; delete those files in Forge instead"
+		end
+	end
+	for _, p in sync.missing do
+		if isPrefix(path, p) or isPrefix(p, path) then
+			return nil, dotted .. " is where Rojo builds " .. table.concat(p, ".") .. "; it is not Studio-only"
+		end
+	end
+	if node.Parent and node.Parent.Parent == game and node.Name == node.ClassName then
+		return nil, dotted .. " is a default " .. node.ClassName .. " container; Studio needs it"
+	end
+	local key = pathKey(path)
+	for _, sk in sync.skip do
+		if underKey(key, sk) or underKey(sk, key) then
+			return nil, dotted .. " is (or holds) a Wally packages folder; change the packages instead"
+		end
+	end
+	return node, nil
+end
+
+local ChangeHistoryService: any = nil
+pcall(function()
+	ChangeHistoryService = game:GetService("ChangeHistoryService")
+end)
+
+-- Removes the instance (undoable); returns true or false and why.
+local function deleteInStudio(path: any, className: any): (boolean, string?)
+	local node, why = deleteTarget(path, className)
+	if not node then
+		return false, why
+	end
+	local recording = nil
+	if ChangeHistoryService then
+		local ok, id = pcall(function()
+			return ChangeHistoryService:TryBeginRecording("Forge: delete " .. node.Name, "Delete " .. table.concat(path, ".") .. " (from RBX Forge)")
+		end)
+		recording = if ok then id else nil
+	end
+	if not recording then
+		-- Without a recording Ctrl+Z could not bring it back: refuse rather than delete for good.
+		return false, "Studio is recording another change (or refused to record this one); try again in a moment"
+	end
+	local ok, err = pcall(function()
+		node.Parent = nil
+	end)
+	pcall(function()
+		ChangeHistoryService:FinishRecording(recording, if ok then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel)
+	end)
+	if not ok then
+		return false, "Studio refused: " .. tostring(err)
+	end
+	-- The Game tab drops it on the next loop turn instead of after the debounce.
+	sync.outlineDirty = true
+	sync.outlineFirst = 0
+	print("[Forge Bridge] deleted " .. table.concat(path, ".") .. " (Ctrl+Z in Studio restores it)")
+	return true, nil
+end
+
+local function runDeleteJob(job: any)
+	local ok, err = pcall(function()
+		post(job, { type = "accepted" })
+		local target = if type(job.target) == "table" then job.target else {}
+		local done, why = deleteInStudio(target.path, target.className)
+		if done then
+			post(job, { type = "done", marks = {} })
+		else
+			post(job, { type = "error", message = tostring(why) })
+		end
+	end)
+	if not ok then
+		warn("[Forge Bridge] " .. tostring(err))
+	end
 end
 
 -- ------------------------------------------------------------ poll loop
@@ -1496,7 +1643,11 @@ task.spawn(function()
 			sync.retryAt = 0
 		end
 		if type(answer) == "table" and answer.job then
-			runJob(answer.job)
+			if answer.job.kind == "delete" then
+				runDeleteJob(answer.job)
+			else
+				runJob(answer.job)
+			end
 		end
 	end
 end)

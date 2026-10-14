@@ -502,7 +502,8 @@ const forgeSync = createSync({
   engine: (root) => new SyncEngine({ root }),
   mapping: { loadPlaces, placeFor },
   activePlace: () => project?.activePlace ?? null,
-  onStudioTree: () => project?.studioChanged()
+  onStudioTree: () => project?.studioChanged(),
+  bridge: () => studio.bridge
 })
 studio.bridge.setSyncHandler(forgeSync.handler)
 // The Sync view / status bar say why Studio edits are not syncing (no plugin connected ...): re-check

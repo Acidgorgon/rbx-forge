@@ -364,7 +364,10 @@ export class SyncService {
   private async outline(body: OutlineBody): Promise<SyncAnswer> {
     if (!this.active()) return { ok: false, error: 'Forge Sync is off' }
     const session = this.sessions.get(body.session)
-    if (!session) return { ok: false, error: 'unknown session' }
+    // resend: the plugin starts over with a fresh config + snapshot. Without it a plugin whose token
+    // Forge dropped (project reopened, a newer config for the place) kept posting outlines nobody took,
+    // and the Game tab kept showing instances long deleted in Studio.
+    if (!session) return { ok: false, error: 'unknown session', resend: true }
     const state = this.placeStates.get(session.placeKey)!
     state.lastSeen = this.now()
     const nodes = Array.isArray(body.nodes) ? body.nodes : []
@@ -821,6 +824,17 @@ export class SyncService {
     return entry
   }
 
+  // Why the Game tab's "Delete in Studio" must not run for this instance path, or null when it may
+  // (the plugin checks again against the live DataModel: same-name siblings, what it streams).
+  deleteRefusal(projectFile: string, path: string[]): string | null {
+    if (!this.active()) return 'Turn Forge Sync on (Settings > Sync) to delete Studio-only instances from Forge'
+    const state = this.stateFor(projectFile)
+    if (!state) return 'Studio has not sent this place yet; open it in Studio with the Forge Bridge plugin on'
+    const map = this.maps.find((m) => m.projectFile === state.projectFile)
+    if (!map) return 'No *.project.json maps this place'
+    return deleteRefusal(map, path)
+  }
+
   private stateFor(projectFile: string): PlaceState | null {
     let best: PlaceState | null = null
     for (const state of this.placeStates.values()) {
@@ -981,6 +995,23 @@ export function outsideTops(map: PlaceMapLike, nodes: StudioOutlineNode[]): stri
     out.push(n.path)
   }
   return out
+}
+
+// Delete in Studio is only for Studio-only instances: not a service, not a project node (a $path root,
+// a skipped folder such as Packages, a $className container) or anything above or inside a $path.
+export function deleteRefusal(map: PlaceMapLike, path: string[]): string | null {
+  const dotted = path.join('.')
+  if (path.length < 2) return `${dotted || 'That'} is a service; services cannot be deleted`
+  const same = (a: string[], b: string[]) => a.length === b.length && a.every((x, i) => x === b[i])
+  const under = (p: string[], prefix: string[]) => p.length > prefix.length && prefix.every((x, i) => x === p[i])
+  for (const r of [...map.roots, ...(map.skipped ?? [])]) {
+    if (same(path, r.instance) || under(path, r.instance)) return `${dotted} is synced to files (Rojo $path); delete the file in Forge instead`
+    if (under(r.instance, path)) return `${dotted} holds ${r.instance.join('.')}, which Rojo maps to files; delete those files in Forge instead`
+  }
+  for (const v of map.virtual ?? []) {
+    if (same(path, v) || under(v, path)) return `${dotted} is defined by the project file; edit the *.project.json instead`
+  }
+  return null
 }
 
 // A few display props (asset ids, sizes as text) for the Game tab; Rojo-typed values are skipped.

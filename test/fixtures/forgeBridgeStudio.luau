@@ -241,7 +241,26 @@ function ScriptEditorService:GetEditorSource(inst)
 	return editorText[inst] or inst.Source
 end
 
+-- ChangeHistoryService: one recording at a time, logged so the test can see the delete was undoable.
+local recordingOpen = nil
+local nextRecording = 0
+local ChangeHistoryService = {}
+function ChangeHistoryService:TryBeginRecording(name)
+	if recordingOpen then
+		return nil
+	end
+	nextRecording += 1
+	recordingOpen = { id = "rec" .. nextRecording, name = name }
+	return recordingOpen.id
+end
+function ChangeHistoryService:FinishRecording(id, op)
+	assert(recordingOpen and recordingOpen.id == id, "FinishRecording without TryBeginRecording")
+	print("RECORDING " .. tostring(op) .. " " .. recordingOpen.name)
+	recordingOpen = nil
+end
+
 local stubs = {
+	ChangeHistoryService = ChangeHistoryService,
 	HttpService = HttpService,
 	ScriptEditorService = ScriptEditorService,
 	RunService = {
@@ -302,7 +321,7 @@ local env = {
 			return {}
 		end,
 	},
-	Enum = { RunContext = { Legacy = "Legacy" } },
+	Enum = { RunContext = { Legacy = "Legacy" }, FinishRecordingOperation = { Commit = "Commit", Cancel = "Cancel" } },
 }
 local run = luau.load(fs.readFile(pluginFile), { debugName = "ForgeBridge", environment = env })
 run()
@@ -340,6 +359,52 @@ elseif scenario == "editor-only" then
 		end,
 	})
 	task.wait(1.5)
+elseif scenario == "outline-removal" then
+	-- Studio-only instances outside the mapped Client folder show in the Game tab outline, then the
+	-- user deletes them in Studio: the outline drops them.
+	-- While it happens the user keeps typing in a synced script (a steady change stream), which used
+	-- to hold the outline back for good.
+	local _, client = rojoBuildsClient()
+	local starterPlayer = methods.FindFirstChild(game, "StarterPlayer")
+	local characterScripts = new("StarterCharacterScripts", "StarterCharacterScripts", starterPlayer)
+	task.wait(2)
+	local loose = new("LocalScript", "LocalScript", starterPlayerScripts, "print(1)")
+	local health = new("Script", "Health", characterScripts, "")
+	task.wait(3)
+	print("OUTLINE ADDED")
+	local typing = true
+	task.spawn(function()
+		local n = 0
+		while typing do
+			n += 1
+			client.Source = "-- " .. n
+			task.wait(0.05)
+		end
+	end)
+	task.wait(0.5)
+	loose:Destroy()
+	health:Destroy()
+	task.wait(14)
+	typing = false
+	task.wait(0.5)
+elseif scenario == "studio-delete" then
+	-- Forge's Game tab deletes a Studio-only LocalScript; the test also sends delete jobs the plugin
+	-- must refuse (synced root, its holder, default container, same-name siblings, stale class).
+	rojoBuildsClient()
+	local starterPlayer = methods.FindFirstChild(game, "StarterPlayer")
+	new("StarterCharacterScripts", "StarterCharacterScripts", starterPlayer)
+	local rs = methods.FindFirstChild(game, "ReplicatedStorage")
+	new("Folder", "Dup", rs)
+	new("Folder", "Dup", rs)
+	local loose = new("LocalScript", "LocalScript", starterPlayerScripts, "print(1)")
+	new("Folder", "Inner", loose)
+	local waited = 0
+	while loose.Parent ~= nil and waited < 40 do
+		task.wait(0.25)
+		waited += 0.25
+	end
+	print(if loose.Parent == nil then "LOOSE DELETED" else "LOOSE STILL THERE")
+	task.wait(2)
 end
 
 print("SCENARIO DONE")

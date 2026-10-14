@@ -18,7 +18,7 @@ import { KEY_COLOR } from './crop.ts'
 import { BRIDGE_VERSION, type BridgeBeat, type BridgeCamera, type BridgeJob, type BridgeModule, type InstanceJson, type PropJson } from './protocol.ts'
 
 // The previews' "front" views (pages/*/preview), so Studio frames line up with the preview frames.
-export const CAMERAS: Record<Exclude<BridgeJob['kind'], 'snapshot'>, BridgeCamera> = {
+export const CAMERAS: Record<Exclude<BridgeJob['kind'], 'snapshot' | 'delete'>, BridgeCamera> = {
   vfx: { pos: [5.5, 5.2, -9.5], target: [0, 3.2, -1], fov: 70 },
   anim: { pos: [6.4, 4.8, -9.8], target: [0, 2.4, -0.6], fov: 50 },
   ability: { pos: [6.5, 5.5, -10.5], target: [0, 3, -2], fov: 70 }

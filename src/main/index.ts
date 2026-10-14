@@ -55,6 +55,8 @@ import { abilityElectronDeps } from './services/ability/electron.ts'
 import { withAbilityTools } from './services/ability/tools.ts'
 import { createPrincipleWiring } from './services/principles/wire.ts'
 import { createStudioWiring } from './services/studio/wire.ts'
+import { SyncEngine } from './services/sync/engine.ts'
+import { loadPlaces, placeFor } from './services/sync/mapping.ts'
 import { createSync } from './services/sync/wire.ts'
 import { pluginsDir } from '../shared/studio/plugin.ts'
 import { homedir } from 'node:os'
@@ -457,10 +459,11 @@ const forgeSync = createSync({
   studio: () => {
     const info = studio.bridge.studio()
     return info ? { placeId: info.placeId, connected: studio.bridge.connected() } : null
-  }
-  // TODO(merge): engine: (root) => new SyncEngine({ root }), mapping: { loadPlaces, placeFor } (services/sync/engine.ts, mapping.ts)
+  },
+  engine: (root) => new SyncEngine({ root }),
+  mapping: { loadPlaces, placeFor }
 })
-// TODO(merge): studio.bridge.setSyncHandler(forgeSync.handler)
+studio.bridge.setSyncHandler(forgeSync.handler)
 
 // Principle priorities (services/principles): per-principle weights learned from Labs ratings; the
 // VFX Lab, Animation Lab and Ability Composer critics weigh their principle scores by them.

@@ -26,8 +26,6 @@ export interface StudioNode {
   properties?: Record<string, SyncValue>
   attributes?: Record<string, SyncValue>
   tags?: string[]
-  // Script whose Source is too large to send (plugin limit): content unknown, never written or trashed.
-  oversize?: true
 }
 
 export interface SyncPlace {

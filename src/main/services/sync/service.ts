@@ -35,6 +35,8 @@ export interface SyncEngineLike {
   resolve(placeKey: string, file: string, take: 'studio' | 'disk' | 'merged', text?: string): Promise<void>
   resolveAll(placeKey: string, take: 'studio' | 'disk'): unknown
   gate(placeKey: string): GateState
+  // Studio went away mid-snapshot: gate back to 'idle'.
+  endSession?(placeKey: string): unknown
   on(event: 'changed', fn: () => void): unknown
 }
 
@@ -110,6 +112,8 @@ export interface SyncServiceDeps {
 
 const RECENT_MAX = 200
 const SEEN_MS = 60_000
+// A snapshot that stops arriving (Studio closed or crashed mid-send) releases the rojo hold after this.
+export const SNAPSHOT_STALE_MS = 30_000
 const WRITTEN_FILE = join('.forge', 'sync', 'forge-written.json')
 const PACKAGES = /^(Server|Dev)?Packages(\/|$)/
 // Written from Studio: the file (and, for renames, its old path) is Forge's change, not the user's.
@@ -288,6 +292,7 @@ export class SyncService {
         }
         await engine.addSnapshot(session.placeKey, Array.isArray(body.nodes) ? body.nodes : [])
         session.nextSeq++
+        this.watchSnapshot(session.token, session.placeKey, !!body.final)
         if (body.final) {
           const entries = await engine.finishSnapshot(session.placeKey)
           session.ready = true
@@ -303,6 +308,28 @@ export class SyncService {
       this.deps.log?.(`sync: snapshot failed: ${(e as Error).message}`, 'stderr')
       return { ok: false, error: (e as Error).message }
     }
+  }
+
+  private snapshotTimers = new Map<string, ReturnType<typeof setTimeout>>()
+
+  private watchSnapshot(token: string, placeKey: string, done: boolean): void {
+    const old = this.snapshotTimers.get(placeKey)
+    if (old) clearTimeout(old)
+    this.snapshotTimers.delete(placeKey)
+    if (done) return
+    const timer = setTimeout(() => {
+      this.snapshotTimers.delete(placeKey)
+      const session = this.sessions.get(token)
+      if (!session || session.ready) return
+      this.sessions.delete(token)
+      this.deps.log?.(`sync: Studio stopped sending the snapshot for ${placeKey}; rojo may serve again`, 'stderr')
+      void this.serial(async () => {
+        await this.deps.engine?.endSession?.(placeKey)
+        this.refresh()
+      })
+    }, SNAPSHOT_STALE_MS)
+    ;(timer as { unref?: () => void }).unref?.()
+    this.snapshotTimers.set(placeKey, timer)
   }
 
   private async changes(body: ChangesBody): Promise<SyncAnswer> {

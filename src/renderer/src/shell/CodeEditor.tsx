@@ -1,6 +1,6 @@
 // Monaco host for file tabs. One editor instance stays mounted while any file is open (hidden behind
 // page tabs), so luau-lsp starts once and models keep their undo stacks and view state.
-import { useEffect, useRef } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { useStore, type ProblemItem } from '../store'
 import { languageForPath, monaco } from '../monaco'
@@ -8,6 +8,11 @@ import { useAppearance } from '../theme'
 import { startLuauLsp } from '../lsp'
 import { setCursor } from '../lib/cursor'
 import { markCursorUsed, rememberCursor, takeCursor } from '../qol/sessionStore'
+import { formatBeforeSave, registerStyluaFormatter } from '../editorAssist/format'
+import { registerInlineCompletions } from '../editorAssist/inline'
+import { setBeforeSave } from '../editorAssist/saveHooks'
+import { setAssistToast } from '../editorAssist/state'
+import { useAutoSave } from '../editorAssist/autosave'
 
 const pathOf = (model: monaco.editor.ITextModel) => model.uri.path.replace(/^\/+/, '')
 
@@ -22,6 +27,7 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
   const appearance = useAppearance()
   const file = state.files.find((f) => f.path === path)
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
   const actionsRef = useRef(actions)
   actionsRef.current = actions
   const pathRef = useRef(path)
@@ -53,8 +59,24 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
     setCursor({ line: pos.lineNumber, column: pos.column, tabSize: opts.tabSize, insertSpaces: opts.insertSpaces, selected: sel && !sel.isEmpty() ? model.getValueLengthInRange(sel) : 0 })
   }
 
+  // Autosave (Settings > Editor; default: on focus change).
+  useAutoSave(editorInstance, path)
+
+  // StyLua (Format Document, format on save) and AI ghost text; toasts go to the app.
+  useEffect(() => {
+    setAssistToast((t) => actionsRef.current.toast(t))
+    setBeforeSave((p, contents, reason) => formatBeforeSave(monaco, p, contents, reason))
+    return () => {
+      setBeforeSave(null)
+      setAssistToast(null)
+    }
+  }, [])
+
   const onMount: OnMount = (editor) => {
     editorRef.current = editor
+    setEditorInstance(editor)
+    registerStyluaFormatter(monaco)
+    registerInlineCompletions(monaco)
     editor.onDidChangeCursorSelection(publishCursor)
     // A file's first showing this session goes back to its saved cursor (unless a reveal is pending).
     const restoreCursor = () => {
@@ -217,6 +239,10 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
         overviewRulerBorder: false,
         hideCursorInOverviewRuler: true,
         fixedOverflowWidgets: true,
+        // Quick fixes (luau-lsp code actions): the light bulb shows on lines that have one; Ctrl+. / ⌘.
+        lightbulb: { enabled: monaco.editor.ShowLightbulbIconMode.OnCode },
+        // AI ghost text (editorAssist/inline.ts): Tab accepts, Esc dismisses.
+        inlineSuggest: { enabled: true, showToolbar: 'onHover', suppressSuggestions: false },
         readOnly: !!readOnlyReason,
         readOnlyMessage: readOnlyReason ? { value: readOnlyReason } : undefined
       }}

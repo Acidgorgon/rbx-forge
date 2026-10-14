@@ -33,6 +33,8 @@ import type {
 } from '@shared/types'
 import { basename, instanceNameOfFile } from './lib/roblox'
 import { isUnder, movedPath, type PathChange } from '@shared/fileOps'
+import type { SaveReason } from '@shared/editorAssist/policy'
+import { runBeforeSave } from './editorAssist/saveHooks'
 
 // ---------------------------------------------------------------- types
 
@@ -461,7 +463,9 @@ export interface Actions {
   pinTab(id: string): void
   closeTab(id: string): void
   editFile(path: string, contents: string): void
-  saveFile(path: string): Promise<void>
+  // reason 'auto' = autosave (editorAssist/autosave): skipped when nothing changed, and formats only
+  // when "format on autosave" is on.
+  saveFile(path: string, opts?: { reason?: SaveReason }): Promise<void>
   reloadFile(path: string): Promise<void>
   // Explorer rename / move to trash; open tabs follow the new path or close (unsaved edits included:
   // the Explorer asks first).
@@ -532,6 +536,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
   const h = window.harness
 
   const actions = useMemo<Actions>(() => {
+    // In-flight saves per path (saveFile chains them).
+    const saving = new Map<string, Promise<void>>()
     const toast = (input: string | ToastInput) => {
       const spec = typeof input === 'string' ? { text: input } : input
       dispatch({ type: 'toast', toast: { id: Date.now() + Math.random(), at: Date.now(), ...spec } })
@@ -600,16 +606,27 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       pinTab: (id) => dispatch({ type: 'pin', id }),
       closeTab: (id) => dispatch({ type: 'closeTab', id }),
       editFile: (path, contents) => dispatch({ type: 'fileEdit', path, contents }),
-      async saveFile(path) {
-        const f = stateRef.current.files.find((x) => x.path === path)
-        if (!f || f.loading) return
-        const contents = f.current
-        try {
-          await h.writeFile(path, contents)
-          dispatch({ type: 'fileSaved', path, contents })
-        } catch (e) {
-          toast({ text: `Could not save ${basename(path)}`, detail: (e as Error).message, kind: 'err' })
+      async saveFile(path, opts) {
+        const reason = opts?.reason ?? 'manual'
+        // Saves of one file run one after another, so an older text never lands on disk last.
+        const run = async () => {
+          const f = stateRef.current.files.find((x) => x.path === path)
+          if (!f || f.loading) return
+          if (reason === 'auto' && f.current === f.saved) return
+          // Format on save (StyLua) rewrites the buffer first, as one undo step.
+          const contents = await runBeforeSave(path, f.current, reason)
+          if (contents !== f.current) dispatch({ type: 'fileEdit', path, contents })
+          try {
+            await h.writeFile(path, contents)
+            dispatch({ type: 'fileSaved', path, contents })
+          } catch (e) {
+            toast({ text: `Could not save ${basename(path)}`, detail: (e as Error).message, kind: 'err' })
+          }
         }
+        const next = (saving.get(path) ?? Promise.resolve()).then(run, run)
+        saving.set(path, next)
+        await next
+        if (saving.get(path) === next) saving.delete(path)
       },
       async reloadFile(path) {
         if (stateRef.current.files.some((f) => f.path === path)) await loadFile(path)

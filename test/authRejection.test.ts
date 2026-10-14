@@ -9,6 +9,10 @@ import { test } from 'node:test'
 import { fakeContext } from './agentFake.ts'
 import { AUTH_PROBE_SYSTEM, AuthHealth, authSignal, classifyAuthError, errorStatus, probeModelFor, watchAnthropicAuth } from '../src/main/accounts/authHealth.ts'
 import { parseTestResult } from '../src/main/accounts/claude.ts'
+import { AUTH_HELP, authHelpFor, isAuthHelp, modelRejectedHelp, toChatMessages, type QueryFn } from '../src/main/agent/sdk.ts'
+import { Credentials } from '../src/main/agent/credentials.ts'
+import { Providers } from '../src/main/agent/providers.ts'
+import { ChatManager } from '../src/main/agent/chat.ts'
 
 const REJECT_TEXT = 'Failed to authenticate. API Error: 403 {"type":"error","error":{"type":"permission_error","message":"claude-opus-5-5 is not available on this account"}}'
 const REVOKED_TEXT = 'Failed to authenticate. API Error: 403 {"type":"error","error":{"type":"permission_error","message":"OAuth token has been revoked"}}'
@@ -158,4 +162,92 @@ test('Test connection: a 403 model rejection is a failed test, not an expired si
   assert.match(rejected.message, /^Test failed: .*403/)
   assert.equal(parseTestResult(r(JSON.stringify({ is_error: true, api_error_status: 401, result: EXPIRED_TEXT }))).auth, true)
   assert.equal(parseTestResult(r(JSON.stringify({ is_error: true, api_error_status: 403, result: REVOKED_TEXT }))).auth, true)
+})
+
+// ---- chat messages: a per-model 403 names the model, a real auth failure keeps the sign-in help ----
+
+const OPUS_HELP = "Your account can't use Claude Opus 5.5 (claude-opus-5-5). Pick another model in the model menu."
+
+test('toChatMessages: a per-model 403 names the model; a real auth failure keeps the sign-in help', () => {
+  const [assistant, result] = failure(REJECT_TEXT, 403)
+  const out = toChatMessages(assistant as never, 'main', undefined, { model: 'claude-opus-5-5' })
+  assert.deepEqual(out.map((m) => [m.role, m.text]), [['system', OPUS_HELP]])
+  assert.deepEqual(toChatMessages(result as never, 'main', undefined, { model: 'claude-opus-5-5' }), [], 'not repeated by the result')
+  // A 403 result without the CLI's auth wording (no assistant error before it) still says so.
+  const bare = toChatMessages({ type: 'result', subtype: 'success', is_error: true, api_error_status: 403, result: 'Forbidden' } as never, 'main', undefined, { model: 'gpt-x' })
+  assert.deepEqual(bare.map((m) => m.text), ["Your account can't use gpt-x. Pick another model in the model menu."])
+  // Real auth failures: the sign-in help.
+  for (const [text, status] of [[EXPIRED_TEXT, 401], [REVOKED_TEXT, 403]] as const) {
+    const [a] = failure(text, status)
+    assert.deepEqual(toChatMessages(a as never, 'main', undefined, { model: 'claude-opus-5-5' }).map((m) => m.text), [AUTH_HELP], text)
+  }
+  assert.deepEqual(toChatMessages({ type: 'assistant', error: 'authentication_failed', parent_tool_use_id: null, message: { content: [] } } as never, 'main').map((m) => m.text), [AUTH_HELP])
+  // Helpers.
+  assert.equal(modelRejectedHelp(), "Your account can't use this model. Pick another model in the model menu.")
+  assert.equal(authHelpFor(`Claude Code returned an error result: ${REJECT_TEXT}`, 'claude-opus-5-5'), OPUS_HELP)
+  assert.equal(authHelpFor(`Claude Code returned an error result: ${EXPIRED_TEXT}`, 'claude-opus-5-5'), AUTH_HELP)
+  assert.equal(authHelpFor('Overloaded', 'claude-opus-5-5'), null)
+  assert.ok(isAuthHelp(OPUS_HELP) && isAuthHelp(AUTH_HELP) && !isAuthHelp('Error: x'))
+})
+
+// The SDK as the CLI behaves: the failure's messages, then a throw ("returned an error result").
+function failingSdk(text: string, status: number): QueryFn {
+  return () =>
+    (async function* () {
+      yield { type: 'system', subtype: 'init', session_id: 's' } as never
+      for (const m of failure(text, status)) yield m as never
+      throw new Error(`Claude Code returned an error result: ${text}`)
+    })()
+}
+
+async function idle(chats: ChatManager, id: string): Promise<void> {
+  const end = Date.now() + 5000
+  while (chats.busy(id)) {
+    if (Date.now() > end) throw new Error('timed out')
+    await new Promise((r) => setTimeout(r, 5))
+  }
+}
+
+function chatSetup(queryFn: QueryFn) {
+  const fake = fakeContext()
+  fake.settings.set('anthropicUseClaudeLogin', true)
+  const creds = new Credentials(fake.ctx, async () => null, { HOME: '/nonexistent' })
+  creds.setLoginProbe(() => true)
+  const providers = new Providers(fake.ctx, creds)
+  return new ChatManager(fake.ctx, { credentials: creds, providers, toolFs: fake.fs, queryFn })
+}
+
+test('chat: a turn on a model the account cannot use says so once, without the sign-in help', async () => {
+  const chats = chatSetup(failingSdk(REJECT_TEXT, 403))
+  const chat = chats.create({ provider: 'anthropic', model: 'claude-opus-5-5' })
+  await chats.send(chat.id, 'hello')
+  await idle(chats, chat.id)
+  const system = chats.messages(chat.id)!.filter((m) => m.role === 'system').map((m) => m.text)
+  assert.deepEqual(system.filter(isAuthHelp), [OPUS_HELP])
+  assert.ok(!system.includes(AUTH_HELP))
+  assert.ok(!system.some((t) => /^Error: /.test(t)), system.join(' | '))
+  // A real auth failure keeps the sign-in help.
+  const chats2 = chatSetup(failingSdk(EXPIRED_TEXT, 401))
+  const c2 = chats2.create({ provider: 'anthropic', model: 'claude-opus-5-5' })
+  await chats2.send(c2.id, 'hello')
+  await idle(chats2, c2.id)
+  const sys2 = chats2.messages(c2.id)!.filter((m) => m.role === 'system').map((m) => m.text)
+  assert.deepEqual(sys2.filter(isAuthHelp), [AUTH_HELP])
+})
+
+test('group chat: an SDK guest on a model the account cannot use says so; an expired sign-in keeps the help', async () => {
+  for (const [text, status, expected] of [[REJECT_TEXT, 403, OPUS_HELP], [EXPIRED_TEXT, 401, AUTH_HELP]] as const) {
+    const fake = fakeContext()
+    const creds = new Credentials(fake.ctx, async () => null, {})
+    await creds.setKey('anthropic', 'key-anthropic')
+    await creds.setKey('openai', 'key-openai')
+    const providers = new Providers(fake.ctx, creds, (async () => new Response('{}')) as never)
+    const chats = new ChatManager(fake.ctx, { credentials: creds, providers, toolFs: fake.fs, queryFn: failingSdk(text, status) })
+    const chat = chats.create({ provider: 'openai', model: 'gpt-6.1-sol' })
+    chats.addGuest(chat.id, { provider: 'anthropic', model: 'claude-opus-5-5' })
+    await chats.send(chat.id, '@opus how should saving work?')
+    await idle(chats, chat.id)
+    const system = chats.messages(chat.id)!.filter((m) => m.role === 'system').map((m) => m.text)
+    assert.deepEqual(system.filter(isAuthHelp), [expected], system.join(' | '))
+  }
 })

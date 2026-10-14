@@ -14,7 +14,8 @@
 // rejection and the login stays as it was.
 
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { isAuthError, type QueryFn } from '../agent/sdk.ts'
+import type { QueryFn } from '../agent/sdk.ts'
+import { classifyAuthError } from './authErrors.ts'
 
 export const AUTH_HEALTH_SETTING = 'anthropicAuthHealth'
 
@@ -34,42 +35,11 @@ export interface SettingsLike {
   setSetting(key: string, value: unknown): void
 }
 
-// Text of an Anthropic authentication failure (CLI and API wording).
-const AUTH_TEXT =
-  /failed to authenticate|authentication[_ ]failed|oauth (session|token) (has )?expired|could not be refreshed|invalid (x-)?api[- _]key|invalid bearer token|not logged in|please run \/login|login expired|token (has been )?revoked|\b401\b.*(unauthori[sz]ed|authentication)|unauthori[sz]ed.*\b401\b/i
-
-// The chat's matcher (agent/sdk.ts isAuthError) plus CLI wording it does not cover.
-export function isAnthropicAuthError(text: unknown): boolean {
-  return typeof text === 'string' && (isAuthError(text) || AUTH_TEXT.test(text))
-}
+export { classifyAuthError, errorStatus, isAnthropicAuthError } from './authErrors.ts'
 
 // SDK assistant-message error codes that mean the credential itself is the problem (the CLI also
 // uses authentication_failed for a 403, see classifyAuthError).
 const AUTH_CODES = new Set(['authentication_failed', 'oauth_org_not_allowed'])
-
-// Wording that blames the credential itself, also on a 403.
-const CREDENTIAL_TEXT =
-  /oauth (session|token) (has )?expired|could not be refreshed|invalid (x-)?api[- _]key|invalid bearer token|invalid (oauth |access )?token|not logged in|please run \/login|login expired|token (has been )?revoked|oauth_org_not_allowed|organization (has been )?(disabled|not allowed)|no credentials|missing credentials|credentials? (were |was )?not found/i
-
-// The HTTP status of an API error: the result's api_error_status, else "API Error: 403" in the text.
-export function errorStatus(text: unknown, status?: unknown): number | undefined {
-  if (typeof status === 'number' && status > 0) return status
-  const m = typeof text === 'string' ? /API Error:?\s*(\d{3})\b/i.exec(text) : null
-  return m ? Number(m[1]) : undefined
-}
-
-// What an error says about the credential:
-//   'auth'     the credential failed (401, or credential wording): mark the login / key failed;
-//   'rejected' a 403 that does not blame the credential (a model the account cannot use, a
-//              permission on one request): not an auth failure by itself;
-//   null       not about authentication at all (overloaded, rate limit, ...).
-export function classifyAuthError(text: unknown, status?: unknown): 'auth' | 'rejected' | null {
-  const t = typeof text === 'string' ? text : ''
-  const code = errorStatus(t, status)
-  if (code === 401) return 'auth'
-  if (code === 403) return CREDENTIAL_TEXT.test(t) ? 'auth' : 'rejected'
-  return isAnthropicAuthError(t) ? 'auth' : null
-}
 
 export class AuthHealth {
   private store: SettingsLike

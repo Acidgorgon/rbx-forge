@@ -9,7 +9,7 @@
 import { insetRect, type Rect } from '../../../shared/studio/crop.ts'
 import { newJobId, type BridgeJob } from '../../../shared/studio/protocol.ts'
 import { snapshotJob } from '../../../shared/studio/payload.ts'
-import { PLUGIN_FILE, PLUGIN_VERSION, pluginRbxmx, pluginSource, pluginVersionOf } from '../../../shared/studio/plugin.ts'
+import { PLUGIN_FILE, PLUGIN_VERSION, pluginRbxmx, pluginSource, pluginTemplateVersion, pluginVersionOf } from '../../../shared/studio/plugin.ts'
 import { beatTargets, DEFAULT_LAG_MS, stageDrift, startEpoch } from '../../../shared/studio/timing.ts'
 import { STUDIO_PREFER_SETTING, type StudioCheckKind, type StudioCheckOptions, type StudioCheckRecord, type StudioFrame, type StudioMark, type StudioPhase, type StudioStatus } from '../../../shared/studio/types.ts'
 import { markStudioFrames } from '../../../shared/studio/frames.ts'
@@ -188,7 +188,9 @@ export class StudioService {
     if (!dir || !file) throw new StudioCheckError('unsupported', 'Roblox Studio runs on Windows and macOS; there is no plugins folder on this system.')
     const template = await this.deps.plugin.template()
     if (!template) throw new StudioCheckError('no-plugin', 'The Forge Bridge plugin is missing from this install (resources/studio/ForgeBridge.luau).')
-    await this.deps.plugin.write(file, pluginRbxmx(pluginSource(template, { port: this.deps.bridge.port, version: PLUGIN_VERSION })))
+    // Stamped with the template's own version: an older template (a broken quick update without its
+    // bundled copy) must not claim to be the plugin this code expects.
+    await this.deps.plugin.write(file, pluginRbxmx(pluginSource(template, { port: this.deps.bridge.port, version: Math.min(PLUGIN_VERSION, pluginTemplateVersion(template)) })))
     this.deps.log?.(`studio: installed the Forge Bridge plugin at ${file}`)
     const s = await this.status()
     this.deps.emit?.('studio:bridge', s)

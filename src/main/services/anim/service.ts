@@ -13,7 +13,7 @@ import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import type { AnimClipRef } from '../../../shared/anim/types.ts'
 import type { AnimCheckReport, AnimClip, AnimCritique, AnimEntry, AnimExportResult, AnimImportResult, AnimIteration, AnimLabStatus, AnimRefineOptions, AnimRefineProgress, AnimScope, AnimScriptResult, AnimStyle, AnimStyleProfile, AnimUploadResult, LearnedPose, RigType } from '../../../shared/anim/model.ts'
-import type { AnimCoverage, AnimImportOptions, AnimImportPreview } from '../../../shared/animTypes.ts'
+import type { AnimCoverage, AnimImportOptions, AnimImportPreview, AnimMoveSets, AnimRetagResult } from '../../../shared/animTypes.ts'
 import type { LabTier } from '../../../shared/labModels.ts'
 import type { LabGate } from '../../../shared/gating/hooks.ts'
 import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
@@ -23,8 +23,9 @@ import { clipFromSequence, readKeyframeSequencesXml, writeKeyframeSequenceXml, t
 import { clipSummary, finishAnimRun, compileAnim, type AnimRecordResult } from '../../../shared/anim/compile.ts'
 import { measureClip } from '../../../shared/anim/measure.ts'
 import { runChecks } from '../../../shared/anim/checks.ts'
-import { allProfiles, autoTags, buildProfile, buildStyle, coverage, MOVE_TAGS, profileFor, profileSkill, profileText, promptTags } from '../../../shared/anim/style.ts'
-import { animCriticSystem, ANIM_DEFAULT_MAX_ITERATIONS, ANIM_DEFAULT_THRESHOLD, animCritiquePrompt, animRefineLoop, beatFrameTimes, heuristicAnimCritique, parseAnimCritique } from '../../../shared/anim/critique.ts'
+import { allProfiles, buildProfile, buildStyle, coverage, profileFor, profileSkill, profileText } from '../../../shared/anim/style.ts'
+import { allKnownTags, coverageOptions, entryText, heuristicRetag, mergeRetag, moveSetDef, moveSetGuide, MOVE_SETS, normalizeCustomTag, normalizeMoveSetSettings, resolveMoveSet, setAutoTags, setPromptTags, type CustomMoveTag, type MoveSetSettings, type ResolvedMoveSet } from '../../../shared/anim/movesets.ts'
+import { animCriticSystem, ANIM_DEFAULT_MAX_ITERATIONS, ANIM_DEFAULT_THRESHOLD, animCritiquePrompt, animRefineLoop, beatFrameTimes, heuristicAnimCritique, parseAnimCritique, withMustFix } from '../../../shared/anim/critique.ts'
 import { ANIM_API, ANIM_API_R6, ANIM_GUIDE, archetypeFor, draftAnimScript, kitReferenceText } from '../../../shared/anim/draft.ts'
 import { ANIM_EXAMPLES, animExample } from '../../../shared/anim/examples.ts'
 import { ANIM_RECORDED } from '../../../shared/anim/examples.recorded.ts'
@@ -44,6 +45,8 @@ import { principlePlan } from '../../../shared/principles/select.ts'
 import type { PrincipleHooks, PrincipleWeights } from '../../../shared/principles/types.ts'
 import { criticBrief, restatementBlock } from '../../../shared/restate/prompt.ts'
 import { normalizeRestatement, type Restatement } from '../../../shared/restate/types.ts'
+import { adjustRemixOps, applyRemix, describeRemixOp, dominantSide, heuristicRemixPlan, libraryScore, normalizeRemixPlan, parseRemixPlan, remixCandidates, remixPlanPrompt, REMIX_SYSTEM, type RemixCandidate, type RemixOp, type RemixOrigin } from '../../../shared/anim/remix.ts'
+import type { AnimRemixMode, AnimRemixOptions } from '../../../shared/animTypes.ts'
 
 export interface ImagePayload {
   mime: string
@@ -260,6 +263,127 @@ export class AnimService {
     return rig === 'R6' || rig === 'R15' ? rig : this.rig()
   }
 
+  // ------------------------------------------------------------ move sets (Combat / Football / ...)
+
+  // The project's settings.json (next to the rig), else <userDir>/settings.json without a project.
+  private settingsFile(): string {
+    return this.rigFile() ?? join(this.deps.userDir, RIG_SETTINGS_FILE)
+  }
+
+  private async readSettings(): Promise<Record<string, unknown>> {
+    try {
+      const v = JSON.parse(await readFile(this.settingsFile(), 'utf8')) as unknown
+      return v && typeof v === 'object' ? (v as Record<string, unknown>) : {}
+    } catch {
+      return {}
+    }
+  }
+
+  private async moveSetSettings(): Promise<MoveSetSettings> {
+    return normalizeMoveSetSettings((await this.readSettings()).moveSet)
+  }
+
+  private async writeMoveSetSettings(next: MoveSetSettings): Promise<void> {
+    const f = this.settingsFile()
+    const prev = await this.readSettings()
+    await mkdir(join(f, '..'), { recursive: true })
+    await writeFile(f, JSON.stringify({ ...prev, moveSet: normalizeMoveSetSettings(next) }, null, 2) + '\n', 'utf8')
+    this.styleCache = null
+  }
+
+  // The active move set with the project's custom move types.
+  async moveSet(): Promise<ResolvedMoveSet> {
+    return resolveMoveSet(await this.moveSetSettings())
+  }
+
+  async moveSets(): Promise<AnimMoveSets> {
+    return { active: await this.moveSet(), sets: MOVE_SETS.map(({ id, name, description }) => ({ id, name, description })) }
+  }
+
+  // Switching keeps every clip's tags; "Re-tag library" (retag) applies the new set.
+  async setMoveSet(id: string): Promise<ResolvedMoveSet> {
+    const cur = await this.moveSetSettings()
+    await this.writeMoveSetSettings({ ...cur, set: moveSetDef(id).id })
+    this.changed()
+    return this.moveSet()
+  }
+
+  async addMoveTag(input: CustomMoveTag | string): Promise<ResolvedMoveSet> {
+    const tag = normalizeCustomTag(input)
+    if (!tag) throw new AnimError('Name the move type (letters, numbers, spaces or dashes).')
+    const cur = await this.moveSetSettings()
+    const set = moveSetDef(cur.set)
+    if (set.tags.some((t) => t.tag === tag.tag)) throw new AnimError(`${set.name} already has "${tag.tag}"`)
+    const list = (cur.custom[set.id] ?? []).filter((c) => c.tag !== tag.tag)
+    await this.writeMoveSetSettings({ ...cur, custom: { ...cur.custom, [set.id]: [...list, tag] } })
+    this.changed()
+    return this.moveSet()
+  }
+
+  async removeMoveTag(tag: string): Promise<ResolvedMoveSet> {
+    const cur = await this.moveSetSettings()
+    const list = cur.custom[cur.set] ?? []
+    await this.writeMoveSetSettings({ ...cur, custom: { ...cur.custom, [cur.set]: list.filter((c) => c.tag !== String(tag ?? '').toLowerCase().trim()) } })
+    this.changed()
+    return this.moveSet()
+  }
+
+  // Move-type tags for a request or a clip name under the active set.
+  async tagsFor(text: string): Promise<string[]> {
+    return setPromptTags(text, await this.moveSet())
+  }
+
+  // Re-tags the library with the active set: the cheap model reads names, notes and descriptions
+  // when one is set up, else the keyword heuristic (name, file / request, notes). A clip that gets a
+  // tag of the set loses other sets' built-in tags (custom tags, "example" and "video" stay); clips
+  // nothing matches keep their tags.
+  async retag(opts: { model?: boolean } = {}): Promise<AnimRetagResult> {
+    const set = await this.moveSet()
+    const all = await this.list()
+    let found: Map<string, string[]> | null = null
+    const cheap = opts.model === false ? null : this.model('cheap')
+    if (cheap && all.length) {
+      try {
+        found = new Map()
+        const known = set.tags.map((t) => t.tag)
+        for (let i = 0; i < all.length; i += 30) {
+          const batch = all.slice(i, i + 30)
+          const lines = batch.map((e, n) => `${n + 1}. "${e.name}" (${e.origin ?? ''})${e.notes ? ` notes: ${e.notes.slice(0, 200)}` : ''} ${e.description.slice(0, 240)}`)
+          const raw = await cheap(
+            `You sort Roblox character animation clips into the move types of a ${set.name.toLowerCase()} game. Answer with JSON only.`,
+            `Move types:\n${moveSetGuide(set)}\n\nClips:\n${lines.join('\n')}\n\nFor each clip give the move types that fit (only from the list; an empty list when none fits). JSON: [{"i":1,"tags":["${known[0]}"]}]`,
+            []
+          )
+          const m = /\[[\s\S]*\]/.exec(raw)
+          if (!m) throw new Error('no JSON in the answer')
+          for (const row of JSON.parse(m[0]) as { i?: number; tags?: unknown }[]) {
+            const e = batch[Number(row.i) - 1]
+            if (e && Array.isArray(row.tags)) found.set(e.id, cleanTags(row.tags).filter((t) => known.includes(t)))
+          }
+        }
+      } catch (e) {
+        this.deps.log?.(`anim: model re-tag failed (${(e as Error).message}); using the keyword heuristic`, 'stderr')
+        found = null
+      }
+    }
+    const changes = found
+      ? all
+          .map((e) => {
+            const words = setPromptTags(entryText(e), set)
+            const after = mergeRetag(e.tags, [...new Set([...(found!.get(e.id) ?? []), ...words])], set)
+            return { id: e.id, before: e.tags, after }
+          })
+          .filter((c) => c.after.join('|') !== c.before.join('|'))
+      : heuristicRetag(all, set)
+    for (const c of changes) {
+      const hit = await this.find(c.id)
+      if (hit) await hit.store.save({ ...hit.entry, tags: c.after })
+    }
+    if (changes.length) await this.relearn().catch(() => undefined)
+    this.changed()
+    return { set: set.id, source: found ? 'model' : 'heuristic', total: all.length, changed: changes.length, changes: changes.slice(0, 200) }
+  }
+
   // Converts a clip between R15 and R6 (in place, or as a new entry with copy). R15 -> R6 loses the
   // waist / elbow / wrist / knee / ankle bends (RIG_CONVERT_WARNING); R6 -> R15 is lossless. Script
   // clips keep their script (it re-records on the new rig).
@@ -312,23 +436,11 @@ export class AnimService {
   // "Avoid" clips are left out unless asked for; liked clips rank higher.
   async search(query: string, opts: { limit?: number; includeAvoid?: boolean; tags?: string[] } = {}): Promise<AnimEntry[]> {
     const all = (await this.list()).filter((e) => opts.includeAvoid || usable(e))
-    const tags = new Set([...(opts.tags ?? []), ...promptTags(query)])
+    const tags = new Set([...(opts.tags ?? []), ...(await this.tagsFor(query))])
     const words = query.toLowerCase().split(/[^a-z0-9-]+/).filter((w) => w.length > 1)
     if (!words.length && !tags.size) return all.slice(0, opts.limit ?? 50)
     const scored = all
-      .map((e) => {
-        let s = 0
-        for (const t of e.tags) if (tags.has(t)) s += 6
-        const name = e.name.toLowerCase()
-        for (const w of words) {
-          if (e.tags.includes(w)) s += 3
-          if (name.includes(w)) s += 3
-          if (e.description.toLowerCase().includes(w)) s += 1
-          if (e.notes.toLowerCase().includes(w)) s += 1
-        }
-        if (e.rating === 'up' || e.quality === 'good' || e.quality === 'reference') s *= 1.3
-        return { e, s }
-      })
+      .map((e) => ({ e, s: libraryScore(e, words, tags) }))
       .filter((x) => x.s > 0)
       .sort((a, b) => b.s - a.s || b.e.updatedAt - a.e.updatedAt)
     return scored.slice(0, opts.limit ?? 50).map((x) => x.e)
@@ -393,7 +505,7 @@ export class AnimService {
 
   async checks(id: string): Promise<AnimCheckReport> {
     const e = needClip(await this.get(id))
-    return runChecks(e.clip, profileFor(await this.style(), e.tags, clipRig(e.clip)))
+    return runChecks(e.clip, profileFor(await this.style(), e.tags, clipRig(e.clip)), { request: e.kind === 'generated' ? e.origin : '', tags: e.tags })
   }
 
   // ------------------------------------------------------------ contract (Ability Composer)
@@ -496,12 +608,13 @@ export class AnimService {
   async previewImport(paths: string[]): Promise<AnimImportPreview[]> {
     const files = await this.expand(paths)
     const out: AnimImportPreview[] = []
+    const set = await this.moveSet()
     for (const r of await this.readClips(files)) {
       if (r.error || !r.clips.length) {
         out.push({ file: r.file, name: basename(r.file), duration: 0, looped: false, markers: 0, suggestedTags: [], error: r.error ?? 'no KeyframeSequence in the file' })
         continue
       }
-      for (const { clip } of r.clips) out.push({ file: r.file, name: clip.name, duration: clip.duration, looped: clip.looped, markers: clip.markers.length, suggestedTags: autoTags(clip, basename(r.file)), rig: clipRig(clip) })
+      for (const { clip } of r.clips) out.push({ file: r.file, name: clip.name, duration: clip.duration, looped: clip.looped, markers: clip.markers.length, suggestedTags: setAutoTags(clip, basename(r.file), set), rig: clipRig(clip) })
     }
     return out
   }
@@ -513,6 +626,7 @@ export class AnimService {
     const skipped: { file: string; reason: string }[] = []
     if (!files.length) return { added, skipped: paths.map((p) => ({ file: String(p), reason: 'no .rbxm, .rbxmx or .bvh files' })) }
     const given = opts.tags?.length ? cleanTags(opts.tags) : null
+    const set = await this.moveSet()
     for (const r of await this.readClips(files, opts.convert)) {
       if (r.error) {
         skipped.push({ file: r.file, reason: r.error })
@@ -532,7 +646,7 @@ export class AnimService {
           kind: 'imported',
           name: clip.name,
           description: describeClip(clip, stats),
-          tags: given ?? autoTags(clip, basename(r.file)),
+          tags: given ?? setAutoTags(clip, basename(r.file), set),
           notes: note ?? '',
           createdAt: now,
           updatedAt: now,
@@ -557,11 +671,13 @@ export class AnimService {
   private async summarizeImports(entries: AnimEntry[], retag: boolean): Promise<void> {
     const cheap = this.model('cheap')
     if (!cheap) return
-    const known = Object.keys(MOVE_TAGS)
+    const set = await this.moveSet()
+    const known = set.tags.map((t) => t.tag)
     const lines = entries.slice(0, 30).map((e, i) => `${i + 1}. "${e.name}" (file ${e.origin}): ${e.description} Suggested tags: ${e.tags.join(', ') || 'none'}.`)
+    const guide = set.id === 'combat' && !set.custom.length ? `only from: ${known.join(', ')}` : `only from these ${set.name.toLowerCase()} move types:\n${moveSetGuide(set)}\n`
     const raw = await cheap(
-      'You label imported Roblox R15 animation clips for an animation library. Answer with JSON only.',
-      `Clips:\n${lines.join('\n')}\n\nFor each clip give tags (only from: ${known.join(', ')}) and one short style note (what makes its motion read: timing, weight, poses). JSON: [{"i":1,"tags":["attack"],"note":"..."}]`,
+      `You label imported Roblox R15 animation clips for an animation library${set.id === 'combat' ? '' : ` of ${set.name.toLowerCase()} moves`}. Answer with JSON only.`,
+      `Clips:\n${lines.join('\n')}\n\nFor each clip give tags (${guide}) and one short style note (what makes its motion read: timing, weight, poses). JSON: [{"i":1,"tags":["${known[0]}"],"note":"..."}]`,
       []
     )
     const m = /\[[\s\S]*\]/.exec(raw)
@@ -595,13 +711,17 @@ export class AnimService {
   }
 
   async coverage(): Promise<AnimCoverage> {
-    return coverage((await this.list()).filter(isClip))
+    return coverage((await this.list()).filter(isClip), coverageOptions(await this.moveSet()))
+  }
+
+  private async knownTags(): Promise<string[]> {
+    return allKnownTags(await this.moveSetSettings())
   }
 
   // Style profiles from the whole library (pure stats), saved to style.json and as memory skills.
   async learn(): Promise<{ style: AnimStyle; saved: string[]; errors: string[] }> {
     const entries = await this.list()
-    const style = buildStyle(entries, this.now())
+    const style = buildStyle(entries, this.now(), await this.knownTags())
     await this.writeStyle(style)
     const saved: string[] = []
     const errors: string[] = []
@@ -632,7 +752,7 @@ export class AnimService {
 
   // Re-measures the profiles (cheap, no model, no memory writes).
   private async relearn(): Promise<void> {
-    await this.writeStyle(buildStyle(await this.list(), this.now()))
+    await this.writeStyle(buildStyle(await this.list(), this.now(), await this.knownTags()))
   }
 
   // ------------------------------------------------------------ rating
@@ -744,19 +864,20 @@ export class AnimService {
     return allProfiles(style).flatMap((p) => p.poses)
   }
 
-  async recordScript(script: string, opts: { name?: string; patches?: AnimClip['patches']; rig?: RigType } = {}): Promise<AnimScriptResult> {
+  async recordScript(script: string, opts: { name?: string; patches?: AnimClip['patches']; rig?: RigType; request?: string } = {}): Promise<AnimScriptResult> {
     const text = String(script ?? '')
     if (!text.trim()) return { ok: false, error: { message: 'the script is empty' }, prints: [], warnings: [], summary: '' }
     if (text.length > 60_000) return { ok: false, error: { message: 'the script is too long (60 KB max)' }, prints: [], warnings: [], summary: '' }
     const rec: AnimRecordResult = await luneAnimTimeline(text, { ...(await this.lunePaths()), run: this.deps.luneRun })
     const run = finishAnimRun(rec, text, { name: opts.name, learned: await this.learnedPoses(), patches: opts.patches, rig: await this.rigFor(opts.rig) })
     if (!run.ok || !run.clip) return { ok: false, ...(run.error ? { error: run.error } : {}), prints: run.prints, warnings: run.warnings, summary: '' }
-    const checks = runChecks(run.clip, profileFor(await this.style(), promptTags(run.clip.name), clipRig(run.clip)))
+    const tags = await this.tagsFor(run.clip.name)
+    const checks = runChecks(run.clip, profileFor(await this.style(), tags, clipRig(run.clip)), { request: opts.request ?? '', tags })
     return { ok: true, prints: run.prints, warnings: run.warnings, summary: clipSummary(run.clip), clip: run.clip, checks }
   }
 
   // Saves a clip as a generated entry (new, or replacing an entry's clip) and writes it into the project.
-  async saveClip(clip: AnimClip, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; scope?: AnimScope; refId?: string; restatement?: Restatement } = {}): Promise<AnimEntry> {
+  async saveClip(clip: AnimClip, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; scope?: AnimScope; refId?: string; restatement?: Restatement; remix?: RemixOrigin } = {}): Promise<AnimEntry> {
     const prev = opts.id ? await this.find(opts.id) : null
     const store = prev?.store ?? this.store(opts.scope ?? 'user')
     const now = this.now()
@@ -768,7 +889,7 @@ export class AnimService {
       kind: prev?.entry.kind ?? 'generated',
       name: prev?.entry.name ?? clip.name,
       description: opts.description ?? prev?.entry.description ?? `${opts.prompt ?? clip.name}. ${describeClip(clip, stats)}`.slice(0, 600),
-      tags: opts.tags ? cleanTags(opts.tags) : prev?.entry.tags ?? cleanTags([...promptTags(opts.prompt ?? clip.name), ...autoTags(clip)]),
+      tags: opts.tags ? cleanTags(opts.tags) : prev?.entry.tags ?? cleanTags([...(await this.tagsFor(opts.prompt ?? clip.name)), ...setAutoTags(clip, '', await this.moveSet())]),
       notes: prev?.entry.notes ?? '',
       createdAt: prev?.entry.createdAt ?? now,
       updatedAt: now,
@@ -777,7 +898,8 @@ export class AnimService {
       thumbs: prev?.entry.thumbs ?? [],
       stats,
       ...(opts.refId ? { refId: opts.refId } : {}),
-      ...(opts.restatement ? { restatement: opts.restatement } : {})
+      ...(opts.restatement ? { restatement: opts.restatement } : {}),
+      ...(opts.remix ? { remix: opts.remix } : {})
     }
     let saved = await store.save(entry)
     if (saved.written) saved = await this.writeProjectFiles(saved).catch(() => saved)
@@ -791,7 +913,7 @@ export class AnimService {
     if (opts.id && !hit) throw new AnimError(`no animation "${opts.id}"`)
     if (hit) needClip(hit.entry)
     const rig = hit ? clipRig(hit.entry.clip) : await this.rigFor(opts.rig)
-    const r = await this.recordScript(script, { name: hit?.entry.clip.name ?? animScriptName(script, opts.prompt ?? 'Animation'), rig })
+    const r = await this.recordScript(script, { name: hit?.entry.clip.name ?? animScriptName(script, opts.prompt ?? 'Animation'), rig, request: hit ? (hit.entry.kind === 'generated' ? hit.entry.origin : '') : opts.prompt })
     if (!r.ok || !opts.save || !r.clip) return r
     if (hit && this.running.has(hit.entry.id)) throw new AnimError('this clip is being refined; cancel the refinement first')
     const entry = await this.saveClip(r.clip, { id: hit?.entry.id, prompt: hit ? undefined : opts.prompt ?? r.clip.name })
@@ -825,7 +947,8 @@ export class AnimService {
     const text = String(request ?? '').trim() || (pinned ? `a move like the reference video ${pinned.name}` : '')
     if (text.length < 3) throw new AnimError('Describe the move, e.g. "a heavy overhead punch with a long windup".')
     const rig = await this.rigFor(opts.rig)
-    const tags = promptTags(text)
+    const set = await this.moveSet()
+    const tags = setPromptTags(text, set)
     const style = await this.style()
     const profile = profileFor(style, tags, rig)
     let source: AnimScriptResult['source'] = 'draft'
@@ -837,12 +960,15 @@ export class AnimService {
       const refs = await this.references(tags, text, undefined, rig)
       const scripted = refs.find((e) => e.clip.script && clipRig(e.clip) === rig) ?? refs.find((e) => e.clip.script)
       const forRig = ANIM_EXAMPLES.filter((x) => (x.rig ?? 'R15') === rig)
-      const ex = forRig.find((x) => archetypeFor(x.name + ' ' + x.tags.join(' ')) === archetypeFor(text)) ?? forRig[0] ?? ANIM_EXAMPLES[0]
+      const ex = forRig.find((x) => archetypeFor(x.name + ' ' + x.tags.join(' ')) === archetypeFor(text, set)) ?? forRig[0] ?? ANIM_EXAMPLES[0]
+      // Outside Combat (or for a custom move type), the move type's description tells the writer what the move is.
+      const moveType = tags.length && (set.id !== 'combat' || set.tags.some((t) => t.custom && tags.includes(t.tag))) ? `Move type (${set.name}):\n${moveSetGuide(set, tags)}` : ''
       const avoid = this.avoidNotes(tags, all)
       const lines = [
         `Make: ${text}`,
         restatementBlock(restatement),
         `Rig: ${rig}${rig === 'R6' ? ' (start the script with a:rig("R6"); no waist, elbows, wrists, knees or ankles)' : ''}`,
+        moveType,
         profile ? profileText(profile) : 'No learned style for this move type yet: use strong anticipation, a fast action and a settling recovery.',
         ...refs.filter((e) => e !== scripted).map((e) => `Library reference "${e.name}" (${e.tags.join(', ')}): ${e.description.slice(0, 300)}`),
         scripted ? `The user liked this related clip ("${scripted.origin}"); reuse what fits:\n\`\`\`lua\n${scripted.clip.script!.slice(0, 4000)}\n\`\`\`` : `An example script (${ex.name}):\n\`\`\`lua\n${ex.script}\`\`\``,
@@ -861,7 +987,7 @@ export class AnimService {
           check: async (raw): Promise<AttemptResult<{ s: string; r: AnimScriptResult }>> => {
             const s = extractAnimScript(raw)
             if (!s) return { ok: false, kind: 'no-script', message: 'no script in the answer' }
-            const r = await this.recordScript(s, { name: animScriptName(s, text), rig })
+            const r = await this.recordScript(s, { name: animScriptName(s, text), rig, request: text })
             if (r.ok) return { ok: true, value: { s, r } }
             const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
             return { ok: false, kind: 'script-error', message: `${r.error?.message ?? 'the script failed'}${where}` }
@@ -877,14 +1003,14 @@ export class AnimService {
       }
     }
     if (!result) {
-      if (!script) script = draftAnimScript(text, profile, rig)
+      if (!script) script = draftAnimScript(text, profile, rig, set)
       else source = 'model'
-      result = await this.recordScript(script, { name: animScriptName(script, text), rig })
+      result = await this.recordScript(script, { name: animScriptName(script, text), rig, request: text })
       if (!result.ok && opts.script) return { ...result, source }
       if (!result.ok) throw new AnimError(`could not record the draft script: ${result.error?.message}`)
     }
     const refTags = pinned ? ((await this.find(pinned.id))?.entry.tags ?? []).filter((t) => t !== 'video') : []
-    const entry = await this.saveClip(result.clip!, { prompt: text, tags: [...new Set([...tags, ...refTags, ...autoTags(result.clip!)])], scope: opts.scope, ...(pinned ? { refId: pinned.id } : {}), ...(restatement ? { restatement } : {}) })
+    const entry = await this.saveClip(result.clip!, { prompt: text, tags: [...new Set([...tags, ...refTags, ...setAutoTags(result.clip!, '', set)])], scope: opts.scope, ...(pinned ? { refId: pinned.id } : {}), ...(restatement ? { restatement } : {}) })
     await this.ensureGuideSkill()
     const out: AnimScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source }
     if (opts.refine !== false && this.deps.capture) {
@@ -893,6 +1019,139 @@ export class AnimService {
       out.refined = refined
     }
     return out
+  }
+
+  // ------------------------------------------------------------ remix (start from the closest clip)
+
+  // "From scratch" / "Remix closest" for the Animate row, with the move set in settings.json.
+  // auto: remix when the library has a usable clip of the request's move type.
+  async remixMode(): Promise<AnimRemixMode> {
+    const v = ((await this.readSettings()).remix as { mode?: unknown } | undefined)?.mode
+    return v === 'remix' || v === 'scratch' ? v : 'auto'
+  }
+
+  async setRemixMode(mode: AnimRemixMode): Promise<AnimRemixMode> {
+    const m: AnimRemixMode = mode === 'remix' || mode === 'scratch' ? mode : 'auto'
+    const f = this.settingsFile()
+    const prev = await this.readSettings()
+    await mkdir(join(f, '..'), { recursive: true })
+    await writeFile(f, JSON.stringify({ ...prev, remix: { ...((prev.remix as object) ?? {}), mode: m } }, null, 2) + '\n', 'utf8')
+    return m
+  }
+
+  // Library clips to start from for a request, best first (reference scoring; no avoid, no video refs).
+  async remixCandidates(prompt: string, opts: { rig?: RigType; limit?: number; exclude?: string } = {}): Promise<{ candidates: RemixCandidate[]; tags: string[] }> {
+    const set = await this.moveSet()
+    const rig = await this.rigFor(opts.rig)
+    return { candidates: remixCandidates(await this.list(), String(prompt ?? ''), set, { rig, limit: opts.limit ?? 8, exclude: opts.exclude }), tags: setPromptTags(String(prompt ?? ''), set) }
+  }
+
+  private async clipLookup(): Promise<(id: string) => AnimClip | null> {
+    const all = await this.list()
+    return (id) => {
+      const e = all.find((x) => x.id === id)
+      return e && isClip(e) ? e.clip : null
+    }
+  }
+
+  // Plans the edit ops for a request on a base clip: the default tier (validated JSON plan), else the
+  // keyword heuristic. With current ops and a critique it re-plans the params (refinement).
+  async planRemix(request: string, base: AnimEntry, others: AnimEntry[], ctx: { current?: RemixOp[]; critique?: AnimCritique | null } = {}): Promise<{ ops: RemixOp[]; source: 'model' | 'heuristic'; rejected: { op: unknown; reason: string }[] }> {
+    const writer = this.model('default')
+    const ids = others.map((o) => o.id)
+    if (writer) {
+      try {
+        const prompt = remixPlanPrompt({
+          request,
+          base: { id: base.id, name: base.name, tags: base.tags, description: base.description, clip: base.clip },
+          others: others.map((o) => ({ id: o.id, name: o.name, tags: o.tags, description: o.description, duration: o.clip.duration })),
+          side: dominantSide(base.clip),
+          ...(ctx.current ? { current: ctx.current } : {}),
+          ...(ctx.critique ? { critique: ctx.critique } : {})
+        })
+        const plan = parseRemixPlan(await writer(REMIX_SYSTEM, prompt, []), { clips: ids })
+        if (plan.rejected.length) this.deps.log?.(`anim: remix plan: dropped ${plan.rejected.map((r) => r.reason).join('; ')}`, 'stderr')
+        return { ops: plan.ops, source: 'model', rejected: plan.rejected }
+      } catch (e) {
+        this.deps.log?.(`anim: remix plan unusable (${(e as Error).message}); using the keyword heuristic`, 'stderr')
+      }
+    }
+    if (ctx.current && ctx.critique) return { ops: adjustRemixOps(ctx.current, ctx.critique, base.clip) ?? ctx.current, source: 'heuristic', rejected: [] }
+    return { ops: heuristicRemixPlan(request, base.clip), source: 'heuristic', rejected: [] }
+  }
+
+  // Request -> a clip edited from the closest library clip (or opts.base): plan ops (model or
+  // heuristic), apply them, save as a generated entry (tags from the base + request) with its origin
+  // (base id + ops), then refine like compose (the critic tunes op params, not keys).
+  async remix(request: string, opts: AnimRemixOptions & { wait?: boolean } = {}): Promise<AnimScriptResult & { refined?: Promise<unknown> }> {
+    const restatement = normalizeRestatement(opts.restatement) ?? undefined
+    const text = String(request ?? '').trim()
+    const rig = await this.rigFor(opts.rig)
+    const set = await this.moveSet()
+    const all = await this.list()
+    let base: AnimEntry | undefined
+    if (opts.base) {
+      base = all.find((e) => e.id === opts.base)
+      if (!base) throw new AnimError(`no animation "${opts.base}" to remix`)
+      needClip(base)
+    } else {
+      const top = remixCandidates(all, text, set, { rig, limit: 1 })[0]
+      if (!top) throw new AnimError(`No usable library clip matches "${text}". Import a reference clip of this move type, pick a base clip, or switch to From scratch.`)
+      base = all.find((e) => e.id === top.id)!
+    }
+    if (text.length < 2 && !opts.ops) throw new AnimError('Describe the change, e.g. "faster, with the left foot".')
+    const others = remixCandidates(all, `${text} ${base.tags.join(' ')}`, set, { rig, limit: 5, exclude: base.id })
+      .map((c) => all.find((e) => e.id === c.id)!)
+      .filter(Boolean)
+    const planned = opts.ops ? { ...normalizeRemixPlan(opts.ops, {}), source: 'user' as const } : await this.planRemix(text, base, others)
+    const lookup = await this.clipLookup()
+    const r = applyRemix(base.clip, planned.ops, lookup)
+    const ops = r.applied
+    const named = animScriptName('', text || `${base.name} remix`)
+    const clip: AnimClip = { ...(clipRig(r.clip) === rig ? r.clip : convertClip(r.clip, rig)), name: named === 'Animation' ? `${base.clip.name}Remix`.slice(0, 40) : named }
+    const names: Record<string, string> = {}
+    for (const o of ops) if (o.op === 'blend' || o.op === 'transplant') names[o.clip] = all.find((e) => e.id === o.clip)?.name ?? o.clip
+    const origin: RemixOrigin = { base: base.id, baseName: base.name, ops, source: planned.source, ...(Object.keys(names).length ? { clips: names } : {}) }
+    const tags = [...new Set([...base.tags.filter((t) => t !== 'example' && t !== 'video'), ...setPromptTags(text, set)])]
+    const description = `${text || 'Remix'}. Remix of "${base.name}"${ops.length ? `: ${ops.map((o) => describeRemixOp(o, names)).join('; ')}` : ' (unchanged)'}. ${describeClip(clip)}`.slice(0, 600)
+    const entry = await this.saveClip(clip, { prompt: text || `remix of ${base.name}`, description, tags, scope: opts.scope, remix: origin, ...(restatement ? { restatement } : {}) })
+    const tagsFor = entry.tags
+    const checks = runChecks(clip, profileFor(await this.style(), tagsFor, clipRig(clip)), { request: text, tags: tagsFor })
+    const warnings = [...planned.rejected.map((x) => `plan: ${x.reason}`), ...r.skipped.map((x) => `${x.op.op}: ${x.reason}`)]
+    const out: AnimScriptResult & { refined?: Promise<unknown> } = { ok: true, prints: [], warnings, summary: clipSummary(clip), clip, checks, entry, source: 'remix' }
+    if (opts.refine !== false && this.deps.capture) {
+      const refined = this.refine(entry.id, opts).catch((e) => this.deps.log?.(`anim: refine failed: ${(e as Error).message}`, 'stderr'))
+      if (opts.wait) await refined
+      out.refined = refined
+    }
+    return out
+  }
+
+  // Re-applies (edited) ops to a remixed entry's base clip, or to a different base clip.
+  async remixApply(id: string, ops: unknown, opts: { base?: string } = {}): Promise<AnimEntry> {
+    const hit = await this.find(id)
+    if (!hit) throw new AnimError(`no animation "${id}"`)
+    needClip(hit.entry)
+    if (this.running.has(id)) throw new AnimError('this clip is being refined; cancel the refinement first')
+    const baseId = opts.base ?? hit.entry.remix?.base
+    if (!baseId) throw new AnimError(`"${hit.entry.name}" is not a remix; pick a base clip to start from`)
+    if (baseId === id) throw new AnimError('a clip cannot be its own base')
+    const all = await this.list()
+    const base = all.find((e) => e.id === baseId)
+    if (!base) throw new AnimError(`the base clip "${hit.entry.remix?.baseName ?? baseId}" is no longer in the library`)
+    needClip(base)
+    const plan = normalizeRemixPlan(Array.isArray(ops) ? ops : [], { clips: all.filter((e) => isClip(e) && e.id !== id).map((e) => e.id) })
+    if (plan.rejected.length) throw new AnimError(`invalid op: ${plan.rejected[0].reason}`)
+    const r = applyRemix(base.clip, plan.ops, await this.clipLookup())
+    const rig = clipRig(hit.entry.clip)
+    const clip: AnimClip = { ...(clipRig(r.clip) === rig ? r.clip : convertClip(r.clip, rig)), name: hit.entry.clip.name }
+    const names: Record<string, string> = {}
+    for (const o of r.applied) if (o.op === 'blend' || o.op === 'transplant') names[o.clip] = all.find((e) => e.id === o.clip)?.name ?? o.clip
+    const remix: RemixOrigin = { base: base.id, baseName: base.name, ops: r.applied, source: 'user', ...(Object.keys(names).length ? { clips: names } : {}) }
+    let saved = await hit.store.save({ ...hit.entry, clip, stats: measureClip(clip), remix, updatedAt: this.now() })
+    if (saved.written && this.deps.projectRoot()) saved = await this.writeProjectFiles(saved).catch(() => saved)
+    this.changed()
+    return saved
   }
 
   private guideSaved = false
@@ -957,7 +1216,9 @@ export class AnimService {
     const style = await this.style()
     const rig = clipRig(clip)
     const profile: AnimStyleProfile | null = profileFor(style, entry.tags, rig)
-    const checks = runChecks(clip, profile)
+    const checks = runChecks(clip, profile, { request: entry.kind === 'generated' ? entry.origin : '', tags: entry.tags })
+    const set = await this.moveSet()
+    const typed = entry.tags.filter((t) => set.tags.some((d) => d.tag === t))
     const refs = await this.references(entry.tags, entry.origin, entry.id, rig)
     const refNames = refs.map((r) => r.name)
     const pinned = entry.refId ? await this.pinnedRef(entry.refId).catch(() => null) : null
@@ -965,21 +1226,24 @@ export class AnimService {
     const weights = await this.principleWeights()
     const request = criticBrief(entry.origin || entry.description, entry.restatement)
     const principled = (c: AnimCritique, raw?: string) => withAnimPrinciples(c, clip, { request, raw, weights, checks })
+    // The must-fix cap goes on last, after the principle and reference blending.
+    const done = (c: AnimCritique) => withMustFix(c)
     if (!critic || !frames.length) {
       const c = principled(heuristicAnimCritique(clip, checks, profile, refNames))
-      return pinned ? this.withMatch(c, clip, pinned) : c
+      return done(pinned ? this.withMatch(c, clip, pinned) : c)
     }
-    const prompt = `${animCritiquePrompt({ request: criticBrief(entry.origin, entry.restatement), clip, frameTimes: times, checks, profile, references: refs.map((r) => ({ name: r.name, description: r.description })), iteration, previous })}\n\n${animCriticPrinciples(clip, request, { weights, focus: previous?.focus, checks })}`
+    const moveType = typed.length && (set.id !== 'combat' || set.tags.some((t) => t.custom && typed.includes(t.tag))) ? `\nMove type (${set.name}):\n${moveSetGuide(set, typed)}` : ''
+    const prompt = `${animCritiquePrompt({ request: criticBrief(entry.origin, entry.restatement) + moveType, clip, frameTimes: times, checks, profile, references: refs.map((r) => ({ name: r.name, description: r.description })), iteration, previous })}\n\n${animCriticPrinciples(clip, request, { weights, focus: previous?.focus, checks })}`
     // Pinned reference: its key frames follow the rendered frames (compared side by side).
     const images = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...(pinned?.images ?? [])]
     try {
       const raw = await critic(pinned ? `${animCriticSystem(rig)}\n${REF_MATCH_TEXT}` : animCriticSystem(rig), prompt + studioFramesNote(frames) + (pinned ? `\n\n${pinned.critique}` : ''), images)
       const c = principled(parseAnimCritique(raw, checks, refNames), raw)
-      return pinned ? this.withMatch(c, clip, pinned, raw) : c
+      return done(pinned ? this.withMatch(c, clip, pinned, raw) : c)
     } catch (e) {
       this.deps.log?.(`anim: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')
       const c = principled(heuristicAnimCritique(clip, checks, profile, refNames))
-      return pinned ? this.withMatch(c, clip, pinned) : c
+      return done(pinned ? this.withMatch(c, clip, pinned) : c)
     }
   }
 
@@ -994,6 +1258,33 @@ export class AnimService {
 
   private progress(p: AnimRefineProgress): void {
     this.deps.emit?.('anim:progress', p)
+  }
+
+  // Remixed entries refine by re-planning their op params from each critique and re-applying them to
+  // the base clip (never by editing keys). Null when the entry is not a remix or its base is gone.
+  private async remixAdjuster(entry: AnimEntry): Promise<{ adjust: (clip: AnimClip, critique: AnimCritique) => Promise<{ clip: AnimClip; applied: number }>; opsOf: (clip: AnimClip) => RemixOp[] | undefined } | null> {
+    if (!entry.remix) return null
+    const all = await this.list()
+    const base = all.find((e) => e.id === entry.remix!.base && isClip(e))
+    if (!base) return null
+    const lookup = await this.clipLookup()
+    const others = all.filter((e) => isClip(e) && usable(e) && e.id !== entry.id && e.id !== base.id && e.tags.some((t) => base.tags.includes(t))).slice(0, 5)
+    const rig = clipRig(entry.clip)
+    const ops = new WeakMap<AnimClip, RemixOp[]>()
+    ops.set(entry.clip, entry.remix.ops)
+    const request = entry.origin
+    return {
+      opsOf: (clip) => ops.get(clip),
+      adjust: async (clip, critique) => {
+        const current = ops.get(clip) ?? entry.remix!.ops
+        const plan = await this.planRemix(request, base, others, { current, critique })
+        if (JSON.stringify(plan.ops) === JSON.stringify(current)) return { clip, applied: 0 }
+        const r = applyRemix(base.clip, plan.ops, lookup)
+        const next: AnimClip = { ...(clipRig(r.clip) === rig ? r.clip : convertClip(r.clip, rig)), name: clip.name }
+        ops.set(next, r.applied)
+        return { clip: next, applied: Math.max(1, r.applied.length) }
+      }
+    }
   }
 
   // Render the key beats -> critique (critic tier, or the numbers) -> apply changes, until the score
@@ -1011,6 +1302,7 @@ export class AnimService {
     const threshold = opts.threshold ?? ANIM_DEFAULT_THRESHOLD
     const maxIt = Math.max(1, Math.min(10, Math.floor(opts.maxIterations ?? ANIM_DEFAULT_MAX_ITERATIONS)))
     const stopAfter = new Map<number, boolean>()
+    const remixer = await this.remixAdjuster(hit.entry)
     try {
       const result = await animRefineLoop(
         hit.entry.clip,
@@ -1040,9 +1332,11 @@ export class AnimService {
             return c
           },
           shouldStop: async (_c, n) => stopAfter.get(n) ?? false,
+          ...(remixer ? { adjust: remixer.adjust } : {}),
           onIteration: async (it) => {
             const current = (await hit.store.read(id)) ?? hit.entry
-            const iteration: AnimIteration = { n: base + it.n, at: this.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique }
+            const ops = remixer?.opsOf(it.clip)
+            const iteration: AnimIteration = { n: base + it.n, at: this.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique, ...(ops ? { ops } : {}) }
             await hit.store.save({ ...current, iterations: [...(current.iterations ?? []), iteration].slice(-8), updatedAt: this.now() })
             this.progress({ entryId: id, iteration: base + it.n, phase: 'adjust', score: it.critique.overall, message: it.critique.summary })
             this.changed()
@@ -1053,8 +1347,10 @@ export class AnimService {
       )
       const current = (await hit.store.read(id)) ?? hit.entry
       const bestFrames = result.best.frames
+      const bestOps = remixer?.opsOf(result.best.clip)
       let entry = await hit.store.save({
         ...current,
+        ...(bestOps && current.remix ? { remix: { ...current.remix, ops: bestOps, source: JSON.stringify(bestOps) === JSON.stringify(current.remix.ops) ? current.remix.source : 'critic' } } : {}),
         clip: result.best.clip,
         stats: measureClip(result.best.clip),
         thumbs: bestFrames.length ? [bestFrames[Math.min(bestFrames.length - 1, 2)], ...current.thumbs.filter((t) => !t.startsWith('frames/'))].slice(0, 6) : current.thumbs,

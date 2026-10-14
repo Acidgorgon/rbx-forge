@@ -39,18 +39,19 @@ function ServiceSegment({ s, port }: { s: ServiceStatus; port?: number }) {
   }, [s.state])
   const h = window.harness
   const items: MenuEntry[] = [
-    { header: `${s.label} · ${s.state}`, mono: true },
+    { header: `${s.label} · ${s.hold ? `held (${s.hold.file})` : s.state}`, mono: true },
+    ...(s.hold ? [{ label: 'Resolve held conflicts…', icon: <Icon name="sync" />, onSelect: () => actions.showSide('sync') }] : []),
     { label: 'Show log', icon: <Icon name="terminal" />, onSelect: () => actions.showBottom('output', [s.id]) },
     { label: s.state === 'running' ? 'Restart' : 'Start', icon: <Icon name="restart" />, onSelect: () => void (s.state === 'running' ? h.restartService(s.id) : h.startService(s.id)) },
     { label: 'Stop', icon: <Icon name="stop" />, disabled: s.state === 'stopped' || s.state === 'missing', onSelect: () => void h.stopService(s.id) }
   ]
-  const detail = s.state === 'crashed' ? 'Crashed' : s.state === 'starting' ? (s.id === 'studioSync' ? (/not sync/i.test(s.detail ?? '') ? 'not syncing' : 'connecting…') : 'starting…') : s.state === 'missing' ? 'not found' : s.state === 'stopped' ? 'stopped' : s.id === 'rojo' && port ? `:${port}` : ''
+  const detail = s.hold ? (s.hold.gate === 'blocked' ? 'held: conflicts' : 'waiting for Studio') : s.state === 'crashed' ? (s.gaveUp ? 'Crashed' : 'restarting…') : s.state === 'starting' ? (s.id === 'studioSync' ? (/not sync/i.test(s.detail ?? '') ? 'not syncing' : 'connecting…') : 'starting…') : s.state === 'missing' ? 'not found' : s.state === 'stopped' ? 'stopped' : s.id === 'rojo' && port ? `:${port}` : ''
   return (
     <>
       <span
         className={`sb${s.state === 'crashed' ? ' crash' : ''}${flash ? ' flash-err' : ''}${s.id === 'studioSync' ? ' opt-1' : ''}`}
         title={`${s.label}: ${s.detail ?? s.state}${s.restarts ? ` · ${s.restarts} restarts` : ''}\nClick: show log · right-click: restart / stop`}
-        onClick={() => actions.showBottom('output', [s.id])}
+        onClick={() => (s.hold ? actions.showSide('sync') : actions.showBottom('output', [s.id]))}
         onContextMenu={(e) => menu.openAt(e, items, { direction: 'up' })}
       >
         <span className={`led ${led}`} />

@@ -36,6 +36,8 @@ import { isUnder, movedPath, type PathChange } from '@shared/fileOps'
 import { diskReloadAction, openPathsIn } from './lib/diskReload'
 import type { SaveReason } from '@shared/editorAssist/policy'
 import { runBeforeSave } from './editorAssist/saveHooks'
+import * as EG from '@shared/editorGroups'
+import type { GroupsState } from '@shared/editorGroups'
 
 // ---------------------------------------------------------------- types
 
@@ -140,7 +142,11 @@ export interface State {
   claims: ClaimView[]
   // Editor
   files: OpenFile[]
+  // Every open tab once (a file open in two groups is one entry); `editor` says which group shows what.
   tabs: Tab[]
+  // Split editor: groups, their tabs and the layout tree (@shared/editorGroups).
+  editor: GroupsState
+  // The active group's active tab.
   activeTab: string
   // Path of the active file tab (null for pages).
   activeFile: string | null
@@ -171,7 +177,8 @@ export type DialogRequest =
   | { kind: 'blinkEvent' }
   | { kind: 'featureBranch' }
   | { kind: 'pullRequest' }
-  | { kind: 'confirm'; title: string; body: string; confirm: string; danger?: boolean; run: () => void }
+  // list: paths shown under the body; dontAsk: the AppSettings switch a "Don't ask again" box turns off.
+  | { kind: 'confirm'; title: string; body: string; confirm: string; danger?: boolean; run: () => void; list?: string[]; dontAsk?: 'confirmFileDelete' | 'confirmStudioDelete' }
 
 export type CreateKind = 'ModuleScript' | 'Script' | 'LocalScript' | 'Feature' | 'Folder' | 'Blink'
 
@@ -231,6 +238,7 @@ const initial: State = {
   claims: [],
   files: [],
   tabs: [FORGE_TAB],
+  editor: EG.initialGroups(['forge'], 'forge'),
   activeTab: 'forge',
   activeFile: null,
   recent: [],
@@ -263,9 +271,12 @@ type Action =
   | { type: 'busy'; sessionId: string; busy: boolean }
   | { type: 'openTab'; tab: Tab; preview?: boolean }
   | { type: 'projectSwitched' }
-  | { type: 'activate'; id: string }
+  | { type: 'activate'; id: string; group?: string }
   | { type: 'pin'; id: string }
-  | { type: 'closeTab'; id: string }
+  // Without `group`: closes the tab in every group.
+  | { type: 'closeTab'; id: string; group?: string }
+  | { type: 'groups'; update: (gs: GroupsState) => GroupsState }
+  | { type: 'restoreGroups'; raw: unknown }
   | { type: 'fileLoaded'; path: string; contents: string }
   | { type: 'fileEdit'; path: string; contents: string }
   | { type: 'fileSaved'; path: string; contents: string }
@@ -300,12 +311,33 @@ function upsert(list: ChatMessage[], m: ChatMessage): ChatMessage[] {
   return [...list, m]
 }
 
-function withActive(state: State, activeTab: string): State {
-  const tab = state.tabs.find((t) => t.id === activeTab)
+// Applies a new group state: drops tabs no group shows (and their file buffers), puts the Forge tab
+// back when nothing is open, and derives activeTab / activeFile / recent from the active group.
+function withGroups(state: State, editor: GroupsState, registry: Tab[] = state.tabs): State {
+  if (!EG.allTabIds(editor).length) editor = EG.openTab(editor, FORGE_TAB.id)
+  const byId = new Map(registry.map((t) => [t.id, t]))
+  if (!byId.has(FORGE_TAB.id)) byId.set(FORGE_TAB.id, FORGE_TAB)
+  editor = EG.retainTabs(editor, (id) => byId.has(id))
+  if (!EG.allTabIds(editor).length) editor = EG.openTab(editor, FORGE_TAB.id)
+  const tabs = EG.allTabIds(editor).map((id) => byId.get(id)!)
+  const openPaths = new Set(tabs.filter((t) => t.kind === 'file' && t.path).map((t) => t.path!))
+  // Buffers of file tabs that just closed go; others (none expected) are left alone.
+  const closedPaths = new Set(state.tabs.filter((t) => t.kind === 'file' && t.path && !openPaths.has(t.path)).map((t) => t.path!))
+  const files = closedPaths.size ? state.files.filter((f) => !closedPaths.has(f.path)) : state.files
+  const activeTab = EG.activeTabOf(editor) ?? tabs[0].id
+  const tab = tabs.find((t) => t.id === activeTab)
   const activeFile = tab?.kind === 'file' ? tab.path ?? null : null
   let recent = state.recent
   if (activeFile && recent[0] !== activeFile) recent = [activeFile, ...recent.filter((p) => p !== activeFile)].slice(0, 20)
-  return { ...state, activeTab, activeFile, recent }
+  return { ...state, tabs, files, editor, activeTab, activeFile, recent }
+}
+
+// Activates a tab: in `group`, else in the active group when it has it, else where it is open.
+function withActive(state: State, id: string, group?: string): State {
+  const gs = state.editor
+  const where = group && EG.getGroup(gs, group)?.tabs.includes(id) ? group : EG.activeGroupOf(gs).tabs.includes(id) ? gs.activeGroup : EG.groupsWithTab(gs, id)[0]
+  if (!where) return state
+  return withGroups(state, EG.activateTab(gs, where, id))
 }
 
 function reducer(state: State, a: Action): State {
@@ -315,9 +347,8 @@ function reducer(state: State, a: Action): State {
     case 'projectSwitched': {
       // File and conflict tabs hold repo-relative paths of the previous project: saving one would
       // write into the new project. Close them with their buffers.
-      const tabs = state.tabs.filter((t) => t.kind !== 'file' && t.kind !== 'conflict')
-      const next = tabs.length ? tabs : [FORGE_TAB]
-      return withActive({ ...state, tabs: next, files: [] }, next.some((t) => t.id === state.activeTab) ? state.activeTab : next[0].id)
+      const keep = new Set(state.tabs.filter((t) => t.kind !== 'file' && t.kind !== 'conflict').map((t) => t.id))
+      return withGroups({ ...state, files: [] }, EG.retainTabs(state.editor, (id) => keep.has(id)))
     }
     case 'layout': {
       const layout = { ...state.layout, ...a.patch }
@@ -353,45 +384,54 @@ function reducer(state: State, a: Action): State {
     case 'busy':
       return { ...state, busy: { ...state.busy, [a.sessionId]: a.busy }, streamingSession: a.busy ? a.sessionId : state.streamingSession }
     case 'openTab': {
+      const gs = state.editor
+      const group = EG.activeGroupOf(gs)
       const existing = state.tabs.find((t) => t.id === a.tab.id)
+      // Opening a preview tab for real pins it.
+      const pinned = existing && !a.preview && existing.preview ? state.tabs.map((t) => (t.id === existing.id ? { ...t, preview: false } : t)) : state.tabs
       if (existing) {
-        // Opening a preview tab for real pins it.
-        const tabs = !a.preview && existing.preview ? state.tabs.map((t) => (t.id === existing.id ? { ...t, preview: false } : t)) : state.tabs
-        return withActive({ ...state, tabs }, existing.id)
+        // Pages, conflicts and transcripts live in one group: show them where they are. A file opens in
+        // the active group (a second view when another group has it).
+        const where = existing.kind === 'file' ? (group.tabs.includes(existing.id) ? group.id : null) : EG.groupsWithTab(gs, existing.id)[0] ?? null
+        if (where) return withGroups({ ...state, tabs: pinned }, EG.activateTab(gs, where, existing.id), pinned)
+        return withGroups({ ...state, tabs: pinned }, EG.openTab(gs, existing.id, { group: group.id }), pinned)
       }
-      let tabs = state.tabs
-      let files = state.files
       const tab = { ...a.tab, preview: !!a.preview }
-      const activeIndex = tabs.findIndex((t) => t.id === state.activeTab)
       if (a.preview) {
-        // Replace the current preview tab (dropping its clean buffer).
-        const prev = tabs.find((t) => t.preview)
+        // Replace this group's preview tab (dropping its clean buffer when no other group shows it).
+        const prevId = group.tabs.find((id) => state.tabs.find((t) => t.id === id)?.preview)
+        const prev = prevId ? state.tabs.find((t) => t.id === prevId) : undefined
         if (prev) {
-          const buf = prev.path ? files.find((f) => f.path === prev.path) : null
+          const buf = prev.path ? state.files.find((f) => f.path === prev.path) : null
           if (!buf || buf.current === buf.saved) {
-            tabs = tabs.map((t) => (t.id === prev.id ? tab : t))
-            if (prev.kind === 'file') files = files.filter((f) => f.path !== prev.path)
-            return withActive(addBuffer({ ...state, tabs, files }, tab), tab.id)
+            const registry = [...state.tabs, tab]
+            return withGroups(addBuffer(state, tab), EG.openTab(gs, tab.id, { group: group.id, replace: prev.id }), registry)
           }
         }
       }
-      tabs = [...tabs.slice(0, activeIndex + 1), tab, ...tabs.slice(activeIndex + 1)]
-      return withActive(addBuffer({ ...state, tabs, files }, tab), tab.id)
+      return withGroups(addBuffer(state, tab), EG.openTab(gs, tab.id, { group: group.id }), [...state.tabs, tab])
     }
     case 'activate':
-      return withActive(state, a.id)
+      return withActive(state, a.id, a.group)
     case 'pin':
       return { ...state, tabs: state.tabs.map((t) => (t.id === a.id ? { ...t, preview: false } : t)) }
     case 'closeTab': {
-      const idx = state.tabs.findIndex((t) => t.id === a.id)
-      if (idx < 0) return state
-      const tab = state.tabs[idx]
-      let tabs = state.tabs.filter((t) => t.id !== a.id)
-      if (tabs.length === 0) tabs = [FORGE_TAB]
-      const files = tab.kind === 'file' && !tabs.some((t) => t.kind === 'file' && t.path === tab.path) ? state.files.filter((f) => f.path !== tab.path) : state.files
-      let active = state.activeTab
-      if (active === a.id || !tabs.some((t) => t.id === active)) active = (tabs[idx] ?? tabs[idx - 1] ?? tabs[0]).id
-      return withActive({ ...state, tabs, files }, active)
+      if (!state.tabs.some((t) => t.id === a.id)) return state
+      return withGroups(state, a.group ? EG.closeTab(state.editor, a.group, a.id) : EG.closeTabEverywhere(state.editor, a.id))
+    }
+    case 'groups': {
+      const editor = a.update(state.editor)
+      return editor === state.editor ? state : withGroups(state, editor)
+    }
+    case 'restoreGroups': {
+      const ids = new Set(state.tabs.map((t) => t.id))
+      const restored = EG.sanitizeGroups(a.raw, (id) => ids.has(id))
+      if (!restored) return state
+      // Tabs open now but missing from the saved layout stay, in the first group.
+      const first = EG.groupOrder(restored)[0]
+      let gs = restored
+      for (const id of EG.allTabIds(state.editor)) if (!EG.groupsWithTab(gs, id).length) gs = EG.openTab(gs, id, { group: first })
+      return withGroups(state, { ...gs, activeGroup: restored.activeGroup })
     }
     case 'fileLoaded':
       return { ...state, files: state.files.map((f) => (f.path === a.path ? { ...f, saved: a.contents, current: a.contents, loading: false } : f)) }
@@ -412,14 +452,17 @@ function reducer(state: State, a: Action): State {
         return { ...next, files: next.files.filter((f) => !hit(f.path)), recent: next.recent.filter((p) => !hit(p)) }
       }
       const move = (path: string) => movedPath(path, a.from, a.to!) ?? path
+      let editor = state.editor
       const tabs = state.tabs.map((t) => {
         if ((t.kind !== 'file' && t.kind !== 'conflict') || !hit(t.path)) return t
         const path = move(t.path!)
-        return t.kind === 'file' ? { ...t, id: `file:${path}`, path, title: tabTitle(path) } : { ...t, id: `conflict:${path}`, path, title: `${tabTitle(path)} ⇄ Studio` }
+        const next = t.kind === 'file' ? { ...t, id: `file:${path}`, path, title: tabTitle(path) } : { ...t, id: `conflict:${path}`, path, title: `${tabTitle(path)} ⇄ Studio` }
+        editor = EG.renameTab(editor, t.id, next.id)
+        return next
       })
-      const active = state.tabs.findIndex((t) => t.id === state.activeTab)
       const files = state.files.map((f) => (hit(f.path) ? { ...f, path: move(f.path) } : f))
-      return withActive({ ...state, tabs, files, recent: state.recent.map(move) }, active >= 0 ? tabs[active].id : state.activeTab)
+      // The renamed tabs replace the old entries (no buffers to drop: they moved with them).
+      return withGroups({ ...state, tabs, files, recent: state.recent.map(move) }, editor, tabs)
     }
     case 'toast': {
       const toasts = [...state.toasts, a.toast].slice(-3)
@@ -464,9 +507,15 @@ export interface Actions {
   openPage(kind: PageKind): void
   openConflict(path: string): void
   openTranscript(agentId: string, title: string): void
-  activateTab(id: string): void
+  // `group`: the editor group (split editor) to act in; default the active group / wherever it is.
+  activateTab(id: string, group?: string): void
   pinTab(id: string): void
-  closeTab(id: string): void
+  // Without `group` the tab closes in every group.
+  closeTab(id: string, group?: string): void
+  // Split editor: any change to the groups (see @shared/editorGroups and shell/editorGroups.ts).
+  editorGroups(update: (gs: GroupsState) => GroupsState): void
+  // A layout saved by QolRoot, applied over the tabs open now.
+  restoreGroups(raw: unknown): void
   editFile(path: string, contents: string): void
   // reason 'auto' = autosave (editorAssist/autosave): skipped when nothing changed, and formats only
   // when "format on autosave" is on.
@@ -607,9 +656,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       openTranscript(agentId, title) {
         dispatch({ type: 'openTab', tab: { id: `transcript:${agentId}`, kind: 'transcript', title, agentId } })
       },
-      activateTab: (id) => dispatch({ type: 'activate', id }),
+      activateTab: (id, group) => dispatch({ type: 'activate', id, group }),
       pinTab: (id) => dispatch({ type: 'pin', id }),
-      closeTab: (id) => dispatch({ type: 'closeTab', id }),
+      closeTab: (id, group) => dispatch({ type: 'closeTab', id, group }),
+      editorGroups: (update) => dispatch({ type: 'groups', update }),
+      restoreGroups: (raw) => dispatch({ type: 'restoreGroups', raw }),
       editFile: (path, contents) => dispatch({ type: 'fileEdit', path, contents }),
       async saveFile(path, opts) {
         const reason = opts?.reason ?? 'manual'
@@ -831,9 +882,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       },
       async setAppSettings(patch) {
+        // Show the change at once: the switches are controlled by appSettings, so waiting for the
+        // main process would flip a clicked switch back until the reply arrives.
+        const before = stateRef.current.appSettings
+        if (before) dispatch({ type: 'set', patch: { appSettings: { ...before, ...patch } } })
         try {
           dispatch({ type: 'set', patch: { appSettings: await h.setAppSettings(patch) } })
         } catch (e) {
+          if (before) dispatch({ type: 'set', patch: { appSettings: before } })
           toast({ text: 'Could not save the setting', detail: (e as Error).message, kind: 'err' })
         }
       },

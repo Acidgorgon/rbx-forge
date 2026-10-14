@@ -124,10 +124,25 @@ export function validateName(name: string, taken: string[] = []): string | null 
 
 // ---------------------------------------------------------------- dialogs
 
-function ConfirmDialog({ title, body, confirm, danger, run, onClose }: { title: string; body: string; confirm: string; danger?: boolean; run: () => void; onClose: () => void }) {
+function ConfirmDialog({ title, body, confirm, danger, run, list, dontAsk, onClose }: { title: string; body: string; confirm: string; danger?: boolean; run: () => void; list?: string[]; dontAsk?: 'confirmFileDelete' | 'confirmStudioDelete'; onClose: () => void }) {
+  const { actions } = useStore()
+  const [skip, setSkip] = useState(false)
   return (
     <Dialog title={title} onClose={onClose}>
       <p>{body}</p>
+      {list && list.length > 0 && (
+        <ul className="confirm-list">
+          {list.map((x) => (
+            <li key={x} className="mono">{x}</li>
+          ))}
+        </ul>
+      )}
+      {dontAsk && (
+        <label className="row confirm-skip" style={{ gap: 6 }}>
+          <input type="checkbox" checked={skip} onChange={(e) => setSkip(e.target.checked)} />
+          Don't ask again <span className="faint">(Settings &gt; Editor turns it back on)</span>
+        </label>
+      )}
       <div className="actions">
         <button className="btn ghost" onClick={onClose}>Cancel</button>
         <button
@@ -135,6 +150,7 @@ function ConfirmDialog({ title, body, confirm, danger, run, onClose }: { title: 
           autoFocus
           onClick={() => {
             onClose()
+            if (dontAsk && skip) void actions.setAppSettings({ [dontAsk]: false })
             run()
           }}
         >

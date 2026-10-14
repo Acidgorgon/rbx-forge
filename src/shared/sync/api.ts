@@ -36,6 +36,11 @@ export interface SyncApi {
   // go (a .model.json inside a mapped $path), or why it cannot; then write it.
   syncSaveTarget(instancePath: string[]): Promise<{ file: string } | { reason: string }>
   syncSaveToRepo(instancePath: string[]): Promise<SyncEntry>
+  // Game tab "Delete in Studio" for a Studio-only instance (Forge Bridge v7): whether it can run now
+  // (Studio connected, plugin new enough, not something the project maps), then the delete itself,
+  // which Ctrl+Z in Studio undoes.
+  syncDeleteCheck(instancePath: string[]): Promise<{ ok: true } | { reason: string }>
+  syncDeleteInStudio(instancePath: string[], className?: string): Promise<void>
   forgeSyncSettings(): Promise<ForgeSyncSettings>
   setForgeSyncSettings(patch: Partial<ForgeSyncSettings>): Promise<ForgeSyncSettings>
 }

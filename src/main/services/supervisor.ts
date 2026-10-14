@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import type { LogLine, PlaceInfo, ServiceId, ServiceState, ServiceStatus } from '@shared/types'
 import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState } from '../../shared/sync/types.ts'
 import { findBash, findPowerShell, findTool, run, spawnTool, toolEnv } from './tools.ts'
+import { gateAction, isRojoPanic, RestartPolicy, ROJO_STABLE_MS, secondsText, type RestartPolicyOptions } from './rojoRestart.ts'
 
 const isWindows = process.platform === 'win32'
 const TEMPLATE_ORIGIN = /github\.com[:/]Acidgorgon\/MyTemplate-Legacy(\.git)?\/?$/i
@@ -22,6 +23,8 @@ export interface SupervisorOptions {
   log: (line: Omit<LogLine, 'at'>) => void
   onStatus: (statuses: ServiceStatus[]) => void
   getSetting: <T>(key: string, fallback: T) => T
+  // Tests: rojo restart backoff / give-up (default rojoRestart.ts constants).
+  rojoRestart?: RestartPolicyOptions
 }
 
 interface Proc {
@@ -33,6 +36,9 @@ interface Proc {
   healthy: ReturnType<typeof setTimeout> | null
   // rojo serve held by the Forge Sync gate (wanted, but not spawned until the gate clears).
   held?: boolean
+  // rojo procs: restart backoff / give-up (rojoRestart.ts), and whether this run printed a panic.
+  policy?: RestartPolicy
+  panicked?: boolean
 }
 
 type Command = { file: string; args: string[] }
@@ -194,8 +200,9 @@ export class Supervisor {
     const next: Proc = proc ?? { child: null, wanted: true, failures: 0, startedAt: 0, retry: null, healthy: null }
     next.wanted = true
     next.failures = 0
+    next.policy?.reset()
     this.procs[id] = next
-    this.update(id, { restarts: 0 })
+    this.update(id, { restarts: 0, gaveUp: undefined })
     this.spawnService(id, id, command)
     if (id === 'rojo') this.startRojoExtras(command.file)
   }
@@ -250,7 +257,7 @@ export class Supervisor {
     }
     if (!this.procs[id]) return
     await this.stopProc(id)
-    this.update(id, { state: 'stopped', pid: undefined, detail: undefined })
+    this.update(id, { state: 'stopped', pid: undefined, detail: undefined, hold: undefined, gaveUp: undefined })
   }
 
   async restart(id: ServiceId): Promise<void> {
@@ -309,6 +316,11 @@ export class Supervisor {
     return { file, detail: gate.detail || (gate.gate === 'blocked' ? 'Studio sync conflicts: resolve or serve anyway' : 'Waiting for Studio sync check') }
   }
 
+  private holdView(file: string): ServiceStatus['hold'] {
+    const gate = this.gates.get(file)?.gate
+    return gate === 'blocked' || gate === 'checking' ? { gate, file } : undefined
+  }
+
   gateOf(file: string): GateState {
     return this.gates.get(file)?.gate ?? 'idle'
   }
@@ -325,19 +337,21 @@ export class Supervisor {
     for (const [key, proc] of Object.entries(this.procs)) {
       if (!proc || !proc.wanted || !this.servedPlace(key)) continue
       const hold = this.holdFor(key)
-      if (hold && proc.child) {
+      const action = gateAction({ holds: !!hold, running: !!proc.child, held: !!proc.held })
+      if (hold && action === 'stop') {
         this.info('rojo', `${hold.file}: ${hold.detail}; stopping rojo serve until Studio and disk agree`)
         proc.held = true
         if (proc.retry) clearTimeout(proc.retry)
         proc.retry = null
-        const child = proc.child
+        const child = proc.child as ChildProcess
         proc.child = null
         void killTree(child)
-        if (key === 'rojo') this.update('rojo', { state: 'starting', pid: undefined, detail: `${hold.detail} (${hold.file})` })
-      } else if (hold && !proc.child && key === 'rojo') {
-        this.update('rojo', { detail: `${hold.detail} (${hold.file})` })
-      } else if (!hold && proc.held) {
+        if (key === 'rojo') this.update('rojo', { state: 'starting', pid: undefined, detail: `${hold.detail} (${hold.file})`, hold: this.holdView(hold.file) })
+      } else if (hold && action === 'wait') {
+        if (key === 'rojo') this.update('rojo', { detail: `${hold.detail} (${hold.file})`, hold: this.holdView(hold.file) })
+      } else if (action === 'start') {
         proc.held = false
+        if (key === 'rojo') this.update('rojo', { hold: undefined })
         this.info('rojo', `${this.servedPlace(key)}: Studio sync clear; starting rojo serve`)
         void (async () => {
           const command = key === 'rojo' ? await this.command('rojo') : this.extraCommands.get(key) ?? null
@@ -430,12 +444,13 @@ export class Supervisor {
     const hold = id === 'rojo' ? this.holdFor(key) : null
     if (hold) {
       proc.held = true
-      update({ state: 'starting', pid: undefined, detail: `${hold.detail} (${hold.file})` })
+      update({ state: 'starting', pid: undefined, detail: `${hold.detail} (${hold.file})`, hold: this.holdView(hold.file) })
       this.info('rojo', `${hold.file}: ${hold.detail}; rojo serve waits`)
       return
     }
-    update({ state: 'starting', detail: undefined, pid: undefined })
+    update({ state: 'starting', detail: undefined, pid: undefined, hold: undefined, gaveUp: undefined })
     this.info(id, `$ ${[command.file, ...command.args].join(' ')}`)
+    if (id === 'rojo') proc.policy ??= new RestartPolicy(this.options.rojoRestart)
     let child: ChildProcess
     try {
       child = spawnTool(command.file, command.args, {
@@ -453,6 +468,8 @@ export class Supervisor {
     }
     proc.child = child
     proc.startedAt = Date.now()
+    proc.panicked = false
+    proc.policy?.started(proc.startedAt)
     let lastLine = ''
     const onText = (stream: 'stdout' | 'stderr') => {
       let buffer = ''
@@ -466,6 +483,7 @@ export class Supervisor {
           lastLine = text.trim()
           this.options.log({ service: id, stream, text: primary ? text : `[${key.replace(/^rojo:/, '')}] ${text}` })
           if (primary && id === 'rojo') this.parseRojo(text)
+          if (id === 'rojo' && !proc.panicked && isRojoPanic(text)) this.onRojoPanic(key, proc, child)
         }
       }
     }
@@ -475,7 +493,8 @@ export class Supervisor {
       update({ state: 'running', pid: child.pid })
       proc.healthy = setTimeout(() => {
         proc.failures = 0
-      }, HEALTHY_MS)
+        proc.policy?.stable()
+      }, proc.policy ? this.options.rojoRestart?.stableMs ?? ROJO_STABLE_MS : HEALTHY_MS)
     })
     let done = false
     const onExit = (code: number | null, signal: NodeJS.Signals | null, error?: Error) => {
@@ -483,9 +502,12 @@ export class Supervisor {
       done = true
       if (proc.healthy) clearTimeout(proc.healthy)
       proc.healthy = null
-      if (proc.child === child) proc.child = null
-      if (!proc.wanted || proc.held) return
-      const reason = error ? error.message : signal ? `killed by ${signal}` : `exited with code ${code}`
+      // Already detached on purpose (a gate hold stopped it, maybe started a new one): not a crash.
+      const superseded = proc.child !== child
+      if (!superseded) proc.child = null
+      if (!proc.wanted || proc.held || superseded) return
+      const reason = proc.panicked ? 'panicked' : error ? error.message : signal ? `killed by ${signal}` : `exited with code ${code}`
+      if (proc.policy) return this.onRojoExit(key, proc, reason, lastLine)
       if (Date.now() - proc.startedAt >= HEALTHY_MS) proc.failures = 0
       const delay = Math.min(1000 * 2 ** proc.failures, MAX_BACKOFF_MS)
       proc.failures++
@@ -508,6 +530,61 @@ export class Supervisor {
     }
     child.on('error', (error) => onExit(null, null, error))
     child.on('exit', (code, signal) => onExit(code, signal))
+  }
+
+  // rojo printed a panic. It may stay up with a dead change processor (Studio then gets WebSocket
+  // errors), so stop it; the exit handler restarts it.
+  private onRojoPanic(key: string, proc: Proc, child: ChildProcess): void {
+    proc.panicked = true
+    this.info('rojo', `${key === 'rojo' ? '' : `${key}: `}rojo panicked (usually a folder deleted or renamed while serving); restarting it`)
+    setTimeout(() => {
+      if (proc.child === child) void killTree(child, 1000)
+    }, 250)
+  }
+
+  // A rojo serve (or rojo sourcemap) exited unexpectedly: restart with backoff, or give up after
+  // several quick crashes in a row and wait for the user's Restart.
+  private onRojoExit(key: string, proc: Proc, reason: string, lastLine: string): void {
+    const primary = key === 'rojo'
+    const decision = (proc.policy as RestartPolicy).failed(Date.now())
+    const label = primary ? '' : `${key}: `
+    if (decision.action === 'give-up') {
+      const detail = `Rojo keeps crashing (${decision.failures} restarts did not help): ${reason}${lastLine ? `: ${lastLine}` : ''}. Restart to try again`
+      if (primary) this.update('rojo', { state: 'crashed', pid: undefined, detail, gaveUp: true })
+      this.options.log({ service: 'rojo', stream: 'stderr', text: `${label}rojo ${reason} ${decision.failures + 1} times in a row; not restarting again. Use Restart.` })
+      return
+    }
+    if (primary) {
+      this.update('rojo', {
+        state: 'crashed',
+        pid: undefined,
+        restarts: this.status.rojo.restarts + 1,
+        detail: `Rojo ${reason === 'panicked' ? 'crashed (panic)' : reason}${lastLine ? `: ${lastLine}` : ''}. Restarting in ${secondsText(decision.delayMs)}`
+      })
+    }
+    this.options.log({ service: 'rojo', stream: 'info', text: `${label}rojo ${reason}; restarting in ${secondsText(decision.delayMs)} (attempt ${decision.attempt})` })
+    proc.retry = setTimeout(async () => {
+      proc.retry = null
+      if (!proc.wanted || proc.held || !this.root) return
+      const next = primary ? await this.command('rojo') : this.extraCommands.get(key) ?? null
+      if (next && proc.wanted && !proc.child && !proc.held) this.spawnService(key, 'rojo', next)
+    }, decision.delayMs)
+  }
+
+  // Stops rojo serve for a Forge file operation (RojoPause); false when it was not running.
+  async pauseRojo(reason: string): Promise<boolean> {
+    // Only a running rojo can trip; a held or stopped one stays as it is.
+    const running = Object.entries(this.procs).some(([key, proc]) => key !== 'dev' && proc?.wanted && proc.child)
+    if (!this.root || !this.procs.rojo?.wanted || !running) return false
+    this.info('rojo', `Stopping rojo serve during a ${reason} (rojo can crash on folders that vanish while it serves)`)
+    await this.stop('rojo')
+    this.update('rojo', { state: 'starting', detail: `Paused for a ${reason}` })
+    return true
+  }
+
+  async resumeRojo(): Promise<void> {
+    if (!this.root || this.procs.rojo?.wanted) return
+    await this.start('rojo')
   }
 
   private parseRojo(text: string): void {

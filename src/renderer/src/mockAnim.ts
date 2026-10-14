@@ -11,8 +11,9 @@ import { findKitPose, resolveKitPose } from '@shared/anim/kit'
 import { xfToCf } from '@shared/anim/math'
 import { measureClip } from '@shared/anim/measure'
 import { runChecks } from '@shared/anim/checks'
-import { autoTags, buildStyle, coverage, profileFor, promptTags } from '@shared/anim/style'
-import { animRefineLoop, beatFrameTimes, heuristicAnimCritique } from '@shared/anim/critique'
+import { autoTags, buildStyle, coverage, profileFor } from '@shared/anim/style'
+import { animRefineLoop, beatFrameTimes, heuristicAnimCritique, withMustFix } from '@shared/anim/critique'
+import { allKnownTags, coverageOptions, heuristicRetag, MOVE_SETS, moveSetDef, normalizeCustomTag, resolveMoveSet, setPromptTags, type MoveSetSettings } from '@shared/anim/movesets'
 import { clipRig, poseCFrames } from '@shared/anim/sample'
 import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
 import { clipSummary } from '@shared/anim/compile'
@@ -20,6 +21,8 @@ import { normalizeLabModels } from '@shared/labModels'
 import { figureDataUrl } from './pages/anim/figure'
 import { withAnimPrinciples } from '@shared/principles/attach'
 import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
+import { applyRemix, describeRemixOp, heuristicRemixPlan, normalizeRemixPlan, remixCandidates, type RemixOrigin } from '@shared/anim/remix'
+import type { AnimRemixMode } from '@shared/animTypes'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -89,6 +92,8 @@ export function animMock(emit: Emit): AnimApi {
   }
   let seq = 0
   let rig: RigType = 'R15'
+  let moveSets: MoveSetSettings = { set: 'combat', custom: {} }
+  let remixMode: AnimRemixMode = 'auto'
 
   async function refine(e: AnimEntry, max: number) {
     const ref = e.reference ? entries.find((x) => x.id === e.reference)?.clip : undefined
@@ -111,8 +116,8 @@ export function animMock(emit: Emit): AnimApi {
           emit('anim:progress', { entryId: e.id, iteration: base + n, phase: 'critique' })
           await delay(400)
           const p = profileFor(style, e.tags, clipRig(clip))
-          const checks = runChecks(clip, p)
-          return withAnimPrinciples(heuristicAnimCritique(clip, checks, p), clip, { request: e.origin.replace(/^Make: /, '') || e.description, weights: mockPrincipleWeights(), checks })
+          const checks = runChecks(clip, p, { request: e.kind === 'generated' ? e.origin : '', tags: e.tags })
+          return withMustFix(withAnimPrinciples(heuristicAnimCritique(clip, checks, p), clip, { request: e.origin.replace(/^Make: /, '') || e.description, weights: mockPrincipleWeights(), checks }))
         },
         onIteration: (it) => {
           const iteration: AnimIteration = { n: base + it.n, at: Date.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique }
@@ -197,26 +202,94 @@ export function animMock(emit: Emit): AnimApi {
       return e
     },
     async animLearn() {
-      style = buildStyle(entries, Date.now())
+      style = buildStyle(entries, Date.now(), allKnownTags(moveSets))
       return { style, saved: style.profiles.map((p) => `anim-style-${p.tag}`), errors: [] }
     },
     async animStyle() {
       return style
     },
     async animCoverage() {
-      return coverage(entries)
+      return coverage(entries, coverageOptions(resolveMoveSet(moveSets)))
+    },
+    async animMoveSets() {
+      return { active: resolveMoveSet(moveSets), sets: MOVE_SETS.map(({ id, name, description }) => ({ id, name, description })) }
+    },
+    async animSetMoveSet(id) {
+      moveSets = { ...moveSets, set: moveSetDef(id).id }
+      changed()
+      return resolveMoveSet(moveSets)
+    },
+    async animAddMoveTag(tag) {
+      const c = normalizeCustomTag(tag)
+      if (!c) throw new Error('Name the move type')
+      moveSets = { ...moveSets, custom: { ...moveSets.custom, [moveSets.set]: [...(moveSets.custom[moveSets.set] ?? []).filter((x) => x.tag !== c.tag), c] } }
+      changed()
+      return resolveMoveSet(moveSets)
+    },
+    async animRemoveMoveTag(tag) {
+      moveSets = { ...moveSets, custom: { ...moveSets.custom, [moveSets.set]: (moveSets.custom[moveSets.set] ?? []).filter((x) => x.tag !== tag) } }
+      changed()
+      return resolveMoveSet(moveSets)
+    },
+    async animRetag() {
+      const set = resolveMoveSet(moveSets)
+      const changes = heuristicRetag(entries, set)
+      for (const c of changes) {
+        const e = entries.find((x) => x.id === c.id)
+        if (e) e.tags = c.after
+      }
+      style = buildStyle(entries, Date.now(), allKnownTags(moveSets))
+      changed()
+      return { set: set.id, source: 'heuristic' as const, total: entries.length, changed: changes.length, changes }
     },
     async animCompose(request, opts) {
       await delay(500)
-      const arch = archetypeFor(request)
+      const arch = archetypeFor(request, resolveMoveSet(moveSets))
       const r6 = (opts?.rig ?? rig) === 'R6'
       const key = (arch === 'sign_push' || arch === 'cast' ? 'sign-push' : arch === 'hit' ? 'hit-reaction' : 'dash-punch') + (r6 ? '-r6' : '')
       const base = exampleEntry(key, `composed-${(seq++).toString(36)}`)
-      const e: AnimEntry = { ...base, ...(opts?.restatement ? { restatement: opts.restatement } : {}), origin: request, description: request, tags: [...new Set([...promptTags(request), ...base.tags.filter((t) => t !== 'example')])], createdAt: Date.now(), updatedAt: Date.now() }
+      const e: AnimEntry = { ...base, ...(opts?.restatement ? { restatement: opts.restatement } : {}), origin: request, description: request, tags: [...new Set([...setPromptTags(request, resolveMoveSet(moveSets)), ...base.tags.filter((t) => t !== 'example')])], createdAt: Date.now(), updatedAt: Date.now() }
       entries.push(e)
       changed()
       if (opts?.refine !== false) void refine(e, opts?.maxIterations ?? 2)
       return { ok: true, entry: e, clip: e.clip, prints: [], warnings: [], summary: clipSummary(e.clip), checks: runChecks(e.clip), source: 'model' }
+    },
+    async animRemixCandidates(prompt) {
+      const set = resolveMoveSet(moveSets)
+      return { candidates: remixCandidates(entries, prompt, set, { rig }), tags: setPromptTags(prompt, set) }
+    },
+    async animRemix(request, opts) {
+      await delay(300)
+      const set = resolveMoveSet(moveSets)
+      const base = opts?.base ? find(opts.base) : entries.find((e) => e.id === remixCandidates(entries, request, set, { rig, limit: 1 })[0]?.id)
+      if (!base) throw new Error(`No usable library clip matches "${request}".`)
+      const ops = opts?.ops ? normalizeRemixPlan(opts.ops).ops : heuristicRemixPlan(request, base.clip)
+      const r = applyRemix(base.clip, ops, (id) => entries.find((e) => e.id === id)?.clip)
+      const remix: RemixOrigin = { base: base.id, baseName: base.name, ops: r.applied, source: opts?.ops ? 'user' : 'heuristic' }
+      const clip = { ...r.clip, name: `${base.clip.name}Remix` }
+      const e: AnimEntry = { ...entry(clip, { id: `remix-${(seq++).toString(36)}` }), kind: 'generated', origin: request, description: `${request}. Remix of "${base.name}": ${r.applied.map((o) => describeRemixOp(o)).join('; ') || 'unchanged'}.`, tags: [...new Set([...base.tags.filter((t) => t !== 'example'), ...setPromptTags(request, set)])], remix, createdAt: Date.now(), updatedAt: Date.now() }
+      entries.push(e)
+      changed()
+      if (opts?.refine !== false) void refine(e, opts?.maxIterations ?? 2)
+      return { ok: true, entry: e, clip: e.clip, prints: [], warnings: [], summary: clipSummary(e.clip), checks: runChecks(e.clip), source: 'remix' }
+    },
+    async animRemixApply(id, ops, opts) {
+      const e = find(id)
+      const base = find(opts?.base ?? e.remix?.base ?? '')
+      const r = applyRemix(base.clip, normalizeRemixPlan(ops).ops, (x) => entries.find((y) => y.id === x)?.clip)
+      e.clip = { ...r.clip, name: e.clip.name }
+      e.stats = measureClip(e.clip)
+      e.remix = { base: base.id, baseName: base.name, ops: r.applied, source: 'user' }
+      e.updatedAt = Date.now()
+      changed()
+      return e
+    },
+    async animRemixMode() {
+      return remixMode
+    },
+    async animSetRemixMode(mode) {
+      remixMode = mode
+      return mode
     },
     async animRunScript(script, opts) {
       const ex = ANIM_EXAMPLES.find((x) => x.script.trim() === script.trim())

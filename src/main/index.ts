@@ -25,6 +25,8 @@ import { renameEntry, trashEntry } from './services/fileOps.ts'
 import { Settings } from './services/settings.ts'
 import { StudioConflicts } from './services/studioConflicts.ts'
 import { Supervisor } from './services/supervisor.ts'
+import { RojoPause } from './services/rojoRestart.ts'
+import { entryTarget } from '../shared/fileOps.ts'
 import { Packages } from './services/packages.ts'
 import { BLINK_ENTRY, BlinkWatcher } from './services/blink.ts'
 import { createIntegrations } from './integrations.ts'
@@ -129,6 +131,11 @@ const supervisor = new Supervisor({
   onStatus: (statuses) => emit('services:status', statuses),
   getSetting: (key, fallback) => settings.get(key, fallback)
 })
+// Stops rojo serve around Forge's own folder deletes / renames (rojo can panic on a folder that
+// vanishes while it serves) and starts it again once they settle.
+// Absolute path of the Explorer entry an operation touches (an init script's folder, not the script).
+const entryFull = (root: string, path: string, isDir?: boolean) => join(root, entryTarget(String(path ?? ''), !!isDir).path)
+const rojoPause = new RojoPause({ pause: (reason) => supervisor.pauseRojo(reason), resume: () => supervisor.resumeRojo(), log: (text) => logs.push({ service: 'rojo', stream: 'stderr', text }) })
 
 // Editor language server: luau-lsp over stdio, relayed to the renderer's Monaco client.
 const lsp = new LspBridge({
@@ -222,7 +229,9 @@ function syncSettings(): SyncSettings {
 function appSettings(): AppSettings {
   return {
     serveAllPlaces: settings.get<boolean>('serveAllPlaces', false) === true,
-    autoRoute: settings.get<boolean>('autoRoute', true) !== false
+    autoRoute: settings.get<boolean>('autoRoute', true) !== false,
+    confirmFileDelete: settings.get<boolean>('confirmFileDelete', true) !== false,
+    confirmStudioDelete: settings.get<boolean>('confirmStudioDelete', true) !== false
   }
 }
 
@@ -435,6 +444,7 @@ const integrations = createIntegrations({
   services: () => supervisor.statuses(),
   startService: (id) => supervisor.start(id),
   stopService: (id) => supervisor.stop(id),
+  withRojoPaused: (fn, reason) => rojoPause.run(fn, reason),
   openExternal: (url) => void shell.openExternal(url),
   summarize: (prompt) => agentIpc.summarize(prompt),
   art: artElectronDeps(),
@@ -502,7 +512,8 @@ const forgeSync = createSync({
   engine: (root) => new SyncEngine({ root }),
   mapping: { loadPlaces, placeFor },
   activePlace: () => project?.activePlace ?? null,
-  onStudioTree: () => project?.studioChanged()
+  onStudioTree: () => project?.studioChanged(),
+  bridge: () => studio.bridge
 })
 studio.bridge.setSyncHandler(forgeSync.handler)
 // The Sync view / status bar say why Studio edits are not syncing (no plugin connected ...): re-check
@@ -742,13 +753,13 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   // refreshes right away (a stale sourcemap.json drops the missing files) without waiting for the watcher.
   renamePath: async (path: string, name: string, isDir?: boolean) => {
     const opened = requireProject()
-    const change = await renameEntry(opened.root, opened.info.mounts ?? [], path, name, !!isDir)
+    const change = await rojoPause.aroundPath(entryFull(opened.root, path, isDir), () => renameEntry(opened.root, opened.info.mounts ?? [], path, name, !!isDir), 'folder rename')
     projectChanged(opened, await opened.refresh())
     return change
   },
   trashPath: async (path: string, isDir?: boolean) => {
     const opened = requireProject()
-    const change = await trashEntry(opened.root, opened.info.mounts ?? [], path, (full) => shell.trashItem(full), !!isDir)
+    const change = await rojoPause.aroundPath(entryFull(opened.root, path, isDir), () => trashEntry(opened.root, opened.info.mounts ?? [], path, (full) => shell.trashItem(full), !!isDir), 'folder delete')
     projectChanged(opened, await opened.refresh())
     return change
   },
@@ -783,6 +794,8 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     const before = appSettings()
     if (typeof patch.serveAllPlaces === 'boolean') settings.set('serveAllPlaces', patch.serveAllPlaces)
     if (typeof patch.autoRoute === 'boolean') settings.set('autoRoute', patch.autoRoute)
+    if (typeof patch.confirmFileDelete === 'boolean') settings.set('confirmFileDelete', patch.confirmFileDelete)
+    if (typeof patch.confirmStudioDelete === 'boolean') settings.set('confirmStudioDelete', patch.confirmStudioDelete)
     const after = appSettings()
     // rojo's job list depends on serveAllPlaces; restart a running rojo so it serves the new set.
     const rojo = supervisor.statuses().find((s) => s.id === 'rojo')

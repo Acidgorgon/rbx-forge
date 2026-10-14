@@ -232,6 +232,17 @@ test('completion: auto-require additionalTextEdits, snippets, commit characters,
           additionalTextEdits: [{ range: range(1, 0, 1, 0), newText: 'local Util = require(script.Parent.Util)\n' }]
         },
         {
+          // Auto-import of a module inside Wally's _Index (e.g. a Studio-only plugin node the
+          // server's ignoreGlobs cannot match): dropped by the client.
+          label: 'vide',
+          labelDetails: { description: 'ReplicatedStorage.Packages._Index["centau_vide@0.4.0"].vide' },
+          detail: 'ReplicatedStorage.Packages._Index["centau_vide@0.4.0"].vide',
+          kind: 9,
+          insertText: 'vide',
+          sortText: '7',
+          additionalTextEdits: [{ range: range(1, 0, 1, 0), newText: 'local vide = require(ReplicatedStorage.Packages._Index["centau_vide@0.4.0"].vide)\n' }]
+        },
+        {
           // fillCallArguments
           label: 'greet',
           labelDetails: { detail: '(name)' },
@@ -255,6 +266,7 @@ test('completion: auto-require additionalTextEdits, snippets, commit characters,
     })
     const { suggestions } = await pending
     const [util, greet, path] = suggestions
+    assert.equal(suggestions.length, 3, 'the _Index auto-import is filtered out')
     assert.deepEqual(util.label, { label: 'Util', detail: undefined, description: 'script.Parent.Util' })
     assert.deepEqual(util.additionalTextEdits, [
       { range: { startLineNumber: 2, startColumn: 1, endLineNumber: 2, endColumn: 1 }, text: 'local Util = require(script.Parent.Util)\n' }

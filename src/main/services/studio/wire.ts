@@ -15,6 +15,7 @@ import type { AnimClip } from '../../../shared/anim/model.ts'
 import { markStudioFrames } from '../../../shared/studio/frames.ts'
 import { abilityJob, animJob, vfxJob } from '../../../shared/studio/payload.ts'
 import { BRIDGE_PORT, type StudioCheckKind, type StudioCheckOptions } from '../../../shared/studio/types.ts'
+import { BUNDLED_TEMPLATE_DIR, PLUGIN_TEMPLATE_FILE, PLUGIN_VERSION, pluginTemplateVersion } from '../../../shared/studio/plugin.ts'
 import { StudioBridge } from './bridge.ts'
 import { StudioService, type ImageOps, type PluginInstaller, type StudioCapturer, type StudioLab } from './service.ts'
 import { studioTools, type StudioTool } from './tools.ts'
@@ -59,24 +60,33 @@ export interface StudioWiring {
   dispose(): Promise<void>
 }
 
-// resources/studio (packaged: process.resourcesPath/studio via electron-builder extraResources).
-export function pluginTemplateCandidates(): string[] {
-  const out: string[] = []
-  const resourcesPath = (process as { resourcesPath?: string }).resourcesPath
+// Where the Forge Bridge template is, best first: next to this code (out/main/studio, which after a
+// quick update is userData/code/<version>/main/studio, so plugin fixes ship with code-only updates),
+// then resources/studio (packaged: process.resourcesPath/studio via electron-builder extraResources;
+// the installer's copy, older than the code after a quick update) and the repo copy for dev and tests.
+export function pluginTemplateCandidates(here: string = import.meta.dirname ?? process.cwd(), resourcesPath: string | undefined = (process as { resourcesPath?: string }).resourcesPath): string[] {
+  const out: string[] = [join(here, BUNDLED_TEMPLATE_DIR)]
   if (resourcesPath) out.push(join(resourcesPath, 'studio'))
-  const here = import.meta.dirname ?? process.cwd()
   out.push(resolve(here, '..', '..', '..', '..', 'resources', 'studio'))
   out.push(resolve(here, '..', '..', 'resources', 'studio'))
   out.push(resolve(process.cwd(), 'resources', 'studio'))
   return out
 }
 
+// The first template that is as new as this code's PLUGIN_VERSION; else the newest one found (the
+// installer writes it stamped with its own version, see StudioService.installPlugin), else null.
 export async function readPluginTemplate(candidates = pluginTemplateCandidates()): Promise<string | null> {
+  let best: { text: string; version: number } | null = null
   for (const dir of candidates) {
-    const f = join(dir, 'ForgeBridge.luau')
-    if (existsSync(f)) return readFile(f, 'utf8')
+    const f = join(dir, PLUGIN_TEMPLATE_FILE)
+    if (!existsSync(f)) continue
+    const text = await readFile(f, 'utf8').catch(() => null)
+    if (text === null) continue
+    const version = pluginTemplateVersion(text)
+    if (version >= PLUGIN_VERSION) return text
+    if (!best || version > best.version) best = { text, version }
   }
-  return null
+  return best?.text ?? null
 }
 
 type Fx = Parameters<VfxService['exportTextures']>[0]

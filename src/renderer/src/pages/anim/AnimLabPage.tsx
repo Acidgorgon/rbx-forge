@@ -3,9 +3,18 @@
 // library coverage; "Animate a ___" (script draft -> keys -> checks -> render / critique / refine, in
 // main); and a detail view with the live preview, timeline, Script tab, checks and iterations. The
 // header's R15 / R6 switch sets the project rig new clips use; a clip converts between rigs in its detail.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+// The move set picker (Combat / Football / Movement & emotes, plus the project's own move types) sets
+// which tags the tagger, coverage, suggestions and drafts use; "Re-tag library" applies a new set.
+// The Animate row makes clips "From scratch" (the model writes keys) or "Remix closest" (the closest
+// library clip edited with planned ops, shared/anim/remix.ts); a remixed clip's ops are editable in
+// its Remix tab and re-apply to the base clip.
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { usePersisted } from '../../qol/sessionStore'
 import type { AnimClip, AnimCoverage, AnimEntry, AnimImportPreview, AnimLabStatus, AnimRefineProgress, AnimScope, AnimStyle, AnimStyleProfile, LearnedPose, R15Joint, RigType } from '@shared/types'
+import type { AnimMoveSets, AnimRemixMode, RemixCandidate } from '@shared/animTypes'
+import { describeRemixOp, REMIX_OPS, REMIX_PARAMS, REMIX_PART_LABEL, REMIX_PARTS, type RemixOp, type RemixOpKind, type RemixPart } from '@shared/anim/remix'
+import { MOVE_SETS, thinLabels, type ResolvedMoveSet } from '@shared/anim/movesets'
+import { missingParts } from '@shared/anim/bodyparts'
 import { ANIM_RUBRIC_KEYS } from '@shared/anim/model'
 import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
 import { clipRig } from '@shared/anim/sample'
@@ -32,13 +41,21 @@ import { RestatedBrief } from '../../components/RestateCard'
 import { AddToGameButton } from '../qolc/AddToGame'
 
 const IMPORT_HINT = '.rbxm · .rbxmx (KeyframeSequence) · .bvh (mocap; FBX: export BVH from Blender) · folders · video refs: mp4/webm/mov/gif'
-const SUGGESTIONS = ['heavy overhead punch', 'quick jab', 'roundhouse kick', 'dodge roll back', 'fireball cast', 'stagger from a hit', 'combat idle']
 const EXAMPLES = [
   { key: 'sign-push', label: 'Sign → palm push' },
   { key: 'dash-punch', label: 'Dash punch' },
   { key: 'hit-reaction', label: 'Hit reaction' }
 ]
 const KNOWN_TAGS = Object.keys(MOVE_TAGS)
+// Tag suggestions: the active move set's tags first (AnimLabPage provides them).
+const TagsContext = createContext<string[]>(KNOWN_TAGS)
+
+// Best iteration: fewer failed requirements (a named body part that stopped moving) first, then the score.
+function bestOf<T extends { critique?: AnimIteration['critique'] }>(its: T[]): T {
+  const fails = (it: T) => missingParts(it.critique?.checks?.motion).length
+  return its.reduce((a, b) => (fails(b) !== fails(a) ? (fails(b) < fails(a) ? b : a) : (b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0])
+}
+type AnimIteration = NonNullable<AnimEntry['iterations']>[number]
 
 const bad = (e: AnimEntry) => e.quality === 'avoid' || e.rating === 'down'
 
@@ -86,7 +103,9 @@ const qualityTag = (e: AnimEntry) =>
   bad(e) ? <span className="tag err">avoid</span> : e.quality === 'good' || e.rating === 'up' ? <span className="tag ok">liked</span> : e.quality === 'reference' ? <span className="tag info">ref</span> : null
 
 // Editable tag pills: click × to drop one, type + Enter (or comma) to add, suggestions below.
-export function TagPills({ tags, onChange, suggest = KNOWN_TAGS, label = 'Tags' }: { tags: string[]; onChange: (tags: string[]) => void; suggest?: string[]; label?: string }) {
+export function TagPills({ tags, onChange, suggest: given, label = 'Tags' }: { tags: string[]; onChange: (tags: string[]) => void; suggest?: string[]; label?: string }) {
+  const known = useContext(TagsContext)
+  const suggest = given ?? known
   const [text, setText] = useState('')
   const add = (raw: string) => {
     const t = raw.toLowerCase().trim().replace(/[^a-z0-9 -]/g, '')
@@ -149,7 +168,7 @@ function Card({ entry, selected, progress, onSelect }: { entry: AnimEntry; selec
         <span className="vfx-name">{entry.name}</span>
         {qualityTag(entry)}
         <span className="faint mono">
-          {entry.kind === 'generated' ? 'made' : entry.clip.source === 'bvh' ? 'bvh' : 'rbxm'}
+          {entry.remix ? 'remix' : entry.kind === 'generated' ? 'made' : entry.clip.source === 'bvh' ? 'bvh' : 'rbxm'}
           {clipRig(entry.clip) === 'R6' ? <span className="anim-rig-b">R6</span> : null}
         </span>
       </div>
@@ -164,14 +183,60 @@ function Card({ entry, selected, progress, onSelect }: { entry: AnimEntry; selec
   )
 }
 
-function Coverage({ coverage, onTag }: { coverage: AnimCoverage | null; onTag: (t: string) => void }) {
+// The active set's move types: built-ins as plain chips, custom ones removable, plus an input to add one.
+function MoveTypes({ set, onAdd, onRemove }: { set: ResolvedMoveSet; onAdd: (tag: string, description: string) => Promise<boolean>; onRemove: (tag: string) => void }) {
+  const [tag, setTag] = useState('')
+  const [desc, setDesc] = useState('')
+  const add = async () => {
+    if (!tag.trim()) return
+    if (await onAdd(tag, desc)) (setTag(''), setDesc(''))
+  }
+  return (
+    <div className="anim-types">
+      <span className="faint mono">{set.name.toLowerCase()} move types</span>
+      <span className="anim-types-list">
+        {set.tags.map((t) =>
+          t.custom ? (
+            <span key={t.tag} className="anim-pill" title={t.description}>
+              {t.tag}
+              <button type="button" onClick={() => onRemove(t.tag)} aria-label={`Remove move type ${t.tag}`}>
+                ×
+              </button>
+            </span>
+          ) : (
+            <span key={t.tag} className="vfx-tag" title={t.description}>
+              {t.tag}
+            </span>
+          )
+        )}
+      </span>
+      <form
+        className="row anim-types-add"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void add()
+        }}
+      >
+        <input className="input mono" value={tag} onChange={(e) => setTag(e.target.value)} placeholder="+ move type" aria-label="New move type" maxLength={24} />
+        <input className="input grow" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="what it is (the tagger, drafter and critic read this)" aria-label="Move type description" maxLength={200} />
+        <button className="btn small" disabled={!tag.trim()}>
+          Add
+        </button>
+      </form>
+    </div>
+  )
+}
+
+function Coverage({ coverage, onTag, set, onRetag, retagging, onAddType, onRemoveType }: { coverage: AnimCoverage | null; onTag: (t: string) => void; set: ResolvedMoveSet | null; onRetag: () => void; retagging: boolean; onAddType: (tag: string, description: string) => Promise<boolean>; onRemoveType: (tag: string) => void }) {
   if (!coverage) return null
   const rows = coverage.tags.filter((r) => r.clips || r.disliked || coverage.thin.includes(r.tag)).slice(0, 12)
   const max = Math.max(1, ...rows.map((r) => r.clips + r.disliked))
+  const labels = set ? thinLabels(coverage.thin, set) : coverage.thin.map((t) => `${t} clips`)
   return (
     <details className="anim-cov" open>
       <summary>
         <span className="mono">coverage</span>
+        {set && <span className="faint"> · {set.name}</span>}
         {coverage.thin.length > 0 && <span className="faint"> · thin: {coverage.thin.join(', ')}</span>}
       </summary>
       <div className="anim-cov-rows">
@@ -193,8 +258,19 @@ function Coverage({ coverage, onTag }: { coverage: AnimCoverage | null; onTag: (
       </div>
       {coverage.thin.length > 0 && (
         <p className="note anim-cov-hint">
-          Feed it next: {coverage.thin.slice(0, 4).map((t) => `${t} clips`).join(', ')}. Three or more good references per move type give a stable style profile; mark bad ones as avoid so the critic knows what not to do.
+          Feed it next: {labels.slice(0, 4).join(', ')}. Three or more good references per move type give a stable style profile; mark bad ones as avoid so the critic knows what not to do.
         </p>
+      )}
+      {set && (
+        <>
+          <div className="row anim-cov-retag">
+            <span className="note grow">Tags look wrong for this set? Re-tagging reads names, files and notes (and the cheap model when one is set up); clips nothing matches keep their tags.</span>
+            <button className="btn small" onClick={onRetag} disabled={retagging} title={`Re-run auto-tagging on the whole library with the ${set.name} move types`}>
+              {retagging ? <span className="spinner" aria-hidden /> : <Icon name="restart" size={11} />} Re-tag library with {set.name}
+            </button>
+          </div>
+          <MoveTypes set={set} onAdd={onAddType} onRemove={onRemoveType} />
+        </>
       )}
     </details>
   )
@@ -306,7 +382,7 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
   const its = entry.iterations ?? []
   const weights = usePrincipleWeights()
   if (!its.length) return <div className="empty">No iterations yet. Refine renders the key beats, critiques them against your style and the checks, applies the changes and keeps each step here.</div>
-  const best = its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0])
+  const best = bestOf(its)
   return (
     <div className="vfx-iters" role="list">
       {its.map((it) => (
@@ -346,7 +422,16 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
                 ))}
               </div>
               <PrincipleScorecard principles={it.critique.principles} focus={it.critique.focus} score={it.critique.principleScore} weights={weights} />
-              <p className="vfx-iter-sum">{it.critique.summary}</p>
+              {it.critique.mustFix?.length ? (
+                <ul className="vfx-warn">
+                  {it.critique.mustFix.map((m, i) => (
+                    <li key={i} className="error">
+                      <Icon name="warn" size={11} /> Must fix: {m}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <p className="vfx-iter-sum">{it.critique.summary.replace(/^Must fix:[^]*?\.\s/, '')}</p>
               {it.critique.changes.length > 0 && (
                 <details className="vfx-changes">
                   <summary>
@@ -416,10 +501,172 @@ function Checks({ entry }: { entry: AnimEntry }) {
   )
 }
 
-function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntry; entries: AnimEntry[]; progress?: AnimRefineProgress; status: AnimLabStatus | null; onClose: () => void }) {
+const remixUsable = (e: AnimEntry) => e.kind !== 'media' && !e.video && !bad(e)
+
+function defaultOp(kind: RemixOpKind, clips: AnimEntry[]): RemixOp {
+  const params = Object.fromEntries(REMIX_PARAMS[kind].map((p) => [p.key, p.def]))
+  const clip = clips[0]?.id ?? ''
+  switch (kind) {
+    case 'amplitude':
+      return { op: 'amplitude', part: 'all', scale: params.scale }
+    case 'transplant':
+      return { op: 'transplant', clip, part: 'upper' }
+    case 'blend':
+      return { op: 'blend', clip, at: params.at, from: params.from, window: params.window }
+    default:
+      return { op: kind, ...params } as RemixOp
+  }
+}
+
+// A remixed clip's origin: the base clip, the edit ops as editable values, and Re-apply (the ops run
+// again on the base, or on another base clip picked here).
+function RemixPanel({ entry, entries, disabled, onOpen }: { entry: AnimEntry; entries: AnimEntry[]; disabled: boolean; onOpen: (id: string) => void }) {
+  const { actions } = useStore()
+  const origin = entry.remix!
+  const [ops, setOps] = useState<RemixOp[]>(origin.ops)
+  const [base, setBase] = useState(origin.base)
+  const [busy, setBusy] = useState(false)
+  useEffect(() => {
+    setOps(origin.ops)
+    setBase(origin.base)
+  }, [entry.id, entry.updatedAt])
+  const clips = useMemo(() => entries.filter((e) => e.id !== entry.id && remixUsable(e)), [entries, entry.id])
+  const others = clips.filter((e) => e.id !== base)
+  const baseEntry = entries.find((e) => e.id === base)
+  const names = useMemo(() => Object.fromEntries(entries.map((e) => [e.id, e.name])), [entries])
+  const dirty = base !== origin.base || JSON.stringify(ops) !== JSON.stringify(origin.ops)
+  const set = (i: number, patch: Partial<RemixOp>) => setOps(ops.map((o, n) => (n === i ? ({ ...o, ...patch } as RemixOp) : o)))
+  const move = (i: number, d: -1 | 1) => {
+    const j = i + d
+    if (j < 0 || j >= ops.length) return
+    const next = [...ops]
+    ;[next[i], next[j]] = [next[j], next[i]]
+    setOps(next)
+  }
+  const apply = async () => {
+    setBusy(true)
+    try {
+      await window.harness.animRemixApply(entry.id, ops, { base })
+      actions.toast({ text: 'Re-applied the ops', detail: `${ops.length} op${ops.length === 1 ? '' : 's'} on ${baseEntry?.name ?? origin.baseName}`, kind: 'ok', ms: 2200 })
+    } catch (e) {
+      actions.toast({ text: 'Re-apply failed', detail: errorText(e), kind: 'err' })
+    } finally {
+      setBusy(false)
+    }
+  }
+  const sourceLabel = { model: 'planned by the model', heuristic: 'planned from the prompt words (no model)', critic: 'tuned by the critic loop', user: 'edited by you' }[origin.source]
+  return (
+    <div className="anim-remix">
+      <div className="row anim-remix-head">
+        <span className="faint mono">from</span>
+        {baseEntry ? (
+          <button className="btn small ghost anim-remix-base" onClick={() => onOpen(baseEntry.id)} title="Open the base clip">
+            <Icon name="figure" size={11} /> {baseEntry.name}
+          </button>
+        ) : (
+          <span className="err-t mono" title="The base clip was deleted: pick another one to re-apply">{origin.baseName} (missing)</span>
+        )}
+        <select className="input anim-remix-pick" value={base} onChange={(e) => setBase(e.target.value)} aria-label="Base clip" disabled={disabled || busy}>
+          {!baseEntry && <option value={origin.base}>{origin.baseName} (missing)</option>}
+          {clips.map((e) => (
+            <option key={e.id} value={e.id}>
+              {e.name}
+              {e.tags.length ? ` · ${e.tags.slice(0, 2).join(', ')}` : ''}
+            </option>
+          ))}
+        </select>
+        <span className="grow" />
+        <span className="faint note">{sourceLabel}</span>
+      </div>
+      <p className="note">Motion comes from the base clip; these ops edit it in order. Change values and Re-apply (Refine tunes these params, never the keys).</p>
+      {!ops.length && <div className="empty">No ops: the clip is the base clip as is. Add one below.</div>}
+      <ol className="anim-remix-ops">
+        {ops.map((o, i) => (
+          <li key={i} className="anim-remix-op">
+            <div className="row">
+              <b className="mono">{o.op}</b>
+              <span className="faint grow anim-remix-desc">{describeRemixOp(o, names)}</span>
+              <button className="btn small ghost" onClick={() => move(i, -1)} disabled={i === 0 || disabled} aria-label={`Move ${o.op} up`}>
+                ↑
+              </button>
+              <button className="btn small ghost" onClick={() => move(i, 1)} disabled={i === ops.length - 1 || disabled} aria-label={`Move ${o.op} down`}>
+                ↓
+              </button>
+              <button className="btn small ghost danger" onClick={() => setOps(ops.filter((_, n) => n !== i))} disabled={disabled} aria-label={`Remove ${o.op}`}>
+                <Icon name="x" size={10} />
+              </button>
+            </div>
+            {(o.op === 'amplitude' || o.op === 'transplant') && (
+              <label className="anim-remix-param">
+                <span>part</span>
+                <select className="input" value={o.part} onChange={(e) => set(i, { part: e.target.value as RemixPart })} disabled={disabled}>
+                  {REMIX_PARTS.map((p) => (
+                    <option key={p} value={p}>
+                      {REMIX_PART_LABEL[p]}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {(o.op === 'blend' || o.op === 'transplant') && (
+              <label className="anim-remix-param">
+                <span>{o.op === 'blend' ? 'into' : 'from'}</span>
+                <select className="input" value={o.clip} onChange={(e) => set(i, { clip: e.target.value })} disabled={disabled}>
+                  {!others.some((c) => c.id === o.clip) && <option value={o.clip}>{names[o.clip] ?? o.clip}</option>}
+                  {others.map((c) => (
+                    <option key={c.id} value={c.id}>
+                      {c.name}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            )}
+            {REMIX_PARAMS[o.op].map((p) => {
+              const v = Number((o as Record<string, unknown>)[p.key] ?? p.def)
+              return (
+                <label key={p.key} className="anim-remix-param">
+                  <span>{p.label}</span>
+                  <input type="range" min={p.min} max={p.max} step={p.step} value={v} onChange={(e) => set(i, { [p.key]: Number(e.target.value) } as Partial<RemixOp>)} disabled={disabled} aria-label={`${o.op} ${p.label}`} />
+                  <input className="input mono anim-remix-num" type="number" min={p.min} max={p.max} step={p.step} value={v} onChange={(e) => Number.isFinite(Number(e.target.value)) && set(i, { [p.key]: Math.min(p.max, Math.max(p.min, Number(e.target.value))) } as Partial<RemixOp>)} disabled={disabled} aria-label={`${o.op} ${p.label} value`} />
+                  <em className="faint">{p.unit}</em>
+                </label>
+              )
+            })}
+          </li>
+        ))}
+      </ol>
+      <div className="row">
+        <select
+          className="input anim-remix-add"
+          value=""
+          onChange={(e) => e.target.value && setOps([...ops, defaultOp(e.target.value as RemixOpKind, others)])}
+          aria-label="Add an op"
+          disabled={disabled || ops.length >= 8}
+        >
+          <option value="">+ add op…</option>
+          {REMIX_OPS.filter((k) => (k !== 'blend' && k !== 'transplant') || others.length > 0).map((k) => (
+            <option key={k} value={k}>
+              {k}
+            </option>
+          ))}
+        </select>
+        <span className="grow" />
+        <button className="btn small ghost" onClick={() => (setOps(origin.ops), setBase(origin.base))} disabled={!dirty || busy}>
+          Reset
+        </button>
+        <button className="btn small primary" onClick={() => void apply()} disabled={disabled || busy || (!dirty && !!baseEntry)} title="Run the ops on the base clip again">
+          {busy ? <span className="spinner" aria-hidden /> : <Icon name="restart" size={11} />} Re-apply
+        </button>
+      </div>
+    </div>
+  )
+}
+
+function Detail({ entry, entries, progress, status, onClose, onOpen }: { entry: AnimEntry; entries: AnimEntry[]; progress?: AnimRefineProgress; status: AnimLabStatus | null; onClose: () => void; onOpen: (id: string) => void }) {
   const { actions } = useStore()
   const h = window.harness
-  const [tab, setTab] = useState<'script' | 'checks' | 'iterations' | 'studio' | 'info'>(entry.clip.script ? 'script' : 'info')
+  const firstTab = (e: AnimEntry) => (e.remix ? 'remix' : e.clip.script ? 'script' : 'info')
+  const [tab, setTab] = useState<'remix' | 'script' | 'checks' | 'iterations' | 'studio' | 'info'>(firstTab(entry))
   const [clip, setClip] = useState<AnimClip>(entry.clip)
   const [notes, setNotes] = useState(entry.notes)
   const [busy, setBusy] = useState<string | null>(null)
@@ -428,7 +675,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
     setClip(entry.clip)
     setNotes(entry.notes)
   }, [entry.id, entry.updatedAt])
-  useEffect(() => setTab(entry.clip.script ? 'script' : 'info'), [entry.id])
+  useEffect(() => setTab(firstTab(entry)), [entry.id])
 
   const refining = !!progress && progress.phase !== 'done' && progress.phase !== 'error'
   const refs = useMemo(() => entries.filter((e) => e.id !== entry.id && e.kind !== 'media' && !bad(e) && e.tags.some((t) => entry.tags.includes(t))).slice(0, 12), [entries, entry])
@@ -567,7 +814,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
       </p>
 
       <div className="seg vfx-tabs" role="tablist">
-        {(['script', 'checks', 'iterations', 'studio', 'info'] as const).map((k) => (
+        {([...(entry.remix ? (['remix'] as const) : []), 'script', 'checks', 'iterations', 'studio', 'info'] as const).map((k) => (
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
             {k}
             {k === 'iterations' && entry.iterations?.length ? ` · ${entry.iterations.length}` : ''}
@@ -576,6 +823,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
         ))}
       </div>
 
+      {tab === 'remix' && entry.remix && <RemixPanel entry={entry} entries={entries} disabled={refining} onOpen={onOpen} />}
       {tab === 'script' && <AnimScriptPanel entry={entry} onPreview={setClip} />}
       {tab === 'checks' && <Checks entry={entry} />}
       {tab === 'studio' && <StudioCheckPanel kind="anim" id={entry.id} />}
@@ -622,7 +870,10 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
               </>
             )}
             <dt>origin</dt>
-            <dd className="mono">{entry.origin}</dd>
+            <dd className="mono">
+              {entry.origin}
+              {entry.remix ? ` · remix of ${entry.remix.baseName}` : ''}
+            </dd>
             {entry.restatement && (
               <>
                 <dt>confirmed brief</dt>
@@ -713,7 +964,7 @@ function ImportReview({ rows, scope, onChange, onCancel, onImport, busy, convert
 // The best iteration's rendered beats next to the pinned video reference's key frames.
 function PinnedCompare({ entry }: { entry: AnimEntry }) {
   const its = entry.iterations ?? []
-  const best = its.length ? its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0]) : null
+  const best = its.length ? bestOf(its) : null
   return <RefCompare lab="anim" refId={entry.refId!} entryId={entry.id} frames={best?.frames ?? []} times={best?.times} match={best?.critique?.match} matchNotes={best?.critique?.matchNotes} clip={best?.clip ?? entry.clip} iteration={best?.n} />
 }
 
@@ -742,6 +993,61 @@ export function AnimLabPage() {
   // Video reference import review (a dropped / picked clip), and the reference pinned to Make.
   const [refImport, setRefImport] = useState<{ file: File | null } | null>(null)
   const [pin, setPin] = useState<{ id: string; name: string } | null>(null)
+  const [moveSets, setMoveSets] = useState<AnimMoveSets | null>(null)
+  const [retagOffer, setRetagOffer] = useState(false)
+  const [retagging, setRetagging] = useState(false)
+  // Remix closest: the persisted mode, the closest clips for the prompt and a picked base clip.
+  const [remixMode, setRemixMode] = useState<AnimRemixMode>('auto')
+  const [cands, setCands] = useState<RemixCandidate[]>([])
+  const [baseId, setBaseId] = useState<string | null>(null)
+  const moveSet = moveSets?.active ?? null
+  const knownTags = useMemo(() => {
+    const mine = moveSet?.tags.map((t) => t.tag) ?? []
+    return [...new Set([...mine, ...(moveSet && moveSet.id !== 'combat' ? [] : KNOWN_TAGS)])]
+  }, [moveSet])
+  const switchSet = async (id: string) => {
+    if (id === moveSet?.id) return
+    try {
+      const next = await h.animSetMoveSet(id)
+      setRetagOffer(entries.length > 0)
+      await load()
+      actions.toast({ text: `Move set: ${next.name}`, detail: 'Existing tags are kept. Re-tag the library to sort it into the new move types.', kind: 'ok', ms: 3500 })
+    } catch (e) {
+      actions.toast({ text: 'Could not switch the move set', detail: errorText(e), kind: 'err' })
+    }
+  }
+  const retag = async () => {
+    if (!moveSet || retagging) return
+    setRetagging(true)
+    try {
+      const r = await h.animRetag()
+      setRetagOffer(false)
+      await load()
+      actions.toast({ text: `Re-tagged ${r.changed} of ${r.total} clip${r.total === 1 ? '' : 's'} with ${moveSet.name}`, detail: r.source === 'model' ? 'Tagged by the cheap Labs model; profiles re-measured.' : 'Tagged from names, files and notes (no model set up); profiles re-measured. Clips nothing matched keep their tags.', kind: 'ok', ms: 5000 })
+    } catch (e) {
+      actions.toast({ text: 'Re-tag failed', detail: errorText(e), kind: 'err' })
+    } finally {
+      setRetagging(false)
+    }
+  }
+  const addType = async (tag: string, description: string) => {
+    try {
+      await h.animAddMoveTag({ tag, ...(description.trim() ? { description: description.trim() } : {}) })
+      await load()
+      return true
+    } catch (e) {
+      actions.toast({ text: 'Could not add the move type', detail: errorText(e), kind: 'err' })
+      return false
+    }
+  }
+  const removeType = async (tag: string) => {
+    try {
+      await h.animRemoveMoveTag(tag)
+      await load()
+    } catch (e) {
+      actions.toast({ text: 'Could not remove the move type', detail: errorText(e), kind: 'err' })
+    }
+  }
   const rig: RigType = status?.rig ?? 'R15'
   const switchRig = async (r: RigType) => {
     if (r === rig) return
@@ -756,7 +1062,9 @@ export function AnimLabPage() {
 
   const load = useCallback(async () => {
     try {
-      const [s, list, st, c] = await Promise.all([h.animStatus(), h.animList(), h.animStyle(), h.animCoverage()])
+      const [s, list, st, c, ms, mode] = await Promise.all([h.animStatus(), h.animList(), h.animStyle(), h.animCoverage(), h.animMoveSets(), h.animRemixMode().catch(() => 'auto' as const)])
+      setMoveSets(ms)
+      setRemixMode(mode)
       setStatus(s)
       setEntries(list)
       setStyle(st)
@@ -790,6 +1098,36 @@ export function AnimLabPage() {
     return entries.filter((e) => (!tag || e.tags.includes(tag)) && words.every((w) => `${e.name} ${e.description} ${e.tags.join(' ')} ${e.notes}`.toLowerCase().includes(w)))
   }, [entries, query, tag])
   const current = entries.find((e) => e.id === selected) ?? null
+
+  // Closest library clips for the prompt (debounced; re-run when the library changes).
+  useEffect(() => {
+    const what = prompt.trim()
+    if (!what) return setCands([])
+    let live = true
+    const timer = setTimeout(() => {
+      void h
+        .animRemixCandidates(what)
+        .then((r) => live && setCands(r.candidates))
+        .catch(() => live && setCands([]))
+    }, 250)
+    return () => {
+      live = false
+      clearTimeout(timer)
+    }
+  }, [prompt, entries])
+  const remixClips = useMemo(() => entries.filter(remixUsable), [entries])
+  const typed = useMemo(() => {
+    const known = new Set(moveSet?.tags.map((t) => t.tag) ?? [])
+    return remixClips.some((e) => e.tags.some((t) => known.has(t)))
+  }, [remixClips, moveSet])
+  const pickedBase = baseId ? entries.find((e) => e.id === baseId) ?? null : null
+  const autoBase = pickedBase ?? (cands[0] ? entries.find((e) => e.id === cands[0].id) ?? null : null)
+  // auto: remix when the library has a usable clip of the request's move type (any typed clip before typing).
+  const remixOn = remixMode === 'remix' || (remixMode === 'auto' && (prompt.trim() ? !!autoBase : typed))
+  const chooseMode = (m: 'remix' | 'scratch') => {
+    setRemixMode(m)
+    void h.animSetRemixMode(m).catch(() => undefined)
+  }
 
   // Import: preview first (suggested tags as pills), then import each file with its tags / quality.
   const startImport = async (paths: string[]) => {
@@ -857,12 +1195,17 @@ export function AnimLabPage() {
       // Restate first: the confirmed reading of the brief goes into compose (null = cancelled).
       const g = await restate.gate(what)
       if (!g) return
-      const r = await h.animCompose(what, { maxIterations: iters, threshold, scope, rig, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
+      const remixing = remixOn && !pin
+      if (remixing && !autoBase) throw new Error('No library clip matches this move type: pick a base clip, import a reference clip, or switch to From scratch.')
+      const r = remixing
+        ? await h.animRemix(what, { maxIterations: iters, threshold, scope, rig, base: autoBase!.id, ...(g.restatement ? { restatement: g.restatement } : {}) })
+        : await h.animCompose(what, { maxIterations: iters, threshold, scope, rig, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
       if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the script did not compile')
       await load()
       setSelected(r.entry.id)
       setView('library')
       setPrompt('')
+      setBaseId(null)
     } catch (e) {
       actions.toast({ text: 'Could not make the animation', detail: errorText(e), kind: 'err' })
     } finally {
@@ -882,9 +1225,10 @@ export function AnimLabPage() {
   const choose = async () => void startImport(await h.animChooseImport())
 
   return (
+    <TagsContext.Provider value={knownTags}>
     <div className="page">
       <datalist id="anim-tag-list">
-        {KNOWN_TAGS.map((t) => (
+        {knownTags.map((t) => (
           <option key={t} value={t} />
         ))}
       </datalist>
@@ -905,6 +1249,13 @@ export function AnimLabPage() {
                 </button>
               ))}
             </div>
+            <select className="input anim-set" value={moveSet?.id ?? 'combat'} onChange={(e) => void switchSet(e.target.value)} aria-label="Move set" title={moveSet ? `${moveSet.description}${status?.projectRoot ? ' (per project: .forge/anim/settings.json)' : ''}` : 'Move set'}>
+              {(moveSets?.sets ?? MOVE_SETS).map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.name.toLowerCase()} moves
+                </option>
+              ))}
+            </select>
             <select className="input" value={scope} onChange={(e) => setScope(e.target.value as AnimScope)} aria-label="Library for imports and new clips">
               <option value="user">your library</option>
               <option value="project" disabled={!status?.projectRoot}>
@@ -933,6 +1284,21 @@ export function AnimLabPage() {
           </div>
         )}
 
+        {retagOffer && moveSet && (
+          <div className="callout row anim-retag-offer" role="status">
+            <Icon name="info" size={12} />
+            <span className="grow note">
+              Now using <b>{moveSet.name}</b> move types ({moveSet.tags.slice(0, 6).map((t) => t.tag).join(', ')}…). Your clips keep their old tags until you re-tag.
+            </span>
+            <button className="btn small primary" onClick={() => void retag()} disabled={retagging}>
+              {retagging ? <span className="spinner" aria-hidden /> : <Icon name="restart" size={11} />} Re-tag library with {moveSet.name}
+            </button>
+            <button className="btn small ghost" onClick={() => setRetagOffer(false)} aria-label="Dismiss">
+              <Icon name="x" size={11} />
+            </button>
+          </div>
+        )}
+
         <section className="set-sec vfx-make">
           <form
             className="vfx-make-row"
@@ -944,7 +1310,7 @@ export function AnimLabPage() {
             <span className="vfx-make-lead mono">
               <span className="vfx-prompt-sigil">›</span> Animate
             </span>
-            <input className="input grow" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="a heavy overhead punch with a long windup" aria-label="Animation to make" spellCheck />
+            <input className="input grow" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={moveSet?.placeholder ?? 'a heavy overhead punch with a long windup'} aria-label="Animation to make" spellCheck />
             {pin && (
               <span className="badge-o hot vfx-make-pin" title="Pinned video reference: Make animates like it">
                 like {pin.name}
@@ -953,10 +1319,55 @@ export function AnimLabPage() {
                 </button>
               </span>
             )}
+            <div className="seg anim-mode" role="radiogroup" aria-label="How to make the clip" title={remixMode === 'auto' ? 'Auto: remix when the library has a clip of this move type (click to fix a mode for this project)' : 'Saved for this project'}>
+              <button type="button" role="radio" aria-checked={!remixOn} className={!remixOn ? 'on' : ''} onClick={() => chooseMode('scratch')} title="The model writes the keys from scratch (timeline script)">
+                From scratch
+              </button>
+              <button type="button" role="radio" aria-checked={remixOn} className={remixOn ? 'on' : ''} onClick={() => chooseMode('remix')} title="Start from the closest library clip and edit it (speed, mirror, trim, amplitude, blend...): the motion stays human">
+                Remix closest
+              </button>
+            </div>
             <button className="btn primary" disabled={!prompt.trim() || making}>
               {making && !restate.waiting ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
             </button>
           </form>
+          {remixOn && !pin && (
+            <div className="row anim-remix-from" aria-live="polite">
+              <Icon name="figure" size={11} />
+              {autoBase ? (
+                <span className="note">
+                  from <b>{autoBase.name}</b>
+                  {!pickedBase && cands[0]?.matched.length ? <span className="faint"> · closest {cands[0].matched.join(', ')}</span> : null}
+                  {pickedBase ? <span className="faint"> · picked</span> : null}
+                </span>
+              ) : (
+                <span className="note">{prompt.trim() ? 'No library clip of this move type: pick a base clip' : 'Type the move: the closest library clip is the starting point'}</span>
+              )}
+              <select className="input anim-remix-pick" value={baseId ?? ''} onChange={(e) => setBaseId(e.target.value || null)} aria-label="Base clip to remix">
+                <option value="">{cands.length ? 'closest match' : 'pick a base clip…'}</option>
+                {cands.length > 0 && (
+                  <optgroup label="closest">
+                    {cands.map((c) => (
+                      <option key={c.id} value={c.id}>
+                        {c.name} · {c.tags.slice(0, 2).join(', ')}
+                      </option>
+                    ))}
+                  </optgroup>
+                )}
+                <optgroup label="library">
+                  {remixClips
+                    .filter((e) => !cands.some((c) => c.id === e.id))
+                    .map((e) => (
+                      <option key={e.id} value={e.id}>
+                        {e.name}
+                        {e.tags.length ? ` · ${e.tags.slice(0, 2).join(', ')}` : ''}
+                      </option>
+                    ))}
+                </optgroup>
+              </select>
+              {remixMode === 'auto' && <span className="faint mono">auto</span>}
+            </div>
+          )}
           {restate.node}
           <div className="vfx-make-opts">
             <label className="art-opt">
@@ -975,7 +1386,7 @@ export function AnimLabPage() {
               <span className="faint">/10</span>
             </label>
             <span className="vfx-sugg">
-              {SUGGESTIONS.map((s) => (
+              {(moveSet?.suggestions ?? MOVE_SETS[0].suggestions).map((s) => (
                 <button key={s} type="button" className="badge-o" onClick={() => setPrompt(s)}>
                   {s}
                 </button>
@@ -1035,7 +1446,7 @@ export function AnimLabPage() {
                     </>
                   )}
                 </div>
-                <Coverage coverage={cov} onTag={(t) => setTag(tag === t ? null : t)} />
+                <Coverage coverage={cov} onTag={(t) => setTag(tag === t ? null : t)} set={moveSet} onRetag={() => void retag()} retagging={retagging} onAddType={addType} onRemoveType={(t) => void removeType(t)} />
                 <div className="row vfx-lib-head">
                   <input className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name, tag, notes" aria-label="Search library" />
                   <span className="note">{shown.length} shown</span>
@@ -1071,7 +1482,7 @@ export function AnimLabPage() {
             (current.video ? (
               <RefDetail key={current.id} lab="anim" entry={current} onClose={() => setSelected(null)} onMade={(id) => void load().then(() => (setSelected(id), setView('library')))} onPin={setPin} />
             ) : (
-              <Detail key={current.id} entry={current} entries={entries} progress={progress[current.id]} status={status} onClose={() => setSelected(null)} />
+              <Detail key={current.id} entry={current} entries={entries} progress={progress[current.id]} status={status} onClose={() => setSelected(null)} onOpen={(id) => setSelected(id)} />
             ))}
         </div>
         {refImport && (
@@ -1088,5 +1499,6 @@ export function AnimLabPage() {
         )}
       </div>
     </div>
+    </TagsContext.Provider>
   )
 }

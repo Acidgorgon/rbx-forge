@@ -68,6 +68,8 @@ export interface IntegrationDeps {
   services: () => ServiceStatus[]
   startService: (id: ServiceId) => Promise<void>
   stopService: (id: ServiceId) => Promise<void>
+  // Runs a folder operation with rojo serve stopped (rojoRestart.ts RojoPause); optional.
+  withRojoPaused?: <T>(fn: () => Promise<T>, reason?: string) => Promise<T>
   openExternal: (url: string) => void
   choosePlaceFile: () => Promise<string | null>
   // One-shot model call for "summarize incoming changes" (agent layer); optional.
@@ -282,7 +284,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
 
   // ---------------------------------------------------------------- feature rename
   const doRename = async (from: string, to: string) => {
-    const result = await renameFeature(root(), from, to, {
+    const rename = () => renameFeature(root(), from, to, {
       devRunning: () => deps.services().some((s) => s.id === 'dev' && (s.state === 'running' || s.state === 'starting')),
       stopDev: () => deps.stopService('dev'),
       startDev: () => deps.startService('dev'),
@@ -290,6 +292,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
       resumeProjectWatch: deps.resumeProjectWatch,
       log: (text) => log({ service: 'harness', stream: 'info', text })
     })
+    const result = deps.withRojoPaused ? await deps.withRojoPaused(rename, 'feature rename') : await rename()
     emit('features:renamed', result)
     void deps.git()?.refresh()
     return result

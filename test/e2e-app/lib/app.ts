@@ -7,7 +7,7 @@ import { execSync } from 'node:child_process'
 import { mkdirSync, mkdtempSync, writeFileSync } from 'node:fs'
 import { createServer } from 'node:net'
 import { tmpdir } from 'node:os'
-import { join, resolve } from 'node:path'
+import { delimiter, join, resolve } from 'node:path'
 import { pathToFileURL } from 'node:url'
 
 export const REPO = resolve(import.meta.dirname, '..', '..', '..')
@@ -61,6 +61,10 @@ export function appEnv(home: string): Record<string, string> {
     if (k === 'ELECTRON_RENDERER_URL' || k === 'ELECTRON_RUN_AS_NODE' || k === 'NODE_OPTIONS') continue
     env[k] = v
   }
+  // `npm run` puts node_modules/.bin of the repo and of every folder above it on PATH. Those are not
+  // the user's PATH, and a stray tool there (a codex in /node_modules/.bin, say) would leak into the
+  // sandbox and change what the app finds (a signed-in Codex makes the no-provider flows fail).
+  if (env.PATH) env.PATH = env.PATH.split(delimiter).filter((d) => !/[\\/]node_modules[\\/]\.bin[\\/]?$/.test(d)).join(delimiter)
   env.HOME = home
   env.XDG_CONFIG_HOME = join(home, 'config')
   env.XDG_DATA_HOME = join(home, 'data')

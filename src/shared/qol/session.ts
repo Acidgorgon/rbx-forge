@@ -1,6 +1,7 @@
 // "Pick up where you left off": the versioned session state file (userData/session-state.json).
 // Open tabs + active tab and editor cursors per project, panel layout, per-chat scroll + drafts, per-lab
 // selections. Parsing is tolerant: unknown or broken entries are dropped, never fatal. Pure.
+import { sanitizeGroups, type GroupsState } from '../editorGroups.ts'
 
 export const SESSION_VERSION = 2
 export const SESSION_FILE = 'session-state.json'
@@ -28,6 +29,8 @@ export interface CursorPos {
 export interface ProjectSession {
   tabs: SessionTab[]
   activeTab: string
+  // Split editor layout (groups of tab ids + the split tree); absent = one group with every tab.
+  groups?: GroupsState
   // Repo-relative path -> last cursor.
   cursors: Record<string, CursorPos>
   // Lab page state, e.g. "vfx.selected" -> entry id, "vfx.view" -> "effects".
@@ -115,13 +118,16 @@ export function cleanProjectSession(v: unknown): ProjectSession | null {
     tabs.push(tab)
     if (tabs.length >= MAX_TABS) break
   }
-  return {
+  const out: ProjectSession = {
     tabs,
     activeTab: isStr(v.activeTab) && v.activeTab ? v.activeTab : tabs[0]?.id ?? 'forge',
     cursors: cleanCursors(v.cursors),
     labs: cleanLabs(v.labs),
     savedAt: num(v.savedAt) ?? 0
   }
+  const groups = v.groups === undefined ? null : sanitizeGroups(v.groups, (id) => seen.has(id))
+  if (groups) out.groups = groups
+  return out
 }
 
 function cleanLayout(v: unknown): SessionState['layout'] {

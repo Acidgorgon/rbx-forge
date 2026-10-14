@@ -20,9 +20,21 @@ function cspMeta(): Plugin {
   }
 }
 
+// The Forge Bridge plugin template next to the main bundle (out/main/studio/ForgeBridge.luau), so a
+// quick update (out/main, out/preload, out/renderer only) ships plugin fixes too. Forge reads this copy
+// first (services/studio/wire.ts readPluginTemplate); resources/studio stays the installer's fallback.
+function forgeBridgeTemplate(): Plugin {
+  return {
+    name: 'rbx-forge-bridge-template',
+    generateBundle() {
+      this.emitFile({ type: 'asset', fileName: 'studio/ForgeBridge.luau', source: readFileSync(resolve('resources/studio/ForgeBridge.luau'), 'utf8') })
+    }
+  }
+}
+
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin()],
+    plugins: [externalizeDepsPlugin(), forgeBridgeTemplate()],
     resolve: { alias: { '@shared': resolve('src/shared') } },
     define: { __FORGE_SHELL__: JSON.stringify(shellInfo) },
     build: {

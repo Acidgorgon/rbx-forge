@@ -72,6 +72,8 @@ Working rules:
 - Studio edits sync back into the repo via studio-sync; conflicts are listed by studio_conflicts.
 - If mcp__studio__* tools are available they act on the live Roblox Studio (run Luau, play tests).
 - A message may end with [Confirmed restatement ...]: Forge restated a big request and the user approved (or corrected) that reading. Treat it as the agreed goal, problem and assumptions; do not restate it again, start the work.
+- Big multi-file features (a new system with server, client, UI and data parts): suggest the user run /team <request>. Team mode is a separate run where a lead plans the work and specialist agents build the parts in parallel, with its own progress board; it suits large builds, while a focused change is faster right here.
+- In a group chat, the other models (guests) are read-only advisers the user invited; they comment and critique, you own the project and make the edits.
 - Be concise in replies.`
 
 // Appended to SYSTEM_PROMPT on OpenAI-compatible providers, where tools have bare names.
@@ -103,10 +105,61 @@ function msg(agentId: string, role: ChatMessage['role'], text: string, tool?: Ch
   return { id: randomUUID(), role, text, at: Date.now(), agentId, ...(tool ? { tool } : {}) }
 }
 
-// Maps one SDK message to zero or more ChatMessages. Subagent traffic (parent_tool_use_id set) is skipped.
-export function toChatMessages(m: SDKMessage, agentId: string): ChatMessage[] {
+const SUBAGENT_TOOL_NAMES = new Set(['Agent', 'Task'])
+const SUMMARY_CAP = 4000
+
+// The text a subagent returned, without the CLI's bookkeeping trailer (<usage>, agentId lines).
+export function subagentSummary(content: unknown): string {
+  const parts = typeof content === 'string' ? [content] : Array.isArray(content) ? content.map((c: any) => (c?.type === 'text' ? String(c.text ?? '') : '')) : []
+  let text = parts.join('\n')
+  text = text.replace(/<usage>[\s\S]*?(<\/usage>|$)/g, '').replace(/^agentId: .*$/gm, '')
+  text = text.replace(/\n{3,}/g, '\n\n').trim()
+  return text.length > SUMMARY_CAP ? text.slice(0, SUMMARY_CAP - 3).trimEnd() + '...' : text
+}
+
+// One chip per subagent for a query: created from the Agent tool_use, updated in place (same
+// message id) while the subagent calls tools, and given the subagent's summary when it returns.
+// The subagent's own messages (parent_tool_use_id set) never become chat messages themselves.
+export class SubagentChips {
+  private chips = new Map<string, { msg: ChatMessage; desc: string; tools: number }>()
+
+  start(toolUseId: string, input: Record<string, unknown>, agentId: string): ChatMessage {
+    const type = typeof input.subagent_type === 'string' && input.subagent_type.trim() ? input.subagent_type.trim() : 'general'
+    const desc = typeof input.description === 'string' && input.description.trim() ? input.description.trim().replace(/\s+/g, ' ').slice(0, 120) : summarizeInput({ prompt: input.prompt })
+    const name = `agent:${type}`
+    const chip = msg(agentId, 'tool', '', { name, input: desc })
+    this.chips.set(toolUseId, { msg: chip, desc, tools: 0 })
+    return chip
+  }
+
+  // A subagent's tool calls: the chip shows how many so far.
+  progress(parentId: string, calls: number): ChatMessage | null {
+    const c = this.chips.get(parentId)
+    if (!c || !calls) return null
+    c.tools += calls
+    c.msg = { ...c.msg, tool: { name: c.msg.tool!.name, input: `${c.desc} · ${c.tools} tool call${c.tools === 1 ? '' : 's'}` } }
+    return c.msg
+  }
+
+  finish(toolUseId: string, content: unknown, isError: boolean): ChatMessage | null {
+    const c = this.chips.get(toolUseId)
+    if (!c) return null
+    this.chips.delete(toolUseId)
+    const summary = subagentSummary(content)
+    c.msg = { ...c.msg, text: isError ? `Error: ${summary || 'subagent failed'}` : summary || 'Done (no summary).' }
+    return c.msg
+  }
+}
+
+// Maps one SDK message to zero or more ChatMessages. Subagent traffic (parent_tool_use_id set)
+// only updates that subagent's chip (`subs`); without `subs` it is skipped.
+export function toChatMessages(m: SDKMessage, agentId: string, subs?: SubagentChips): ChatMessage[] {
   if (m.type === 'assistant') {
-    if (m.parent_tool_use_id) return []
+    if (m.parent_tool_use_id) {
+      const calls = (m.message.content as any[]).filter((b) => b?.type === 'tool_use').length
+      const chip = subs?.progress(m.parent_tool_use_id, calls)
+      return chip ? [chip] : []
+    }
     const out: ChatMessage[] = []
     if (m.error) out.push(msg(agentId, 'system', errorText(m.error)))
     const text: string[] = []
@@ -114,6 +167,10 @@ export function toChatMessages(m: SDKMessage, agentId: string): ChatMessage[] {
       if (block.type === 'text' && block.text?.trim()) text.push(block.text)
       else if (block.type === 'tool_use') {
         if (text.length) out.push(msg(agentId, 'assistant', text.splice(0).join('\n')))
+        if (subs && SUBAGENT_TOOL_NAMES.has(block.name) && block.id) {
+          out.push(subs.start(block.id, (block.input ?? {}) as Record<string, unknown>, agentId))
+          continue
+        }
         const name = displayToolName(block.name)
         out.push(msg(agentId, 'tool', name, { name, input: summarizeInput(block.input) }))
       }
@@ -124,12 +181,18 @@ export function toChatMessages(m: SDKMessage, agentId: string): ChatMessage[] {
   // Tool results are not shown, except images a tool produced (forge-image markers).
   if (m.type === 'user' && !m.parent_tool_use_id && Array.isArray((m.message as any)?.content)) {
     const ids: { id: string; name?: string }[] = []
+    const chips: ChatMessage[] = []
     for (const block of (m.message as any).content as any[]) {
       if (block?.type !== 'tool_result') continue
+      const chip = subs?.finish(block.tool_use_id, block.content, block.is_error === true)
+      if (chip) {
+        chips.push(chip)
+        continue
+      }
       const parts = typeof block.content === 'string' ? [block.content] : Array.isArray(block.content) ? block.content.map((c: any) => (c?.type === 'text' ? c.text : '')) : []
       for (const t of parts) for (const x of extractImageMarkers(String(t ?? '')).ids) if (!ids.some((y) => y.id === x.id)) ids.push(x)
     }
-    return ids.length ? [msg(agentId, 'assistant', ids.map((x) => imageMarker(x)).join('\n'))] : []
+    return [...chips, ...(ids.length ? [msg(agentId, 'assistant', ids.map((x) => imageMarker(x)).join('\n'))] : [])]
   }
   if (m.type === 'result' && (m.is_error || m.subtype !== 'success')) {
     const detail = m.subtype === 'success' ? m.result : m.errors?.join('; ') || m.subtype

@@ -56,6 +56,7 @@ export function blinkTools(deps: BlinkToolDeps): { read: ServiceTool[]; write: S
     if (!r) throw new Error('no project open')
     return r
   }
+  let queue: Promise<unknown> = Promise.resolve()
   const read: ServiceTool[] = [
     {
       name: 'blink_events',
@@ -101,14 +102,27 @@ export function blinkTools(deps: BlinkToolDeps): { read: ServiceTool[]; write: S
         return: z.string().optional(),
         scope: z.string().optional()
       },
-      handler: async (args: BlinkEventSpec) => {
-        const r = await deps.addEvent(root(), args, { revertOnError: true })
-        if (!r.check.ok) return fail(`not added (events.blink restored):\n${r.check.diagnostics.slice(0, 10).map(diagText).join('\n')}`)
-        return ok(`added to events.blink${r.check.skipped ? ` (not compile-checked: ${r.check.skipped})` : ''}:\n${r.declaration}`)
+      // Parallel calls (models often add two events at once) run one at a time: each reads,
+      // appends and may restore events.blink, so overlapping runs would drop each other's event.
+      handler: (args: BlinkEventSpec) => {
+        const run = queue.then(() => addOne(args))
+        queue = run.catch(() => undefined)
+        return run
       }
     }
   ]
   return { read, write }
+
+  async function addOne(args: BlinkEventSpec): Promise<ToolResult> {
+    // A repeated call (same name in the same scope) is answered plainly instead of failing with
+    // a parser error, so the model sees the event is already there and moves on.
+    const scope = args.scope ? args.scope.split('.') : []
+    const existing = (await deps.listEvents(root()).catch(() => [] as BlinkEvent[])).find((e) => e.name === args.name && e.scope.join('.') === scope.join('.'))
+    if (existing) return ok(`already exists, nothing added: ${deps.describeEvent(existing)}`)
+    const r = await deps.addEvent(root(), args, { revertOnError: true })
+    if (!r.check.ok) return fail(`not added (events.blink restored):\n${r.check.diagnostics.slice(0, 10).map(diagText).join('\n')}`)
+    return ok(`added to events.blink${r.check.skipped ? ` (not compile-checked: ${r.check.skipped})` : ''}:\n${r.declaration}`)
+  }
 }
 
 // ---------------------------------------------------------------- Wally packages

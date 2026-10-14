@@ -195,7 +195,11 @@ body.resizing .panel, body.resizing .bottom { transition: none !important; }
 .btn.primary:hover:not(:disabled), .btn-forge:hover:not(:disabled) { border-color: var(--ember); color: var(--ember-hi); }
 .btn.primary:active:not(:disabled), .btn-forge:active:not(:disabled) { transform: translateY(1px); }
 .btn-forge { height: 24px; padding: 0 10px 0 8px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--r-md); font-size: 12.5px; position: relative; white-space: nowrap; transition: filter var(--dur-fast), transform var(--dur-instant), box-shadow var(--dur-base); }
-.btn-forge.crashed { background: var(--err-fill); color: var(--err); border-color: var(--err-line); }
+.btn-forge.crashed, .btn-forge.failed { background: var(--err-fill); color: var(--err); border-color: var(--err-line); }
+.btn-forge.held { background: var(--warn-fill); color: var(--warn); border-color: var(--warn-line); animation: forge-held-pulse 1.6s ease-in-out infinite; }
+.btn-forge.checking { background: var(--warn-fill); color: var(--warn); border-color: var(--warn-line); }
+@keyframes forge-held-pulse { 50% { box-shadow: 0 0 0 3px var(--warn-fill); } }
+@media (prefers-reduced-motion: reduce) { .btn-forge.held { animation: none; } }
 .btn-forge.running { background: var(--ok-fill); color: var(--ok); border-color: var(--ok-line); }
 .btn-forge.stopped { background: transparent; color: var(--fg-2); border-color: var(--line-strong); }
 .btn-ghost { height: 24px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--r-md); border: 1px solid var(--line-strong); color: var(--fg-2); font-weight: 500; font-size: 12px; background: transparent; white-space: nowrap; transition: border-color var(--dur-fast), background var(--dur-fast), transform var(--dur-instant); }
@@ -488,6 +492,8 @@ button.badge-o:hover:not(:disabled) { border-color: var(--fg-faint); color: var(
 .dialog { position: fixed; z-index: 46; left: 50%; top: 16vh; transform: translateX(-50%); width: min(440px, calc(100vw - 32px)); background: var(--bg-overlay); border-radius: var(--r-lg); box-shadow: var(--sh-3); padding: 16px; animation: rf-palette-in var(--dur-base) var(--ease-out); max-height: 76vh; overflow: auto; }
 .dialog h2 { margin: 0 0 6px; font-size: 13px; font-weight: 500; color: var(--fg); }
 .dialog p { margin: 0 0 12px; color: var(--fg-muted); font-size: 12px; line-height: 1.55; }
+.dialog .confirm-list { margin: -4px 0 12px; padding-left: 18px; word-break: break-all; max-height: 140px; overflow: auto; font-size: 11.5px; color: var(--fg); }
+.dialog .confirm-skip { margin: 0 0 12px; font-size: 12px; color: var(--fg-muted); cursor: pointer; }
 .dialog .actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
 
 .toasts { position: fixed; z-index: 60; right: calc(var(--toast-right, 0px) + 18px); bottom: calc(var(--status-h) + 14px); display: flex; flex-direction: column; gap: 8px; align-items: flex-end; transition: right var(--dur-panel) var(--ease-out); pointer-events: none; }

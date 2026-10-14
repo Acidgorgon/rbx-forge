@@ -14,12 +14,13 @@
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import { z } from 'zod'
-import type { CanUseTool, HookCallbackMatcher, Options, PermissionResult } from '@anthropic-ai/claude-agent-sdk'
+import type { AgentDefinition, CanUseTool, HookCallbackMatcher, Options, PermissionResult } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatMessage } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import { applyHunks, diffCard, isReadOnlyMode, PLAN_FORMAT, planCard, type ChatMode, type ChatTodo, type CheckpointInfo, type DiffCardData, type PlanCardData } from '../../shared/chatModes.ts'
 import { defineTool, type GentreeTool, type ToolResult } from './tools.ts'
-import { summarizeInput } from './sdk.ts'
+import { summarizeInput, SYSTEM_PROMPT } from './sdk.ts'
+import { withRules } from './projectRules.ts'
 
 export const READ_BUILTINS = ['Read', 'Glob', 'Grep'] as const
 export const EDIT_BUILTINS = ['Edit', 'Write', 'MultiEdit', 'NotebookEdit'] as const
@@ -28,6 +29,12 @@ export const SHELL_BUILTINS = ['Bash'] as const
 export const CHAT_STATE_TOOLS = ['update_todos'] as const
 // Ask the user themselves before running (terminal confirm), so no second approval card.
 export const SELF_CONFIRMING_TOOLS = ['run_in_terminal'] as const
+
+// The Agent SDK's built-in subagent tool: 'Agent' (sdk-tools.d.ts AgentInput); the CLI still
+// accepts its older name 'Task' as an alias, so both are gated the same way.
+export const SUBAGENT_TOOLS = ['Agent', 'Task'] as const
+// Named subagents that only read; the only ones Ask / Plan may start.
+export const READ_SUBAGENTS = ['explorer', 'reviewer'] as const
 
 const GENTREE = 'gentree'
 
@@ -95,15 +102,67 @@ export function refuseRemovedTool(mode: ChatMode, known: Iterable<string>): (nam
   }
 }
 
+export function isSubagentTool(name: string): boolean {
+  return (SUBAGENT_TOOLS as readonly string[]).includes(name)
+}
+
+// Why a subagent call is refused in this mode, or undefined when it may start. Subagents inherit
+// the chat's gating (canUseTool, the PreToolUse guard, bounds), so the call itself only needs:
+// no isolation (worktree / remote would leave the project), and read-only agents in Ask / Plan.
+export function subagentDenial(mode: ChatMode, input: Record<string, unknown>): string | undefined {
+  if (input.isolation !== undefined) return 'Subagents run in this project with the chat\'s own permissions; call Agent again without isolation.'
+  if (!isReadOnlyMode(mode)) return undefined
+  const type = typeof input.subagent_type === 'string' ? input.subagent_type : ''
+  if ((READ_SUBAGENTS as readonly string[]).includes(type)) return undefined
+  return `In ${mode === 'plan' ? 'Plan' : 'Ask'} mode only the read-only subagents (${READ_SUBAGENTS.join(', ')}) can run; set subagent_type to one of them.`
+}
+
+const SUBAGENT_NOTE_EDIT =
+  '\n\n# Subagents\nYou can start subagents with the Agent tool (subagent_type explorer: read-only search; builder: implements one scoped change; reviewer: read-only review). Several Agent calls in one message run in parallel: use them for independent work (e.g. explore three systems at once, or build parts that touch different files), not for one small edit. Give each a self-contained prompt (files, goal, constraints); they do not see this conversation. Their edits go through the same approvals and project bounds as yours. Summarize what they found or changed.'
+const SUBAGENT_NOTE_READ =
+  '\n\n# Subagents\nYou can start read-only subagents with the Agent tool (subagent_type explorer: search the codebase; reviewer: review code). Several Agent calls in one message run in parallel; give each a self-contained question. They cannot change anything in this mode either.'
+
 // System prompt note per mode (appended after the rules block, so the cached prefix stays).
+// `sdk`: the Anthropic Agent SDK path, which also has subagents.
 export function modeNote(mode: ChatMode, sdk: boolean): string {
-  if (mode === 'ask') return '\n\n# Mode: Ask\nRead-only. Answer the question; read and search as needed. You cannot change files or run commands in this mode, so do not offer edits as done.'
+  if (mode === 'ask') return '\n\n# Mode: Ask\nRead-only. Answer the question; read and search as needed. You cannot change files or run commands in this mode, so do not offer edits as done.' + (sdk ? SUBAGENT_NOTE_READ : '')
   if (mode === 'plan') {
     return sdk
-      ? '\n\n# Mode: Plan\nRead-only investigation, then a plan for the user to approve.'
+      ? '\n\n# Mode: Plan\nRead-only investigation, then a plan for the user to approve.' + SUBAGENT_NOTE_READ
       : `\n\n# Mode: Plan\nInvestigate read-only (you cannot change anything in this mode), then reply with a plan for the user to approve; do not start the work.\n${PLAN_FORMAT}`
   }
-  return ''
+  return sdk ? SUBAGENT_NOTE_EDIT : ''
+}
+
+// Named subagents for the SDK (Options.agents). Read-only ones get an explicit read tool list;
+// the builder inherits the chat's tools (and so its approvals) but cannot start more subagents.
+// Each prompt carries the project layout and the project's own rules (AGENTS.md, aiRules), since
+// a subagent does not see the chat's system prompt.
+export function chatSubagents(mode: ChatMode, readServerTools: string[], rules = ''): Record<string, AgentDefinition> {
+  const base = withRules(SYSTEM_PROMPT, rules)
+  const read = [...READ_BUILTINS, ...readServerTools.filter((n) => !(CHAT_STATE_TOOLS as readonly string[]).includes(n)).map((n) => `mcp__${GENTREE}__${n}`)]
+  const agents: Record<string, AgentDefinition> = {
+    explorer: {
+      description: 'Read-only codebase search: where something lives, how a system works, which files a change would touch. Returns paths, line ranges and a short summary. Start several in parallel for independent questions.',
+      tools: read,
+      disallowedTools: [...SUBAGENT_TOOLS],
+      prompt: `You are an explorer subagent: search and read only, never change anything. Answer the question you were given with file paths, line ranges and a concise summary of what you found. Read only the ranges you need.\n\n${base}`
+    },
+    reviewer: {
+      description: 'Read-only review of a change or a set of files: bugs, broken Feature / Rojo / Blink wiring, and violations of the project rules (AGENTS.md, aiRules). Returns findings with file:line, most severe first.',
+      tools: read,
+      disallowedTools: [...SUBAGENT_TOOLS],
+      prompt: `You are a reviewer subagent: read only, never change anything. Review what you were pointed at for real bugs, wiring mistakes (Init/Start order, Blink events, Rojo paths) and violations of the project instructions below. Report findings as file:line with a one-line fix each, most severe first; say plainly when you found nothing.\n\n${base}`
+    }
+  }
+  if (!isReadOnlyMode(mode)) {
+    agents.builder = {
+      description: 'Implements one scoped change (a feature part, or files no other running builder touches). Give it the exact files, the goal and the constraints. Its edits go through the same approvals and project bounds as yours.',
+      disallowedTools: [...SUBAGENT_TOOLS],
+      prompt: `You are a builder subagent: implement exactly the change you were given, in the existing style, and nothing else. Stay inside the files you were assigned; other builders may be editing other files at the same time. Follow the project instructions below strictly (they override your habits, e.g. a "no comments in game scripts" rule). When done, reply with the files you changed and one line each on what changed.\n\n${base}`
+    }
+  }
+  return agents
 }
 
 // Plan-mode workflow body for the SDK (Options.planModeInstructions).
@@ -124,20 +183,23 @@ export interface SdkModeInput {
   approve: (name: string, input: Record<string, unknown>, signal: AbortSignal) => Promise<PermissionResult>
   // Plan mode: the agent called ExitPlanMode with this plan.
   onPlan: (plan: string) => void
+  // Project rules block (projectRules.ts), carried into the subagents' prompts.
+  rules?: string
 }
 
-export function sdkModeOptions(o: SdkModeInput): Pick<Options, 'permissionMode' | 'tools' | 'allowedTools' | 'disallowedTools' | 'canUseTool' | 'hooks' | 'planModeInstructions'> {
+export function sdkModeOptions(o: SdkModeInput): Pick<Options, 'permissionMode' | 'tools' | 'allowedTools' | 'disallowedTools' | 'canUseTool' | 'hooks' | 'planModeInstructions' | 'agents'> {
   const { mode, catalog } = o
   const ro = isReadOnlyMode(mode)
   const writeServer = o.serverTools.filter((n) => !catalog.read.has(n))
   const readServer = o.serverTools.filter((n) => catalog.read.has(n))
   const mcp = (n: string) => `mcp__${GENTREE}__${n}`
-  const tools: string[] = ro ? [...READ_BUILTINS, ...(mode === 'plan' ? ['ExitPlanMode'] : [])] : [...READ_BUILTINS, 'Edit', 'Write', ...(o.allowBash ? ['Bash'] : [])]
+  // 'Agent' (subagents) in every mode: read modes only get the read-only agents (subagentDenial).
+  const tools: string[] = ro ? [...READ_BUILTINS, 'Agent', ...(mode === 'plan' ? ['ExitPlanMode'] : [])] : [...READ_BUILTINS, 'Edit', 'Write', 'Agent', ...(o.allowBash ? ['Bash'] : [])]
   const allowedTools =
     mode === 'auto'
       ? [`mcp__${GENTREE}`, `mcp__${GENTREE}__*`, ...READ_BUILTINS, ...(o.studio ? ['mcp__studio', 'mcp__studio__*'] : [])]
       : [...readServer.map(mcp), ...READ_BUILTINS, ...(mode === 'edit' ? SELF_CONFIRMING_TOOLS.map(mcp) : [])]
-  const disallowedTools = ro ? [...EDIT_BUILTINS, ...SHELL_BUILTINS, ...writeServer.map(mcp), 'mcp__studio', 'NotebookEdit', 'Agent', 'Task'] : undefined
+  const disallowedTools = ro ? [...EDIT_BUILTINS, ...SHELL_BUILTINS, ...writeServer.map(mcp), 'mcp__studio', 'NotebookEdit'] : undefined
 
   const canUseTool: CanUseTool = async (name, input, opts) => {
     if (name === 'ExitPlanMode') {
@@ -145,6 +207,11 @@ export function sdkModeOptions(o: SdkModeInput): Pick<Options, 'permissionMode' 
       const plan = typeof input.plan === 'string' ? input.plan : ''
       if (plan.trim()) o.onPlan(plan)
       return { behavior: 'deny', message: 'Forge showed your plan to the user as a card (Approve & run / Edit plan / Keep planning). Stop here and wait; do not repeat the plan.' }
+    }
+    // Starting a subagent needs no card: each tool call it makes comes back through here.
+    if (isSubagentTool(name)) {
+      const why = subagentDenial(mode, input)
+      return why ? { behavior: 'deny', message: why } : { behavior: 'allow', updatedInput: input }
     }
     const verdict = classifyTool(mode, name, catalog)
     if (verdict === 'deny') return { behavior: 'deny', message: denyMessage(mode, name) }
@@ -165,6 +232,10 @@ export function sdkModeOptions(o: SdkModeInput): Pick<Options, 'permissionMode' 
         if (hi.hook_event_name !== 'PreToolUse') return {}
         const name = hi.tool_name
         const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: reason } })
+        if (isSubagentTool(name)) {
+          const why = subagentDenial(mode, (hi.tool_input ?? {}) as Record<string, unknown>)
+          return why ? deny(why) : {}
+        }
         if (ro && classifyTool(mode, name, catalog) === 'deny') return deny(denyMessage(mode, name))
         if ((EDIT_BUILTINS as readonly string[]).includes(name)) {
           const b = await o.bounds(name, (hi.tool_input ?? {}) as Record<string, unknown>, { signal: new AbortController().signal } as any)
@@ -182,7 +253,8 @@ export function sdkModeOptions(o: SdkModeInput): Pick<Options, 'permissionMode' 
     allowedTools,
     ...(disallowedTools ? { disallowedTools } : {}),
     canUseTool,
-    hooks: { PreToolUse: [guard] }
+    hooks: { PreToolUse: [guard] },
+    agents: chatSubagents(mode, readServer, o.rules)
   }
 }
 

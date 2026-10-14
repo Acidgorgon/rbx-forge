@@ -1,5 +1,5 @@
 // Titlebar (SPEC §7.1): brand, project + place switchers, omnibox, Sync, Serve, panel toggles, theme.
-import { useRef, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { useStore } from '../store'
 import { AnvilMark, Wordmark } from '../components/Brand'
 import { Icon } from '../components/Icons'
@@ -9,6 +9,7 @@ import { sparks } from '../lib/sparks'
 import { setThemeMode, useAppearance } from '../theme'
 import { requestBugReport } from '../qol/QolRoot'
 import { helpMenuItems } from './helpMenu'
+import { serveNotice, serveView } from '@shared/rojoView'
 
 function parentDir(root: string): string {
   const parts = root.split(/[\\/]/).filter(Boolean)
@@ -82,8 +83,51 @@ export function Titlebar() {
     }
   }
 
+  // Forge Sync holds rojo serve for a place: open the conflicts, or serve that place anyway.
+  const resolveHeld = () => actions.showSide('sync')
+  const serveAnyway = async (file: string) => {
+    try {
+      const status = await window.harness.syncStatus()
+      const held = status.places.filter((p) => p.projectFile === file && p.gate === 'blocked')
+      if (!held.length) return actions.toast({ text: 'Nothing held', detail: `${file} is not held by Forge Sync any more`, kind: 'info', ms: 3000 })
+      for (const p of held) await window.harness.syncServeAnyway(p.placeKey)
+      actions.toast({ text: 'Serving anyway', detail: 'The held conflicts stay listed in Forge Sync', kind: 'ok', ms: 3000 })
+      await actions.refreshSync()
+    } catch (e) {
+      actions.toast({ text: 'Could not serve anyway', detail: errorText(e), kind: 'err' })
+    }
+  }
+  const heldMenu = (el: HTMLElement) => {
+    const hold = rojo?.hold
+    if (!hold) return
+    menu.openUnder(
+      el,
+      [
+        { header: hold.gate === 'blocked' ? `rojo serve waits: ${hold.file}` : `rojo serve waits for the Studio check: ${hold.file}`, mono: true },
+        { label: 'Resolve conflicts…', icon: <Icon name="sync" />, sub: 'Pick Studio or disk per file in Forge Sync', onSelect: resolveHeld },
+        { label: 'Serve anyway', icon: <Icon name="play" />, sub: 'Studio edits in the held files may be overwritten', disabled: hold.gate !== 'blocked', reason: 'Still checking', onSelect: () => void serveAnyway(hold.file) },
+        { label: 'Show log', icon: <Icon name="terminal" />, onSelect: () => actions.showBottom('output', ['rojo']) }
+      ],
+      { minWidth: 300 }
+    )
+  }
+
+  // Toasts for rojo restarting by itself, giving up, or being held on conflicts.
+  const lastRojo = useRef(rojo)
+  const announced = useRef(rojo?.restarts ?? 0)
+  useEffect(() => {
+    const { notice, announced: next } = serveNotice(lastRojo.current, rojo, announced.current)
+    lastRojo.current = rojo
+    announced.current = next
+    if (!notice) return
+    if (notice.kind === 'restarted') actions.toast({ text: 'Rojo crashed, restarted', detail: 'Reconnect the Rojo plugin in Studio if it disconnected', kind: 'info', action: { label: 'Show log', run: () => actions.showBottom('output', ['rojo']) } })
+    else if (notice.kind === 'gave-up') actions.toast({ text: 'Rojo keeps crashing', detail: notice.detail, kind: 'err', ms: 0, action: { label: 'Restart', run: () => void window.harness.startService('rojo') } })
+    else actions.toast({ text: 'rojo serve is held', detail: `${notice.file}: ${notice.detail || 'Studio sync conflicts'}. Resolve them or serve anyway.`, kind: 'hot', ms: 15000, action: { label: 'Resolve', run: resolveHeld } })
+  }, [rojo])
+
   const serve = async () => {
     const h = window.harness
+    if (rojo?.hold) return heldMenu(serveRef.current as HTMLElement)
     try {
       if (rojo?.state === 'running') {
         sparks(serveRef.current)
@@ -97,7 +141,8 @@ export function Titlebar() {
     }
   }
 
-  const serveState = rojo?.state === 'running' ? 'running' : rojo?.state === 'crashed' ? 'crashed' : rojo?.state === 'starting' ? 'starting' : 'stopped'
+  const view = serveView(rojo, port)
+  const serveState = view.kind
 
   return (
     <header className={`titlebar${isMac ? ' mac' : ''}`}>
@@ -149,11 +194,12 @@ export function Titlebar() {
           ref={serveRef}
           className={`btn-forge ${serveState}`}
           onClick={() => void serve()}
-          title={serveState === 'running' ? `Rojo is serving on :${port} · click to restart (${keyHint('mod+shift+r')})` : serveState === 'crashed' ? `Rojo crashed: ${rojo?.detail ?? ''} · click to restart` : 'Start rojo serve'}
+          title={serveState === 'running' ? `${view.title} (${keyHint('mod+shift+r')})` : view.title}
           disabled={serveState === 'starting'}
+          aria-haspopup={serveState === 'held' || serveState === 'checking' ? 'menu' : undefined}
         >
-          {serveState === 'starting' ? <span className="spinner" /> : serveState === 'crashed' ? <Icon name="restart" size={12} /> : serveState === 'running' ? <span className="led ok" /> : <Icon name="play" size={12} />}
-          {serveState === 'running' ? 'Serving' : serveState === 'crashed' ? 'Crashed' : serveState === 'starting' ? 'Starting' : 'Serve'}
+          {serveState === 'starting' || serveState === 'checking' ? <span className="spinner" /> : serveState === 'held' ? <Icon name="warn" size={12} /> : serveState === 'crashed' || serveState === 'failed' ? <Icon name="restart" size={12} /> : serveState === 'running' ? <span className="led ok" /> : <Icon name="play" size={12} />}
+          {view.label}
           <span className="serve-port" style={{ opacity: 0.7, fontSize: 11 }}>:{port}</span>
         </button>
         <span className="tb-sep" />

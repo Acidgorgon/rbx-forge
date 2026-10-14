@@ -68,7 +68,7 @@ const methods = [
   'vfxTexStatus', 'vfxTexList', 'vfxTexGenerate', 'vfxTexPreview', 'vfxTexUpdate', 'vfxTexRate', 'vfxTexDelete', 'vfxTexUpload', 'vfxTexCheck', 'vfxTexFile',
   // Animation Lab (services/anim) + Labs model tiers
   'animStatus', 'animList', 'animGet', 'animImport', 'animPreviewImport', 'animChooseImport', 'animUpdate', 'animDelete', 'animRate',
-  'animLearn', 'animStyle', 'animCoverage', 'animCompose', 'animRunScript', 'animGetRig', 'animSetRig', 'animConvert', 'animRefine', 'animCancel', 'animChecks', 'animExamples',
+  'animLearn', 'animStyle', 'animCoverage', 'animMoveSets', 'animSetMoveSet', 'animAddMoveTag', 'animRemoveMoveTag', 'animRetag', 'animCompose', 'animRemixCandidates', 'animRemix', 'animRemixApply', 'animRemixMode', 'animSetRemixMode', 'animRunScript', 'animGetRig', 'animSetRig', 'animConvert', 'animRefine', 'animCancel', 'animChecks', 'animExamples',
   'animAddExample', 'animFile', 'animSaveThumb', 'animExport', 'animUpload', 'listAnimClips', 'getAnimPose', 'getLabModels', 'setLabModels',
   // Ability Composer (moves: animation + VFX + shake / screen / hit-stop / movement)
   'abilityStatus', 'abilityList', 'abilityGet', 'abilitySave', 'abilityDelete', 'abilityRate', 'abilityCompose', 'abilityCritique',
@@ -88,7 +88,7 @@ const methods = [
   // Principle priorities (learned from Labs ratings)
   'principlesView', 'principlesReset',
   // Forge Sync (Studio -> disk, gates rojo serve)
-  'syncStatus', 'syncResolve', 'syncResolveAll', 'syncServeAnyway', 'syncCommitStudioEdits', 'syncDisableLegacyPlugin', 'syncSaveTarget', 'syncSaveToRepo',
+  'syncStatus', 'syncResolve', 'syncResolveAll', 'syncServeAnyway', 'syncCommitStudioEdits', 'syncDisableLegacyPlugin', 'syncSaveTarget', 'syncSaveToRepo', 'syncDeleteCheck', 'syncDeleteInStudio',
   'forgeSyncSettings', 'setForgeSyncSettings',
   // Lab gating (decision log, decision models, cost per kept)
   'labGatingView', 'labGatingSet', 'labGatingRetrain', 'labGatingReset',

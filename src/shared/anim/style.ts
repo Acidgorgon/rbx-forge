@@ -222,10 +222,10 @@ export function buildProfile(tag: string, entries: AnimEntry[]): AnimStyleProfil
   }
 }
 
-function buildRigProfiles(entries: AnimEntry[], rig: RigType): { profiles: AnimStyleProfile[]; overall: AnimStyleProfile | null } {
+function buildRigProfiles(entries: AnimEntry[], rig: RigType, known: Set<string>): { profiles: AnimStyleProfile[]; overall: AnimStyleProfile | null } {
   const mine = entries.filter((e) => clipRig(e.clip) === rig)
   const tags = new Set<string>()
-  for (const e of mine) for (const t of e.tags) if (MOVE_TAGS[t]) tags.add(t)
+  for (const e of mine) for (const t of e.tags) if (known.has(t)) tags.add(t)
   const tagRig = (p: AnimStyleProfile | null) => (p && rig === 'R6' ? { ...p, rig, poses: p.poses.map((x) => ({ ...x, id: `r6-${x.id}` })) } : p)
   const profiles = [...tags].sort().map((t) => tagRig(buildProfile(t, mine))).filter((p): p is AnimStyleProfile => !!p)
   return { profiles, overall: tagRig(buildProfile('*', mine)) }
@@ -235,7 +235,10 @@ function buildRigProfiles(entries: AnimEntry[], rig: RigType): { profiles: AnimS
 // between rigs, poses do not (an R6 pose has no elbows or knees), so each rig learns from its own clips.
 // Video references (kind 'media') have no keys: they only add their measured timing to the
 // profiles of their tags (AnimStyleProfile.video and a note marked as from a video).
-export function buildStyle(entries: AnimEntry[], now = Date.now()): AnimStyle {
+// knownTags: the move types that get a profile (default the combat tags; the service passes every
+// move set's tags, see movesets.ts allKnownTags).
+export function buildStyle(entries: AnimEntry[], now = Date.now(), knownTags: readonly string[] = Object.keys(MOVE_TAGS)): AnimStyle {
+  const known = new Set(knownTags)
   const clips = entries.filter((e) => e.kind !== 'media')
   const videos = entries.filter((e) => e.kind === 'media' && e.video)
   const withVideo = (set: { profiles: AnimStyleProfile[]; overall: AnimStyleProfile | null }) => {
@@ -246,8 +249,8 @@ export function buildStyle(entries: AnimEntry[], now = Date.now()): AnimStyle {
     }
     return { profiles: set.profiles.map((p) => add(p)!), overall: add(set.overall) }
   }
-  const r15 = withVideo(buildRigProfiles(clips, 'R15'))
-  const r6 = withVideo(buildRigProfiles(clips, 'R6'))
+  const r15 = withVideo(buildRigProfiles(clips, 'R15', known))
+  const r6 = withVideo(buildRigProfiles(clips, 'R6', known))
   return { updatedAt: now, profiles: r15.profiles, overall: r15.overall, ...(r6.profiles.length || r6.overall ? { r6 } : {}) }
 }
 
@@ -305,10 +308,13 @@ export function profileSkill(p: AnimStyleProfile, examples: string[] = []): { na
 }
 
 // Library coverage: clips per tag, liked vs disliked, and the thin categories to feed next.
-export function coverage(all: AnimEntry[]): { tags: { tag: string; clips: number; liked: number; disliked: number }[]; thin: string[] } {
+// opts: the active move set's core tags (thin when under three usable clips) and its known tags
+// (default: combat, CORE_TAGS and MOVE_TAGS).
+export function coverage(all: AnimEntry[], opts: { core?: readonly string[]; known?: readonly string[] } = {}): { tags: { tag: string; clips: number; liked: number; disliked: number }[]; thin: string[] } {
+  const core: readonly string[] = opts.core ?? CORE_TAGS
   const entries = all.filter((e) => e.kind !== 'media')
   const rows = new Map<string, { tag: string; clips: number; liked: number; disliked: number }>()
-  for (const t of [...CORE_TAGS, ...Object.keys(MOVE_TAGS)]) rows.set(t, { tag: t, clips: 0, liked: 0, disliked: 0 })
+  for (const t of [...core, ...(opts.known ?? Object.keys(MOVE_TAGS))]) rows.set(t, { tag: t, clips: 0, liked: 0, disliked: 0 })
   for (const e of entries) {
     for (const t of e.tags) {
       if (t === 'example') continue
@@ -319,7 +325,7 @@ export function coverage(all: AnimEntry[]): { tags: { tag: string; clips: number
       rows.set(t, r)
     }
   }
-  const tags = [...rows.values()].filter((r) => r.clips || r.disliked || (CORE_TAGS as readonly string[]).includes(r.tag)).sort((a, b) => b.clips - a.clips || a.tag.localeCompare(b.tag))
-  const thin = tags.filter((r) => (CORE_TAGS as readonly string[]).includes(r.tag) && r.clips < 3).map((r) => r.tag)
+  const tags = [...rows.values()].filter((r) => r.clips || r.disliked || core.includes(r.tag)).sort((a, b) => b.clips - a.clips || a.tag.localeCompare(b.tag))
+  const thin = tags.filter((r) => core.includes(r.tag) && r.clips < 3).map((r) => r.tag)
   return { tags, thin }
 }

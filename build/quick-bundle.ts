@@ -15,6 +15,7 @@ import { privateKeyFrom, publicKeyBase64, sha256Hex, signManifest, validateManif
 import { shellInfoFromLock, type ShellInfo } from '../src/main/services/quick/shellInfo.ts'
 import { QUICK_UPDATE_PUBLIC_KEY } from '../src/main/services/quick/publicKey.ts'
 import { BUNDLE_ROOTS } from '../src/main/services/quick/zipPath.ts'
+import { BUNDLED_TEMPLATE_DIR, PLUGIN_TEMPLATE_FILE, PLUGIN_VERSION, pluginTemplateVersion } from '../src/shared/studio/plugin.ts'
 
 const ROOT = resolve(import.meta.dirname, '..')
 
@@ -124,6 +125,17 @@ export interface BundleOptions {
   shell: ShellInfo
 }
 
+// The Forge Bridge plugin template must ride along (main/studio/ForgeBridge.luau, emitted by
+// electron.vite.config.ts) and be the version this code installs; otherwise a quick update would
+// stamp the installer's older template with the new version (or ship plugin fixes nowhere).
+export function checkPluginTemplate(files: [string, Buffer][]): void {
+  const path = `main/${BUNDLED_TEMPLATE_DIR}/${PLUGIN_TEMPLATE_FILE}`
+  const hit = files.find(([p]) => p === path)
+  if (!hit) throw new Error(`${path} is missing from the build; electron.vite.config.ts emits it (run electron-vite build)`)
+  const version = pluginTemplateVersion(hit[1].toString('utf8'))
+  if (version !== PLUGIN_VERSION) throw new Error(`${path} is plugin template v${version} but the code installs v${PLUGIN_VERSION}; bump "-- forge-bridge-template:" in resources/studio/ForgeBridge.luau with PLUGIN_VERSION`)
+}
+
 // The zip and its signed envelope (quick-<channel>.json text).
 export function makeQuickBundle(opts: BundleOptions): { zip: Buffer; manifest: QuickManifest; envelope: string } {
   const built = resolve(opts.from)
@@ -131,6 +143,7 @@ export function makeQuickBundle(opts: BundleOptions): { zip: Buffer; manifest: Q
   for (const top of BUNDLE_ROOTS) {
     for (const full of listFiles(join(built, top))) files.push([relative(built, full).split(sep).join('/'), readFileSync(full)])
   }
+  checkPluginTemplate(files)
   if (files.length > 0xffff) throw new Error(`${files.length} files is more than a plain zip holds`)
   const zip = writeDeflateZip(files)
   const manifest: QuickManifest = validateManifest({

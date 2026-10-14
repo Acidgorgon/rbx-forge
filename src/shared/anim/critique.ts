@@ -11,6 +11,7 @@ import { clipSummary } from './compile.ts'
 import { measureClip, phases } from './measure.ts'
 import { applyAnimChanges } from './patch.ts'
 import { profileText } from './style.ts'
+import { missingParts, partMustFix } from './bodyparts.ts'
 
 export const ANIM_RUBRIC_WEIGHTS: Record<AnimRubricKey, number> = { silhouette: 0.2, timing: 0.2, weight: 0.16, arcs: 0.12, appeal: 0.14, cleanliness: 0.18 }
 export const ANIM_DEFAULT_THRESHOLD = 7.5
@@ -111,6 +112,30 @@ function extractJson(raw: string): unknown {
   return JSON.parse(text.slice(start, end + 1))
 }
 
+// A clip that fails a hard requirement (a body part the request names barely moves, see
+// bodyparts.ts) cannot score above MUST_FIX_CAP (half a point less per extra failure), carries the
+// failures in mustFix and leads its summary with them. Idempotent: the service applies it again
+// after the principle and reference blending.
+export const MUST_FIX_CAP = 6
+
+export function withMustFix(c: AnimCritique): AnimCritique {
+  const missing = missingParts(c.checks?.motion)
+  if (!missing.length) return c.mustFix?.length ? (({ mustFix: _m, ...rest }) => rest)(c) : c
+  const mustFix = missing.map(partMustFix)
+  const cap = MUST_FIX_CAP - (missing.length - 1) * 0.5
+  const lead = `Must fix: ${mustFix.join('; ')}.`
+  return { ...c, overall: Math.round(Math.min(c.overall, cap) * 10) / 10, mustFix, summary: c.summary.startsWith('Must fix:') ? c.summary : `${lead} ${c.summary}`.slice(0, 900) }
+}
+
+// Ranks iterations for "best": fewer failed requirements first, then the score. An iteration that
+// lost a named part's motion never beats one that had it.
+export function betterIteration<T extends { critique: AnimCritique }>(a: T, b: T): T {
+  const fa = missingParts(a.critique.checks?.motion).length
+  const fb = missingParts(b.critique.checks?.motion).length
+  if (fa !== fb) return fb < fa ? b : a
+  return b.critique.overall > a.critique.overall ? b : a
+}
+
 const cleanScore = (c: AnimCheckReport) => Math.round(((c.scores.sliding + c.scores.limits + c.scores.penetration) / 3) * 10) / 10
 
 // The critic's JSON -> AnimCritique. Cleanliness is never above what the checks measured.
@@ -123,7 +148,7 @@ export function parseAnimCritique(raw: string, checks: AnimCheckReport, referenc
   }
   scores.cleanliness = Math.min(scores.cleanliness, cleanScore(checks) + 0.5)
   const changes = Array.isArray(data.changes) ? (data.changes as AnimChange[]).filter((c) => c && typeof c === 'object' && typeof (c as { kind?: unknown }).kind === 'string').slice(0, 8) : []
-  return { scores, overall: animOverall(scores), summary: String(data.summary ?? '').slice(0, 600), changes, checks, references }
+  return withMustFix({ scores, overall: animOverall(scores), summary: String(data.summary ?? '').slice(0, 600), changes, checks, references })
 }
 
 // No vision model: scores and changes from the checks and the learned profile.
@@ -159,14 +184,14 @@ export function heuristicAnimCritique(clip: AnimClip, checks: AnimCheckReport, p
     appeal: Math.round(Math.min(8, (checks.scores.readability + timing) / 2) * 10) / 10,
     cleanliness: cleanScore(checks)
   }
-  return {
+  return withMustFix({
     scores,
     overall: animOverall(scores),
     summary: `Numbers-only check (no vision model): checks ${checks.overall}/10${profile ? ` against the "${profile.tag}" profile` : ''}. ${notes.join('; ') || checks.issues.slice(0, 2).map((i) => i.message).join('; ') || 'No issues found.'}`.trim(),
     changes: changes.slice(0, 6),
     checks,
     references
-  }
+  })
 }
 
 // ------------------------------------------------------------------ loop
@@ -188,6 +213,9 @@ export interface AnimRefineDeps {
   // Lab gating (services/gating): true after a critique below the threshold with rounds left ends
   // the loop now (score plateau).
   shouldStop?(critique: AnimCritique, iteration: number, remaining: number): Promise<boolean>
+  // Replaces applying the critic's key changes: remixed clips re-plan their edit ops from the critique
+  // and re-apply them to the base clip (remix.ts). applied 0 ends the loop ("no-changes").
+  adjust?(clip: AnimClip, critique: AnimCritique, iteration: number): Promise<{ clip: AnimClip; applied: number; rejected?: { change: unknown; reason: string }[] }>
 }
 
 export type AnimStopReason = 'threshold' | 'max-iterations' | 'no-changes' | 'cancelled' | 'plateau'
@@ -209,15 +237,27 @@ export async function animRefineLoop(initial: AnimClip, deps: AnimRefineDeps, op
     const it: AnimRefineIteration = { n, clip, frames, times, critique, rejected: [] }
     iterations.push(it)
     previous = critique
-    if (critique.overall >= threshold || n === max) {
+    const passed = critique.overall >= threshold && !critique.mustFix?.length
+    if (passed || n === max) {
       await deps.onIteration?.(it)
-      stop = critique.overall >= threshold ? 'threshold' : 'max-iterations'
+      stop = passed ? 'threshold' : 'max-iterations'
       break
     }
     if (await deps.shouldStop?.(critique, n, max - n)) {
       await deps.onIteration?.(it)
       stop = 'plateau'
       break
+    }
+    if (deps.adjust) {
+      const a = await deps.adjust(clip, critique, n)
+      it.rejected = a.rejected ?? []
+      await deps.onIteration?.(it)
+      if (!a.applied) {
+        stop = 'no-changes'
+        break
+      }
+      clip = a.clip
+      continue
     }
     const r = applyAnimChanges(clip, critique.changes)
     it.rejected = r.rejected
@@ -229,7 +269,7 @@ export async function animRefineLoop(initial: AnimClip, deps: AnimRefineDeps, op
     clip = { ...r.clip, patches: [...(clip.patches ?? []), ...r.applied] }
   }
   if (!iterations.length) throw new Error('refinement was cancelled before the first render')
-  const best = iterations.reduce((a, b) => (b.critique.overall > a.critique.overall ? b : a), iterations[0])
+  const best = iterations.reduce((a, b) => betterIteration(a, b), iterations[0])
   return { best, iterations, stop }
 }
 

@@ -157,6 +157,13 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
       changed()
       return entry
     },
+    async syncDeleteCheck(instancePath) {
+      return instancePath.length >= 2 ? { ok: true as const } : { reason: 'services cannot be deleted' }
+    },
+    async syncDeleteInStudio(instancePath) {
+      await delay(200)
+      log(`deleted ${instancePath.join('.')} in Studio`)
+    },
     async syncResolve(placeKey, file, take) {
       await delay(200)
       resolveOne(placeKey, file, take)

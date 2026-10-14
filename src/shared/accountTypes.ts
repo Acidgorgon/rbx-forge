@@ -95,6 +95,12 @@ export interface SignInProgress {
   // The tool may ask for a code shown in the browser (Claude: "Paste code here if prompted").
   acceptsCode?: boolean
   message?: string
+  // Codex: installing the CLI first, waiting on a device code, or the browser login.
+  stage?: 'installing' | 'device' | 'browser'
+  // Codex device sign-in: the one-time code to enter at `url`.
+  userCode?: string
+  // Where to read more when it failed for a reason the user has to fix (e.g. no npm).
+  helpUrl?: string
 }
 
 export interface AccountsEvents {

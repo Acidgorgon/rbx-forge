@@ -10,8 +10,10 @@ import type { Providers } from '../agent/providers.ts'
 import { codexService } from '../agent/codex/service.ts'
 import { ClaudeAccount } from './claude.ts'
 import { codexAccountProvider } from './codex.ts'
+import { applyCodexDefaults } from './codexDefaults.ts'
+import type { ArtSettings } from '../../shared/artTypes.ts'
 import { accountRegistry, type AccountRegistry } from './registry.ts'
-import { AccountsService } from './service.ts'
+import { AccountsService, keyCheckMessage } from './service.ts'
 
 export function accountId(v: unknown): AccountId {
   if (typeof v === 'string' && (ACCOUNT_IDS as string[]).includes(v)) return v as AccountId
@@ -34,13 +36,13 @@ export function claudeAccount(credentials: Credentials, env: NodeJS.ProcessEnv =
 export function registerAccountsIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
-  deps: { credentials: Credentials; providers: Providers; providersChanged: () => Promise<void>; registry?: AccountRegistry }
+  deps: { credentials: Credentials; providers: Providers; providersChanged: () => Promise<void>; registry?: AccountRegistry; fetchFn?: typeof fetch }
 ): { service: AccountsService; dispose(): void } {
   const registry = deps.registry ?? accountRegistry
   const claude = claudeAccount(deps.credentials)
   const unregisterClaude = registry.register(claude)
   // Replaces the Codex placeholder on the OpenAI card (codexService() is configured before this runs).
-  const unregisterCodex = registry.register(codexAccountProvider(codexService))
+  const unregisterCodex = registry.register(codexAccountProvider(codexService, { afterSignIn: () => codexDefaults(ctx, deps) }))
   const service = new AccountsService({
     credentials: deps.credentials,
     providers: deps.providers,
@@ -79,4 +81,31 @@ export function registerAccountsIpc(
       service.dispose()
     }
   }
+}
+
+// After a ChatGPT sign-in: Codex becomes the default chat model / image backend when no OpenAI API
+// key works (codexDefaults.ts). The key check is the same GET /models the card's test runs.
+async function codexDefaults(ctx: HarnessContext, deps: { credentials: Credentials; providers: Providers; fetchFn?: typeof fetch }): Promise<string | null> {
+  const r = await applyCodexDefaults({
+    openAiKeyWorks: async () => {
+      if (!(await deps.credentials.getKey('openai'))) return false
+      const ep = await deps.providers.endpoint('openai')
+      if ('error' in ep) return false
+      try {
+        const res = await (deps.fetchFn ?? fetch)(`${ep.baseUrl}/models`, { headers: ep.headers, signal: AbortSignal.timeout(8000) })
+        await res.arrayBuffer().catch(() => undefined)
+        if (res.status === 401 || res.status === 403) return false
+        return keyCheckMessage(res.status).ok ? true : null
+      } catch {
+        return null
+      }
+    },
+    defaultModel: () => deps.providers.defaultModel(),
+    providerReady: (p) => deps.providers.ready(p),
+    setDefaultModel: (c) => deps.providers.setDefaultModel(c.provider, c.model),
+    imageBackend: () => ctx.getSetting<Partial<ArtSettings>>('art.settings', {})?.backend,
+    setImageBackend: (backend) => ctx.setSetting('art.settings', { ...ctx.getSetting<Partial<ArtSettings>>('art.settings', {}), backend })
+  })
+  if (r.message) ctx.log({ service: 'agent', stream: 'info', text: `[codex] ${r.message}` })
+  return r.message
 }

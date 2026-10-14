@@ -47,7 +47,7 @@ import type { GatingApi, GatingEvents } from './gating/types.ts'
 export type * from './gating/types.ts'
 import type { RestateApi, RestateCard } from './restateTypes.ts'
 import type { ChatModesApi } from './chatModesApi.ts'
-import type { ChatMode, DiffCardData, PlanCardData } from './chatModes.ts'
+import type { ChatMode, ChatTodo, DiffCardData, PlanCardData } from './chatModes.ts'
 export type * from './restateTypes.ts'
 import type { ThumbsApi, ThumbsEvents } from './thumbs/types.ts'
 export type * from './thumbs/types.ts'
@@ -76,6 +76,11 @@ export interface ServiceStatus {
   restarts: number
   // Short detail for the status bar, e.g. "rojo serve on :34872" or "rojo not found".
   detail?: string
+  // rojo: serve held by the Forge Sync gate for this place file ('blocked': conflicts to resolve or
+  // "serve anyway"; 'checking': waiting for the Studio snapshot).
+  hold?: { gate: 'checking' | 'blocked'; file: string }
+  // rojo: crashed several times in a row and is no longer restarted automatically (Restart button).
+  gaveUp?: boolean
 }
 
 export interface LogLine {
@@ -211,6 +216,11 @@ export interface AppSettings {
   serveAllPlaces: boolean
   // Route simple chat turns to a cheaper model tier (agent/budget routeModel); off = always the chosen model.
   autoRoute: boolean
+  // Delete confirmations ("Don't ask again" turns one off; Settings > Editor turns it back on). File
+  // deletes go to the Recycle Bin / Trash; Delete in Studio is undone with Ctrl+Z in Studio. Deletes
+  // that would lose unsaved editor changes are confirmed regardless.
+  confirmFileDelete: boolean
+  confirmStudioDelete: boolean
 }
 
 export interface PlacesChanged {
@@ -352,6 +362,8 @@ export interface ChatSession {
   chatMode?: ChatMode
   // A turn is running in main (set when listed mid-turn, e.g. after a renderer reload).
   busy?: boolean
+  // The agent's task list (update_todos), shown as a checklist card in the thread.
+  todos?: ChatTodo[]
 }
 
 export type TestAgentState = 'queued' | 'running' | 'passed' | 'failed' | 'error' | 'cancelled'

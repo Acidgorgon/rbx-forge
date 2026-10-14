@@ -4,7 +4,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { git, INVENTORY_SERVICE } from '../lib/project.ts'
 import { write } from '../../fixture.ts'
-import { bodyText, check, CENTER, dismissToasts, mod, showSide, SkipFlow, waitText } from '../lib/ui.ts'
+import { bodyText, check, CENTER, dismissToasts, mod, openPage, showSide, SkipFlow, waitText } from '../lib/ui.ts'
 import type { Flow } from './types.ts'
 
 const MARK = '-- forge-e2e edit'
@@ -190,7 +190,34 @@ export const coreFlows: Flow[] = [
       await waitDisk('src/server/E2eRenamed.server.luau', false)
       await page.waitForFunction(() => ![...document.querySelectorAll('.tab')].some((t) => t.textContent?.includes('E2eRenamed')), undefined, { timeout: 5000 })
       await page.waitForFunction(() => ![...document.querySelectorAll('aside.side [role="treeitem"]')].some((t) => t.textContent?.includes('E2eRenamed')), undefined, { timeout: 10_000 })
+
+      // "Don't ask again": the next delete (Del key) goes straight to the trash; Settings turns it back on.
+      write(root, 'src/server/E2eSkipA.server.luau', 'print("a")\n')
+      write(root, 'src/server/E2eSkipB.server.luau', 'print("b")\n')
+      await filter.fill('E2eSkipA')
+      const a = side.locator('[role="treeitem"]', { hasText: 'E2eSkipA' }).first()
+      await a.waitFor({ state: 'visible', timeout: 15_000 })
+      await a.click({ button: 'right' })
+      await menuItem(/^Delete/).click()
+      await dialog.getByLabel(/Don't ask again/).check()
+      await dialog.getByRole('button', { name: /Move to/ }).click()
+      await waitDisk('src/server/E2eSkipA.server.luau', false)
+      await filter.fill('E2eSkipB')
+      const b = side.locator('[role="treeitem"]', { hasText: 'E2eSkipB' }).first()
+      await b.waitFor({ state: 'visible', timeout: 15_000 })
+      await b.click()
+      await page.keyboard.press('Delete')
+      await waitDisk('src/server/E2eSkipB.server.luau', false)
+      check((await dialog.count()) === 0, 'a delete asked again after "Don\'t ask again"')
       await filter.fill('')
+      await openPage(page, 'Settings')
+      const sw = page.locator('#set-editor').getByLabel('Confirm file deletes')
+      await sw.waitFor({ state: 'visible', timeout: 10_000 })
+      check(!(await sw.isChecked()), 'Settings > Editor: "Confirm file deletes" still on after "Don\'t ask again"')
+      await sw.check()
+      for (let i = 0; i < 30 && !(await page.evaluate(() => (window as unknown as { harness: { getAppSettings(): Promise<{ confirmFileDelete: boolean }> } }).harness.getAppSettings().then((x) => x.confirmFileDelete))); i++) await page.waitForTimeout(100)
+      check(await sw.isChecked(), 'Settings > Editor: "Confirm file deletes" did not turn back on')
+      await showSide(page, 'Explorer')
     }
   },
   {

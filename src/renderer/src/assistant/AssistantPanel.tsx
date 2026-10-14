@@ -8,118 +8,23 @@ import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
 import { ModelPicker } from '../components/ModelPicker'
 import { useMenu, type MenuEntry } from '../components/Menu'
-import { ChecklistCard, GroupTokens, isGroup, MentionMenu, mentionQuery, ParticipantsBar, PlanCard, SpeakerHead, useActiveChat, useMentionOptions, type MentionOption } from './GroupChat'
+import { GroupTokens, isGroup, MentionMenu, mentionQuery, ParticipantsBar, useActiveChat, useMentionOptions, type MentionOption } from './GroupChat'
 import { useProblems } from '../shell/problems'
 import { ago, fmtTokens, fmtUsd, keyHint, errorText } from '../lib/format'
 import { basename, scriptsFlat } from '../lib/roblox'
 import { MemoryProposals } from '../pages/memory/MemoryProposals'
 import { addImageFile, MAX_IMAGES_PER_MESSAGE, onAttachRequest } from './attachments'
-import { AttachGlyph, ImageThumb, MessageImages } from './ChatImages'
+import { AttachGlyph, ImageThumb } from './ChatImages'
 import { EffortPicker, RouteSummary, useVision } from './EffortPicker'
 import { acceptedImageType } from './imageScale'
-import { RestateMessage } from './RestateMessage'
 import { AccountsPrompt } from '../accounts/AccountsPrompt'
-import { ConclusionCard, PatchCard, ReviewCard, SettingsNotice, splitStance, StancePill } from './GroupCards'
 import './chatextras.css'
-import { ModeBadge, ModePill, cycleMode, useChatMode } from './commands/ModePill'
-import { PlanModeCard } from './commands/PlanModeCard'
-import { DiffCard } from './commands/DiffCard'
-import { CommandOutput, slashMatches, useCommandList, useSlashRunner } from './commands/slash'
+import { ModePill, cycleMode, useChatMode } from './commands/ModePill'
+import { slashMatches, useCommandList, useSlashRunner } from './commands/slash'
+import { MessageList, turnStart, useTick } from './Thread'
+import { elapsed } from './chatItems'
 
-type Item = { kind: 'msg'; m: ChatMessage } | { kind: 'tools'; ms: ChatMessage[]; id: string }
-
-export function groupMessages(messages: ChatMessage[]): Item[] {
-  const out: Item[] = []
-  for (const m of messages) {
-    if (m.role === 'tool') {
-      const last = out[out.length - 1]
-      if (last && last.kind === 'tools' && last.ms[0].agentId === m.agentId && last.ms[0].speaker?.model === m.speaker?.model) last.ms.push(m)
-      else out.push({ kind: 'tools', ms: [m], id: m.id })
-    } else out.push({ kind: 'msg', m })
-  }
-  return out
-}
-
-function ToolRow({ m, running }: { m: ChatMessage; running?: boolean }) {
-  const [open, setOpen] = useState(false)
-  const failed = /^(error|failed)\b/i.test(m.text.trim())
-  const body = m.text.trim()
-  return (
-    <div className={`tool${open ? ' open' : ''}`}>
-      <button className="tool-head" onClick={() => body && setOpen(!open)} title={m.tool ? `${m.tool.name} ${m.tool.input}` : undefined}>
-        {running ? <span className="spinner" /> : failed ? <Icon name="x" size={12} className="tool-bad" /> : <Icon name="check" size={12} className="tool-ok" />}
-        <span className="tool-name">{m.tool?.name ?? 'tool'}</span>
-        <span className="tool-input">{m.tool?.input}</span>
-      </button>
-      {open && <pre className="tool-body selectable">{body}</pre>}
-    </div>
-  )
-}
-
-export function ToolGroup({ ms, last, busy }: { ms: ChatMessage[]; last: boolean; busy: boolean }) {
-  const [expanded, setExpanded] = useState(false)
-  const shown = ms.length > 4 && !expanded ? ms.slice(-2) : ms
-  return (
-    <div className="tools">
-      {ms[0].agentId !== 'main' && <AgentTag id={ms[0].agentId} />}
-      {ms.length > 4 && !expanded && (
-        <button className="tool-more" onClick={() => setExpanded(true)}>
-          <Icon name="chev" size={11} /> {ms.length} tool calls
-        </button>
-      )}
-      {shown.map((m, i) => (
-        <ToolRow key={m.id} m={m} running={busy && last && i === shown.length - 1} />
-      ))}
-    </div>
-  )
-}
-
-function AgentTag({ id }: { id: string }) {
-  const { state, actions } = useStore()
-  const agent = state.agents.find((a) => a.id === id)
-  return (
-    <button className="agent-tag" title={agent?.scenario} onClick={() => actions.openTranscript(id, agent ? `Agent: ${agent.scenario.slice(0, 24)}` : 'Agent')}>
-      <Icon name="bot" size={12} /> agent {agent ? `· ${agent.state}` : ''}
-    </button>
-  )
-}
-
-export function Message({ m }: { m: ChatMessage }) {
-  const chat = useActiveChat()
-  if (m.role === 'user') {
-    return (
-      <div className="m-user">
-        <span className="m-who">you{m.mode && <ModeBadge mode={m.mode} />}</span>
-        <div className="m-body">
-          {m.text && <div className="m-text selectable">{m.text}</div>}
-          {m.images?.length ? <MessageImages images={m.images} size="sm" /> : null}
-        </div>
-      </div>
-    )
-  }
-  if (m.command) return <CommandOutput m={m} />
-  if (m.role === 'system') return m.settingsLink ? <SettingsNotice m={m} /> : <div className="m-system selectable">{m.text}</div>
-  if (m.planMode) return <PlanModeCard m={m} />
-  if (m.diff) return <DiffCard m={m} />
-  if (m.card === 'plan') return <PlanCard m={m} />
-  if (m.card === 'checklist') return <ChecklistCard m={m} />
-  if (m.card === 'restate' && m.restate) return <RestateMessage m={m} />
-  if (m.card === 'conclusion' && m.conclusion) return <ConclusionCard m={m} />
-  if (m.card === 'patch' && m.patch) return <PatchCard m={m} />
-  if (m.card === 'review' && m.review) return <ReviewCard m={m} />
-  const fromAgent = m.agentId && m.agentId !== 'main'
-  const host = !!chat && !!m.speaker && m.speaker.provider === chat.provider && m.speaker.model === chat.model
-  const st = m.speaker && isGroup(chat) ? splitStance(m.text) : { text: m.text, stance: null }
-  return (
-    <div className="m-assistant selectable">
-      {fromAgent && <AgentTag id={m.agentId} />}
-      {m.speaker && isGroup(chat) && <SpeakerHead s={m.speaker} host={host} chat={chat} />}
-      {st.text && <Markdown text={st.text} />}
-      {st.stance && <StancePill stance={st.stance} />}
-      {m.images?.length ? <MessageImages images={m.images} /> : null}
-    </div>
-  )
-}
+export { Message, MessageList } from './Thread'
 
 // ---------------------------------------------------------------- orchestrator board
 
@@ -439,6 +344,8 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
   }
 
   const modeInfo = MODES.find((m) => m.id === mode) ?? MODES[0]
+  const now = useTick(busy)
+  const started = busy && id ? turnStart(state.messages[id] ?? []) : null
 
   return (
     <div className="composer">
@@ -503,12 +410,13 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
           </div>
         )}
         <div className="cmp-line">
-          <span className="cmp-prompt">&gt;</span>
+          <span className="cmp-prompt" aria-hidden>&gt;</span>
           <textarea
             ref={ref}
             rows={1}
             value={text}
             placeholder={busy ? 'working…' : 'Type a message, / for commands, @ for files'}
+            aria-label="Message"
             onChange={(e) => {
               setText(e.target.value)
               setCaret(e.target.selectionStart ?? e.target.value.length)
@@ -519,51 +427,47 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
             onPaste={onPaste}
             spellCheck={false}
           />
-          <input
-            ref={fileInput}
-            type="file"
-            accept="image/png,image/jpeg,image/webp,image/gif"
-            multiple
-            hidden
-            onChange={(e) => {
-              const files = [...(e.target.files ?? [])]
-              e.target.value = ''
-              void addFiles(files)
-            }}
-          />
+        </div>
+        <input
+          ref={fileInput}
+          type="file"
+          accept="image/png,image/jpeg,image/webp,image/gif"
+          multiple
+          hidden
+          onChange={(e) => {
+            const files = [...(e.target.files ?? [])]
+            e.target.value = ''
+            void addFiles(files)
+          }}
+        />
+        <div className="cmp-tools" onClick={(e) => e.stopPropagation()}>
           <span className="cmp-attach-wrap" title={vision ? 'Attach images (or paste / drop them)' : visionHint}>
             <button
               type="button"
               className="cmp-attach"
               aria-label="Attach images"
               disabled={!vision || busy || images.length >= MAX_IMAGES_PER_MESSAGE}
-              onClick={(e) => {
-                e.stopPropagation()
-                fileInput.current?.click()
-              }}
+              onClick={() => fileInput.current?.click()}
             >
               <AttachGlyph size={14} />
             </button>
           </span>
-          {busy ? (
-            <button className="cmp-send" onClick={() => void actions.stop()} title="Stop">
-              <Icon name="stop" size={14} />
-            </button>
-          ) : (
-            <button className="cmp-send" onClick={submit} disabled={(!text.trim() && !images.length) || adding > 0} title="Send (Enter) · Shift+Enter for a new line">
-              <Icon name="upload" size={15} />
-            </button>
-          )}
-        </div>
-      </div>
-      <div className="cmp-hint" title={modeInfo.hint}>
-        <span className="cmp-hint-l">
           <ModePill mode={chatMode.mode} setMode={chatMode.setMode} />
           <span className="cm-cycle" title={`Shift+Tab cycles the chat mode · routing: ${modeInfo.label}`}>
             <span className="kc">Shift</span>+<span className="kc">Tab</span>
           </span>
-        </span>
-        <span className="kc cmp-send-kc" title="Send · Shift+Enter for a new line">↵</span>
+          <span className="grow" />
+          {busy && started && <span className="cmp-elapsed" title="Time this turn has been working">{elapsed(now - started)}</span>}
+          {busy ? (
+            <button type="button" className="cmp-send stop" onClick={() => void actions.stop()} title="Stop" aria-label="Stop">
+              <Icon name="stop" size={12} />
+            </button>
+          ) : (
+            <button type="button" className="cmp-send" onClick={submit} disabled={(!text.trim() && !images.length) || adding > 0} title="Send (Enter) · Shift+Enter for a new line" aria-label="Send">
+              <Icon name="arrowUp" size={15} />
+            </button>
+          )}
+        </div>
       </div>
       {slashRunner.node}
     </div>
@@ -602,7 +506,6 @@ export function AssistantPanel() {
   const id = state.activeChatId
   const messages = useMemo(() => (id ? state.messages[id] ?? [] : []), [id, state.messages])
   const busy = id ? !!state.busy[id] : false
-  const items = useMemo(() => groupMessages(messages), [messages])
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const [mode, setModeState] = useState<OrchestrateMode>('auto')
@@ -631,8 +534,8 @@ export function AssistantPanel() {
   useLayoutEffect(() => {
     const el = scroller.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [items, busy, boards.length])
-  useChatScroll(id, scroller, stick, items.length)
+  }, [messages, busy, boards.length, chat?.todos])
+  useChatScroll(id, scroller, stick, messages.length)
 
   const history = (el: HTMLElement) => {
     const entries: MenuEntry[] = [{ header: 'Threads' }]
@@ -700,17 +603,10 @@ export function AssistantPanel() {
               {!chat && <div style={{ marginTop: 10 }}><ParticipantsBar compact /></div>}
             </div>
           )}
-          {items.map((it, i) =>
-            it.kind === 'msg' ? <Message key={it.m.id} m={it.m} /> : <ToolGroup key={it.id} ms={it.ms} last={i === items.length - 1} busy={busy} />
-          )}
+          <MessageList chat={chat} messages={messages} busy={busy} thinking={thinking} />
           {boards.map((b) => (
             <Board key={b.runId} b={b} />
           ))}
-          {thinking && (
-            <div className="thinking" aria-label="Working">
-              <span /><span /><span />
-            </div>
-          )}
           <MemoryProposals sessionId={id} />
         </div>
         <Composer mode={mode} setMode={setMode} />

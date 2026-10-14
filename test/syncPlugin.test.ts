@@ -13,6 +13,7 @@ import { StudioBridge } from '../src/main/services/studio/bridge.ts'
 import { SyncEngine } from '../src/main/services/sync/engine.ts'
 import { loadPlaces, placeFor } from '../src/main/services/sync/mapping.ts'
 import { SyncService } from '../src/main/services/sync/service.ts'
+import { deleteInStudio, deleteJob } from '../src/main/services/studio/deleteInstance.ts'
 import { findLune } from '../src/main/services/tests/lune.ts'
 import { pluginSource } from '../src/shared/studio/plugin.ts'
 import type { SyncStatus } from '../src/shared/sync/types.ts'
@@ -53,7 +54,13 @@ function gentree(): string {
   return root
 }
 
-async function runStudio(scenario: string): Promise<{ root: string; out: string; status: SyncStatus }> {
+interface During {
+  bridge: StudioBridge
+  service: SyncService
+  trees: string[][]
+}
+
+async function runStudio(scenario: string, during?: (env: During) => Promise<void>): Promise<{ root: string; out: string; status: SyncStatus; trees: string[][]; final: string[] }> {
   const root = gentree()
   const service = new SyncService({
     root,
@@ -67,18 +74,29 @@ async function runStudio(scenario: string): Promise<{ root: string; out: string;
   await service.start()
   const bridge = new StudioBridge({ port: 0, holdMs: 200 })
   await bridge.start()
-  bridge.setSyncHandler(service.handler)
+  // Every outline the plugin posts, as the Game tab sees it (live tree paths, joined with dots).
+  const trees: string[][] = []
+  const paths = () => (service.liveTree(join(root, 'default.project.json')) ?? service.liveTree('default.project.json'))?.nodes.map((n) => n.path.join('.')).sort() ?? []
+  bridge.setSyncHandler({
+    ...service.handler,
+    outline: async (body) => {
+      const answer = await service.handler.outline!(body)
+      trees.push(paths())
+      return answer
+    }
+  })
   try {
     const dir = mkdtempSync(join(tmpdir(), 'forge-plugin-run-'))
     dirs.push(dir)
     const template = readFileSync(resolve(import.meta.dirname, '..', 'resources', 'studio', 'ForgeBridge.luau'), 'utf8')
     writeFileSync(join(dir, 'ForgeBridge.luau'), pluginSource(template, { port: bridge.port }))
     const harness = resolve(import.meta.dirname, 'fixtures', 'forgeBridgeStudio.luau')
-    const out = await new Promise<string>((res, rej) =>
+    const run = new Promise<string>((res, rej) =>
       execFile(lune!, ['run', harness, join(dir, 'ForgeBridge.luau'), scenario], { cwd: dir, timeout: 60_000 }, (err, stdout, stderr) => (err ? rej(new Error(`${err.message}\n${stdout}\n${stderr}`)) : res(stdout + stderr)))
     )
+    const [out] = await Promise.all([run, during?.({ bridge, service, trees })])
     assert.match(out, /SCENARIO DONE/, out)
-    return { root, out, status: await service.status() }
+    return { root, out, status: await service.status(), trees, final: paths() }
   } finally {
     await bridge.stop()
     service.close()
@@ -102,4 +120,64 @@ test('plugin: mapped folders Rojo builds after the bridge started are synced (fr
 test('plugin: Script Editor text in an unpublished place syncs without a Source change', { skip }, async () => {
   const { root, out } = await runStudio('editor-only')
   assert.equal(readFileSync(join(root, 'src/client/Client/init.client.luau'), 'utf8'), 'print("typed")\n', out)
+})
+
+test('plugin: Studio-only instances deleted in Studio leave the Game tab outline', { skip }, async () => {
+  const { out, trees, final } = await runStudio('outline-removal')
+  assert.ok(
+    trees.some((t) => t.includes('StarterPlayer.StarterPlayerScripts.LocalScript') && t.includes('StarterPlayer.StarterCharacterScripts.Health')),
+    `${out}\n${JSON.stringify(trees)}`
+  )
+  assert.ok(!final.includes('StarterPlayer.StarterPlayerScripts.LocalScript'), `${out}\n${JSON.stringify(final)}`)
+  assert.ok(!final.includes('StarterPlayer.StarterCharacterScripts.Health'), `${out}\n${JSON.stringify(final)}`)
+  // The mapped folder and the default container stay.
+  assert.ok(final.includes('StarterPlayer.StarterPlayerScripts.Client'), JSON.stringify(final))
+  assert.ok(final.includes('StarterPlayer.StarterCharacterScripts'), JSON.stringify(final))
+})
+
+test('plugin: Delete in Studio removes a Studio-only instance undoably and refuses synced or ambiguous ones', { skip }, async () => {
+  const refusals: Record<string, string> = {}
+  let deleted = false
+  const { out, final } = await runStudio('studio-delete', async ({ bridge, service, trees }) => {
+    const until = Date.now() + 30_000
+    while (!trees.some((t) => t.includes('StarterPlayer.StarterPlayerScripts.LocalScript')) && Date.now() < until) await new Promise((r) => setTimeout(r, 100))
+    // Straight to the plugin (Forge's own checks skipped): the plugin refuses on its own.
+    const pluginSays = async (key: string, path: string[], className?: string) => {
+      try {
+        await bridge.run(deleteJob(path, className), () => ({}), { acceptTimeoutMs: 10_000, timeoutMs: 15_000 })
+        refusals[key] = 'deleted'
+      } catch (e) {
+        refusals[key] = (e as Error).message
+      }
+    }
+    await pluginSays('root', ['StarterPlayer', 'StarterPlayerScripts', 'Client'])
+    await pluginSays('inRoot', ['StarterPlayer', 'StarterPlayerScripts', 'Client', 'Client'])
+    await pluginSays('holder', ['StarterPlayer', 'StarterPlayerScripts'])
+    await pluginSays('default', ['StarterPlayer', 'StarterCharacterScripts'])
+    await pluginSays('dup', ['ReplicatedStorage', 'Dup'])
+    await pluginSays('service', ['ReplicatedStorage'])
+    await pluginSays('stale', ['StarterPlayer', 'StarterPlayerScripts', 'LocalScript'], 'Script')
+    await pluginSays('gone', ['StarterPlayer', 'StarterPlayerScripts', 'Nope'])
+    // Forge's own refusal (project mapping) before anything reaches Studio.
+    const deps = { bridge, refusal: (p: string[]) => service.deleteRefusal('default.project.json', p) }
+    await assert.rejects(deleteInStudio(deps, ['StarterPlayer', 'StarterPlayerScripts']), /holds StarterPlayer\.StarterPlayerScripts\.Client/)
+    await deleteInStudio(deps, ['StarterPlayer', 'StarterPlayerScripts', 'LocalScript'], 'LocalScript')
+    deleted = true
+  })
+  assert.ok(deleted, out)
+  assert.match(refusals.root, /synced to a file/, JSON.stringify(refusals))
+  assert.match(refusals.inRoot, /synced to a file/, JSON.stringify(refusals))
+  assert.match(refusals.holder, /holds StarterPlayer\.StarterPlayerScripts\.Client/, JSON.stringify(refusals))
+  assert.match(refusals.default, /default StarterCharacterScripts container/, JSON.stringify(refusals))
+  assert.match(refusals.dup, /2 instances named ReplicatedStorage\.Dup/, JSON.stringify(refusals))
+  assert.match(refusals.service, /is a service/, JSON.stringify(refusals))
+  assert.match(refusals.stale, /is a LocalScript in Studio now, not a Script/, JSON.stringify(refusals))
+  assert.match(refusals.gone, /not in Studio/, JSON.stringify(refusals))
+  assert.match(out, /LOOSE DELETED/, out)
+  // One recording, committed: Ctrl+Z in Studio restores it. Refusals record nothing.
+  assert.equal(out.match(/RECORDING /g)?.length, 1, out)
+  assert.match(out, /RECORDING Commit Forge: delete LocalScript/, out)
+  // The Game tab dropped it (and its child) right away.
+  assert.ok(!final.some((p) => p.startsWith('StarterPlayer.StarterPlayerScripts.LocalScript')), JSON.stringify(final))
+  assert.ok(final.includes('ReplicatedStorage.Dup'), JSON.stringify(final))
 })

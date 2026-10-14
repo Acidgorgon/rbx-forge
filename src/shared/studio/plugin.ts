@@ -9,8 +9,23 @@
 // Roblox Studio does not run on Linux, so there is no folder there.
 
 export const PLUGIN_FILE = 'ForgeBridge.rbxmx'
-export const PLUGIN_VERSION = 6 // 2: Forge Sync (snapshot + change stream); 3: unsynced Instance-reference report; 4: viewport snapshot job (Thumbnail Lab); 5: Game-tab outline of the mapped services (Studio-only instances); 6: sync picks up mapped roots created after it started (Rojo connecting later) and Script Editor text in unpublished places
+export const PLUGIN_VERSION = 7 // 2: Forge Sync (snapshot + change stream); 3: unsynced Instance-reference report; 4: viewport snapshot job (Thumbnail Lab); 5: Game-tab outline of the mapped services (Studio-only instances); 6: sync picks up mapped roots created after it started (Rojo connecting later) and Script Editor text in unpublished places; 7: the Game-tab outline keeps up with deletes, and Delete in Studio (the one, user-confirmed write; Ctrl+Z restores)
 const VERSION_RE = /--\s*forge-bridge-version:\s*(\d+)/
+// The template's own version line (resources/studio/ForgeBridge.luau). Templates from before v7 have
+// none; they are v6 or older.
+const TEMPLATE_RE = /--\s*forge-bridge-template:\s*(\d+)/
+const UNMARKED_TEMPLATE_VERSION = 6
+
+// The plugin template ships next to the main bundle (out/main/studio/ForgeBridge.luau, emitted by
+// electron.vite.config.ts) so a quick update (code only: out/main, out/preload, out/renderer) carries
+// plugin fixes too; resources/studio (extraResources) is the full installer's copy and the fallback.
+export const PLUGIN_TEMPLATE_FILE = 'ForgeBridge.luau'
+export const BUNDLED_TEMPLATE_DIR = 'studio'
+
+export function pluginTemplateVersion(template: string): number {
+  const m = TEMPLATE_RE.exec(template)
+  return m ? Number(m[1]) : UNMARKED_TEMPLATE_VERSION
+}
 
 export interface PathEnv {
   platform: string

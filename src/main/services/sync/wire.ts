@@ -9,6 +9,7 @@ import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING } from '../../../shared/sync/typ
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import type { ServiceState } from '../../../shared/types.ts'
 import { findTool, run, toolEnv } from '../tools.ts'
+import { deleteInStudio, deleteUnavailable, type DeleteBridge } from '../studio/deleteInstance.ts'
 import { engineSetting, SyncService, type LiveStudioNode, type SyncEngineLike, type SyncHandler, type SyncMapping } from './service.ts'
 
 export interface SyncWireDeps {
@@ -32,6 +33,8 @@ export interface SyncWireDeps {
   activePlace?: () => string | null
   // The live Studio tree changed shape (throttled): the Game tab re-reads liveTree().
   onStudioTree?: () => void
+  // The Forge Bridge (Game tab "Delete in Studio" queues a delete job for the plugin).
+  bridge?: () => DeleteBridge | null
 }
 
 export interface GitLike {
@@ -111,6 +114,15 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     outline: async (body) => (current?.handler.outline ? current.handler.outline(body) : offAnswer)
   }
 
+  const deleteDeps = () => {
+    const bridge = deps.bridge?.()
+    if (!bridge) throw new Error('The Forge Bridge is not running')
+    return {
+      bridge,
+      refusal: (path: string[]) => (current ? current.deleteRefusal(deps.activePlace?.() ?? 'default.project.json', path) : 'No project open')
+    }
+  }
+
   const emptyStatus = (): SyncStatus => ({ engine: settings().engine, places: [], recent: [], pendingStudioEdits: [] })
 
   const handlers: Record<string, (...args: any[]) => unknown> = {
@@ -123,6 +135,16 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     syncDisableLegacyPlugin: () => need().disableLegacyPlugin(),
     syncSaveTarget: async (instancePath: unknown) => (current ? current.saveTarget(deps.activePlace?.() ?? 'default.project.json', cleanPath(instancePath)) : { reason: 'No project open' }),
     syncSaveToRepo: (instancePath: unknown) => need().saveToRepo(deps.activePlace?.() ?? 'default.project.json', cleanPath(instancePath)),
+    // Game tab "Delete in Studio" (plugin v7) for a Studio-only instance of the active place.
+    syncDeleteCheck: async (instancePath: unknown): Promise<{ ok: true } | { reason: string }> => {
+      const why = await deleteUnavailable(deleteDeps(), cleanPath(instancePath)).catch((e) => (e as Error).message)
+      return why ? { reason: why } : { ok: true }
+    },
+    syncDeleteInStudio: async (instancePath: unknown, className?: unknown) => {
+      const path = cleanPath(instancePath)
+      await deleteInStudio(deleteDeps(), path, typeof className === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(className) ? className : undefined)
+      deps.log?.(`sync: deleted ${path.join('.')} in Studio (Ctrl+Z in Studio restores it)`)
+    },
     forgeSyncSettings: () => settings(),
     setForgeSyncSettings: async (patch: Partial<ForgeSyncSettings>) => {
       if (patch.engine === 'forge' || patch.engine === 'project' || patch.engine === 'off') deps.settings.set(SYNC_ENGINE_SETTING, patch.engine)

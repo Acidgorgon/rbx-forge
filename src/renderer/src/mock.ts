@@ -47,6 +47,7 @@ import { chatExtrasMock } from './mockChatExtras'
 import { restateMock } from './mockRestate'
 import { qolMock } from './mockQol'
 import { chatModesMock } from './mockChatModes'
+import { seedFishingChat } from './mockFishing'
 import { entryTarget, isUnder, parentDir, protectedReason, renamedPath, renameProblem, siblingsOf, type PathChange } from '@shared/fileOps'
 import { BLINK_OUTPUTS, eventsBlink, generatedClient, generatedServer, mockBlinkModel } from './mockBlink'
 
@@ -572,6 +573,7 @@ const groupDeps = {
   readyModels: async () => (await providers.api.listProviders()).filter((p) => p.ready).flatMap((p) => p.models.map((model) => ({ provider: p.id, model })))
 }
 seedGroupChat(groupDeps)
+seedFishingChat(chats, chatMessages)
 const group = groupMock(groupDeps)
 const extras = chatExtrasMock({ emit, chats, messages: chatMessages, addGuest: (id, c) => group.api.addGuest(id, c) })
 // Restate first (mockRestate.ts): big requests get a restatement card before the reply.
@@ -951,7 +953,7 @@ const api: HarnessApi = {
   }
 }
 
-let appSettings: AppSettings = { serveAllPlaces: false, autoRoute: true }
+let appSettings: AppSettings = { serveAllPlaces: false, autoRoute: true, confirmFileDelete: true, confirmStudioDelete: true }
 
 // A new file from the create flow shows up in the tree and the scripts list, like the dev watcher's
 // sourcemap refresh would do.

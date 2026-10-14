@@ -6,7 +6,7 @@ import type { BudgetLimits, ProviderId, ProviderInfo, SyncSettings, UsageSummary
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { ModelPicker, ProviderMark } from '../components/ModelPicker'
-import { setMotionMode, setThemeMode, useAppearance, type MotionMode, type ThemeMode } from '../theme'
+import { setChatFont, setMotionMode, setThemeMode, useAppearance, type ChatFont, type MotionMode, type ThemeMode } from '../theme'
 import { errorText, fmtTokens, fmtUsd } from '../lib/format'
 import { ToolchainSection } from '../setup/Toolchain'
 import { DefaultEffortSetting } from '../assistant/EffortPicker'
@@ -304,6 +304,9 @@ export function SettingsPage() {
           </Row>
           <Row title="Motion" desc="Reduced keeps state changes but drops decorative movement. Your OS reduce-motion setting is always respected.">
             <Seg<MotionMode> value={appearance.motion} options={[['full', 'Full'], ['reduced', 'Reduced'], ['off', 'Off']]} onChange={setMotionMode} />
+          </Row>
+          <Row title="Chat font" desc="Readable sets assistant replies in a proportional font; Monospace keeps the terminal look everywhere.">
+            <Seg<ChatFont> value={appearance.chatFont} options={[['sans', 'Readable'], ['mono', 'Monospace']]} onChange={setChatFont} />
           </Row>
         </section>
 

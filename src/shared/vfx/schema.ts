@@ -34,7 +34,8 @@ export const ENUMS: Record<string, Record<string, number>> = {
   MeshType: { Head: 0, Torso: 1, Wedge: 2, Sphere: 3, Cylinder: 4, FileMesh: 5, Brick: 6, Prism: 7, Pyramid: 8, ParallelRamp: 9, RightAngleRamp: 10, CornerWedge: 11 },
   PartType: { Ball: 0, Block: 1, Cylinder: 2, Wedge: 3, CornerWedge: 4 },
   // Enum.Material (the few the Lab draws: Neon glows, ForceField is a rim-lit shell).
-  Material: { Plastic: 256, SmoothPlastic: 272, Neon: 288, Glass: 1568, ForceField: 1584 }
+  // The others shade the part proxies (rough / metal / glassy).
+  Material: { Plastic: 256, SmoothPlastic: 272, Neon: 288, Wood: 512, WoodPlanks: 528, Marble: 784, Slate: 800, Concrete: 816, Granite: 832, Brick: 848, Pebble: 864, Cobblestone: 880, CorrodedMetal: 1040, DiamondPlate: 1056, Foil: 1072, Metal: 1088, Grass: 1280, Sand: 1296, Fabric: 1312, Ice: 1536, Glass: 1568, ForceField: 1584 }
 }
 
 export function enumName(enumType: string, value: number): string | undefined {
@@ -172,6 +173,24 @@ export const SCHEMA: Record<string, Record<string, PropSpec>> = {
     Anchored: { kind: 'bool', default: false },
     CanCollide: { kind: 'bool', default: true }
   },
+  WedgePart: {
+    CFrame: { kind: 'cframe', default: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] },
+    Size: { kind: 'vec3', default: [4, 1, 2], main: true },
+    Color: { kind: 'color3', default: [0.639, 0.635, 0.647] },
+    Transparency: { kind: 'number', default: 0, min: 0, max: 1, step: 0.05, main: true },
+    Material: { kind: 'enum:Material', default: 'Plastic', main: true }
+  },
+  UnionOperation: {
+    CFrame: { kind: 'cframe', default: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] },
+    Size: { kind: 'vec3', default: [1, 1, 1], main: true },
+    Color: { kind: 'color3', default: [0.639, 0.635, 0.647] },
+    Transparency: { kind: 'number', default: 0, min: 0, max: 1, step: 0.05, main: true },
+    Material: { kind: 'enum:Material', default: 'Plastic', main: true }
+  },
+  // Bones are Attachments that nest (each relative to its parent bone).
+  Bone: {
+    CFrame: { kind: 'cframe', default: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] }
+  },
   SpecialMesh: {
     MeshType: { kind: 'enum:MeshType', default: 'Head' },
     MeshId: { kind: 'content', default: '' },
@@ -189,7 +208,9 @@ export const SCHEMA: Record<string, Record<string, PropSpec>> = {
 
 // Classes the importer keeps (everything else is dropped unless it holds one of these).
 export const VFX_CLASSES = new Set(['ParticleEmitter', 'Beam', 'Trail', 'Attachment', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight', 'MeshPart', 'SpecialMesh'])
-export const CONTAINER_CLASSES = new Set(['Model', 'Folder', 'Part', 'MeshPart', 'Attachment', 'Configuration', 'WedgePart', 'UnionOperation'])
+export const CONTAINER_CLASSES = new Set(['Model', 'Folder', 'Part', 'MeshPart', 'Attachment', 'Bone', 'Configuration', 'WedgePart', 'UnionOperation'])
+// Visible geometry the preview draws (kept on import even without effects inside).
+export const PART_CLASSES = new Set(['Part', 'MeshPart', 'WedgePart', 'UnionOperation'])
 export const SCRIPT_CLASSES = new Set(['Script', 'LocalScript', 'ModuleScript'])
 
 export function propSpec(className: string, prop: string): PropSpec | undefined {

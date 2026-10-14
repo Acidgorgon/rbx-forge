@@ -12,7 +12,7 @@ import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
 import { composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
+import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, emitAttributes, importNotes, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
 import { CRITIC_SYSTEM, critiquePrompt, DEFAULT_MAX_ITERATIONS, DEFAULT_THRESHOLD, heuristicCritique, parseCritique, refineLoop, stageFrameTimes, type RefineResult } from '../../../shared/vfx/critique.ts'
 import { CHOREOGRAPHY_GUIDE, draftScript, kitReference, TIMELINE_API } from '../../../shared/vfx/choreo.ts'
 import { compileTimeline, finishRun } from '../../../shared/vfx/compile.ts'
@@ -343,7 +343,7 @@ export class VfxService {
             extracted.set(f, { error: `could not read the XML: ${(e as Error).message}` })
           }
         } else if (!prev) {
-          extracted.set(f, { error: `binary .rbxm needs Lune (${'error' in lune ? lune.error : 'runtime missing'})` })
+          extracted.set(f, { error: `binary .rbxm needs Lune to be read (${'error' in lune ? lune.error : 'the Lune runtime scripts are missing'}); install Lune (Settings > Tests) or save the model as .rbxmx in Studio` })
         }
       }
     }
@@ -361,6 +361,8 @@ export class VfxService {
       for (const g of groups) {
         const name = groups.length > 1 ? g.name : basename(f, extname(f))
         const effect = effectFromNodes(name, g.nodes)
+        const notes = importNotes(g.nodes, effect, emitAttributes(effect.roots))
+        if (notes.length) (result.notes ??= []).push({ file: f, notes })
         const id = entryId(name)
         const now = this.now()
         const entry: VfxEntry = {
@@ -376,7 +378,8 @@ export class VfxService {
           effect,
           stats: effectStats(effect),
           thumbs: [],
-          quality: 'reference'
+          quality: 'reference',
+          ...(notes.length ? { importNotes: notes } : {})
         }
         const bytes = await readFile(f)
         if (bytes.length < 20 * 1024 * 1024) await store.writeFile(id, `media/${safeFileName(basename(f))}`, bytes)
@@ -1147,7 +1150,10 @@ async function exists(p: string): Promise<boolean> {
 export function splitEffects(roots: import('../../../shared/vfx/types.ts').VfxNode[]): { name: string; nodes: import('../../../shared/vfx/types.ts').VfxNode[] }[] {
   const hasVfx = (n: import('../../../shared/vfx/types.ts').VfxNode) => allNodes([n]).some((x) => ['ParticleEmitter', 'Beam', 'Trail', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight'].includes(x.className))
   const withVfx = roots.filter(hasVfx)
-  if (withVfx.length > 1) return withVfx.map((n) => ({ name: n.name, nodes: [n] }))
+  // Several Models / Folders: a pack of separate effects. Loose parts selected together in Studio
+  // (several Parts at the top) are one effect: they keep their relative positions.
+  if (withVfx.length > 1 && withVfx.every((n) => n.className === 'Model' || n.className === 'Folder')) return withVfx.map((n) => ({ name: n.name, nodes: [n] }))
+  if (withVfx.length > 1) return [{ name: withVfx[0].name, nodes: roots }]
   if (withVfx.length === 1) {
     const only = withVfx[0]
     const kids = only.children.filter(hasVfx)

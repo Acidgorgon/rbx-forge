@@ -1,16 +1,18 @@
 // Turns an imported instance tree into a VfxEffect (VFX nodes only, cues from scripts), and measures
 // it: stats, tags, layer roles, curve shapes and the performance guard.
 
-import { CONTAINER_CLASSES, prop, SCRIPT_CLASSES, VFX_CLASSES } from './schema.ts'
+import { CONTAINER_CLASSES, PART_CLASSES, prop, SCRIPT_CLASSES, VFX_CLASSES } from './schema.ts'
 import { curveShape, evalColorSequence, hex, sequenceMax, type CurveShape } from './sequence.ts'
 import { emitterBudget, flipbookFrames, MAX_RATE, prepareEffect, simulate } from './simulate.ts'
 import type { ColorSequence, NumberRange, NumberSequence, Rgb, VfxCue, VfxEffect, VfxNode, VfxStats } from './types.ts'
 
-// Keeps VFX instances, their containers and scripts; drops everything else (terrain, UI, sounds...).
+// Keeps VFX instances, their containers, scripts and visible parts (drawn in the preview); drops
+// everything else (terrain, UI, sounds...).
 export function pruneToVfx(nodes: VfxNode[]): VfxNode[] {
   const keep = (n: VfxNode): VfxNode | null => {
     const kids = n.children.map(keep).filter((x): x is VfxNode => !!x)
-    const own = VFX_CLASSES.has(n.className) || SCRIPT_CLASSES.has(n.className)
+    const visiblePart = PART_CLASSES.has(n.className) && (n.props.Transparency === undefined || Number(n.props.Transparency) < 1)
+    const own = VFX_CLASSES.has(n.className) || SCRIPT_CLASSES.has(n.className) || visiblePart
     if (own || (CONTAINER_CLASSES.has(n.className) && kids.some((k) => !SCRIPT_CLASSES.has(k.className) || k.children.length))) return { ...n, children: kids }
     return null
   }
@@ -103,9 +105,114 @@ export function effectDuration(nodes: VfxNode[], cues: VfxCue[]): number {
   return Math.max(1, Math.min(10, round(end || 2)))
 }
 
+// ------------------------------------------------------------------ emit attributes
+//
+// The community convention for emit-on-demand VFX (the user's own effects use exactly these):
+// attributes on a ParticleEmitter, or on its parent Attachment / Part / Model (the nearest ancestor
+// that has one; the emitter's own value wins):
+//   EmitDelay     seconds to wait before emitting (default 0)
+//   EmitCount     ParticleEmitter:Emit(EmitCount) after the delay
+//   EmitDuration  seconds the emitter stays Enabled after the delay; with Rate 0 the EmitCount
+//                 particles are spread evenly over that time instead of one burst
+// When any of them applies, they drive the emitter's timeline (the script / burst guesses do not).
+// Beams and Trails with EmitDelay / EmitDuration are switched on for that window.
+
+export const EMIT_ATTRS = ['EmitCount', 'EmitDelay', 'EmitDuration'] as const
+
+export interface EmitAttrs {
+  count?: number
+  delay: number
+  duration?: number
+}
+
+// The emit attributes that apply to each node id (own value, else the nearest ancestor's).
+export function emitAttributes(nodes: VfxNode[]): Map<string, EmitAttrs> {
+  const out = new Map<string, EmitAttrs>()
+  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : undefined)
+  const visit = (n: VfxNode, inherited: Partial<Record<(typeof EMIT_ATTRS)[number], number>>) => {
+    const here = { ...inherited }
+    for (const k of EMIT_ATTRS) {
+      const v = num(n.attrs?.[k])
+      if (v !== undefined) here[k] = v
+    }
+    if ((n.className === 'ParticleEmitter' || n.className === 'Beam' || n.className === 'Trail') && EMIT_ATTRS.some((k) => here[k] !== undefined)) {
+      out.set(n.id, {
+        delay: Math.max(0, Math.min(30, here.EmitDelay ?? 0)),
+        ...(here.EmitCount !== undefined ? { count: Math.max(0, Math.min(10000, Math.round(here.EmitCount))) } : {}),
+        ...(here.EmitDuration !== undefined && here.EmitDuration > 0 ? { duration: Math.min(30, here.EmitDuration) } : {})
+      })
+    }
+    for (const c of n.children) visit(c, here)
+  }
+  for (const r of nodes) visit(r, {})
+  return out
+}
+
+// Cues for attribute-driven nodes (see above).
+export function cuesFromAttributes(nodes: VfxNode[], attrs = emitAttributes(nodes)): VfxCue[] {
+  const cues: VfxCue[] = []
+  for (const n of allNodes(nodes)) {
+    const a = attrs.get(n.id)
+    if (!a) continue
+    const startsOn = prop<boolean>(n, 'Enabled') !== false
+    if (n.className !== 'ParticleEmitter') {
+      // Beams / Trails: on for [delay, delay + duration] (or from the delay on).
+      if (startsOn && (a.delay > 0 || a.duration)) cues.push({ at: 0, target: n.id, action: 'disable' })
+      cues.push({ at: round(a.delay), target: n.id, action: 'enable' })
+      if (a.duration) cues.push({ at: round(a.delay + a.duration), target: n.id, action: 'disable' })
+      continue
+    }
+    if (startsOn) cues.push({ at: 0, target: n.id, action: 'disable' })
+    const rate = prop<number>(n, 'Rate') || 0
+    if (a.duration && rate <= 0 && a.count) {
+      // Spread EmitCount over EmitDuration (at most 60 steps).
+      const steps = Math.max(1, Math.min(60, a.count, Math.round(a.duration * 30)))
+      let sent = 0
+      for (let i = 0; i < steps; i++) {
+        const want = Math.round(((i + 1) * a.count) / steps)
+        if (want > sent) cues.push({ at: round(a.delay + (i * a.duration) / steps), target: n.id, action: 'emit', count: want - sent })
+        sent = want
+      }
+      continue
+    }
+    if (a.count) cues.push({ at: round(a.delay), target: n.id, action: 'emit', count: a.count })
+    if (a.duration) {
+      cues.push({ at: round(a.delay), target: n.id, action: 'enable' })
+      cues.push({ at: round(a.delay + a.duration), target: n.id, action: 'disable' })
+    } else if (a.count === undefined) {
+      // Only a delay: a default burst then (like Emit() with no count).
+      cues.push({ at: round(a.delay), target: n.id, action: 'emit', count: Math.max(8, Math.round(rate * 0.25)) })
+    }
+  }
+  return cues
+}
+
+// What an imported model does that the preview does not reproduce, for the import note.
+export function importNotes(raw: VfxNode[], effect: VfxEffect, attrs: Map<string, EmitAttrs>): string[] {
+  const notes: string[] = []
+  const all = allNodes(raw)
+  const scripts = all.filter((n) => SCRIPT_CLASSES.has(n.className))
+  if (attrs.size) notes.push(`${attrs.size} emitter${attrs.size === 1 ? '' : 's'} timed by EmitCount / EmitDelay / EmitDuration attributes.`)
+  const logic = scripts.filter((s) => s.source && /TweenService|RunService|while\s|repeat\s|require\s*\(|Heartbeat|RenderStepped|:Connect\s*\(|math\.random|CFrame\s*=|Position\s*=/.test(s.source))
+  if (logic.length) notes.push(`Script logic the preview cannot run (${logic.slice(0, 3).map((s) => s.name).join(', ')}${logic.length > 3 ? ' ...' : ''}): only Emit / Enabled / wait lines were read; tweens, loops and movement are not played.`)
+  else if (scripts.length && !effect.cues.length) notes.push('Scripts were found but no Emit / Enabled lines in them; emitters use their own settings.')
+  const meshes = all.filter((n) => n.className === 'MeshPart' || n.className === 'UnionOperation' || (n.className === 'SpecialMesh' && n.props.MeshType === 'FileMesh'))
+  if (meshes.length) notes.push(`${meshes.length} mesh${meshes.length === 1 ? '' : 'es'} drawn as tinted proxies (mesh files are not downloaded).`)
+  const skipped = new Set<string>()
+  for (const n of all) if (['Sound', 'Decal', 'Texture', 'SurfaceGui', 'BillboardGui', 'Humanoid', 'Fire', 'Smoke', 'Sparkles', 'Explosion'].includes(n.className)) skipped.add(n.className)
+  if (skipped.size) notes.push(`Not shown: ${[...skipped].join(', ')}.`)
+  const flip = all.filter((n) => n.className === 'ParticleEmitter' && typeof n.props.Texture === 'string' && /^rbxassetid:|^http/.test(String(n.props.Texture)))
+  if (flip.length) notes.push('Uploaded textures load from Roblox when online; offline they show as a placeholder.')
+  return notes
+}
+
 export function effectFromNodes(name: string, nodes: VfxNode[]): VfxEffect {
   const roots = pruneToVfx(nodes)
-  const cues = defaultCues(roots, cuesFromScripts(roots))
+  const attrs = emitAttributes(roots)
+  // Attribute-driven nodes: the attributes are the timeline (script reads would be the generic
+  // emit loop guessing 16 for every emitter).
+  const scripted = cuesFromScripts(roots).filter((c) => !attrs.has(c.target))
+  const cues = defaultCues(roots, [...cuesFromAttributes(roots, attrs), ...scripted])
   const hasTrail = allNodes(roots).some((n) => n.className === 'Trail')
   return { name, roots, cues, duration: effectDuration(roots, cues), motion: hasTrail ? 'swing' : 'static' }
 }

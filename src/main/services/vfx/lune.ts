@@ -51,6 +51,11 @@ export function normalizeLuneNode(raw: any): VfxNode {
     children: Array.isArray(raw?.children) ? raw.children.map(normalizeLuneNode) : []
   }
   if (typeof raw?.source === 'string') node.source = raw.source
+  if (raw?.attrs && typeof raw.attrs === 'object' && !Array.isArray(raw.attrs)) {
+    const attrs: Record<string, number | boolean | string> = {}
+    for (const [k, v] of Object.entries(raw.attrs as Record<string, unknown>)) if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') attrs[k] = v
+    if (Object.keys(attrs).length) node.attrs = attrs
+  }
   return node
 }
 

@@ -115,6 +115,28 @@ export interface PreparedMesh {
   size: Vec3
   // Size, transparency and colour at time t (tweens, SizeScale, Fade).
   look: (t: number) => { size: Vec3; transparency: number; color: Rgb }
+  // What to draw: the Part shape, or a proxy for meshes (mesh files are not downloaded).
+  shape: MeshShape
+  material: string
+}
+
+export type MeshShape = 'box' | 'ball' | 'cylinder' | 'wedge' | 'ellipsoid'
+
+// Part.Shape / WedgePart / a SpecialMesh child's MeshType -> the primitive the preview draws, and
+// the size multiplier a SpecialMesh's Scale applies (FileMesh scales are in mesh units: ignored).
+export function meshShape(n: VfxNode): { shape: MeshShape; scale: Vec3 } {
+  const one: Vec3 = [1, 1, 1]
+  if (n.className === 'WedgePart') return { shape: 'wedge', scale: one }
+  if (n.className === 'MeshPart' || n.className === 'UnionOperation') return { shape: 'ellipsoid', scale: one }
+  const sm = n.children.find((c) => c.className === 'SpecialMesh' || c.className === 'BlockMesh' || c.className === 'CylinderMesh')
+  if (sm) {
+    const type = sm.className === 'BlockMesh' ? 'Brick' : sm.className === 'CylinderMesh' ? 'Cylinder' : String(sm.props.MeshType ?? 'Head')
+    const sc = Array.isArray(sm.props.Scale) && sm.className !== 'SpecialMesh' ? (sm.props.Scale as Vec3) : Array.isArray(sm.props.Scale) && type !== 'FileMesh' ? (sm.props.Scale as Vec3) : one
+    const shape: MeshShape = type === 'Sphere' ? 'ball' : type === 'Cylinder' ? 'cylinder' : type === 'Wedge' ? 'wedge' : type === 'Brick' ? 'box' : 'ellipsoid'
+    return { shape, scale: [Number(sc[0]) || 1, Number(sc[1]) || 1, Number(sc[2]) || 1] }
+  }
+  const shape = String(n.props.Shape ?? 'Block')
+  return { shape: shape === 'Ball' ? 'ball' : shape === 'Cylinder' ? 'cylinder' : shape === 'Wedge' || shape === 'CornerWedge' ? 'wedge' : 'box', scale: one }
 }
 
 export interface PreparedEffect {
@@ -130,7 +152,7 @@ export interface PreparedEffect {
   timeline: Timeline
 }
 
-const ATTACH_CLASSES = new Set(['Attachment'])
+const ATTACH_CLASSES = new Set(['Attachment', 'Bone'])
 const PART_CLASSES = new Set(['Part', 'MeshPart', 'WedgePart', 'UnionOperation'])
 const LIGHT_CLASSES = new Set(['PointLight', 'SpotLight', 'SurfaceLight'])
 
@@ -250,8 +272,10 @@ export function prepareEffect(effect: VfxEffect, seed = 1): PreparedEffect {
       out.lights.push({ id: n.id, name: n.name, node: n, at, windows, timeline: tl })
     } else if (n.className === 'Highlight') {
       out.highlights.push(n)
-    } else if ((n.className === 'Part' || n.className === 'MeshPart') && (prop<number>(n, 'Transparency') < 1 || tl.has(n.id, 'Transparency'))) {
-      const size = prop<number[]>(n, 'Size') as Vec3
+    } else if (PART_CLASSES.has(n.className) && (prop<number>(n, 'Transparency') < 1 || tl.has(n.id, 'Transparency'))) {
+      const ms = meshShape(n)
+      const raw = prop<number[]>(n, 'Size') as Vec3
+      const size: Vec3 = [raw[0] * ms.scale[0], raw[1] * ms.scale[1], raw[2] * ms.scale[2]]
       const color = prop<Rgb>(n, 'Color')
       const tr = prop<number>(n, 'Transparency')
       const animated = tl.animated(n.id)
@@ -265,7 +289,7 @@ export function prepareEffect(effect: VfxEffect, seed = 1): PreparedEffect {
             return { size: [s[0] * k, s[1] * k, s[2] * k] as Vec3, transparency: 1 - (1 - Math.max(0, Math.min(1, base))) * (1 - f), color: tl.value<Rgb>(n.id, 'Color', color, t) }
           }
         : () => fixed
-      out.meshes.push({ id: n.id, name: n.name, node: n, at, size, look })
+      out.meshes.push({ id: n.id, name: n.name, node: n, at, size, look, shape: ms.shape, material: String(n.props.Material ?? 'Plastic') })
     }
   }
   return out

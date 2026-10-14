@@ -190,3 +190,7 @@
 .vfx-script-out details summary { cursor: pointer; color: var(--fg-muted); }
 .vfx-cue-ro { font-size: 11px; color: var(--fg-2); }
 .vfx-cue-ro .faint { display: inline-block; min-width: 44px; }
+
+/* Import notes on an imported model (what the preview does not reproduce). */
+.vfx-import-notes { margin: 0; padding-left: 14px; display: flex; flex-direction: column; gap: 2px; }
+.vfx-import-notes .note { font-size: 11px; margin: 0; }

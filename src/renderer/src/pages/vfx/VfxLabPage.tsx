@@ -353,6 +353,20 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
             </dd>
             <dt>origin</dt>
             <dd className="mono">{entry.origin}</dd>
+            {!!entry.importNotes?.length && (
+              <>
+                <dt>import</dt>
+                <dd>
+                  <ul className="vfx-import-notes">
+                    {entry.importNotes.map((n) => (
+                      <li key={n} className="note">
+                        {n}
+                      </li>
+                    ))}
+                  </ul>
+                </dd>
+              </>
+            )}
             {entry.restatement && (
               <>
                 <dt>confirmed brief</dt>
@@ -480,7 +494,7 @@ export function VfxLabPage() {
       if (r.added[0]) setSelected(r.added[0].id)
       actions.toast({
         text: `Imported ${r.added.length} effect${r.added.length === 1 ? '' : 's'}`,
-        detail: r.skipped.length ? `Skipped ${r.skipped.length}: ${r.skipped.slice(0, 3).map((s) => `${s.file.split(/[\\/]/).pop()} (${s.reason})`).join('; ')}` : undefined,
+        detail: [r.skipped.length ? `Skipped ${r.skipped.length}: ${r.skipped.slice(0, 3).map((s) => `${s.file.split(/[\\/]/).pop()} (${s.reason})`).join('; ')}` : '', ...(r.notes ?? []).slice(0, 2).map((n) => `${n.file.split(/[\\/]/).pop()}: ${n.notes.join(' ')}`)].filter(Boolean).join('\n') || undefined,
         kind: r.added.length ? 'ok' : 'info'
       })
     } catch (e) {

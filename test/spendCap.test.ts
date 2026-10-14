@@ -238,3 +238,29 @@ test('cap field: dollar sign, decimal comma and thousands separators are read', 
   assert.ok(Number.isNaN(parseUsd('ten') as number))
   assert.ok(Number.isNaN(parseUsd('-5') as number))
 })
+
+test('service: saves never overlap, and the last one written holds the newest state', async () => {
+  let active = 0
+  let maxActive = 0
+  const written: unknown[] = []
+  const store = {
+    load: async () => null,
+    save: async (data: unknown) => {
+      active++
+      maxActive = Math.max(maxActive, active)
+      await new Promise((r) => setTimeout(r, 5))
+      written.push(data)
+      active--
+    }
+  }
+  const s = new SpendService({ store, saveDelayMs: 0 })
+  await s.ready()
+  s.record({ provider: 'anthropic', source: 'chat', costUsd: 1 })
+  s.record({ provider: 'anthropic', source: 'chat', costUsd: 2 })
+  await s.setSettings({ dailyUsd: 10 })
+  await s.flush()
+  assert.equal(maxActive, 1)
+  const last = written.at(-1) as { settings: SpendSettings; book: { days: Record<string, { total: number }> } }
+  assert.equal(last.settings.dailyUsd, 10)
+  assert.equal(Object.values(last.book.days)[0].total, 3)
+})

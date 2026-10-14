@@ -56,6 +56,9 @@ export class SpendService {
   private loaded: Promise<void>
   private timer: ReturnType<typeof setTimeout> | null = null
   private now: () => number
+  // Saves run one after another: two overlapping writes of the same temp file could interleave
+  // into a broken spend.json, which loads as an empty book (history and caps' spend gone).
+  private saving: Promise<void> = Promise.resolve()
 
   constructor(deps: SpendServiceDeps) {
     this.deps = deps
@@ -155,7 +158,12 @@ export class SpendService {
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     await this.loaded
-    const data: FileShape = { v: 1, settings: this.settingsValue, book: this.book }
-    await this.deps.store.save(data).catch((e) => this.deps.log?.(`save failed: ${(e as Error).message}`))
+    const next = this.saving.then(() => {
+      // Serialized when this save actually runs, so the newest state is written last.
+      const data = JSON.parse(JSON.stringify({ v: 1, settings: this.settingsValue, book: this.book })) as FileShape
+      return this.deps.store.save(data).catch((e) => this.deps.log?.(`save failed: ${(e as Error).message}`))
+    })
+    this.saving = next
+    await next
   }
 }

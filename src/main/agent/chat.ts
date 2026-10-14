@@ -257,7 +257,17 @@ export class ChatManager {
   }
 
   // Starts a turn and returns once it is underway; progress arrives as chat:message events.
+  // The renderer marks the chat busy as it sends; when no turn starts (no provider / key, no project,
+  // budget stop, restate card posted) busy is cleared here so the composer does not stay "working…".
   async send(id: string, text: string, imageIds: string[] = []): Promise<void> {
+    try {
+      await this.startSend(id, text, imageIds)
+    } finally {
+      if (!this.running.has(id)) this.ctx.emit('chat:busy', { sessionId: id, busy: false })
+    }
+  }
+
+  private async startSend(id: string, text: string, imageIds: string[]): Promise<void> {
     const chat = this.find(id)
     if (!chat) throw new Error(`unknown chat ${id}`)
     if (this.running.has(id)) throw new Error('chat is busy')

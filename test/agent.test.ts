@@ -197,6 +197,21 @@ test('chat streams messages, stores the SDK session id and resumes it', async ()
   assert.ok(fake.events.some((e) => e.event === 'chat:busy' && e.payload.busy === false))
 })
 
+test('a send that cannot start a turn (no Anthropic key) clears busy for the renderer', async () => {
+  const fake = fakeContext()
+  const queryFn: QueryFn = () => {
+    throw new Error('the SDK must not run without credentials')
+  }
+  const credentials = new Credentials(fake.ctx, async () => null, {})
+  const chats = new ChatManager(fake.ctx, { queryFn, credentials, makeServer: () => ({ type: 'stdio', command: 'none' }) })
+  const chat = chats.create()
+  await chats.send(chat.id, 'hello')
+  assert.equal(chats.busy(chat.id), false)
+  assert.match(chats.messages(chat.id)!.at(-1)!.text, /Anthropic API key/)
+  const busy = fake.events.filter((e) => e.event === 'chat:busy' && e.payload.sessionId === chat.id)
+  assert.deepEqual(busy.at(-1)?.payload, { sessionId: chat.id, busy: false })
+})
+
 test('toChatMessages maps errors to system messages', () => {
   const out = toChatMessages({ type: 'result', subtype: 'error_max_turns', is_error: true, errors: [] } as any, 'main')
   assert.equal(out[0].role, 'system')

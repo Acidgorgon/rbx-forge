@@ -7,6 +7,9 @@
 // No electron imports: rendering (capture), the vision model and Rojo come in as functions.
 
 import type { LabTier } from '../../../shared/labModels.ts'
+import type { LabGate } from '../../../shared/gating/hooks.ts'
+import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
+import { composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
@@ -75,6 +78,8 @@ export interface VfxServiceDeps {
   textures?: VfxTextureHooks
   // Principle priorities: the user's learned weights (critique, compose plan) and the rating log.
   principles?: PrincipleHooks
+  // Lab gating (services/gating): skip the critic, early stop, retry routes. Optional.
+  gate?: LabGate
 }
 
 export interface VfxTextureHooks {
@@ -764,6 +769,9 @@ export class VfxService {
     const base = hit.entry.iterations?.length ?? 0
     const timesByIt = new Map<number, number[]>()
     const pngs = new Map<number, Buffer[]>()
+    const threshold = opts.threshold ?? DEFAULT_THRESHOLD
+    const maxIt = Math.max(1, Math.min(10, Math.floor(opts.maxIterations ?? DEFAULT_MAX_ITERATIONS)))
+    const stopAfter = new Map<number, boolean>()
     try {
       const result = await refineLoop(
         hit.entry.effect,
@@ -783,9 +791,15 @@ export class VfxService {
           },
           critique: async (effect, _files, n, previous) => {
             this.progress({ entryId: id, iteration: base + n, phase: 'critique' })
+            const gate = this.deps.gate
+            const g = gate ? await gate.beforeCritique({ lab: 'vfx', entryId: id, iteration: base + n, frames: pngs.get(n) ?? [], previousScore: previous?.overall ?? null, changes: previous?.changes.length ?? 0, threshold }) : null
+            if (g?.skip && previous) return skippedCritique(previous, g.reason)
             const current = (await hit.store.read(id)) ?? hit.entry
-            return this.critique(current, effect, pngs.get(n) ?? [], timesByIt.get(n) ?? [], base + n, previous)
+            const c = await this.critique(current, effect, pngs.get(n) ?? [], timesByIt.get(n) ?? [], base + n, previous)
+            if (gate) stopAfter.set(n, (await gate.afterCritique({ lab: 'vfx', entryId: id, iteration: base + n, score: c.overall, threshold, remaining: maxIt - n, changes: c.changes.length, summary: c.summary })).stop)
+            return c
           },
+          shouldStop: async (_c, n) => stopAfter.get(n) ?? false,
           onIteration: async (it) => {
             const current = (await hit.store.read(id)) ?? hit.entry
             const iteration: VfxIteration = { n: base + it.n, at: this.now(), effect: it.effect, frames: it.frames, critique: it.critique }
@@ -817,6 +831,7 @@ export class VfxService {
       throw e
     } finally {
       this.running.delete(id)
+      this.deps.gate?.endRun('vfx', id)
     }
   }
 
@@ -924,21 +939,26 @@ export class VfxService {
         principlePlan('vfx', text, { weights: await this.principleWeights() })
       ].filter(Boolean)
       try {
-        let raw = await vision(COMPOSE_SYSTEM, lines.join('\n\n'), pinned?.images ?? [])
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const s = extractScript(raw)
-          if (!s) throw new Error('no script in the answer')
-          const r = await this.recordScript(s, EMPTY_BASE(scriptName(s, text)))
-          if (r.ok) {
-            script = s
-            result = r
-            source = 'model'
-            break
-          }
-          if (attempt === 1) throw new Error(r.error?.message ?? 'the script failed')
-          const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
-          raw = await vision(COMPOSE_SYSTEM, `${lines.join('\n\n')}\n\nYour script:\n\`\`\`lua\n${s}\`\`\`\nfailed: ${r.error?.message}${where}\nFix it and answer with the whole corrected script.`, pinned?.images ?? [])
-        }
+        const images = pinned?.images ?? []
+        const prompt = lines.join('\n\n')
+        const done = await composeWithGate({
+          lab: 'vfx',
+          gate: this.deps.gate,
+          ask: () => vision(COMPOSE_SYSTEM, prompt, images),
+          check: async (raw): Promise<AttemptResult<{ s: string; r: VfxScriptResult }>> => {
+            const s = extractScript(raw)
+            if (!s) return { ok: false, kind: 'no-script', message: 'no script in the answer' }
+            const r = await this.recordScript(s, EMPTY_BASE(scriptName(s, text)))
+            if (r.ok) return { ok: true, value: { s, r } }
+            const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
+            return { ok: false, kind: 'script-error', message: `${r.error?.message ?? 'the script failed'}${where}` }
+          },
+          repair: (raw, message) => vision(COMPOSE_SYSTEM, `${prompt}\n\nYour script:\n\`\`\`lua\n${extractScript(raw) ?? raw.slice(0, 4000)}\`\`\`\nfailed: ${message}\nFix it and answer with the whole corrected script.`, images),
+          rephrase: () => vision(COMPOSE_SYSTEM, `${prompt}\n\n${rephraseNote('script')}`, images)
+        })
+        script = done.value.s
+        result = done.value.r
+        source = 'model'
       } catch (e) {
         this.deps.log?.(`vfx: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
       }

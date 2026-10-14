@@ -19,6 +19,7 @@ import { RefImport } from '../videoref/RefImport'
 import { isRefFile } from '../videoref/decode'
 import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 import { principleLabel } from '@shared/principles/catalog'
+import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import './vfx.css'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg · video refs: mp4/webm/mov/gif'
@@ -332,6 +333,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
       {tab === 'studio' && draft && <StudioCheckPanel kind="vfx" id={entry.id} before={flush} />}
       {tab === 'iterations' && draft && entry.refId && <PinnedCompare entry={entry} effect={draft} />}
       {tab === 'iterations' && draft && <Iterations entry={entry} onRestore={(e, n) => (edit(e), actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
+      {tab === 'iterations' && draft && <LabDecisions lab="vfx" entryId={entry.id} />}
       {tab === 'info' && (
         <div className="vfx-info">
           <p className="vfx-desc">{entry.description || <span className="faint">No description.</span>}</p>
@@ -630,6 +632,7 @@ export function VfxLabPage() {
               ))}
             </span>
           </div>
+          <LabCostLine lab="vfx" />
         </section>
 
         <div className="seg vfx-view" role="tablist" aria-label="Library">

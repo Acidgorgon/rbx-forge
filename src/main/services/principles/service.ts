@@ -22,6 +22,14 @@ export interface PrincipleServiceDeps {
   emit?: (event: 'principles:changed', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   now?: () => number
+  // Lab gating shadow mode (services/gating): learned weights reach the critics only when applied;
+  // every rating's would-be weight change is logged as a decision.
+  gate?: PrincipleGate
+}
+
+export interface PrincipleGate {
+  weightsApplied(): boolean
+  logWeightChange(lab: PrincipleFeedback['lab'], entryId: string, before: PrincipleWeights, after: PrincipleWeights): Promise<void>
 }
 
 export const FEEDBACK_FILE = 'feedback.json'
@@ -70,7 +78,9 @@ export class PrincipleService implements PrincipleHooks {
     return stored && stored.version === 1 && stored.ratings === fb.length && stored.updatedAt >= latest ? stored : fb.length ? learnProfile(fb, latest) : emptyProfile(this.now())
   }
 
+  // The weights the critics use: the learned ones, or neutral while gating keeps them in shadow.
   async weights(): Promise<PrincipleWeights> {
+    if (this.deps.gate && !this.deps.gate.weightsApplied()) return {}
     return (await this.profile()).weights
   }
 
@@ -86,6 +96,7 @@ export class PrincipleService implements PrincipleHooks {
     const scores = Object.fromEntries(Object.entries(input.scores ?? {}).filter(([, v]) => Number.isFinite(v)))
     if (!Object.keys(scores).length) return
     const at = this.now()
+    const before = this.deps.gate ? (await this.profile()).weights : {}
     const fb = (await this.feedback()).filter((f) => !(f.lab === input.lab && f.entryId === input.entryId))
     fb.push({ at, lab: input.lab, entryId: input.entryId, ...(input.name ? { name: input.name.slice(0, 80) } : {}), rating: input.rating, scores, ...(input.notes?.trim() ? { notes: input.notes.trim().slice(0, 600) } : {}) })
     const kept = fb.sort((a, b) => a.at - b.at).slice(-MAX_FEEDBACK)
@@ -93,6 +104,7 @@ export class PrincipleService implements PrincipleHooks {
     await this.writeJson(FEEDBACK_FILE, kept)
     await this.writeJson(PROFILE_FILE, profile)
     this.deps.emit?.('principles:changed', { at })
+    await this.deps.gate?.logWeightChange(input.lab, input.entryId, before, profile.weights).catch((e) => this.deps.log?.(`principles: gate log: ${(e as Error).message}`, 'stderr'))
     await this.saveMemory(profile)
   }
 

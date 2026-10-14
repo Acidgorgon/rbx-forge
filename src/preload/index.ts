@@ -77,6 +77,8 @@ const methods = [
   // Forge Sync (Studio -> disk, gates rojo serve)
   'syncStatus', 'syncResolve', 'syncResolveAll', 'syncServeAnyway', 'syncCommitStudioEdits', 'syncDisableLegacyPlugin',
   'forgeSyncSettings', 'setForgeSyncSettings',
+  // Lab gating (decision log, decision models, cost per kept)
+  'labGatingView', 'labGatingSet', 'labGatingRetrain', 'labGatingReset',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

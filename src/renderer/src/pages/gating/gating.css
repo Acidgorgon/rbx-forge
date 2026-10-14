@@ -1,0 +1,32 @@
+/* Lab gating: cost line, Decisions list, Settings > Labs block. Terminal style, tokens only. */
+.gate-line { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; font-size: 11px; color: var(--fg-2); padding: 6px 0 0; min-width: 0; }
+.gate-line b { color: var(--fg); font-weight: 600; }
+
+.gate-decs { margin-top: 12px; border-top: 1px dashed var(--line); padding-top: 10px; min-width: 0; }
+.gate-decs-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; margin-bottom: 6px; }
+.gate-decs-title { font: 500 10.5px/1.2 var(--font-ui); letter-spacing: .1em; text-transform: uppercase; color: var(--fg-muted); }
+.gate-dec-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; min-width: 0; }
+.gate-dec { display: flex; align-items: center; gap: 6px; padding: 4px 0; font-size: 11.5px; min-width: 0; border-bottom: 1px dotted var(--line); }
+.gate-dec:last-child { border-bottom: 0; }
+.gate-dec-gate { color: var(--fg-2); flex: none; min-width: 84px; font-size: 11px; }
+.gate-dec-in { flex: 1; font-size: 11px; }
+.gate-dec-save { color: var(--ok); font-size: 10.5px; flex: none; }
+.gate-dec-at { font-size: 10.5px; flex: none; min-width: 26px; text-align: right; }
+
+.gate-set .set-sub:first-child { margin-top: 14px; }
+.gate-models { list-style: none; margin: 4px 0 8px; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.gate-model { display: flex; align-items: center; gap: 10px; padding: 5px 0; border-bottom: 1px dotted var(--line); min-width: 0; font-size: 12px; }
+.gate-model:last-child { border-bottom: 0; }
+.gate-model-name { color: var(--fg); flex: none; min-width: 140px; }
+.gate-model-q { flex: 1; font-size: 11px; }
+.gate-actions { gap: 8px; margin: 4px 0 6px; }
+.gate-tbl-wrap { overflow-x: auto; margin: 4px 0 6px; }
+.gate-tbl td, .gate-tbl th { text-align: right; }
+.gate-tbl td:first-child, .gate-tbl th:first-child { text-align: left; }
+
+@media (max-width: 620px) {
+  .gate-dec { flex-wrap: wrap; }
+  .gate-dec-in { flex-basis: 100%; order: 5; white-space: normal; }
+  .gate-model { flex-wrap: wrap; }
+  .gate-model-q { flex-basis: 100%; order: 5; white-space: normal; }
+}

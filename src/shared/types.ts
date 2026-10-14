@@ -37,6 +37,8 @@ export type * from './principleTypes.ts'
 import type { SyncApi, SyncEvents } from './sync/api.ts'
 export type * from './sync/api.ts'
 export type * from './sync/types.ts'
+import type { GatingApi, GatingEvents } from './gating/types.ts'
+export type * from './gating/types.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -463,7 +465,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -488,7 +490,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

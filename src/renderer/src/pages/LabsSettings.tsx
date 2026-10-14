@@ -4,6 +4,7 @@ import { useEffect, useState } from 'react'
 import { LAB_TIERS, LAB_TIER_INFO, type LabModels, type LabTier } from '@shared/labModels'
 import { useStore } from '../store'
 import { errorText } from '../lib/format'
+import { GatingSettings } from './gating/LabGating'
 
 export function LabsSettings() {
   const { actions } = useStore()
@@ -59,6 +60,7 @@ export function LabsSettings() {
           </div>
         )
       })}
+      <GatingSettings />
     </>
   )
 }

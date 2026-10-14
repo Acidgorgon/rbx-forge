@@ -32,7 +32,13 @@ export interface ImagePayload {
 }
 export type ModelFn = (system: string, prompt: string, images: ImagePayload[]) => Promise<string>
 export type { LabTier } from '../../../shared/labModels.ts'
+
+// Thrown inside critique() when the gate reuses the previous vision critique.
+class SkipCritic extends Error {}
 import type { LabTier } from '../../../shared/labModels.ts'
+import type { LabGate } from '../../../shared/gating/hooks.ts'
+import { rephraseNote } from '../../../shared/gating/gates.ts'
+import { composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
 
 export interface MemoryLike {
   remember(input: { scope: 'user' | 'project'; kind?: 'memory' | 'skill'; type?: 'user' | 'project' | 'feedback' | 'reference'; name: string; description: string; body: string }, source?: 'agent' | 'reflection' | 'style' | 'user'): Promise<{ entry: { name: string } }>
@@ -78,6 +84,8 @@ export interface AbilityServiceDeps {
   now?: () => number
   // Principle priorities: the user's learned weights (critique, compose plan) and the rating log.
   principles?: PrincipleHooks
+  // Lab gating (services/gating): skip the critic, retry routes. Optional.
+  gate?: LabGate
 }
 
 export class AbilityServiceError extends Error {}
@@ -392,17 +400,37 @@ export class AbilityService {
         principlePlan('ability', text, { weights: await this.principleWeights() })
       ].filter(Boolean).join('\n\n')
       try {
-        const raw = await model(COMPOSE_SYSTEM, prompt, [])
-        const m = /\{[\s\S]*\}/.exec(raw.replace(/```(?:json)?/g, ''))
-        if (!m) throw new Error('no JSON in the answer')
-        const j = JSON.parse(m[0]) as { events?: Record<string, unknown>[]; remove?: string[]; duration?: number; plan?: unknown }
-        const plan = parsePlanObject(j.plan)
+        const done = await composeWithGate({
+          lab: 'ability',
+          gate: this.deps.gate,
+          // v0.5 kept the draft on any failure (no repair round).
+          legacy: () => 'give-up',
+          ask: () => model(COMPOSE_SYSTEM, prompt, []),
+          check: async (raw): Promise<AttemptResult<{ ability: Ability; plan: Record<string, string> }>> => {
+            const m = /\{[\s\S]*\}/.exec(raw.replace(/```(?:json)?/g, ''))
+            if (!m) return { ok: false, kind: 'no-script', message: 'no JSON in the answer' }
+            let j: { events?: Record<string, unknown>[]; remove?: string[]; duration?: number; plan?: unknown }
+            try {
+              j = JSON.parse(m[0])
+            } catch (e) {
+              return { ok: false, kind: 'parse', message: `JSON parse: ${(e as Error).message}` }
+            }
+            try {
+              const plan = parsePlanObject(j.plan) as Record<string, string>
+              const next = applyPatch(ability, { ability: j.duration ? { duration: j.duration } : undefined, events: Array.isArray(j.events) ? j.events : [], remove: Array.isArray(j.remove) ? j.remove.map(String) : [] })
+              const errors = validateAbility(next, ctx).filter((i) => i.level === 'error')
+              if (errors.length) return { ok: false, kind: 'script-error', message: errors.map((e) => e.message).join('; ') }
+              return { ok: true, value: { ability: applyTimingFixes(next, timingChecks(next, ctx)), plan } }
+            } catch (e) {
+              return { ok: false, kind: 'script-error', message: (e as Error).message }
+            }
+          },
+          repair: (raw, message) => model(COMPOSE_SYSTEM, `${prompt}\n\nYour answer:\n${raw.slice(0, 4000)}\nwas rejected: ${message}\nFix it and answer with the whole corrected JSON.`, []),
+          rephrase: () => model(COMPOSE_SYSTEM, `${prompt}\n\n${rephraseNote('json')}`, [])
+        })
+        const plan = done.value.plan
         if (Object.keys(plan).length) notes.push(`plan: ${Object.entries(plan).map(([k, v]) => `${k}: ${v}`).join('; ')}`)
-        const next = applyPatch(ability, { ability: j.duration ? { duration: j.duration } : undefined, events: Array.isArray(j.events) ? j.events : [], remove: Array.isArray(j.remove) ? j.remove.map(String) : [] })
-        const errors = validateAbility(next, ctx).filter((i) => i.level === 'error')
-        if (errors.length) throw new Error(errors.map((e) => e.message).join('; '))
-        const fixed = applyTimingFixes(next, timingChecks(next, ctx))
-        ability = fixed
+        ability = done.value.ability
         timing = 'model'
       } catch (e) {
         notes.push(`model timing unusable (${(e as Error).message}); kept the draft`)
@@ -451,15 +479,30 @@ export class AbilityService {
       try {
         // Studio check frames (studio/...) come in ready-made; otherwise render the beats.
         const pngs = opts.frames?.length ? opts.frames : await this.deps.capture!({ ability, effects, times: beats.map((b) => b.t), ...FRAME_SIZE })
+        const prev = hit.entry.critique
+        const gate = this.deps.gate
+        const prevFrames: Buffer[] = []
+        if (gate && prev?.vision && prev.frames.length) for (const f of prev.frames) {
+          const b = await hit.store.readFile(id, f).catch(() => null)
+          if (b) prevFrames.push(b)
+        }
+        const g = gate ? await gate.beforeCritique({ lab: 'ability', entryId: id, iteration: 1, frames: pngs, previousFrames: prevFrames, previousScore: prev?.vision ? prev.overall : null, changes: 0, threshold: 7.5 }) : null
         for (const [i, png] of pngs.entries()) {
           const f = `frames/critique-${i + 1}.png`
           await hit.store.writeFile(id, f, png)
           frames.push(f)
         }
+        if (g?.skip && prev?.vision) {
+          vision = { ...prev.vision, changes: [], summary: `Critic skipped (${g.reason ?? 'frames unchanged'}): scores carried over. ${prev.vision.summary}`.slice(0, 600) }
+          throw new SkipCritic()
+        }
         raw = await model(ABILITY_CRITIC_SYSTEM, `${critiquePrompt({ request: hit.entry.origin, timeline: timelineText(ability, ctx), checks, beats })}\n\n${abilityCriticPrinciples(ability, ctx, request, { weights, focus: hit.entry.critique?.focus, effect: mainEffect })}` + studioFramesNote(pngs), pngs.map((p) => ({ mime: 'image/png', base64: p.toString('base64') })))
         vision = parseVisionCritique(raw)
+        if (gate) await gate.afterCritique({ lab: 'ability', entryId: id, iteration: 1, score: vision.overall, threshold: 7.5, remaining: 0, changes: vision.changes?.length ?? 0, summary: vision.summary })
       } catch (e) {
-        this.deps.log?.(`ability: vision critique unavailable (${(e as Error).message}); timing rules only`, 'stderr')
+        if (e instanceof SkipCritic) {
+          // Reused the previous vision critique (gates on, frames unchanged).
+        } else this.deps.log?.(`ability: vision critique unavailable (${(e as Error).message}); timing rules only`, 'stderr')
       }
     }
     const t = timingScore(checks)

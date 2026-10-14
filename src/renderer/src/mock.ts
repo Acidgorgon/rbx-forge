@@ -36,6 +36,7 @@ import { abilityMock } from './mockAbility'
 import { studioMock } from './mockStudio'
 import { forgeSyncMock } from './mockForgeSync'
 import { principlesMock } from './mockPrinciples'
+import { gatingMock } from './mockGating'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -902,6 +903,8 @@ const api: HarnessApi = {
   // Principle priorities (mockPrinciples.ts): weights learned from a seeded rating log.
   ...principlesMock(emit),
   ...forgeSync.api,
+  // Lab gating (mockGating.ts): seeded decisions, cost table and decision models.
+  ...gatingMock(emit),
 
   on(event, handler) {
     let set = listeners.get(event)

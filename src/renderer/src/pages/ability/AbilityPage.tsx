@@ -17,6 +17,7 @@ import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
 import '../vfx/vfx.css'
 import './ability.css'
 import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
+import { LabCostLine, LabDecisions } from '../gating/LabGating'
 
 const SUGGESTIONS = ['charged palm blast that knocks me back', 'dash punch', 'ground slam shockwave', 'rising uppercut with sparks', 'quick sword slash']
 const EXAMPLES = [{ key: 'hollow-purple', label: 'Hollow Purple' }]
@@ -354,6 +355,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
 
       {tab === 'edit' && <Inspector ability={draft} selected={selected} t={0} vfxEntries={vfxEntries} onChange={edit} onSelect={setSelected} />}
       {tab === 'critique' && <CritiquePanel entry={entry} ability={draft} busy={busy === 'critique'} onCritique={(apply) => void critique(apply)} ctx={ctx} />}
+      {tab === 'critique' && <LabDecisions lab="ability" entryId={entry.id} />}
       {tab === 'studio' && <StudioCheckPanel kind="ability" id={entry.id} before={flush} />}
       {tab === 'export' && <ExportPanel entry={entry} status={status} onExport={() => void doExport()} result={exported} busy={busy === 'export'} />}
       {tab === 'info' && (
@@ -530,6 +532,7 @@ export function AbilityPage() {
               ))}
             </span>
           </div>
+          <LabCostLine lab="ability" />
         </section>
 
         <div className="seg vfx-view" role="tablist" aria-label="Library">

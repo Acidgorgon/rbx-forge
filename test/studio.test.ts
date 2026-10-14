@@ -605,3 +605,21 @@ test('snapshot: through the bridge (no stage, viewport crop, full width) and the
     await b2.stop()
   }
 })
+
+test('snapshot: a pre-v4 plugin (no snapshot jobs) gets no job; the window is grabbed instead', async () => {
+  const b = await bridge(100)
+  const session = new FakeSession()
+  const { svc } = service(b, session, {})
+  try {
+    // Version 3 polls: connected, but it would run a snapshot job as a stage job.
+    await fetch(`http://127.0.0.1:${b.port}/forge-bridge/poll?v=3&place=MyGame&placeId=42`).then((r) => r.json())
+    assert.ok(b.connected())
+    const offered = fetch(`http://127.0.0.1:${b.port}/forge-bridge/poll?v=3&place=MyGame&placeId=42`).then((r) => r.json() as Promise<{ job?: BridgeJob; idle?: boolean }>)
+    const shot = await svc.snapshot(1280)
+    assert.equal(shot.via, 'window')
+    assert.equal(String(shot.png), 'grab@1|full|1280')
+    assert.equal((await offered).job, undefined, 'no snapshot job is offered to an old plugin')
+  } finally {
+    await b.stop()
+  }
+})

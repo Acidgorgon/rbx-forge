@@ -30,6 +30,10 @@ import { loadPinnedRef, type PinnedRef } from '../videoref/refs.ts'
 import { blendMatch, parseMatch, REF_MATCH_TEXT } from '../../../shared/videoref/prompt.ts'
 import { vfxNumericMatch } from '../../../shared/videoref/match.ts'
 import { luneExtract, luneTimeline, type LuneRun } from './lune.ts'
+import { principleIds, scoresForRating, vfxCriticPrinciples, withVfxPrinciples } from '../../../shared/principles/attach.ts'
+import { principlePlan } from '../../../shared/principles/select.ts'
+import { vfxPrincipleChecks } from '../../../shared/principles/vfxChecks.ts'
+import type { PrincipleHooks, PrincipleWeights } from '../../../shared/principles/types.ts'
 
 export interface ImagePayload {
   mime: string
@@ -69,6 +73,8 @@ export interface VfxServiceDeps {
   // Custom textures (textures/service.ts): forgetex:// previews, gen-ref materialisation on save,
   // the rbxassetid swap when effects are written to the project, and the list for prompts.
   textures?: VfxTextureHooks
+  // Principle priorities: the user's learned weights (critique, compose plan) and the rating log.
+  principles?: PrincipleHooks
 }
 
 export interface VfxTextureHooks {
@@ -466,12 +472,29 @@ export class VfxService {
     if (e.kind === 'generated') e.quality = rating === 'up' ? 'good' : rating === 'down' ? 'avoid' : undefined
     if (!e.quality) delete e.quality
     const saved = await hit.store.save(e)
+    await this.recordPrinciples(saved, rating).catch((err) => this.deps.log?.(`vfx: principle feedback: ${(err as Error).message}`, 'stderr'))
     if (rating === 'up' && this.deps.memory && saved.effect?.script) await this.saveSequenceSkill(saved).catch((err) => this.deps.log?.(`vfx: sequence skill: ${(err as Error).message}`, 'stderr'))
     if (rating === 'down' && this.deps.memory) await this.saveAvoidNotes(saved).catch((err) => this.deps.log?.(`vfx: avoid note: ${(err as Error).message}`, 'stderr'))
     // Liked or disliked results change the recipes for their tags.
     if (rating && this.deps.memory && saved.effect) await this.relearn(saved.tags).catch(() => undefined)
     this.changed()
     return saved
+  }
+
+  // Ratings teach the principle weights: the rated effect's per-principle scores (its last critique,
+  // else the code checks) and the user's notes.
+  private async recordPrinciples(e: VfxEntry, rating: 'up' | 'down' | null): Promise<void> {
+    const p = this.deps.principles
+    if (!p || !e.effect) return
+    if (!rating) return void (await p.forget?.('vfx', e.id))
+    const last = e.iterations?.[e.iterations.length - 1]?.critique
+    const ids = principleIds('vfx', e.origin || e.description)
+    const scores = scoresForRating(last?.principles, () => vfxPrincipleChecks(e.effect!).filter((c) => ids.includes(c.id)))
+    await p.record({ lab: 'vfx', entryId: e.id, name: e.name, rating, scores, ...(e.notes ? { notes: e.notes } : {}) })
+  }
+
+  private async principleWeights(): Promise<PrincipleWeights> {
+    return (await this.deps.principles?.weights().catch(() => ({}))) ?? {}
   }
 
   // A liked scripted effect becomes a skill: the request, its beats and the script, so the assistant
@@ -692,22 +715,25 @@ export class VfxService {
     const refNames = refs.map((r) => r.name)
     const pinned = entry.refId ? await this.pinnedRef(entry.refId).catch(() => null) : null
     const vision = this.deps.vision?.('critic')
+    const weights = await this.principleWeights()
+    const request = entry.origin || entry.description
+    const principled = (c: VfxCritique, raw?: string) => withVfxPrinciples(c, effect, { request, raw, weights })
     if (!vision) {
-      const c = heuristicCritique(effect, recipe, refNames)
+      const c = principled(heuristicCritique(effect, recipe, refNames))
       return pinned ? this.withMatch(c, effect, pinned) : c
     }
-    const prompt = critiquePrompt({ prompt: entry.origin, effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })
+    const prompt = `${critiquePrompt({ prompt: entry.origin, effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })}\n\n${vfxCriticPrinciples(effect, request, { weights, focus: previous?.focus })}`
     // Pinned reference: its key frames follow the rendered frames (compared side by side).
     const extra = pinned ? pinned.images : await this.referenceImages(refs, tags)
     const images: ImagePayload[] = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...extra]
     const note = pinned ? `\n\n${pinned.critique}` : images.length > frames.length ? `\nThe last ${images.length - frames.length} image(s) are reference effects from the library.` : ''
     try {
       const raw = await vision(pinned ? `${CRITIC_SYSTEM}\n${REF_MATCH_TEXT}` : CRITIC_SYSTEM, prompt + studioFramesNote(frames) + note, images)
-      const c = parseCritique(raw, effect, refNames)
+      const c = principled(parseCritique(raw, effect, refNames), raw)
       return pinned ? this.withMatch(c, effect, pinned, raw) : c
     } catch (e) {
       this.deps.log?.(`vfx: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')
-      const c = heuristicCritique(effect, recipe, refNames)
+      const c = principled(heuristicCritique(effect, recipe, refNames))
       return pinned ? this.withMatch(c, effect, pinned) : c
     }
   }
@@ -894,8 +920,9 @@ export class VfxService {
         ...liked.map((e) => `The user liked this related sequence ("${e.origin}"); reuse what fits:\n\`\`\`lua\n${e.effect!.script!.slice(0, 4000)}\n\`\`\``),
         ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : []),
         ...(await this.textureLines()),
-        ...(pinned ? [pinned.compose] : [])
-      ]
+        ...(pinned ? [pinned.compose] : []),
+        principlePlan('vfx', text, { weights: await this.principleWeights() })
+      ].filter(Boolean)
       try {
         let raw = await vision(COMPOSE_SYSTEM, lines.join('\n\n'), pinned?.images ?? [])
         for (let attempt = 0; attempt < 2; attempt++) {

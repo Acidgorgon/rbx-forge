@@ -34,6 +34,7 @@ import { animMock } from './mockAnim'
 import { refMock } from './mockRef'
 import { abilityMock } from './mockAbility'
 import { studioMock } from './mockStudio'
+import { principlesMock } from './mockPrinciples'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -878,6 +879,8 @@ const api: HarnessApi = {
   ...abilityMock(emit),
   // Studio check (mockStudio.ts): fake Forge Bridge + SVG Studio frames; ?studio=ready|offline|noplugin|outdated|nocapture.
   ...studioMock(emit),
+  // Principle priorities (mockPrinciples.ts): weights learned from a seeded rating log.
+  ...principlesMock(emit),
 
   on(event, handler) {
     let set = listeners.get(event)

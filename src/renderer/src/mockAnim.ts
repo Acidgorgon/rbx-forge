@@ -18,6 +18,8 @@ import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
 import { clipSummary } from '@shared/anim/compile'
 import { normalizeLabModels } from '@shared/labModels'
 import { figureDataUrl } from './pages/anim/figure'
+import { withAnimPrinciples } from '@shared/principles/attach'
+import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -109,7 +111,8 @@ export function animMock(emit: Emit): AnimApi {
           emit('anim:progress', { entryId: e.id, iteration: base + n, phase: 'critique' })
           await delay(400)
           const p = profileFor(style, e.tags, clipRig(clip))
-          return heuristicAnimCritique(clip, runChecks(clip, p), p)
+          const checks = runChecks(clip, p)
+          return withAnimPrinciples(heuristicAnimCritique(clip, checks, p), clip, { request: e.origin.replace(/^Make: /, '') || e.description, weights: mockPrincipleWeights(), checks })
         },
         onIteration: (it) => {
           const iteration: AnimIteration = { n: base + it.n, at: Date.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique }
@@ -185,6 +188,7 @@ export function animMock(emit: Emit): AnimApi {
     },
     async animRate(id, rating) {
       const e = find(id)
+      recordPrincipleRating('anim', e.id, e.name, rating, e.iterations?.[e.iterations.length - 1]?.critique?.principles, e.notes)
       if (rating) e.rating = rating
       else delete e.rating
       if (rating === 'down') e.quality = 'avoid'

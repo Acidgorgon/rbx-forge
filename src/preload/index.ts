@@ -72,6 +72,8 @@ const methods = [
   'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile',
   // Video references (VFX Lab + Animation Lab: "make it like this")
   'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
+  // Principle priorities (learned from Labs ratings)
+  'principlesView', 'principlesReset',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

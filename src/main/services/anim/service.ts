@@ -35,6 +35,10 @@ import { loadPinnedRef, type PinnedRef } from '../videoref/refs.ts'
 import { blendMatch, parseMatch, REF_MATCH_TEXT } from '../../../shared/videoref/prompt.ts'
 import { animNumericMatch } from '../../../shared/videoref/match.ts'
 import type { LuneRun } from '../vfx/lune.ts'
+import { animCriticPrinciples, principleIds, scoresForRating, withAnimPrinciples } from '../../../shared/principles/attach.ts'
+import { animPrincipleChecks } from '../../../shared/principles/animChecks.ts'
+import { principlePlan } from '../../../shared/principles/select.ts'
+import type { PrincipleHooks, PrincipleWeights } from '../../../shared/principles/types.ts'
 
 export interface ImagePayload {
   mime: string
@@ -74,6 +78,8 @@ export interface AnimServiceDeps {
   defaultRig?: { get(): RigType; set(rig: RigType): void }
   log?: (text: string, stream?: 'info' | 'stderr') => void
   now?: () => number
+  // Principle priorities: the user's learned weights (critique, compose plan) and the rating log.
+  principles?: PrincipleHooks
 }
 
 const ANIM_EXT = new Set(['.rbxm', '.rbxmx', '.bvh'])
@@ -637,6 +643,7 @@ export class AnimService {
     else if (e.quality === 'avoid' || (e.kind === 'generated' && e.quality === 'good')) delete e.quality
     if (!e.quality) delete e.quality
     const saved = await hit.store.save(e)
+    await this.recordPrinciples(saved, rating).catch((err) => this.deps.log?.(`anim: principle feedback: ${(err as Error).message}`, 'stderr'))
     await this.relearn().catch(() => undefined)
     if (this.deps.memory && rating) {
       const style = await this.style()
@@ -650,6 +657,22 @@ export class AnimService {
     }
     this.changed()
     return saved
+  }
+
+  // Ratings teach the principle weights: the clip's per-principle scores (its last critique, else the
+  // code checks) and the user's notes.
+  private async recordPrinciples(e: AnimEntry, rating: 'up' | 'down' | null): Promise<void> {
+    const p = this.deps.principles
+    if (!p || !isClip(e)) return
+    if (!rating) return void (await p.forget?.('anim', e.id))
+    const last = e.iterations?.[e.iterations.length - 1]?.critique
+    const ids = principleIds('anim', e.origin || e.description, { looped: e.clip.looped })
+    const scores = scoresForRating(last?.principles, () => animPrincipleChecks(e.clip, runChecks(e.clip)).filter((c) => ids.includes(c.id)))
+    await p.record({ lab: 'anim', entryId: e.id, name: e.name, rating, scores, ...(e.notes ? { notes: e.notes } : {}) })
+  }
+
+  private async principleWeights(): Promise<PrincipleWeights> {
+    return (await this.deps.principles?.weights().catch(() => ({}))) ?? {}
   }
 
   private async saveExampleSkill(e: AnimEntry): Promise<void> {
@@ -814,7 +837,8 @@ export class AnimService {
         ...refs.filter((e) => e !== scripted).map((e) => `Library reference "${e.name}" (${e.tags.join(', ')}): ${e.description.slice(0, 300)}`),
         scripted ? `The user liked this related clip ("${scripted.origin}"); reuse what fits:\n\`\`\`lua\n${scripted.clip.script!.slice(0, 4000)}\n\`\`\`` : `An example script (${ex.name}):\n\`\`\`lua\n${ex.script}\`\`\``,
         avoid.length ? `The user marked these as bad; do not repeat them: ${avoid.join(' | ')}` : '',
-        pinned ? pinned.compose : ''
+        pinned ? pinned.compose : '',
+        principlePlan('anim', text, { weights: await this.principleWeights() })
       ].filter(Boolean)
       try {
         const system = animComposeSystem(rig)
@@ -923,20 +947,23 @@ export class AnimService {
     const refNames = refs.map((r) => r.name)
     const pinned = entry.refId ? await this.pinnedRef(entry.refId).catch(() => null) : null
     const critic = this.model('critic')
+    const weights = await this.principleWeights()
+    const request = entry.origin || entry.description
+    const principled = (c: AnimCritique, raw?: string) => withAnimPrinciples(c, clip, { request, raw, weights, checks })
     if (!critic || !frames.length) {
-      const c = heuristicAnimCritique(clip, checks, profile, refNames)
+      const c = principled(heuristicAnimCritique(clip, checks, profile, refNames))
       return pinned ? this.withMatch(c, clip, pinned) : c
     }
-    const prompt = animCritiquePrompt({ request: entry.origin, clip, frameTimes: times, checks, profile, references: refs.map((r) => ({ name: r.name, description: r.description })), iteration, previous })
+    const prompt = `${animCritiquePrompt({ request: entry.origin, clip, frameTimes: times, checks, profile, references: refs.map((r) => ({ name: r.name, description: r.description })), iteration, previous })}\n\n${animCriticPrinciples(clip, request, { weights, focus: previous?.focus, checks })}`
     // Pinned reference: its key frames follow the rendered frames (compared side by side).
     const images = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...(pinned?.images ?? [])]
     try {
       const raw = await critic(pinned ? `${animCriticSystem(rig)}\n${REF_MATCH_TEXT}` : animCriticSystem(rig), prompt + studioFramesNote(frames) + (pinned ? `\n\n${pinned.critique}` : ''), images)
-      const c = parseAnimCritique(raw, checks, refNames)
+      const c = principled(parseAnimCritique(raw, checks, refNames), raw)
       return pinned ? this.withMatch(c, clip, pinned, raw) : c
     } catch (e) {
       this.deps.log?.(`anim: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')
-      const c = heuristicAnimCritique(clip, checks, profile, refNames)
+      const c = principled(heuristicAnimCritique(clip, checks, profile, refNames))
       return pinned ? this.withMatch(c, clip, pinned) : c
     }
   }

@@ -14,6 +14,8 @@ import type {
 import { paletteText } from "@shared/videoref/analyze";
 import { glowText, motionText } from "@shared/videoref/prompt";
 import { animNumericMatch, vfxNumericMatch } from "@shared/videoref/match";
+import { refPrinciples } from "@shared/principles/ref";
+import { principleName } from "@shared/principles/catalog";
 import { useStore } from "../../store";
 import { Icon } from "../../components/Icons";
 import { errorText } from "../../lib/format";
@@ -639,6 +641,8 @@ export function RefDetail({
         )}
       </div>
 
+      <RefPrincipleList video={v} />
+
       <div className="vfx-actions">
         <span className="grow" />
         <button
@@ -650,6 +654,31 @@ export function RefDetail({
         </button>
       </div>
     </section>
+  );
+}
+
+// What the reference is a good example of, per principle (vision notes first, then measured ones).
+function RefPrincipleList({ video }: { video: VideoRef }) {
+  const list = refPrinciples(video);
+  if (!list.length) return null;
+  return (
+    <div className="ref-principles" aria-label="Principles this reference exemplifies">
+      <div className="ref-vision-head">
+        <span className="mono">exemplifies</span>
+        <span className="faint mono">{list.length} principles</span>
+      </div>
+      <ul>
+        {list.map((p) => (
+          <li key={p.id}>
+            <span className="mono ref-pr-id">{principleName(p.id)}</span>
+            <span className="ref-pr-note">{p.note}</span>
+            <span className="faint mono" title={p.source === "measured" ? "measured from the clip" : "from the vision model"}>
+              {p.source === "measured" ? "m" : "v"}
+            </span>
+          </li>
+        ))}
+      </ul>
+    </div>
   );
 }
 

@@ -8,6 +8,7 @@ import { prop } from './schema.ts'
 import { curveShape, evalNumberSequence } from './sequence.ts'
 import { applyChanges, compactEffect, SpecError } from './spec.ts'
 import { textureSuggestions } from './tex/textures.ts'
+import { changePrinciple } from '../principles/score.ts'
 import { RUBRIC_KEYS, type NumberRange, type NumberSequence, type RubricKey, type VfxChange, type VfxCritique, type VfxEffect, type VfxRecipe } from './types.ts'
 
 export const RUBRIC_WEIGHTS: Record<RubricKey, number> = { readability: 0.22, layering: 0.18, timing: 0.16, color: 0.16, silhouette: 0.14, performance: 0.14 }
@@ -114,7 +115,7 @@ export function parseCritique(raw: string, effect: VfxEffect, references: string
     ? (data.changes as Record<string, unknown>[])
         .filter((c) => c && typeof c.node === 'string' && typeof c.prop === 'string' && c.value !== undefined)
         .slice(0, 8)
-        .map((c) => ({ node: String(c.node), prop: String(c.prop), value: c.value as VfxChange['value'], ...(c.why ? { why: String(c.why).slice(0, 200) } : {}) }))
+        .map((c) => ({ node: String(c.node), prop: String(c.prop), value: c.value as VfxChange['value'], ...(c.why ? { why: String(c.why).slice(0, 200) } : {}), ...(changePrinciple(c) ? { principle: changePrinciple(c) } : {}) }))
     : []
   return { scores, overall: overallScore(scores), summary: String(data.summary ?? '').slice(0, 600), changes, references }
 }
@@ -209,8 +210,8 @@ export function heuristicCritique(effect: VfxEffect, recipe: VfxRecipe | null, r
     const role = emitterRole(n)
     const life = prop<NumberRange>(n, 'Lifetime')
     const pairs: [string, number, (v: number) => VfxChange][] = [
-      [`${role}.Lifetime`, (life[0] + life[1]) / 2, (v) => ({ node: n.name, prop: 'Lifetime', value: [Math.round(v * 0.8 * 100) / 100, Math.round(v * 1.2 * 100) / 100], why: `${role} lifetime toward the references` })],
-      [`${role}.LightEmission`, prop<number>(n, 'LightEmission'), (v) => ({ node: n.name, prop: 'LightEmission', value: Math.round(v * 100) / 100, why: `${role} blending like the references` })]
+      [`${role}.Lifetime`, (life[0] + life[1]) / 2, (v) => ({ node: n.name, prop: 'Lifetime', value: [Math.round(v * 0.8 * 100) / 100, Math.round(v * 1.2 * 100) / 100], why: `${role} lifetime toward the references`, principle: 'fx-timing' })],
+      [`${role}.LightEmission`, prop<number>(n, 'LightEmission'), (v) => ({ node: n.name, prop: 'LightEmission', value: Math.round(v * 100) / 100, why: `${role} blending like the references`, principle: 'fx-contrast' })]
     ]
     for (const [key, value, make] of pairs) {
       const r = recipe?.ranges[key]
@@ -226,13 +227,13 @@ export function heuristicCritique(effect: VfxEffect, recipe: VfxRecipe | null, r
       checks++
       misses++
       const v = size[0]?.v ?? 1
-      changes.push({ node: n.name, prop: 'Size', value: [[0, v * 0.4], [0.15, v], [1, 0]], why: 'quick swell then decay instead of a constant size' })
+      changes.push({ node: n.name, prop: 'Size', value: [[0, v * 0.4], [0.15, v], [1, 0]], why: 'quick swell then decay instead of a constant size', principle: 'fx-timing' })
     }
     const tr = prop<NumberSequence>(n, 'Transparency')
     if (evalNumberSequence(tr, 1) < 0.9) {
       checks++
       misses++
-      changes.push({ node: n.name, prop: 'Transparency', value: [...tr.filter((k) => k.t < 0.7).map((k) => [k.t, k.v]), [1, 1]], why: 'fade out instead of popping at the end of life' })
+      changes.push({ node: n.name, prop: 'Transparency', value: [...tr.filter((k) => k.t < 0.7).map((k) => [k.t, k.v]), [1, 1]], why: 'fade out instead of popping at the end of life', principle: 'fx-dissipation' })
     }
   }
   // Better-texture actions (built-in textures used for a job they do not fit).
@@ -240,7 +241,7 @@ export function heuristicCritique(effect: VfxEffect, recipe: VfxRecipe | null, r
   for (const c of textureSuggestions(effect, (n) => emitterRole(n)).reverse()) {
     checks++
     misses++
-    changes.unshift(c)
+    changes.unshift({ ...c, principle: c.principle ?? 'fx-shape' })
   }
   const missingRoles = recipe ? recipe.layers.filter((l) => l.share >= 0.2 && !roles.has(l.role as never) && ['core', 'glow', 'sparks', 'smoke'].includes(l.role)).map((l) => l.role) : []
   if (missingRoles.length) notes.push(`The references usually also have ${missingRoles.join(', ')} layers.`)

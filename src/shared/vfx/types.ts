@@ -7,6 +7,7 @@
 //   nseq NumKey[] (NumberSequence), cseq ColorKey[] (ColorSequence), ref (node id), cframe number[12]
 
 import type { VideoRef } from '../videoref/types.ts'
+import type { PrincipleScore } from '../principles/types.ts'
 
 export type Vec2 = [number, number]
 export type Vec3 = [number, number, number]
@@ -190,6 +191,11 @@ export interface VfxCritique {
   // With a pinned video reference: 0..10 match (blended into overall) and the biggest difference.
   match?: number
   matchNotes?: string
+  // Per-principle scores (critic + code checks), their weighted mean (blended into overall) and the
+  // principles the next round targets first (shared/principles).
+  principles?: PrincipleScore[]
+  principleScore?: number
+  focus?: string[]
 }
 
 // One parameter change: node by name (or id), property, new value.
@@ -199,6 +205,8 @@ export interface VfxChange {
   // Raw JSON in the spec shorthands (normalised when applied, see spec.ts normalizeValue).
   value: unknown
   why?: string
+  // The principle this change raises (shared/principles), when the critic named one.
+  principle?: string
 }
 
 // Parameter ranges and patterns learned from the library for one effect type (tag).

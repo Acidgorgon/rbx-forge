@@ -1,6 +1,7 @@
 // IPC handlers (VfxApi) and agent tools for the VFX Lab, built from app pieces passed in by
 // main/index.ts. No electron imports: capture, dialogs and the vision model come in as functions.
 
+import type { PrincipleHooks } from '../../../shared/principles/types.ts'
 import type { LabTier } from '../../../shared/labModels.ts'
 import { join } from 'node:path'
 import { findRuntimeDir, luneStatus } from '../tests/lune.ts'
@@ -14,6 +15,8 @@ import type { TextureGenerateInput } from '../../../shared/vfxTextureTypes.ts'
 import type { ArtFetch } from '../art/openaiImages.ts'
 
 export interface VfxWireDeps {
+  // Principle priorities (services/principles): weights for the critics, ratings feed them.
+  principles?: PrincipleHooks
   userDataDir: string
   root: () => string | null
   settings: { get<T>(key: string, fallback: T): T }
@@ -54,6 +57,7 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     log: deps.log
   })
   const service = new VfxService({
+    principles: deps.principles,
     userDir: join(deps.userDataDir, 'vfx'),
     projectRoot: deps.root,
     lune: async () => {

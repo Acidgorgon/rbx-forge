@@ -4,6 +4,7 @@
 // beats. The rules come with concrete retimes (fixes) the composer or the assistant can apply.
 
 import { applyPatch, validateAbility } from './model.ts'
+import { changePrinciple } from '../principles/score.ts'
 import { markerTime, resolveAbility, round, type EventLengths, type ResolvedAbility } from './timing.ts'
 import { ABILITY_RUBRIC, type Ability, type AbilityChange, type AbilityCritique, type AbilityRubricKey, type TimingCheck } from './types.ts'
 
@@ -32,7 +33,7 @@ export function releaseMarker(ability: Ability): { name: string; t: number } | n
   return null
 }
 
-function anticipationStart(ability: Ability): { label: string; t: number } {
+export function anticipationStart(ability: Ability): { label: string; t: number } {
   const a = ability.animation
   if (a) {
     for (const want of ANTICIPATION_MARKERS) {
@@ -44,7 +45,7 @@ function anticipationStart(ability: Ability): { label: string; t: number } {
   return { label: 'start', t: 0 }
 }
 
-function charged(ability: Ability, ctx: CritiqueContext): boolean {
+export function charged(ability: Ability, ctx: CritiqueContext): boolean {
   const tags = (ability.tags ?? []).map((t) => t.toLowerCase())
   if (tags.some((t) => ['charge', 'charged', 'ultimate', 'cast', 'channel'].includes(t))) return true
   return ability.events.some((e) => e.kind === 'vfx' && (ctx.stages?.(e.effect) ?? []).some((s) => /charge|gather|channel/i.test(s.label)))
@@ -194,7 +195,7 @@ export function parseVisionCritique(raw: string): NonNullable<AbilityCritique['v
   const changes: AbilityChange[] = (Array.isArray(j.changes) ? j.changes : [])
     .filter((c: any) => c && typeof c.event === 'string' && typeof c.field === 'string')
     .slice(0, 6)
-    .map((c: any) => ({ event: c.event, field: c.field, value: c.value, ...(c.why ? { why: String(c.why).slice(0, 200) } : {}) }))
+    .map((c: any) => ({ event: c.event, field: c.field, value: c.value, ...(c.why ? { why: String(c.why).slice(0, 200) } : {}), ...(changePrinciple(c) ? { principle: changePrinciple(c) } : {}) }))
   return { scores, overall, summary: String(j.summary ?? '').slice(0, 600), changes }
 }
 

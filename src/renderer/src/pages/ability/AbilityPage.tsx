@@ -16,6 +16,7 @@ import { Inspector } from './Inspector'
 import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
 import '../vfx/vfx.css'
 import './ability.css'
+import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 
 const SUGGESTIONS = ['charged palm blast that knocks me back', 'dash punch', 'ground slam shockwave', 'rising uppercut with sparks', 'quick sword slash']
 const EXAMPLES = [{ key: 'hollow-purple', label: 'Hollow Purple' }]
@@ -79,6 +80,7 @@ function CritiquePanel({ entry, ability, busy, onCritique, ctx }: { entry: Abili
   const checks = useMemo(() => timingChecks(ability, ctx), [ability, ctx])
   const c = entry.critique
   const failing = checks.filter((x) => !x.ok)
+  const weights = usePrincipleWeights()
   return (
     <div className="ab-crit">
       <div className="ab-crit-bar">
@@ -118,6 +120,11 @@ function CritiquePanel({ entry, ability, busy, onCritique, ctx }: { entry: Abili
             ))}
           </div>
           <p className="vfx-iter-sum">{c.vision.summary}</p>
+        </div>
+      )}
+      {c?.principles && (
+        <div className="ab-principles">
+          <PrincipleScorecard principles={c.principles} focus={c.focus} score={c.principleScore} weights={weights} />
         </div>
       )}
       {c && c.frames.length > 0 && (
@@ -390,6 +397,7 @@ export function AbilityPage() {
   const [query, setQuery] = useState('')
   const [prompt, setPrompt] = useState('')
   const [making, setMaking] = useState(false)
+  const [view, setView] = useState<'moves' | 'priorities'>('moves')
 
   const load = useCallback(async () => {
     try {
@@ -524,7 +532,16 @@ export function AbilityPage() {
           </div>
         </section>
 
-        <div className={`vfx-body${current ? ' has-detail' : ''}`}>
+        <div className="seg vfx-view" role="tablist" aria-label="Library">
+          <button role="tab" aria-selected={view === 'moves'} className={view === 'moves' ? 'on' : ''} onClick={() => setView('moves')}>
+            moves
+          </button>
+          <button role="tab" aria-selected={view === 'priorities'} className={view === 'priorities' ? 'on' : ''} onClick={() => setView('priorities')} title="Which animation and VFX principles count most for you, learned from your ratings">
+            priorities
+          </button>
+        </div>
+        {view === 'priorities' && <PrinciplePriorities domains={['anim', 'vfx']} />}
+        <div className={`vfx-body${current ? ' has-detail' : ''}`} hidden={view !== 'moves'}>
           <div className="vfx-lib">
             <div className="row vfx-lib-head">
               <input className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search moves" aria-label="Search moves" />

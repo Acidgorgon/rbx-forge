@@ -5,6 +5,7 @@
 import type { AnimMarker } from './types.ts'
 import type { R6Joint } from './r6.ts'
 import type { VideoRef } from '../videoref/types.ts'
+import type { PrincipleScore } from '../principles/types.ts'
 
 export type { R6Joint }
 
@@ -207,11 +208,12 @@ export const ANIM_RUBRIC_KEYS = ['silhouette', 'timing', 'weight', 'arcs', 'appe
 export type AnimRubricKey = (typeof ANIM_RUBRIC_KEYS)[number]
 
 // A change the critic (or an automatic check) proposes, applied on top of the script's clip.
+// principle: the principle the change raises (shared/principles), when the critic named one.
 export type AnimChange =
-  | { kind: 'offset'; joint: R15Joint; at: number; rot: [number, number, number]; why?: string }
-  | { kind: 'retime'; from: number; to: number; scale: number; why?: string }
-  | { kind: 'ease'; at: number; joint?: R15Joint; style: PoseEasingStyle; dir?: PoseEasingDirection; why?: string }
-  | { kind: 'fix'; check: 'limits' | 'sliding' | 'penetration'; why?: string }
+  | { kind: 'offset'; joint: R15Joint; at: number; rot: [number, number, number]; why?: string; principle?: string }
+  | { kind: 'retime'; from: number; to: number; scale: number; why?: string; principle?: string }
+  | { kind: 'ease'; at: number; joint?: R15Joint; style: PoseEasingStyle; dir?: PoseEasingDirection; why?: string; principle?: string }
+  | { kind: 'fix'; check: 'limits' | 'sliding' | 'penetration'; why?: string; principle?: string }
 
 export interface AnimCritique {
   scores: Record<AnimRubricKey, number>
@@ -223,6 +225,11 @@ export interface AnimCritique {
   // With a pinned video reference: 0..10 match (blended into overall) and the biggest difference.
   match?: number
   matchNotes?: string
+  // Per-principle scores (critic + code checks), their weighted mean (blended into overall) and the
+  // principles the next round targets first (shared/principles).
+  principles?: PrincipleScore[]
+  principleScore?: number
+  focus?: string[]
 }
 
 export interface AnimIteration {

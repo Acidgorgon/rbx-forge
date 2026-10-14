@@ -201,7 +201,7 @@ export class RefService {
       const video = h.entry.video!
       const { images, keyLabels } = await refImages(video, (f) => h.store.readFile(h.entry.id, f), { sheet: true })
       const raw = await model(refVisionSystem(h.lab), refVisionPrompt(video, h.entry.name, keyLabels), images)
-      const vision = parseRefVision(raw, this.now())
+      const vision = parseRefVision(raw, this.now(), undefined, h.lab)
       const cur = (await this.find(id)) ?? h
       const next = { ...cur.entry, video: { ...cur.entry.video!, vision }, description: `${vision.summary} ${describeAnalysis(video.analysis, h.lab)}`.slice(0, 1200), updatedAt: this.now() }
       const saved = h.lab === 'vfx' ? await (cur.store as VfxStore).save(next as VfxEntry) : await (cur.store as AnimStore).save(next as AnimEntry)

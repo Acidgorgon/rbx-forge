@@ -21,6 +21,10 @@ import { evalColorSequence } from '../../../shared/vfx/sequence.ts'
 import type { ColorSequence, Rgb, VfxEffect, VfxEntry } from '../../../shared/vfx/types.ts'
 import { instancePathFor, requireExpression } from '../blink.ts'
 import { abilityId, AbilityStore, PROJECT_ABILITY_DIR } from './store.ts'
+import { abilityCriticPrinciples, principleIds, scoresForRating, withAbilityPrinciples } from '../../../shared/principles/attach.ts'
+import { abilityPrincipleChecks } from '../../../shared/principles/abilityChecks.ts'
+import { parsePlanObject, principlePlan } from '../../../shared/principles/select.ts'
+import type { PrincipleHooks, PrincipleWeights } from '../../../shared/principles/types.ts'
 
 export interface ImagePayload {
   mime: string
@@ -72,6 +76,8 @@ export interface AbilityServiceDeps {
   emit?: (event: 'ability:changed', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   now?: () => number
+  // Principle priorities: the user's learned weights (critique, compose plan) and the rating log.
+  principles?: PrincipleHooks
 }
 
 export class AbilityServiceError extends Error {}
@@ -382,13 +388,16 @@ export class AbilityService {
         `Draft: ${JSON.stringify(ability)}`,
         `Timeline:\n${timelineText(ability, ctx)}`,
         `Timing checks:\n${timingChecks(ability, ctx).map((c) => `- ${c.ok ? 'ok' : c.level}: ${c.message}`).join('\n')}`,
-        ...liked.map((e) => `A move the user liked ("${e.origin}"):\n${timelineText(e.ability)}`)
-      ].join('\n\n')
+        ...liked.map((e) => `A move the user liked ("${e.origin}"):\n${timelineText(e.ability)}`),
+        principlePlan('ability', text, { weights: await this.principleWeights() })
+      ].filter(Boolean).join('\n\n')
       try {
         const raw = await model(COMPOSE_SYSTEM, prompt, [])
         const m = /\{[\s\S]*\}/.exec(raw.replace(/```(?:json)?/g, ''))
         if (!m) throw new Error('no JSON in the answer')
-        const j = JSON.parse(m[0]) as { events?: Record<string, unknown>[]; remove?: string[]; duration?: number }
+        const j = JSON.parse(m[0]) as { events?: Record<string, unknown>[]; remove?: string[]; duration?: number; plan?: unknown }
+        const plan = parsePlanObject(j.plan)
+        if (Object.keys(plan).length) notes.push(`plan: ${Object.entries(plan).map(([k, v]) => `${k}: ${v}`).join('; ')}`)
         const next = applyPatch(ability, { ability: j.duration ? { duration: j.duration } : undefined, events: Array.isArray(j.events) ? j.events : [], remove: Array.isArray(j.remove) ? j.remove.map(String) : [] })
         const errors = validateAbility(next, ctx).filter((i) => i.level === 'error')
         if (errors.length) throw new Error(errors.map((e) => e.message).join('; '))
@@ -434,6 +443,10 @@ export class AbilityService {
     const frames: string[] = []
     let vision: AbilityCritique['vision']
     const model = opts.vision === false ? null : this.deps.model?.('critic')
+    const weights = await this.principleWeights()
+    const request = hit.entry.origin || hit.entry.description
+    const mainEffect = this.mainEffect(ability, effects)
+    let raw: string | undefined
     if (model && (this.deps.capture || opts.frames?.length)) {
       try {
         // Studio check frames (studio/...) come in ready-made; otherwise render the beats.
@@ -443,23 +456,29 @@ export class AbilityService {
           await hit.store.writeFile(id, f, png)
           frames.push(f)
         }
-        const raw = await model(ABILITY_CRITIC_SYSTEM, critiquePrompt({ request: hit.entry.origin, timeline: timelineText(ability, ctx), checks, beats }) + studioFramesNote(pngs), pngs.map((p) => ({ mime: 'image/png', base64: p.toString('base64') })))
+        raw = await model(ABILITY_CRITIC_SYSTEM, `${critiquePrompt({ request: hit.entry.origin, timeline: timelineText(ability, ctx), checks, beats })}\n\n${abilityCriticPrinciples(ability, ctx, request, { weights, focus: hit.entry.critique?.focus, effect: mainEffect })}` + studioFramesNote(pngs), pngs.map((p) => ({ mime: 'image/png', base64: p.toString('base64') })))
         vision = parseVisionCritique(raw)
       } catch (e) {
         this.deps.log?.(`ability: vision critique unavailable (${(e as Error).message}); timing rules only`, 'stderr')
       }
     }
     const t = timingScore(checks)
-    const critique: AbilityCritique = { at: this.now(), timingScore: t, checks, ...(vision ? { vision } : {}), beats, frames, overall: vision ? Math.round(((t + vision.overall) / 2) * 10) / 10 : t, summary: summarize(checks, vision) }
+    const critique: AbilityCritique = withAbilityPrinciples(
+      { at: this.now(), timingScore: t, checks, ...(vision ? { vision } : {}), beats, frames, overall: vision ? Math.round(((t + vision.overall) / 2) * 10) / 10 : t, summary: summarize(checks, vision) },
+      ability,
+      ctx,
+      { request, raw: vision ? raw : undefined, weights, effect: mainEffect }
+    )
     let next = ability
     const applied: string[] = []
     if (opts.apply) {
       next = applyTimingFixes(next, checks)
       applied.push(...checks.filter((c) => !c.ok && c.fix).map((c) => `${c.fix!.event}: ${c.rule}`))
-      if (vision?.changes.length) {
-        const r = applyChanges(next, vision.changes)
+      const ordered = critique.vision?.changes ?? []
+      if (ordered.length) {
+        const r = applyChanges(next, ordered)
         next = r.ability
-        applied.push(...vision.changes.map((c) => `${c.event}.${c.field}`).filter((x) => !r.skipped.some((s) => s.startsWith(x))))
+        applied.push(...ordered.map((c) => `${c.event}.${c.field}`).filter((x) => !r.skipped.some((s) => s.startsWith(x))))
       }
     }
     const entry = await hit.store.save({ ...hit.entry, ability: next, critique, updatedAt: this.now(), thumbs: frames.length ? [frames[Math.min(2, frames.length - 1)], ...hit.entry.thumbs.filter((f) => !f.startsWith('frames/'))].slice(0, 4) : hit.entry.thumbs })
@@ -480,6 +499,7 @@ export class AbilityService {
     else if (rating === 'down') e.quality = 'avoid'
     else delete e.quality
     const saved = await hit.store.save(e)
+    await this.recordPrinciples(saved, rating).catch((err) => this.deps.log?.(`ability: principle feedback: ${(err as Error).message}`, 'stderr'))
     if (this.deps.memory && rating) {
       const { ctx } = await this.context(saved.ability)
       const up = rating === 'up'
@@ -500,6 +520,28 @@ export class AbilityService {
     }
     this.changed()
     return saved
+  }
+
+  // Ratings teach the principle weights: the move's per-principle scores (its last critique, else the
+  // timing rules and the main effect's checks).
+  private async recordPrinciples(e: AbilityEntry, rating: 'up' | 'down' | null): Promise<void> {
+    const p = this.deps.principles
+    if (!p) return
+    if (!rating) return void (await p.forget?.('ability', e.id))
+    const { ctx, effects } = await this.context(e.ability)
+    const ids = principleIds('ability', e.origin || e.description)
+    const scores = scoresForRating(e.critique?.principles, () => abilityPrincipleChecks(e.ability, ctx, { effect: this.mainEffect(e.ability, effects) }).filter((c) => ids.includes(c.id)))
+    await p.record({ lab: 'ability', entryId: e.id, name: e.name, rating, scores })
+  }
+
+  private async principleWeights(): Promise<PrincipleWeights> {
+    return (await this.deps.principles?.weights().catch(() => ({}))) ?? {}
+  }
+
+  // The move's first VFX effect (the one the principle checks look at).
+  private mainEffect(ability: Ability, effects: Record<string, VfxEffect>): VfxEffect | null {
+    const ev = ability.events.find((x) => x.kind === 'vfx' && effects[(x as { effect: string }).effect])
+    return ev ? effects[(ev as { effect: string }).effect] : null
   }
 
   // ------------------------------------------------------------ export

@@ -132,6 +132,8 @@ export interface RefVision {
   // Animation: the pose at each beat and the timing feel.
   poses?: { beat: string; pose: string }[]
   timing?: string
+  // Animation / VFX principles the clip exemplifies, one note each (shared/principles/ref.ts).
+  principles?: { id: string; note: string; source?: 'vision' | 'measured' }[]
   model?: string
   at: number
 }

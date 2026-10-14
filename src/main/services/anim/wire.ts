@@ -1,6 +1,7 @@
 // IPC handlers (AnimApi) and agent tools for the Animation Lab, built from app pieces passed in by
 // main/index.ts. No electron imports: capture, dialogs and the models come in as functions.
 
+import type { PrincipleHooks } from '../../../shared/principles/types.ts'
 import { join } from 'node:path'
 import { findRuntimeDir, luneStatus } from '../tests/lune.ts'
 import type { AnimClip, AnimEntry, AnimRefineOptions, AnimScope, RigType } from '../../../shared/anim/model.ts'
@@ -10,6 +11,8 @@ import { AnimService, type AnimCaptureRequest, type MemoryLike, type ModelFn } f
 import { animTools, type AnimTool } from './tools.ts'
 
 export interface AnimWireDeps {
+  // Principle priorities (services/principles): weights for the critics, ratings feed them.
+  principles?: PrincipleHooks
   userDataDir: string
   root: () => string | null
   settings: { get<T>(key: string, fallback: T): T; set(key: string, value: unknown): void }
@@ -34,6 +37,7 @@ export const ANIM_RIG_SETTING = 'anim.rig'
 export function createAnimWiring(deps: AnimWireDeps): AnimWiring {
   const lunePath = () => deps.settings.get<string | null>('tests.lunePath', null)
   const service = new AnimService({
+    principles: deps.principles,
     userDir: join(deps.userDataDir, 'anim'),
     projectRoot: deps.root,
     lune: async () => {

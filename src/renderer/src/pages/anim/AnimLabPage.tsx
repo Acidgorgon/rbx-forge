@@ -20,6 +20,8 @@ import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
 import { RefCard, RefCompare, RefDetail } from '../videoref/RefViews'
 import { RefImport } from '../videoref/RefImport'
 import { isRefFile } from '../videoref/decode'
+import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
+import { principleLabel } from '@shared/principles/catalog'
 import '../vfx/vfx.css'
 import './anim.css'
 
@@ -296,6 +298,7 @@ function Frame({ id, file }: { id: string; file: string }) {
 
 function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: AnimClip, n: number) => void }) {
   const its = entry.iterations ?? []
+  const weights = usePrincipleWeights()
   if (!its.length) return <div className="empty">No iterations yet. Refine renders the key beats, critiques them against your style and the checks, applies the changes and keeps each step here.</div>
   const best = its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0])
   return (
@@ -336,6 +339,7 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
                   </div>
                 ))}
               </div>
+              <PrincipleScorecard principles={it.critique.principles} focus={it.critique.focus} score={it.critique.principleScore} weights={weights} />
               <p className="vfx-iter-sum">{it.critique.summary}</p>
               {it.critique.changes.length > 0 && (
                 <details className="vfx-changes">
@@ -345,7 +349,7 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
                   <ul>
                     {it.critique.changes.map((c, i) => (
                       <li key={i}>
-                        <span className="mono">{c.kind === 'offset' ? `${c.joint} @${c.at.toFixed(2)}` : c.kind === 'retime' ? `retime ${c.from.toFixed(2)}–${c.to.toFixed(2)} ×${c.scale}` : c.kind === 'ease' ? `ease ${c.style} @${c.at.toFixed(2)}` : `fix ${c.check}`}</span> {c.why ?? ''}
+                        <span className="mono">{c.kind === 'offset' ? `${c.joint} @${c.at.toFixed(2)}` : c.kind === 'retime' ? `retime ${c.from.toFixed(2)}–${c.to.toFixed(2)} ×${c.scale}` : c.kind === 'ease' ? `ease ${c.style} @${c.at.toFixed(2)}` : `fix ${c.check}`}</span> {c.principle && <span className="pr-chg mono">{principleLabel(c.principle)}</span>} {c.why ?? ''}
                       </li>
                     ))}
                   </ul>
@@ -705,7 +709,7 @@ export function AnimLabPage() {
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState<string | null>(null)
   const [scope, setScope] = useState<AnimScope>('user')
-  const [view, setView] = useState<'library' | 'style'>('library')
+  const [view, setView] = useState<'library' | 'style' | 'priorities'>('library')
   const [prompt, setPrompt] = useState('')
   const [iters, setIters] = useState(4)
   const [threshold, setThreshold] = useState(7.5)
@@ -975,8 +979,13 @@ export function AnimLabPage() {
               <button role="tab" aria-selected={view === 'style'} className={view === 'style' ? 'on' : ''} onClick={() => setView('style')}>
                 style · {(style?.profiles.length ?? 0) + (style?.r6?.profiles.length ?? 0)}
               </button>
+              <button role="tab" aria-selected={view === 'priorities'} className={view === 'priorities' ? 'on' : ''} onClick={() => setView('priorities')} title="Which animation principles count most for you, learned from your ratings">
+                priorities
+              </button>
             </div>
-            {view === 'style' ? (
+            {view === 'priorities' ? (
+              <PrinciplePriorities domains={['anim']} />
+            ) : view === 'style' ? (
               <StyleView style={style} onLearn={() => void learn()} busy={!!busy} />
             ) : (
               <>

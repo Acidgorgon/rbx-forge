@@ -131,21 +131,21 @@ export function heuristicAnimCritique(clip: AnimClip, checks: AnimCheckReport, p
   const s = measureClip(clip)
   const changes: AnimChange[] = []
   const notes: string[] = []
-  if (checks.scores.limits < 8) changes.push({ kind: 'fix', check: 'limits', why: 'joints past natural limits' })
-  if (checks.scores.sliding < 8) changes.push({ kind: 'fix', check: 'sliding', why: 'feet slide while planted' })
-  if (checks.scores.penetration < 8) changes.push({ kind: 'fix', check: 'penetration', why: 'arms cut into the body' })
+  if (checks.scores.limits < 8) changes.push({ kind: 'fix', check: 'limits', why: 'joints past natural limits', principle: 'solid-posing' })
+  if (checks.scores.sliding < 8) changes.push({ kind: 'fix', check: 'sliding', why: 'feet slide while planted', principle: 'solid-posing' })
+  if (checks.scores.penetration < 8) changes.push({ kind: 'fix', check: 'penetration', why: 'arms cut into the body', principle: 'solid-posing' })
   const ph = phases(clip)
   if (profile && profile.samples > 0) {
     const want = profile.timing.anticipation.median
     if (want > 0.04 && s.anticipation > 0.02 && (s.anticipation < want * 0.75 || s.anticipation > want * 1.4)) {
       const scale = Math.max(0.5, Math.min(2.2, want / s.anticipation))
-      changes.push({ kind: 'retime', from: ph.motionStart, to: ph.actionStart, scale: Math.round(scale * 100) / 100, why: `anticipation toward the ${profile.tag} references (${want.toFixed(2)} s)` })
+      changes.push({ kind: 'retime', from: ph.motionStart, to: ph.actionStart, scale: Math.round(scale * 100) / 100, why: `anticipation toward the ${profile.tag} references (${want.toFixed(2)} s)`, principle: 'anticipation' })
       notes.push(`anticipation ${s.anticipation.toFixed(2)} s vs ${want.toFixed(2)} s in the references`)
     }
     const wantRec = profile.timing.recovery.median
     if (wantRec > 0.05 && s.recovery > 0.02 && (s.recovery < wantRec * 0.7 || s.recovery > wantRec * 1.5)) {
       const scale = Math.max(0.5, Math.min(2.2, wantRec / s.recovery))
-      changes.push({ kind: 'retime', from: ph.actionEnd, to: ph.motionEnd, scale: Math.round(scale * 100) / 100, why: `recovery toward the references (${wantRec.toFixed(2)} s)` })
+      changes.push({ kind: 'retime', from: ph.actionEnd, to: ph.motionEnd, scale: Math.round(scale * 100) / 100, why: `recovery toward the references (${wantRec.toFixed(2)} s)`, principle: 'follow-through' })
     }
   }
   const timing = checks.scores.timing

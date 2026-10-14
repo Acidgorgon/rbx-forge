@@ -17,6 +17,8 @@ import { TextureLab } from './TextureLab'
 import { RefCard, RefCompare, RefDetail } from '../videoref/RefViews'
 import { RefImport } from '../videoref/RefImport'
 import { isRefFile } from '../videoref/decode'
+import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
+import { principleLabel } from '@shared/principles/catalog'
 import './vfx.css'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg · video refs: mp4/webm/mov/gif'
@@ -90,6 +92,7 @@ function Frame({ id, file, label }: { id: string; file: string; label?: string }
 
 function Iterations({ entry, onRestore }: { entry: VfxEntry; onRestore: (effect: VfxEffect, n: number) => void }) {
   const its = entry.iterations ?? []
+  const weights = usePrincipleWeights()
   if (!its.length) return <div className="empty">No iterations yet. Refine runs render → critique → adjust and keeps each step here.</div>
   const best = its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0])
   return (
@@ -120,6 +123,7 @@ function Iterations({ entry, onRestore }: { entry: VfxEntry; onRestore: (effect:
                   </div>
                 ))}
               </div>
+              <PrincipleScorecard principles={it.critique.principles} focus={it.critique.focus} score={it.critique.principleScore} weights={weights} />
               <p className="vfx-iter-sum">{it.critique.summary}</p>
               {it.critique.changes.length > 0 && (
                 <details className="vfx-changes">
@@ -130,7 +134,7 @@ function Iterations({ entry, onRestore }: { entry: VfxEntry; onRestore: (effect:
                         <span className="mono">
                           {c.node}.{c.prop}
                         </span>{' '}
-                        {c.why ?? ''}
+                        {c.principle && <span className="pr-chg mono">{principleLabel(c.principle)}</span>} {c.why ?? ''}
                       </li>
                     ))}
                   </ul>
@@ -405,7 +409,7 @@ export function VfxLabPage() {
   const [drag, setDrag] = useState(false)
   const [progress, setProgress] = useState<Record<string, VfxRefineProgress>>({})
   // Library view: effects, or the custom texture library (TextureLab).
-  const [view, setView] = useState<'effects' | 'textures'>('effects')
+  const [view, setView] = useState<'effects' | 'textures' | 'priorities'>('effects')
   // Video reference import review (a dropped / picked clip), and the reference pinned to Make.
   const [refImport, setRefImport] = useState<{ file: File | null } | null>(null)
   const [pin, setPin] = useState<{ id: string; name: string } | null>(null)
@@ -635,8 +639,12 @@ export function VfxLabPage() {
           <button role="tab" aria-selected={view === 'textures'} className={view === 'textures' ? 'on' : ''} onClick={() => setView('textures')} title="Custom particle and beam textures: procedural (free) or AI, upload to Roblox">
             textures
           </button>
+          <button role="tab" aria-selected={view === 'priorities'} className={view === 'priorities' ? 'on' : ''} onClick={() => setView('priorities')} title="Which VFX principles count most for you, learned from your ratings">
+            priorities
+          </button>
         </div>
         {view === 'textures' && <TextureLab />}
+        {view === 'priorities' && <PrinciplePriorities domains={['vfx']} />}
         {view === 'effects' && (
           <div className={`vfx-body${current ? ' has-detail' : ''}`}>
             <div className="vfx-lib">

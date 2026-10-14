@@ -93,3 +93,11 @@
   .ref-bar i { transition: none; }
 }
 .ref-card .anim-dur { position: absolute; right: 6px; top: 5px; padding: 1px 5px; border-radius: var(--r-sm); background: rgba(0, 0, 0, .6); color: #ddd; font-size: 10px; }
+
+/* Principles a reference exemplifies (shared/principles/ref.ts). */
+.ref-principles { display: flex; flex-direction: column; gap: 4px; padding: 6px 10px; border-left: 2px solid var(--line); }
+.ref-principles ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; }
+.ref-principles li { display: grid; grid-template-columns: minmax(84px, 120px) 1fr auto; gap: 8px; font-size: 11.5px; line-height: 1.45; align-items: baseline; }
+.ref-pr-id { color: var(--ember-text); }
+.ref-pr-note { color: var(--fg); min-width: 0; overflow-wrap: anywhere; }
+@media (max-width: 560px) { .ref-principles li { grid-template-columns: 1fr auto; } .ref-pr-note { grid-column: 1 / -1; } }

@@ -7,6 +7,7 @@
 import { animPhases, beatSeconds, paletteText } from './analyze.ts'
 import type { PaletteColor, RefBeatLabel, RefLab, RefSegment, RefVision, VideoRef, VideoRefAnalysis } from './types.ts'
 import { REF_BEATS } from './types.ts'
+import { parseRefPrinciples, refPrincipleAsk, refPrinciplesText } from '../principles/ref.ts'
 
 const f2 = (x: number) => x.toFixed(2)
 
@@ -53,7 +54,7 @@ Describe the body only (ignore effects and camera unless they matter for the tim
 {"summary":"two sentences: the move and its feel","poses":[{"beat":"anticipation|release|impact|dissipate|flash","pose":"body, line of action, arms, legs, weight"}],"timing":"the timing feel (snappy, heavy, floaty...), where it holds and where it is fast","motion":"where the body travels"}`
 
 export function refVisionSystem(lab: RefLab): string {
-  return lab === 'anim' ? REF_VISION_SYSTEM_ANIM : REF_VISION_SYSTEM_VFX
+  return `${lab === 'anim' ? REF_VISION_SYSTEM_ANIM : REF_VISION_SYSTEM_VFX}\n${refPrincipleAsk(lab)}`
 }
 
 export function refVisionPrompt(ref: Pick<VideoRef, 'lab' | 'analysis' | 'source' | 'trim'>, name: string, keyLabels: string[]): string {
@@ -80,7 +81,7 @@ const str = (v: unknown, max = 600) => (typeof v === 'string' ? v.trim().slice(0
 
 // The vision model's JSON -> RefVision (tolerant: missing fields are left out; prose without JSON
 // becomes the summary).
-export function parseRefVision(raw: string, at = Date.now(), model?: string): RefVision {
+export function parseRefVision(raw: string, at = Date.now(), model?: string, lab?: RefLab): RefVision {
   let data: Record<string, unknown>
   try {
     data = extractJson(raw)
@@ -105,6 +106,8 @@ export function parseRefVision(raw: string, at = Date.now(), model?: string): Re
       .filter((p) => p && typeof p === 'object' && typeof p.pose === 'string')
       .slice(0, 8)
       .map((p) => ({ beat: str(p.beat, 40) ?? '', pose: str(p.pose, 300)! }))
+  const principles = parseRefPrinciples(data.principles, lab ?? (out.poses?.length ? 'anim' : 'vfx'))
+  if (principles.length) out.principles = principles
   if (!out.summary) out.summary = out.effect ?? out.timing ?? 'No summary.'
   return out
 }
@@ -150,6 +153,8 @@ export function refComposeBlock(ref: VideoRef, name: string, opts: { keyLabels?:
   lines.push(`Screen-space motion: ${motionText(a)}.`)
   const v = visionText(ref.vision, lab)
   if (v) lines.push(v)
+  const pr = refPrinciplesText(ref)
+  if (pr) lines.push(pr)
   if (opts.notes) lines.push(`User notes on the reference: ${opts.notes.slice(0, 400)}`)
   if (opts.keyLabels?.length) lines.push(`The attached images are the reference's key frames in order: ${opts.keyLabels.join(', ')}.`)
   return lines.join('\n')
@@ -167,6 +172,7 @@ export function refCritiqueBlock(ref: VideoRef, name: string, keyLabels: string[
     ref.lab === 'vfx' ? `Reference palette ${paletteText(a.palette.slice(0, 4))}; ${glowText(a)}.` : `Reference holds / fast motion: ${timelineText(a)}.`,
     `Reference motion: ${motionText(a)}.`,
     ref.vision ? `Reference summary: ${ref.vision.summary}` : '',
+    refPrinciplesText(ref, 4),
     `Reference key frames attached after the rendered frames: ${keyLabels.join(', ')}.`
   ]
   return lines.filter(Boolean).join('\n')

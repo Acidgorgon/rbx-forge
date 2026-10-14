@@ -53,6 +53,7 @@ import { withRefTools } from './services/videoref/tools.ts'
 import { createAbilityWiring } from './services/ability/wire.ts'
 import { abilityElectronDeps } from './services/ability/electron.ts'
 import { withAbilityTools } from './services/ability/tools.ts'
+import { createPrincipleWiring } from './services/principles/wire.ts'
 import { createStudioWiring } from './services/studio/wire.ts'
 import { studioElectronDeps } from './services/studio/electron.ts'
 import { withStudioTools } from './services/studio/tools.ts'
@@ -429,9 +430,20 @@ const studio = createStudioWiring({
   ...studioElectronDeps(preloadPath())
 })
 
+// Principle priorities (services/principles): per-principle weights learned from Labs ratings; the
+// VFX Lab, Animation Lab and Ability Composer critics weigh their principle scores by them.
+const principles = createPrincipleWiring({
+  userDataDir: app.getPath('userData'),
+  memory,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[principles] ${text}` })
+})
+registerPackSection({ id: 'principles', label: 'Principle priorities', dir: () => principles.service.dir })
+
 // VFX Lab (services/vfx): reference library, recipes as memory skills, offscreen three.js renders and
 // the render / critique / refine loop (critique on the default model through the agent layer).
 const vfx = createVfxWiring({
+  principles: principles.service,
   userDataDir: app.getPath('userData'),
   root: () => project?.info.root ?? null,
   settings,
@@ -456,6 +468,7 @@ registerPackSection({ id: 'vfx-textures', label: 'VFX textures', dir: () => vfx.
 // Animation Lab (services/anim): clip library, style profiles as memory skills, timeline scripts and
 // the render / critique / refine loop. Models per Labs tier (Settings > Labs) through the agent layer.
 const anim = createAnimWiring({
+  principles: principles.service,
   userDataDir: app.getPath('userData'),
   root: () => project?.info.root ?? null,
   settings,
@@ -486,6 +499,7 @@ const refs = createRefWiring({
 // Ability Composer (services/ability): moves that reference VFX Lab effects and Animation Lab clips by
 // id; compose uses vfx_compose / anim_compose from the tool registry when they exist.
 const ability = createAbilityWiring({
+  principles: principles.service,
   userDataDir: app.getPath('userData'),
   root: () => project?.info.root ?? null,
   emit: (event, payload) => emit(event, payload as never),
@@ -566,7 +580,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 for (const [name, handler] of Object.entries(handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers, ...studio.handlers, ...refs.handlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers, ...studio.handlers, ...refs.handlers, ...principles.handlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }

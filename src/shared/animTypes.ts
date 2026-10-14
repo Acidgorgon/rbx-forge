@@ -4,6 +4,7 @@ import type { AnimClipRef } from './anim/types.ts'
 import type { AnimCheckReport, AnimClip, AnimEntry, AnimExportResult, AnimImportResult, AnimLabStatus, AnimRefineOptions, AnimRefineProgress, AnimScope, AnimScriptResult, AnimStyle, AnimUploadResult, RigType } from './anim/model.ts'
 import type { LabModels } from './labModels.ts'
 import type { Restatement } from './restate/types.ts'
+import type { CustomMoveTag, ResolvedMoveSet } from './anim/movesets.ts'
 
 export type * from './anim/model.ts'
 export type { LabModels, LabTier } from './labModels.ts'
@@ -11,6 +12,21 @@ export type { LabModels, LabTier } from './labModels.ts'
 export interface AnimCoverage {
   tags: { tag: string; clips: number; liked: number; disliked: number }[]
   thin: string[]
+}
+
+// Move sets (anim/movesets.ts): the active one (with the project's custom move types) and the built-ins.
+export interface AnimMoveSets {
+  active: ResolvedMoveSet
+  sets: { id: string; name: string; description: string }[]
+}
+
+export interface AnimRetagResult {
+  set: string
+  // model: the cheap Labs tier read the clips; heuristic: keywords in names, files and notes.
+  source: 'model' | 'heuristic'
+  total: number
+  changed: number
+  changes: { id: string; before: string[]; after: string[] }[]
 }
 
 export interface AnimImportOptions {
@@ -49,6 +65,13 @@ export interface AnimApi {
   animLearn(): Promise<{ style: AnimStyle; saved: string[]; errors: string[] }>
   animStyle(): Promise<AnimStyle | null>
   animCoverage(): Promise<AnimCoverage>
+  // Move sets (Combat / Football / Movement & emotes), per project in .forge/anim/settings.json.
+  animMoveSets(): Promise<AnimMoveSets>
+  animSetMoveSet(id: string): Promise<ResolvedMoveSet>
+  animAddMoveTag(tag: CustomMoveTag): Promise<ResolvedMoveSet>
+  animRemoveMoveTag(tag: string): Promise<ResolvedMoveSet>
+  // Re-tags the library with the active set (cheap model, else keywords); keeps unmatched clips' tags.
+  animRetag(): Promise<AnimRetagResult>
   // rig: R15 or R6 (default: the project's rig).
   // reference: a video reference id ("make it like this"; see RefApi).
   animCompose(request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType; reference?: string; restatement?: Restatement }): Promise<AnimScriptResult>

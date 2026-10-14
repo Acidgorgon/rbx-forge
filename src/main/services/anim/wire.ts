@@ -77,6 +77,11 @@ export function createAnimWiring(deps: AnimWireDeps): AnimWiring {
     animLearn: () => service.learn(),
     animStyle: () => service.style(),
     animCoverage: () => service.coverage(),
+    animMoveSets: () => service.moveSets(),
+    animSetMoveSet: (x: unknown) => service.setMoveSet(String(x ?? '')),
+    animAddMoveTag: (tag: unknown) => service.addMoveTag(tag as never),
+    animRemoveMoveTag: (tag: unknown) => service.removeMoveTag(String(tag ?? '')),
+    animRetag: () => service.retag(),
     // The background refinement promise stays in main (not serialisable).
     animCompose: async (request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType; reference?: string }) => {
       const { refined: _refined, ...r } = await service.compose(String(request ?? ''), { ...(opts ?? {}), rig: rigOf(opts?.rig), wait: false })

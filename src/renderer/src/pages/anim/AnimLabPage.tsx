@@ -3,9 +3,14 @@
 // library coverage; "Animate a ___" (script draft -> keys -> checks -> render / critique / refine, in
 // main); and a detail view with the live preview, timeline, Script tab, checks and iterations. The
 // header's R15 / R6 switch sets the project rig new clips use; a clip converts between rigs in its detail.
-import { useCallback, useEffect, useMemo, useState } from 'react'
+// The move set picker (Combat / Football / Movement & emotes, plus the project's own move types) sets
+// which tags the tagger, coverage, suggestions and drafts use; "Re-tag library" applies a new set.
+import { createContext, useCallback, useContext, useEffect, useMemo, useState } from 'react'
 import { usePersisted } from '../../qol/sessionStore'
 import type { AnimClip, AnimCoverage, AnimEntry, AnimImportPreview, AnimLabStatus, AnimRefineProgress, AnimScope, AnimStyle, AnimStyleProfile, LearnedPose, R15Joint, RigType } from '@shared/types'
+import type { AnimMoveSets } from '@shared/animTypes'
+import { MOVE_SETS, thinLabels, type ResolvedMoveSet } from '@shared/anim/movesets'
+import { missingParts } from '@shared/anim/bodyparts'
 import { ANIM_RUBRIC_KEYS } from '@shared/anim/model'
 import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
 import { clipRig } from '@shared/anim/sample'
@@ -32,13 +37,21 @@ import { RestatedBrief } from '../../components/RestateCard'
 import { AddToGameButton } from '../qolc/AddToGame'
 
 const IMPORT_HINT = '.rbxm · .rbxmx (KeyframeSequence) · .bvh (mocap; FBX: export BVH from Blender) · folders · video refs: mp4/webm/mov/gif'
-const SUGGESTIONS = ['heavy overhead punch', 'quick jab', 'roundhouse kick', 'dodge roll back', 'fireball cast', 'stagger from a hit', 'combat idle']
 const EXAMPLES = [
   { key: 'sign-push', label: 'Sign → palm push' },
   { key: 'dash-punch', label: 'Dash punch' },
   { key: 'hit-reaction', label: 'Hit reaction' }
 ]
 const KNOWN_TAGS = Object.keys(MOVE_TAGS)
+// Tag suggestions: the active move set's tags first (AnimLabPage provides them).
+const TagsContext = createContext<string[]>(KNOWN_TAGS)
+
+// Best iteration: fewer failed requirements (a named body part that stopped moving) first, then the score.
+function bestOf<T extends { critique?: AnimIteration['critique'] }>(its: T[]): T {
+  const fails = (it: T) => missingParts(it.critique?.checks?.motion).length
+  return its.reduce((a, b) => (fails(b) !== fails(a) ? (fails(b) < fails(a) ? b : a) : (b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0])
+}
+type AnimIteration = NonNullable<AnimEntry['iterations']>[number]
 
 const bad = (e: AnimEntry) => e.quality === 'avoid' || e.rating === 'down'
 
@@ -86,7 +99,9 @@ const qualityTag = (e: AnimEntry) =>
   bad(e) ? <span className="tag err">avoid</span> : e.quality === 'good' || e.rating === 'up' ? <span className="tag ok">liked</span> : e.quality === 'reference' ? <span className="tag info">ref</span> : null
 
 // Editable tag pills: click × to drop one, type + Enter (or comma) to add, suggestions below.
-export function TagPills({ tags, onChange, suggest = KNOWN_TAGS, label = 'Tags' }: { tags: string[]; onChange: (tags: string[]) => void; suggest?: string[]; label?: string }) {
+export function TagPills({ tags, onChange, suggest: given, label = 'Tags' }: { tags: string[]; onChange: (tags: string[]) => void; suggest?: string[]; label?: string }) {
+  const known = useContext(TagsContext)
+  const suggest = given ?? known
   const [text, setText] = useState('')
   const add = (raw: string) => {
     const t = raw.toLowerCase().trim().replace(/[^a-z0-9 -]/g, '')
@@ -164,14 +179,60 @@ function Card({ entry, selected, progress, onSelect }: { entry: AnimEntry; selec
   )
 }
 
-function Coverage({ coverage, onTag }: { coverage: AnimCoverage | null; onTag: (t: string) => void }) {
+// The active set's move types: built-ins as plain chips, custom ones removable, plus an input to add one.
+function MoveTypes({ set, onAdd, onRemove }: { set: ResolvedMoveSet; onAdd: (tag: string, description: string) => Promise<boolean>; onRemove: (tag: string) => void }) {
+  const [tag, setTag] = useState('')
+  const [desc, setDesc] = useState('')
+  const add = async () => {
+    if (!tag.trim()) return
+    if (await onAdd(tag, desc)) (setTag(''), setDesc(''))
+  }
+  return (
+    <div className="anim-types">
+      <span className="faint mono">{set.name.toLowerCase()} move types</span>
+      <span className="anim-types-list">
+        {set.tags.map((t) =>
+          t.custom ? (
+            <span key={t.tag} className="anim-pill" title={t.description}>
+              {t.tag}
+              <button type="button" onClick={() => onRemove(t.tag)} aria-label={`Remove move type ${t.tag}`}>
+                ×
+              </button>
+            </span>
+          ) : (
+            <span key={t.tag} className="vfx-tag" title={t.description}>
+              {t.tag}
+            </span>
+          )
+        )}
+      </span>
+      <form
+        className="row anim-types-add"
+        onSubmit={(e) => {
+          e.preventDefault()
+          void add()
+        }}
+      >
+        <input className="input mono" value={tag} onChange={(e) => setTag(e.target.value)} placeholder="+ move type" aria-label="New move type" maxLength={24} />
+        <input className="input grow" value={desc} onChange={(e) => setDesc(e.target.value)} placeholder="what it is (the tagger, drafter and critic read this)" aria-label="Move type description" maxLength={200} />
+        <button className="btn small" disabled={!tag.trim()}>
+          Add
+        </button>
+      </form>
+    </div>
+  )
+}
+
+function Coverage({ coverage, onTag, set, onRetag, retagging, onAddType, onRemoveType }: { coverage: AnimCoverage | null; onTag: (t: string) => void; set: ResolvedMoveSet | null; onRetag: () => void; retagging: boolean; onAddType: (tag: string, description: string) => Promise<boolean>; onRemoveType: (tag: string) => void }) {
   if (!coverage) return null
   const rows = coverage.tags.filter((r) => r.clips || r.disliked || coverage.thin.includes(r.tag)).slice(0, 12)
   const max = Math.max(1, ...rows.map((r) => r.clips + r.disliked))
+  const labels = set ? thinLabels(coverage.thin, set) : coverage.thin.map((t) => `${t} clips`)
   return (
     <details className="anim-cov" open>
       <summary>
         <span className="mono">coverage</span>
+        {set && <span className="faint"> · {set.name}</span>}
         {coverage.thin.length > 0 && <span className="faint"> · thin: {coverage.thin.join(', ')}</span>}
       </summary>
       <div className="anim-cov-rows">
@@ -193,8 +254,19 @@ function Coverage({ coverage, onTag }: { coverage: AnimCoverage | null; onTag: (
       </div>
       {coverage.thin.length > 0 && (
         <p className="note anim-cov-hint">
-          Feed it next: {coverage.thin.slice(0, 4).map((t) => `${t} clips`).join(', ')}. Three or more good references per move type give a stable style profile; mark bad ones as avoid so the critic knows what not to do.
+          Feed it next: {labels.slice(0, 4).join(', ')}. Three or more good references per move type give a stable style profile; mark bad ones as avoid so the critic knows what not to do.
         </p>
+      )}
+      {set && (
+        <>
+          <div className="row anim-cov-retag">
+            <span className="note grow">Tags look wrong for this set? Re-tagging reads names, files and notes (and the cheap model when one is set up); clips nothing matches keep their tags.</span>
+            <button className="btn small" onClick={onRetag} disabled={retagging} title={`Re-run auto-tagging on the whole library with the ${set.name} move types`}>
+              {retagging ? <span className="spinner" aria-hidden /> : <Icon name="restart" size={11} />} Re-tag library with {set.name}
+            </button>
+          </div>
+          <MoveTypes set={set} onAdd={onAddType} onRemove={onRemoveType} />
+        </>
       )}
     </details>
   )
@@ -306,7 +378,7 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
   const its = entry.iterations ?? []
   const weights = usePrincipleWeights()
   if (!its.length) return <div className="empty">No iterations yet. Refine renders the key beats, critiques them against your style and the checks, applies the changes and keeps each step here.</div>
-  const best = its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0])
+  const best = bestOf(its)
   return (
     <div className="vfx-iters" role="list">
       {its.map((it) => (
@@ -346,7 +418,16 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
                 ))}
               </div>
               <PrincipleScorecard principles={it.critique.principles} focus={it.critique.focus} score={it.critique.principleScore} weights={weights} />
-              <p className="vfx-iter-sum">{it.critique.summary}</p>
+              {it.critique.mustFix?.length ? (
+                <ul className="vfx-warn">
+                  {it.critique.mustFix.map((m, i) => (
+                    <li key={i} className="error">
+                      <Icon name="warn" size={11} /> Must fix: {m}
+                    </li>
+                  ))}
+                </ul>
+              ) : null}
+              <p className="vfx-iter-sum">{it.critique.summary.replace(/^Must fix:[^]*?\.\s/, '')}</p>
               {it.critique.changes.length > 0 && (
                 <details className="vfx-changes">
                   <summary>
@@ -713,7 +794,7 @@ function ImportReview({ rows, scope, onChange, onCancel, onImport, busy, convert
 // The best iteration's rendered beats next to the pinned video reference's key frames.
 function PinnedCompare({ entry }: { entry: AnimEntry }) {
   const its = entry.iterations ?? []
-  const best = its.length ? its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0]) : null
+  const best = its.length ? bestOf(its) : null
   return <RefCompare lab="anim" refId={entry.refId!} entryId={entry.id} frames={best?.frames ?? []} times={best?.times} match={best?.critique?.match} matchNotes={best?.critique?.matchNotes} clip={best?.clip ?? entry.clip} iteration={best?.n} />
 }
 
@@ -742,6 +823,57 @@ export function AnimLabPage() {
   // Video reference import review (a dropped / picked clip), and the reference pinned to Make.
   const [refImport, setRefImport] = useState<{ file: File | null } | null>(null)
   const [pin, setPin] = useState<{ id: string; name: string } | null>(null)
+  const [moveSets, setMoveSets] = useState<AnimMoveSets | null>(null)
+  const [retagOffer, setRetagOffer] = useState(false)
+  const [retagging, setRetagging] = useState(false)
+  const moveSet = moveSets?.active ?? null
+  const knownTags = useMemo(() => {
+    const mine = moveSet?.tags.map((t) => t.tag) ?? []
+    return [...new Set([...mine, ...(moveSet && moveSet.id !== 'combat' ? [] : KNOWN_TAGS)])]
+  }, [moveSet])
+  const switchSet = async (id: string) => {
+    if (id === moveSet?.id) return
+    try {
+      const next = await h.animSetMoveSet(id)
+      setRetagOffer(entries.length > 0)
+      await load()
+      actions.toast({ text: `Move set: ${next.name}`, detail: 'Existing tags are kept. Re-tag the library to sort it into the new move types.', kind: 'ok', ms: 3500 })
+    } catch (e) {
+      actions.toast({ text: 'Could not switch the move set', detail: errorText(e), kind: 'err' })
+    }
+  }
+  const retag = async () => {
+    if (!moveSet || retagging) return
+    setRetagging(true)
+    try {
+      const r = await h.animRetag()
+      setRetagOffer(false)
+      await load()
+      actions.toast({ text: `Re-tagged ${r.changed} of ${r.total} clip${r.total === 1 ? '' : 's'} with ${moveSet.name}`, detail: r.source === 'model' ? 'Tagged by the cheap Labs model; profiles re-measured.' : 'Tagged from names, files and notes (no model set up); profiles re-measured. Clips nothing matched keep their tags.', kind: 'ok', ms: 5000 })
+    } catch (e) {
+      actions.toast({ text: 'Re-tag failed', detail: errorText(e), kind: 'err' })
+    } finally {
+      setRetagging(false)
+    }
+  }
+  const addType = async (tag: string, description: string) => {
+    try {
+      await h.animAddMoveTag({ tag, ...(description.trim() ? { description: description.trim() } : {}) })
+      await load()
+      return true
+    } catch (e) {
+      actions.toast({ text: 'Could not add the move type', detail: errorText(e), kind: 'err' })
+      return false
+    }
+  }
+  const removeType = async (tag: string) => {
+    try {
+      await h.animRemoveMoveTag(tag)
+      await load()
+    } catch (e) {
+      actions.toast({ text: 'Could not remove the move type', detail: errorText(e), kind: 'err' })
+    }
+  }
   const rig: RigType = status?.rig ?? 'R15'
   const switchRig = async (r: RigType) => {
     if (r === rig) return
@@ -756,7 +888,8 @@ export function AnimLabPage() {
 
   const load = useCallback(async () => {
     try {
-      const [s, list, st, c] = await Promise.all([h.animStatus(), h.animList(), h.animStyle(), h.animCoverage()])
+      const [s, list, st, c, ms] = await Promise.all([h.animStatus(), h.animList(), h.animStyle(), h.animCoverage(), h.animMoveSets()])
+      setMoveSets(ms)
       setStatus(s)
       setEntries(list)
       setStyle(st)
@@ -882,9 +1015,10 @@ export function AnimLabPage() {
   const choose = async () => void startImport(await h.animChooseImport())
 
   return (
+    <TagsContext.Provider value={knownTags}>
     <div className="page">
       <datalist id="anim-tag-list">
-        {KNOWN_TAGS.map((t) => (
+        {knownTags.map((t) => (
           <option key={t} value={t} />
         ))}
       </datalist>
@@ -905,6 +1039,13 @@ export function AnimLabPage() {
                 </button>
               ))}
             </div>
+            <select className="input anim-set" value={moveSet?.id ?? 'combat'} onChange={(e) => void switchSet(e.target.value)} aria-label="Move set" title={moveSet ? `${moveSet.description}${status?.projectRoot ? ' (per project: .forge/anim/settings.json)' : ''}` : 'Move set'}>
+              {(moveSets?.sets ?? MOVE_SETS).map((x) => (
+                <option key={x.id} value={x.id}>
+                  {x.name.toLowerCase()} moves
+                </option>
+              ))}
+            </select>
             <select className="input" value={scope} onChange={(e) => setScope(e.target.value as AnimScope)} aria-label="Library for imports and new clips">
               <option value="user">your library</option>
               <option value="project" disabled={!status?.projectRoot}>
@@ -933,6 +1074,21 @@ export function AnimLabPage() {
           </div>
         )}
 
+        {retagOffer && moveSet && (
+          <div className="callout row anim-retag-offer" role="status">
+            <Icon name="info" size={12} />
+            <span className="grow note">
+              Now using <b>{moveSet.name}</b> move types ({moveSet.tags.slice(0, 6).map((t) => t.tag).join(', ')}…). Your clips keep their old tags until you re-tag.
+            </span>
+            <button className="btn small primary" onClick={() => void retag()} disabled={retagging}>
+              {retagging ? <span className="spinner" aria-hidden /> : <Icon name="restart" size={11} />} Re-tag library with {moveSet.name}
+            </button>
+            <button className="btn small ghost" onClick={() => setRetagOffer(false)} aria-label="Dismiss">
+              <Icon name="x" size={11} />
+            </button>
+          </div>
+        )}
+
         <section className="set-sec vfx-make">
           <form
             className="vfx-make-row"
@@ -944,7 +1100,7 @@ export function AnimLabPage() {
             <span className="vfx-make-lead mono">
               <span className="vfx-prompt-sigil">›</span> Animate
             </span>
-            <input className="input grow" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="a heavy overhead punch with a long windup" aria-label="Animation to make" spellCheck />
+            <input className="input grow" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder={moveSet?.placeholder ?? 'a heavy overhead punch with a long windup'} aria-label="Animation to make" spellCheck />
             {pin && (
               <span className="badge-o hot vfx-make-pin" title="Pinned video reference: Make animates like it">
                 like {pin.name}
@@ -975,7 +1131,7 @@ export function AnimLabPage() {
               <span className="faint">/10</span>
             </label>
             <span className="vfx-sugg">
-              {SUGGESTIONS.map((s) => (
+              {(moveSet?.suggestions ?? MOVE_SETS[0].suggestions).map((s) => (
                 <button key={s} type="button" className="badge-o" onClick={() => setPrompt(s)}>
                   {s}
                 </button>
@@ -1035,7 +1191,7 @@ export function AnimLabPage() {
                     </>
                   )}
                 </div>
-                <Coverage coverage={cov} onTag={(t) => setTag(tag === t ? null : t)} />
+                <Coverage coverage={cov} onTag={(t) => setTag(tag === t ? null : t)} set={moveSet} onRetag={() => void retag()} retagging={retagging} onAddType={addType} onRemoveType={(t) => void removeType(t)} />
                 <div className="row vfx-lib-head">
                   <input className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name, tag, notes" aria-label="Search library" />
                   <span className="note">{shown.length} shown</span>
@@ -1088,5 +1244,6 @@ export function AnimLabPage() {
         )}
       </div>
     </div>
+    </TagsContext.Provider>
   )
 }

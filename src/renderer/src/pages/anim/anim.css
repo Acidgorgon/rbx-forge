@@ -138,3 +138,15 @@
 .anim-convert { align-items: flex-start; gap: 8px; }
 .anim-convert p { margin: 4px 0 8px; }
 .anim-convert .row { flex-wrap: wrap; gap: 6px; }
+
+/* Move sets: header picker, re-tag offer, the active set's move types under coverage */
+.anim-set { width: auto; }
+.anim-retag-offer { align-items: center; gap: 8px; }
+.anim-cov-retag { align-items: center; gap: 8px; margin-top: 6px; }
+.anim-cov-retag .note { font-size: 11px; }
+.anim-types { display: grid; gap: 4px; margin-top: 8px; padding-top: 6px; border-top: 1px solid var(--line); }
+.anim-types > .mono { font-size: 10.5px; }
+.anim-types-list { display: flex; flex-wrap: wrap; gap: 4px; }
+.anim-types-add { gap: 6px; }
+.anim-types-add .input { height: 24px; font-size: 11px; }
+.anim-types-add .input.mono { width: 120px; flex: none; }

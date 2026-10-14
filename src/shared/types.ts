@@ -409,6 +409,8 @@ export interface RokitTool {
   description?: string
   // Latest GitHub release, when known (unauthenticated API, cached; may be missing when rate limited).
   latest?: string
+  // Set when `latest` is unknown because GitHub rate limited Forge: when the checks resume (ms).
+  latestRetryAt?: number
   updateAvailable: boolean
 }
 

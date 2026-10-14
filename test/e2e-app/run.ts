@@ -153,6 +153,9 @@ async function main(): Promise<void> {
   const final = launched as Launched | null
   if (final) {
     writeFileSync(join(OUT, 'main.log'), final.mainLog.join('\n'))
+    // The app's own log panel (services, harness, agent), for spotting noisy services.
+    const logs = await final.page.evaluate(() => window.harness.getLogs()).catch(() => [])
+    writeFileSync(join(OUT, 'app-logs.json'), JSON.stringify(logs, null, 1))
     await final.app.close().catch(() => undefined)
   }
   await fake.close()

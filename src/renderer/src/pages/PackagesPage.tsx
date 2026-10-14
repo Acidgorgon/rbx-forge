@@ -516,6 +516,7 @@ function ToolsTab({
   }
   const pinned = tools.filter((t) => t.inManifest)
   const available = tools.filter((t) => !t.inManifest)
+  const retryAt = tools.find((t) => t.latestRetryAt)?.latestRetryAt
   const lspUnpinned = !!lsp && !lsp.inManifest && lsp.onPath
 
   let lspBanner: ReactNode = null
@@ -562,6 +563,11 @@ function ToolsTab({
     <>
       {lspBanner}
       {rowErrors[lsp?.name ?? ''] && <p className="pk-inline-error">{rowErrors[lsp?.name ?? '']}</p>}
+      {retryAt && (
+        <p className="muted small" role="note">
+          GitHub rate limited: latest versions unknown, retry at {new Date(retryAt).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}.
+        </p>
+      )}
 
       <section className="section">
         <div className="section-head">

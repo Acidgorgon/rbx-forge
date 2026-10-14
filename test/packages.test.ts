@@ -319,3 +319,49 @@ test('Packages service: adding a tool without rokit edits rokit.toml and reports
   assert.match(events.at(-1)?.error ?? '', /rokit is not installed/)
   await assert.rejects(packages.addTool('not a repo'), /owner\/repo/)
 })
+
+test('Packages service: GitHub release checks dedupe, revalidate with the ETag, and log one line per rate-limit pause', async () => {
+  const root = tempProject()
+  const logs: string[] = []
+  const calls: { url: string; etag?: string }[] = []
+  let limited = false
+  const fakeFetch = (async (input: string | URL, init: RequestInit = {}) => {
+    const url = String(input)
+    const etag = (init.headers as Record<string, string> | undefined)?.['If-None-Match']
+    calls.push({ url, etag })
+    await new Promise((r) => setTimeout(r, 5))
+    if (limited) return jsonResponse({ message: 'API rate limit exceeded' }, 403, { 'retry-after': '600' })
+    if (etag === '"v1"') return new Response(null, { status: 304 })
+    return jsonResponse({ tag_name: 'v7.7.1' }, 200, { etag: '"v1"' })
+  }) as typeof fetch
+  let now = Date.now()
+  const realNow = Date.now
+  Date.now = () => now
+  try {
+    const packages = new Packages({ root: () => root, devRunning: () => false, log: (l) => logs.push(l.text), emit: () => undefined, fetch: fakeFetch, findTool: () => null, rokitHome: join(root, 'no-rokit') })
+    // Two concurrent asks: one request.
+    const [a, b] = await Promise.all([packages.latestRelease('rojo-rbx/rojo'), packages.latestRelease('rojo-rbx/rojo')])
+    assert.deepEqual([a, b], ['7.7.1', '7.7.1'])
+    assert.equal(calls.length, 1)
+    // Within the TTL: no request. After it: revalidated with If-None-Match, a 304 keeps the value.
+    await packages.latestRelease('rojo-rbx/rojo')
+    assert.equal(calls.length, 1)
+    now += 2 * 60 * 60_000
+    assert.equal(await packages.latestRelease('rojo-rbx/rojo'), '7.7.1')
+    assert.equal(calls.at(-1)!.etag, '"v1"')
+    // Rate limited: several repos at once -> one log line, then no requests until the pause ends.
+    limited = true
+    await Promise.all(['a/one', 'b/two', 'c/three', 'd/four'].map((r) => packages.latestRelease(r)))
+    assert.equal(logs.filter((l) => /rate limit/.test(l)).length, 1, logs.join(' | '))
+    const n = calls.length
+    await packages.latestRelease('e/five')
+    assert.equal(calls.length, n, 'no request while paused')
+    assert.equal(packages.rateLimited(), now + 600_000, 'Retry-After sets the pause')
+    const curated = await packages.curated()
+    assert.ok(curated.filter((t) => !t.latest).every((t) => t.latestRetryAt === now + 600_000), 'unknown versions say when checks resume')
+    now += 601_000
+    assert.equal(packages.rateLimited(), null)
+  } finally {
+    Date.now = realNow
+  }
+})

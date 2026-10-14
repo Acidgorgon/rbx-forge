@@ -541,6 +541,17 @@ export interface PackagesOptions {
 interface Cached<T> {
   at: number
   value: T
+  // GitHub ETag: a stale entry is revalidated with If-None-Match (a 304 does not count against the limit).
+  etag?: string
+}
+
+// Until when GitHub asks us to stop (Retry-After, X-RateLimit-Reset), else 10 minutes from now.
+export function rateLimitUntil(headers: Headers | undefined, now = Date.now()): number {
+  const retryAfter = Number(headers?.get('retry-after'))
+  if (retryAfter > 0) return now + retryAfter * 1000
+  const reset = Number(headers?.get('x-ratelimit-reset'))
+  if (reset > 0 && reset * 1000 > now) return reset * 1000
+  return now + 10 * 60_000
 }
 
 export class Packages {
@@ -548,6 +559,7 @@ export class Packages {
   private meta = new Map<string, Cached<WallyPackage>>()
   private releases = new Map<string, Cached<string | null>>()
   private rateLimitedUntil = 0
+  private releaseRequests = new Map<string, Promise<string | null>>()
   private installing: 'wally' | 'rokit' | null = null
   private wallyRun: Promise<void> | null = null
   private wallyAgain = false
@@ -780,27 +792,53 @@ export class Packages {
   // ---------------------------------------------------------------- rokit
 
   // Latest release version for owner/repo, or null when unknown (offline, rate limited, no releases).
+  // One request per repo at a time; cached for RELEASE_TTL_MS, then revalidated with the ETag. A 403 /
+  // 429 pauses every check until GitHub's reset time and logs one line per pause.
   async latestRelease(repo: string): Promise<string | null> {
     const key = repo.toLowerCase()
     const hit = this.releases.get(key)
     if (hit && Date.now() - hit.at < RELEASE_TTL_MS) return hit.value
-    if (Date.now() < this.rateLimitedUntil) return hit?.value ?? null
+    if (this.rateLimited()) return hit?.value ?? null
+    const pending = this.releaseRequests.get(key)
+    if (pending) return pending
+    const request = this.fetchRelease(repo, key, hit).finally(() => this.releaseRequests.delete(key))
+    this.releaseRequests.set(key, request)
+    return request
+  }
+
+  // Until when GitHub update checks are paused (ms), or null.
+  rateLimited(): number | null {
+    return Date.now() < this.rateLimitedUntil ? this.rateLimitedUntil : null
+  }
+
+  private async fetchRelease(repo: string, key: string, hit: Cached<string | null> | undefined): Promise<string | null> {
     const headers: Record<string, string> = { Accept: 'application/vnd.github+json', 'User-Agent': 'rbx-forge' }
     if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`
+    if (hit?.etag) headers['If-None-Match'] = hit.etag
     try {
-      const json = (await getJson(this.fetchFn, `${GITHUB_API}/repos/${repo}/releases/latest`, headers, 6000)) as { tag_name?: string }
-      const value = json.tag_name ? tagToVersion(json.tag_name) : null
-      this.releases.set(key, { at: Date.now(), value })
-      return value
-    } catch (error) {
-      const e = error as { status?: number; headers?: Headers }
-      if (e.status === 403 || e.status === 429) {
-        const reset = Number(e.headers?.get('x-ratelimit-reset'))
-        this.rateLimitedUntil = reset ? reset * 1000 : Date.now() + 10 * 60_000
-        this.log(`GitHub API rate limit reached; tool update checks paused until ${new Date(this.rateLimitedUntil).toLocaleTimeString()}`)
-      } else if (e.status === 404) {
-        this.releases.set(key, { at: Date.now(), value: null })
+      const response = await this.fetchFn(`${GITHUB_API}/repos/${repo}/releases/latest`, { headers, signal: AbortSignal.timeout(6000) })
+      if (response.status === 304 && hit) {
+        this.releases.set(key, { ...hit, at: Date.now() })
+        return hit.value
       }
+      if (response.status === 403 || response.status === 429) {
+        const until = rateLimitUntil(response.headers)
+        const wasLimited = this.rateLimited() !== null
+        this.rateLimitedUntil = Math.max(this.rateLimitedUntil, until)
+        if (!wasLimited) this.log(`GitHub API rate limit reached; tool update checks paused until ${new Date(this.rateLimitedUntil).toLocaleTimeString()}`)
+        return hit?.value ?? null
+      }
+      if (response.status === 404) {
+        this.releases.set(key, { at: Date.now(), value: null })
+        return null
+      }
+      if (!response.ok) return hit?.value ?? null
+      const json = (await response.json()) as { tag_name?: string }
+      const value = json.tag_name ? tagToVersion(json.tag_name) : null
+      const etag = response.headers.get('etag') ?? undefined
+      this.releases.set(key, { at: Date.now(), value, ...(etag ? { etag } : {}) })
+      return value
+    } catch {
       return hit?.value ?? null
     }
   }
@@ -826,6 +864,9 @@ export class Packages {
     if (latest) {
       tool.latest = latest
       tool.updateAvailable = inManifest && compareVersions(latest, version) > 0
+    } else {
+      const retryAt = this.rateLimited()
+      if (retryAt) tool.latestRetryAt = retryAt
     }
     return tool
   }

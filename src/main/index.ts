@@ -65,6 +65,7 @@ import { homedir } from 'node:os'
 import { studioElectronDeps } from './services/studio/electron.ts'
 import { withStudioTools } from './services/studio/tools.ts'
 import { defaultChatImage } from './services/art/wire.ts'
+import { createQol } from './services/qol/wire.ts'
 
 // Name and data folder. The data folder stays "rbx-forge" (what development builds have always
 // used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
@@ -95,7 +96,10 @@ function installCsp(): void {
   })
 }
 
+// Quality of life (services/qol): sees every event for done notifications and the away digest.
+let qolObserve: ((event: string, payload: unknown) => void) | null = null
 function emit<K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]): void {
+  qolObserve?.(event, payload)
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(event, payload)
   }
@@ -215,6 +219,7 @@ function requireProject(): Project {
 }
 
 async function closeProject(): Promise<void> {
+  if (project) await qol.service.onProjectClose()
   terminal.onProjectClose()
   integrations.onProjectClose()
   project?.close()
@@ -348,6 +353,7 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   await integrations.onProjectOpen(full).catch((error) => harnessLog(`integrations: ${error}`, 'stderr'))
   setup.onProjectOpen(full)
   void memory.onProjectOpen()
+  await qol.service.onProjectOpen(full).catch(() => undefined)
   return opened.info
 }
 
@@ -570,6 +576,24 @@ const ability = createAbilityWiring({
 })
 registerPackSection({ id: 'abilities', label: 'Ability library', dir: () => ability.service.userLibraryDir })
 
+// Quality of life (services/qol): bug reports, done notifications, session restore, away digest.
+const qol = createQol({
+  userDataDir: app.getPath('userData'),
+  getSetting: (key, fallback) => settings.get(key, fallback),
+  setSetting: (key, value) => settings.set(key, value),
+  logs: () => logs.get(),
+  root: () => project?.info.root ?? null,
+  projectName: () => project?.info.name,
+  emit: (event, payload) => emit(event as keyof HarnessEvents, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text }),
+  git: (args, cwd) => run(findTool('git') || 'git', args, cwd),
+  syncStatus: async () => (await forgeSync.handlers.syncStatus()) as never,
+  studioConflicts: () => ctx.studioConflicts(),
+  gitStatus: async () => (git ? git.status() : null),
+  testsLast: async () => (await integrations.handlers.testsLast()) as never
+})
+qolObserve = (event, payload) => qol.service.observe(event, payload)
+
 const handlers: Record<string, (...args: any[]) => unknown> = {
   openProject: (root?: string) => openProject(root),
   getProject: () => ctx.project(),
@@ -632,13 +656,17 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 for (const [name, handler] of Object.entries(handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...gating.wrap('vfx', vfx.handlers), ...gating.wrap('anim', anim.handlers), ...studio.handlers, ...refs.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers })) {
+// Long lab / build calls notify when they finish (services/qol).
+const timed = (name: string, handler: (...args: any[]) => unknown) => qol.service.timed(name, handler)
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...gating.wrap('vfx', vfx.handlers), ...gating.wrap('anim', anim.handlers), ...studio.handlers, ...refs.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
-  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
+  const fn = timed(name, handler)
+  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
 }
 for (const [name, handler] of Object.entries(gating.wrap('ability', ability.handlers))) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
-  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
+  const fn = timed(name, handler)
+  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
 }
 ipcMain.on(INVOKE_PREFIX + 'lspSend', (_event, message: unknown) => lsp.send(message))
 // Caption-button overlay colours follow the renderer theme (Windows/Linux only).

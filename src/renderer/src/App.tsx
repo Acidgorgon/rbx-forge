@@ -19,6 +19,7 @@ import { TeamView } from './views/TeamView'
 import { AssistantPanel } from './assistant/AssistantPanel'
 import { ToolchainGate } from './setup/Toolchain'
 import { terminalOwnsKey } from './terminal/session'
+import { QolRoot } from './qol/QolRoot'
 import './shell/workbench.css'
 import './views/views.css'
 import './pages/pages.css'
@@ -191,6 +192,7 @@ function Shell() {
       <Dialogs />
       <Toasts />
       <ToolchainGate />
+      <QolRoot />
     </div>
   )
 }

@@ -1,6 +1,7 @@
 // Assistant panel (SPEC §7.5) in the terminal style: model / mode pills, usage meter, compact
 // messages (no avatars), group chat, orchestrator task board, and the "> Type a message" composer.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { useChatDraft, useChatScroll, rememberChatScroll } from '../qol/chatSession'
 import type { BoardView, ChatImage, ChatMessage, OrchestrateMode, TaskView } from '@shared/types'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
@@ -263,6 +264,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
   }
   const problems = useProblems()
   const [text, setText] = useState('')
+  useChatDraft(id, text, setText)
   const [caret, setCaret] = useState(0)
   const [pick, setPick] = useState(0)
   const [closedAt, setClosedAt] = useState<number | null>(null)
@@ -608,6 +610,7 @@ export function AssistantPanel() {
     const el = scroller.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [items, busy, boards.length])
+  useChatScroll(id, scroller, stick, items.length)
 
   const history = (el: HTMLElement) => {
     const entries: MenuEntry[] = [{ header: 'Threads' }]
@@ -663,6 +666,7 @@ export function AssistantPanel() {
           onScroll={(e) => {
             const el = e.currentTarget
             stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+            rememberChatScroll(id, el.scrollTop, stick.current)
           }}
         >
           {noProvider && (

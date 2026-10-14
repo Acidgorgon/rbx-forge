@@ -3,6 +3,7 @@
 // detail view with the live three.js preview, the parameter editor (writes back to the effect's
 // Luau module and .rbxmx) and the iteration history side by side.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { usePersisted } from '../../qol/sessionStore'
 import type { VfxEffect, VfxEntry, VfxLabStatus, VfxRecipe, VfxRefineProgress, VfxScope } from '@shared/types'
 import { RUBRIC_KEYS } from '@shared/vfx/types'
 import { perfWarnings } from '@shared/vfx/analyze'
@@ -407,7 +408,8 @@ export function VfxLabPage() {
   const [status, setStatus] = useState<VfxLabStatus | null>(null)
   const [entries, setEntries] = useState<VfxEntry[]>([])
   const [recipes, setRecipes] = useState<VfxRecipe[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
+  // Selection and library tab survive restarts (qol/sessionStore).
+  const [selected, setSelected] = usePersisted<string | null>('vfx.selected', null)
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState<string | null>(null)
   const [scope, setScope] = useState<VfxScope>('user')
@@ -421,7 +423,7 @@ export function VfxLabPage() {
   const [drag, setDrag] = useState(false)
   const [progress, setProgress] = useState<Record<string, VfxRefineProgress>>({})
   // Library view: effects, or the custom texture library (TextureLab).
-  const [view, setView] = useState<'effects' | 'textures' | 'priorities'>('effects')
+  const [view, setView] = usePersisted<'effects' | 'textures' | 'priorities'>('vfx.view', 'effects')
   // Video reference import review (a dropped / picked clip), and the reference pinned to Make.
   const [refImport, setRefImport] = useState<{ file: File | null } | null>(null)
   const [pin, setPin] = useState<{ id: string; name: string } | null>(null)

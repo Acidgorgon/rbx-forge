@@ -81,6 +81,9 @@ const methods = [
   'forgeSyncSettings', 'setForgeSyncSettings',
   // Lab gating (decision log, decision models, cost per kept)
   'labGatingView', 'labGatingSet', 'labGatingRetrain', 'labGatingReset',
+  // Quality of life (bug reports, notifications, session restore, away digest)
+  'qolGetSettings', 'qolSetSettings', 'qolBugReportStart', 'qolBugReport', 'qolBugReportPreview', 'qolRevealPath', 'qolReportError',
+  'qolLoadSession', 'qolSaveSession', 'qolDigest', 'qolSeen', 'qolTestNotify',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

@@ -4,6 +4,7 @@
 // main); and a detail view with the live preview, timeline, Script tab, checks and iterations. The
 // header's R15 / R6 switch sets the project rig new clips use; a clip converts between rigs in its detail.
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { usePersisted } from '../../qol/sessionStore'
 import type { AnimClip, AnimCoverage, AnimEntry, AnimImportPreview, AnimLabStatus, AnimRefineProgress, AnimScope, AnimStyle, AnimStyleProfile, LearnedPose, R15Joint, RigType } from '@shared/types'
 import { ANIM_RUBRIC_KEYS } from '@shared/anim/model'
 import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
@@ -717,11 +718,12 @@ export function AnimLabPage() {
   const [entries, setEntries] = useState<AnimEntry[]>([])
   const [style, setStyle] = useState<AnimStyle | null>(null)
   const [cov, setCov] = useState<AnimCoverage | null>(null)
-  const [selected, setSelected] = useState<string | null>(null)
+  // Selection and library tab survive restarts (qol/sessionStore).
+  const [selected, setSelected] = usePersisted<string | null>('anim.selected', null)
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState<string | null>(null)
   const [scope, setScope] = useState<AnimScope>('user')
-  const [view, setView] = useState<'library' | 'style' | 'priorities'>('library')
+  const [view, setView] = usePersisted<'library' | 'style' | 'priorities'>('anim.view', 'library')
   const [prompt, setPrompt] = useState('')
   const [iters, setIters] = useState(4)
   const [threshold, setThreshold] = useState(7.5)

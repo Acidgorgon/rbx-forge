@@ -218,6 +218,38 @@ DAU, retention, session length, revenue and concurrent players for the experienc
 
 The Team panel shows **claims** (shared "working on" markers in `.forge/claims.json`, flagged when stale or contested), open pull requests (through `gh`, or a GitHub compare link), an activity feed that merges git history with Studio sync events, the history and blame of the open file, and lint problems. Team settings are kept in `.forge/project.json` and committed. Forge has light and dark themes. Use the sun/moon button in the title bar.
 
+### Quality of life
+
+![Since your last session: Studio edits, commits by others, a finished lab run, a conflict and failing tests](docs/screenshots/190-qol-away-digest-dark.png)
+
+- **Report a bug**: use the bug button in the title bar, the palette (*Report a bug…*) or Settings > Notifications. Forge takes a screenshot of its window, then asks what happened and what you expected. The report adds the open page, the app and OS versions, the project **name** (the full path only if you tick it), recent renderer and main-process errors and the last 300 log lines from every service. Anything that looks like a key, token, password, cookie or webhook is replaced with `[REDACTED]`, and your home folder shows as `~`. Forge saves `report.md` and `screenshot.png` under `<userData>/bug-reports/<time>/` and copies the markdown to your clipboard; **Reveal** opens the folder. Nothing is uploaded.
+- **Done notifications**: you get an OS notification, with optional sound, when a long task finishes or needs you:
+  - lab compose / refine / critique runs (VFX, Animation, Ability, plus any lab that sends `<lab>:progress` events);
+  - team runs and their change requests;
+  - chat replies that took over 30 s;
+  - Lune tests, test agents and releases;
+  - new Forge Sync conflicts.
+
+  Clicking a notification brings Forge forward on the right page. In **Settings > Notifications** you choose *In background* (default), *Always* or *Off*, and turn each category on or off.
+- **Pick up where you left off**: Forge saves your session to `<userData>/session-state.json` (versioned) and reopens it on start and after an auto-update restart:
+  - open tabs and the active tab;
+  - panel layout;
+  - chat drafts and scroll position;
+  - the selected entry and tab in each lab;
+  - editor cursors.
+
+  Files or entries you deleted in the meantime are skipped.
+- **Since you were away**: a card that shows when you open a project, and when you come back after an hour idle. It lists:
+  - teammate edits Forge Sync pulled from Studio;
+  - new git commits by other people (since the HEAD you last saw);
+  - lab runs that finished;
+  - open Studio conflicts and held places;
+  - failing tests from the last run.
+
+  Each line opens its place in Forge. You can dismiss the card, and turn it off in Settings.
+
+![Report a bug dialog with the redacted report preview](docs/screenshots/192-qol-bug-report-dark.png)
+
 ## Install
 
 Download the installer for your computer from the **[latest release](https://github.com/Acidgorgon/rbx-forge/releases/latest)**.

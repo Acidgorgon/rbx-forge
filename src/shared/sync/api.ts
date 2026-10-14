@@ -32,6 +32,10 @@ export interface SyncApi {
   syncCommitStudioEdits(message?: string): Promise<SyncCommitResult>
   // Renames the legacy StudioSyncPlugin file(s) in the Studio plugins folder to *.disabled.
   syncDisableLegacyPlugin(): Promise<SyncStatus>
+  // Game tab "Save to repo" for a Studio-only, non-script instance of the active place: where it would
+  // go (a .model.json inside a mapped $path), or why it cannot; then write it.
+  syncSaveTarget(instancePath: string[]): Promise<{ file: string } | { reason: string }>
+  syncSaveToRepo(instancePath: string[]): Promise<SyncEntry>
   forgeSyncSettings(): Promise<ForgeSyncSettings>
   setForgeSyncSettings(patch: Partial<ForgeSyncSettings>): Promise<ForgeSyncSettings>
 }

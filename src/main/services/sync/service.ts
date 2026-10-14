@@ -12,6 +12,7 @@ import type {
   PlaceSyncStatus,
   StudioChange,
   StudioNode,
+  StudioOutlineNode,
   SyncAction,
   SyncConflictInfo,
   SyncEntry,
@@ -39,12 +40,23 @@ export interface SyncEngineLike {
   // Studio went away mid-snapshot: gate back to 'idle'.
   endSession?(placeKey: string): unknown
   on(event: 'changed', fn: () => void): unknown
+  // Game tab (optional so older fakes still fit): the live Studio tree under the mapped roots, the
+  // Studio-only instances an $ignoreUnknownInstances root keeps in Studio, and "Save to repo".
+  liveTree?(placeKey: string): { nodes: StudioNode[]; version: number } | null
+  // Cheap: the tree's shape counter, null without a snapshot.
+  treeVersion?(placeKey: string): number | null
+  leftInStudio?(placeKey: string): string[][]
+  saveTarget?(placeKey: string, path: string[]): Promise<{ file: string } | { reason: string }>
+  saveToRepo?(placeKey: string, path: string[]): Promise<SyncEntry>
 }
 
 export interface PlaceMapLike {
   projectFile: string
   placeIds: number[]
   roots: { instance: string[]; path: string; isFile?: boolean; ignoreUnknown?: boolean }[]
+  skipped?: { instance: string[] }[]
+  // Project nodes without $path (services, $className containers).
+  virtual?: string[][]
 }
 
 export interface SyncMapping {
@@ -66,6 +78,22 @@ export interface SyncConfigAnswer {
   roots: string[][]
   skip: string[][]
   reason?: string
+  outline?: string[][]
+  outlineMax?: number
+}
+
+export interface OutlineBody {
+  session: string
+  place: SyncPlace
+  nodes: StudioOutlineNode[]
+  truncated?: boolean
+}
+
+// One instance of the Game tab's live Studio tree (flat; project.ts nests it).
+export interface LiveStudioNode {
+  path: string[]
+  className: string
+  props?: Record<string, string | number | boolean>
 }
 
 export interface SnapshotBody {
@@ -93,6 +121,7 @@ export interface SyncHandler {
   config(q: SyncConfigQuery): Promise<SyncConfigAnswer>
   snapshot(body: SnapshotBody): Promise<SyncAnswer>
   changes(body: ChangesBody): Promise<SyncAnswer>
+  outline?(body: OutlineBody): Promise<SyncAnswer>
 }
 
 export interface GitRun {
@@ -116,9 +145,17 @@ export interface SyncServiceDeps {
   now?: () => number
   // Tests: how long a snapshot may stall before the hold is released (default SNAPSHOT_STALE_MS).
   staleMs?: number
+  // The live Studio tree changed shape (throttled to one call per TREE_THROTTLE_MS): the Game tab
+  // re-reads liveTree(). Not called for script edits or heartbeats.
+  onStudioTree?: () => void
+  // Tests: throttle for onStudioTree (default TREE_THROTTLE_MS).
+  treeThrottleMs?: number
 }
 
 const RECENT_MAX = 200
+// Game-tab outline: the plugin sends at most this many instances outside the synced roots.
+export const OUTLINE_MAX = 3000
+export const TREE_THROTTLE_MS = 1000
 const SEEN_MS = 60_000
 // A snapshot that stops arriving (Studio closed or crashed mid-send) releases the rojo hold after this.
 export const SNAPSHOT_STALE_MS = 30_000
@@ -150,6 +187,12 @@ interface PlaceState {
   refs: SyncRef[]
   refsTotal: number
   snapshotRefs?: SyncRef[]
+  // Game-tab outline from the plugin (v5) and its signature, so an unchanged resend is a no-op.
+  outline?: { nodes: StudioOutlineNode[]; truncated: boolean; sig: string }
+  // Engine tree version last pushed to the Game tab (null: no tree).
+  treeVersion?: number | null
+  // Last "left in Studio" line logged, so it is logged once per change.
+  leftNote?: string
 }
 
 export function placeKeyOf(place: SyncPlace, projectFile?: string): string {
@@ -217,7 +260,10 @@ export class SyncService {
     this.deps = deps
     this.root = deps.root
     this.now = deps.now ?? Date.now
-    deps.engine?.on('changed', () => this.refresh())
+    deps.engine?.on('changed', () => {
+      this.refresh()
+      this.checkTree()
+    })
   }
 
   settings(): ForgeSyncSettings {
@@ -250,6 +296,8 @@ export class SyncService {
   close(): void {
     this.closed = true
     this.sessions.clear()
+    if (this.treeTimer) clearTimeout(this.treeTimer)
+    this.treeTimer = null
   }
 
   // ---- Bridge handler ----
@@ -257,7 +305,8 @@ export class SyncService {
   readonly handler: SyncHandler = {
     config: (q) => this.config(q),
     snapshot: (body) => this.snapshot(body),
-    changes: (body) => this.changes(body)
+    changes: (body) => this.changes(body),
+    outline: (body) => this.outline(body)
   }
 
   private async config(q: SyncConfigQuery): Promise<SyncConfigAnswer> {
@@ -285,7 +334,23 @@ export class SyncService {
     const skip = map.roots.filter((r) => PACKAGES.test(r.path)).map((r) => r.instance)
     this.deps.log?.(`sync: Studio session for ${map.projectFile} (${placeKey}), ${roots.length} roots`)
     this.refresh()
-    return { enabled: true, sessionToken: token, roots, skip }
+    return { enabled: true, sessionToken: token, roots, skip, outline: outlineContainers(map), outlineMax: OUTLINE_MAX }
+  }
+
+  // Game-tab outline (plugin v5): names and classes of the mapped services' instances outside the roots.
+  private async outline(body: OutlineBody): Promise<SyncAnswer> {
+    if (!this.active()) return { ok: false, error: 'Forge Sync is off' }
+    const session = this.sessions.get(body.session)
+    if (!session) return { ok: false, error: 'unknown session' }
+    const state = this.placeStates.get(session.placeKey)!
+    state.lastSeen = this.now()
+    const nodes = Array.isArray(body.nodes) ? body.nodes : []
+    const sig = JSON.stringify([nodes, !!body.truncated])
+    if (state.outline?.sig === sig) return { ok: true }
+    state.outline = { nodes, truncated: !!body.truncated, sig }
+    this.scheduleTree()
+    this.refresh()
+    return { ok: true }
   }
 
   private async snapshot(body: SnapshotBody): Promise<SyncAnswer> {
@@ -318,6 +383,7 @@ export class SyncService {
         this.watchSnapshot(session.token, session.placeKey, !!body.final)
         if (body.final) {
           const entries = await engine.finishSnapshot(session.placeKey)
+          this.checkTree()
           session.ready = true
           state.lastSnapshot = this.now()
           this.setRefs(state, state.snapshotRefs ?? [], body.refsTotal)
@@ -371,7 +437,8 @@ export class SyncService {
       if (Array.isArray(body.refs)) this.setRefs(state, body.refs, body.refsTotal)
       const changes = Array.isArray(body.changes) ? body.changes : []
       const entries = changes.length ? await this.serial(() => this.deps.engine!.applyChanges(session.placeKey, changes)) : []
-      await this.record(session.placeKey, entries)
+      this.checkTree()
+      await this.record(session.placeKey, entries, true)
       this.refresh()
       return { ok: true }
     } catch (e) {
@@ -506,7 +573,8 @@ export class SyncService {
         connected: viaBridge || this.now() - state.lastSeen < SEEN_MS,
         ...(state.lastSnapshot ? { lastSnapshot: state.lastSnapshot } : {}),
         counts: { ...state.counts },
-        conflicts: this.conflictsFor(state.placeKey).length
+        conflicts: this.conflictsFor(state.placeKey).length,
+        ...this.leftLine(state)
       })
     }
     // Places no Studio session has opened yet (idle: rojo serves them normally).
@@ -618,6 +686,108 @@ export class SyncService {
     }
   }
 
+  // ---- Game tab ----
+
+  // The live Studio tree for a place file (the session seen most recently), or null when no Studio
+  // session has sent a snapshot: the synced roots from the engine plus the plugin's outline of the
+  // rest of the mapped services. Kept after Studio disconnects (last known), like tree.json was.
+  liveTree(projectFile: string): { nodes: LiveStudioNode[]; truncated: boolean } | null {
+    if (!this.active()) return null
+    const state = this.stateFor(projectFile)
+    if (!state) return null
+    const live = this.deps.engine?.liveTree?.(state.placeKey) ?? null
+    if (!live && !state.outline) return null
+    const nodes: LiveStudioNode[] = []
+    for (const n of live?.nodes ?? []) {
+      const props = displayProps(n.properties)
+      nodes.push(props ? { path: n.path, className: n.className, props } : { path: n.path, className: n.className })
+    }
+    for (const n of state.outline?.nodes ?? []) nodes.push(n.props ? { path: n.path, className: n.className, props: n.props } : { path: n.path, className: n.className })
+    return { nodes, truncated: !!state.outline?.truncated }
+  }
+
+  // Where "Save to repo" would write a Studio-only instance, or why it cannot.
+  async saveTarget(projectFile: string, path: string[]): Promise<{ file: string } | { reason: string }> {
+    const state = this.active() ? this.stateFor(projectFile) : null
+    const engine = this.deps.engine
+    if (!state || !engine?.saveTarget) return { reason: 'Connect Studio with Forge Sync on (Settings > Sync) to save Studio-only instances' }
+    return engine.saveTarget(state.placeKey, path)
+  }
+
+  async saveToRepo(projectFile: string, path: string[]): Promise<SyncEntry> {
+    const state = this.active() ? this.stateFor(projectFile) : null
+    const engine = this.deps.engine
+    if (!state || !engine?.saveToRepo) throw new Error('Connect Studio with Forge Sync on (Settings > Sync) to save Studio-only instances')
+    const entry = await this.serial(() => engine.saveToRepo!(state.placeKey, path))
+    await this.markWritten([entry.file])
+    this.recent = [entry, ...this.recent].slice(0, RECENT_MAX)
+    this.deps.emit('sync:entry', [entry])
+    this.deps.log?.(`sync: saved ${path.join('.')} to ${entry.file}`)
+    this.checkTree()
+    this.refresh()
+    return entry
+  }
+
+  private stateFor(projectFile: string): PlaceState | null {
+    let best: PlaceState | null = null
+    for (const state of this.placeStates.values()) {
+      if (state.projectFile !== projectFile) continue
+      const has = this.deps.engine?.treeVersion?.(state.placeKey) != null || !!state.outline
+      if (!has) continue
+      if (!best || state.lastSeen > best.lastSeen) best = state
+    }
+    return best
+  }
+
+  // Engine tree shape changed for some place (snapshot, add/remove/rename): Game tab rebuild.
+  private checkTree(): void {
+    for (const state of this.placeStates.values()) {
+      const v = this.deps.engine?.treeVersion?.(state.placeKey) ?? null
+      if (v === (state.treeVersion ?? null)) continue
+      state.treeVersion = v
+      this.scheduleTree()
+    }
+  }
+
+  private treeTimer: ReturnType<typeof setTimeout> | null = null
+  private treeAt = 0
+
+  // At most one onStudioTree per throttle window; the last change in a window is never dropped.
+  private scheduleTree(): void {
+    if (!this.deps.onStudioTree || this.treeTimer || this.closed) return
+    const wait = Math.max(0, this.treeAt + (this.deps.treeThrottleMs ?? TREE_THROTTLE_MS) - this.now())
+    this.treeTimer = setTimeout(() => {
+      this.treeTimer = null
+      if (this.closed) return
+      this.treeAt = this.now()
+      this.deps.onStudioTree?.()
+    }, wait)
+    ;(this.treeTimer as { unref?: () => void }).unref?.()
+  }
+
+  // One line on what stays in Studio for a place: top-level Studio-only instances outside every $path
+  // (from the outline) and Studio-only children of $ignoreUnknownInstances roots (from the engine).
+  private leftLine(state: PlaceState): { leftInStudio?: PlaceSyncStatus['leftInStudio'] } {
+    const map = this.maps.find((m) => m.projectFile === state.projectFile)
+    const ignored = this.deps.engine?.leftInStudio?.(state.placeKey) ?? []
+    const outside = map && state.outline ? outsideTops(map, state.outline.nodes) : []
+    const count = ignored.length + outside.length
+    if (!count) {
+      state.leftNote = undefined
+      return {}
+    }
+    const examples = [...outside, ...ignored].slice(0, 3).map((p) => p.join('.'))
+    const why: string[] = []
+    if (outside.length) why.push(`${outside.length} outside every Rojo $path`)
+    if (ignored.length) why.push(`${ignored.length} under $ignoreUnknownInstances`)
+    const note = `${count} Studio-only instance${count === 1 ? ' stays' : 's stay'} in Studio (${why.join(', ')}): ${examples.join(', ')}${count > examples.length ? ', …' : ''}. Rojo leaves ${count === 1 ? 'it' : 'them'} alone; right-click in the Game tab > Save to repo to track one.`
+    if (state.leftNote !== note) {
+      state.leftNote = note
+      this.deps.log?.(`sync: ${state.projectFile}: ${note}`)
+    }
+    return { leftInStudio: { count, examples, note } }
+  }
+
   // ---- internals ----
 
   private requireEngine(): SyncEngineLike {
@@ -642,12 +812,17 @@ export class SyncService {
     return next
   }
 
-  private async record(placeKey: string, entries: SyncEntry[]): Promise<void> {
+  // live: entries of the change stream (a single new Studio-only instance gets its one-line note in
+  // the feed); a snapshot's are summed up in the place's leftInStudio line instead.
+  private async record(placeKey: string, entries: SyncEntry[], live = false): Promise<void> {
     const state = this.placeStates.get(placeKey)
     const shown: SyncEntry[] = []
     const writes: string[] = []
     for (const entry of entries) {
-      if (entry.action === 'unmapped') continue
+      if (entry.action === 'unmapped') {
+        if (live && entry.note?.startsWith('left in Studio')) shown.push(entry)
+        continue
+      }
       if (state) state.counts[entry.action] = (state.counts[entry.action] ?? 0) + 1
       if (entry.action === 'same') continue
       shown.push(entry)
@@ -688,6 +863,41 @@ export class SyncService {
       this.deps.log?.(`sync: could not save ${WRITTEN_FILE}: ${(e as Error).message}`, 'stderr')
     }
   }
+}
+
+// Top-level services the place maps (first name of every project node): what the plugin outlines.
+export function outlineContainers(map: PlaceMapLike): string[][] {
+  const tops = new Set<string>()
+  for (const p of [...map.roots.map((r) => r.instance), ...(map.skipped ?? []).map((s) => s.instance), ...(map.virtual ?? [])]) if (p.length) tops.add(p[0])
+  return [...tops].sort().map((t) => [t])
+}
+
+// Outline instances that are the topmost Studio-only ones outside every $path: their parent is a
+// project node (a service or a $className container) and they are not one themselves. Default
+// service children named after their class (StarterCharacterScripts ...) are not counted.
+export function outsideTops(map: PlaceMapLike, nodes: StudioOutlineNode[]): string[][] {
+  const key = (p: string[]) => p.join('\u0000')
+  const project = new Set<string>()
+  for (const p of [...map.roots.map((r) => r.instance), ...(map.skipped ?? []).map((s) => s.instance), ...(map.virtual ?? [])]) {
+    for (let i = 1; i <= p.length; i++) project.add(key(p.slice(0, i)))
+  }
+  const out: string[][] = []
+  for (const n of nodes) {
+    if (n.path.length < 2 || project.has(key(n.path)) || !project.has(key(n.path.slice(0, -1)))) continue
+    if (n.className === n.path[n.path.length - 1]) continue
+    out.push(n.path)
+  }
+  return out
+}
+
+// A few display props (asset ids, sizes as text) for the Game tab; Rojo-typed values are skipped.
+function displayProps(props: Record<string, unknown> | undefined): Record<string, string | number | boolean> | undefined {
+  if (!props) return undefined
+  let out: Record<string, string | number | boolean> | undefined
+  for (const [k, v] of Object.entries(props)) {
+    if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') (out ??= {})[k] = v
+  }
+  return out
 }
 
 function firstLine(text: string): string {

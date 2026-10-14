@@ -15,6 +15,9 @@
 -- Forge Sync (plugin version 2; 3 adds the unsynced-reference report): in edit mode the plugin also streams the scripts and instances under
 -- the project's Rojo-mapped roots to Forge (a chunked snapshot, then debounced change events), so Forge
 -- can reconcile Studio with disk before Rojo serves. It only reads: it never changes the DataModel.
+-- Version 5 adds the Game-tab outline: names and classes (no properties but a few asset ids) of what
+-- else sits in the services the project maps, e.g. ReplicatedStorage.Assets, so Forge can show
+-- Studio-only instances. Debounced, capped, and re-sent only when it changed.
 --
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
@@ -511,6 +514,24 @@ local SYNC_PROPS: { { any } } = {
 	{ "Model", { "LevelOfDetail", "ModelStreamingMode" } },
 }
 
+-- Game-tab outline (plugin version 5).
+local OUTLINE_DEBOUNCE = 1.5
+local OUTLINE_MAX_WAIT = 10
+-- Renames do not fire DescendantAdded/Removing: a rescan catches them (sent only when changed).
+local OUTLINE_RESCAN = 30
+local OUTLINE_DEPTH = 12
+local OUTLINE_SKIP_CLASSES: { [string]: boolean } = { Camera = true, Terrain = true, Players = true }
+-- A few asset ids shown in the Game tab (strings only; read with pcall).
+local OUTLINE_PROPS: { { any } } = {
+	{ "Animation", "AnimationId" },
+	{ "Sound", "SoundId" },
+	{ "MeshPart", "MeshId" },
+	{ "SpecialMesh", "MeshId" },
+	{ "Decal", "Texture" },
+	{ "ImageLabel", "Image" },
+	{ "ImageButton", "Image" },
+}
+
 -- Instance-reference properties (Creator Hub API: ObjectValue.Value, JointInstance / WeldConstraint /
 -- NoCollisionConstraint Part0/Part1, Constraint / Beam / Trail Attachment0/Attachment1,
 -- Model.PrimaryPart). Forge Sync does not write references to disk; it only reports where they are
@@ -546,6 +567,14 @@ local sync = {
 	dirty = false,
 	firstTouch = 0,
 	lastTouch = 0,
+	-- Game-tab outline: containers to walk, node cap, change flags and the last body sent.
+	outline = {} :: { Instance },
+	outlineMax = 0,
+	outlineDirty = false,
+	outlineFirst = 0,
+	outlineLast = 0,
+	outlineScan = 0,
+	outlineSent = nil :: string?,
 }
 -- Ids stay the same for an instance for the whole Studio session, across re-snapshots.
 local syncIds: { [Instance]: string } = setmetatable({}, { __mode = "k" }) :: any
@@ -909,6 +938,9 @@ local function stopSync()
 	sync.refs = {}
 	sync.refsDirty = false
 	sync.dirty = false
+	sync.outline = {}
+	sync.outlineDirty = false
+	sync.outlineSent = nil
 end
 
 local function resolve(path: { string }): Instance?
@@ -1028,6 +1060,30 @@ local function startSync(): string
 		if root then
 			table.insert(sync.roots, root)
 		end
+	end
+	sync.outline = {}
+	sync.outlineMax = math.clamp(tonumber(config.outlineMax) or 0, 0, 5000)
+	if sync.outlineMax > 0 then
+		for _, path in config.outline or {} do
+			local container = resolve(path)
+			if container and not table.find(sync.outline, container) then
+				table.insert(sync.outline, container)
+				local function mark()
+					local now = os.clock()
+					if not sync.outlineDirty then
+						sync.outlineDirty = true
+						sync.outlineFirst = now
+					end
+					sync.outlineLast = now
+				end
+				table.insert(sync.rootConns, container.DescendantAdded:Connect(mark))
+				table.insert(sync.rootConns, container.DescendantRemoving:Connect(mark))
+			end
+		end
+		-- First outline right after the snapshot.
+		sync.outlineDirty = #sync.outline > 0
+		sync.outlineFirst = 0
+		sync.outlineLast = 0
 	end
 	-- Watch before walking: anything that changes during the walk is diffed against the walk afterwards.
 	for _, root in sync.roots do
@@ -1179,6 +1235,98 @@ local function flush()
 	end
 end
 
+local function outlineProps(inst: Instance): any
+	local props = nil
+	for _, entry in OUTLINE_PROPS do
+		if inst:IsA(entry[1]) then
+			local ok, value = pcall(function()
+				return (inst :: any)[entry[2]]
+			end)
+			if ok and type(value) == "string" and value ~= "" and #value <= 1024 then
+				props = props or {}
+				props[entry[2]] = value
+			end
+		end
+	end
+	return props
+end
+
+local function insideSyncRoot(inst: Instance): boolean
+	for _, r in sync.roots do
+		if inst == r or inst:IsDescendantOf(r) then
+			return true
+		end
+	end
+	return false
+end
+
+-- Breadth-first over the outline containers, outside the synced roots (they stream on their own) and
+-- the skip list, up to OUTLINE_DEPTH levels and outlineMax nodes. Sent only when it changed.
+local function sendOutline(gen: number)
+	sync.outlineDirty = false
+	sync.outlineScan = os.clock()
+	local nodes, truncated = {}, false
+	local queue, head = {}, 1
+	for _, container in sync.outline do
+		if container.Parent then
+			table.insert(queue, { container, pathOf(container), 0 })
+		end
+	end
+	local seen, deep = 0, false
+	while head <= #queue and not truncated do
+		local item = queue[head]
+		head += 1
+		local inst, path, depth = item[1], item[2], item[3]
+		if depth >= OUTLINE_DEPTH then
+			if #inst:GetChildren() > 0 then
+				deep = true
+			end
+			continue
+		end
+		for _, child in inst:GetChildren() do
+			if OUTLINE_SKIP_CLASSES[child.ClassName] or SYNC_SKIP_NAMES[child.Name] or child.Name == "" or insideSyncRoot(child) then
+				continue
+			end
+			local childPath = table.clone(path)
+			table.insert(childPath, child.Name)
+			local key = pathKey(childPath)
+			local skipped = false
+			for _, sk in sync.skip do
+				if underKey(key, sk) then
+					skipped = true
+					break
+				end
+			end
+			if skipped then
+				continue
+			end
+			if #nodes >= sync.outlineMax then
+				truncated = true
+				break
+			end
+			table.insert(nodes, { path = childPath, className = child.ClassName, props = outlineProps(child) })
+			table.insert(queue, { child, childPath, depth + 1 })
+			seen += 1
+			if seen % SYNC_YIELD_EVERY == 0 then
+				task.wait()
+				if gen ~= sync.generation then
+					return
+				end
+			end
+		end
+	end
+	truncated = truncated or deep
+	local signature = HttpService:JSONEncode({ nodes, truncated })
+	if signature == sync.outlineSent then
+		return
+	end
+	local ok, err = syncPost("outline", { session = sync.session, place = syncPlace(), nodes = nodes, truncated = truncated })
+	if not ok then
+		error("outline: " .. tostring(err), 0)
+	end
+	sync.outlineSent = signature
+end
+
 local function syncLoop()
 	while alive do
 		if not enabled then
@@ -1210,6 +1358,24 @@ local function syncLoop()
 					sync.wanted = true
 					sync.retryAt = os.clock() + RETRY_SECONDS
 				end
+			end
+		end
+		now = os.clock()
+		if
+			sync.session
+			and not sync.dirty
+			and #sync.outline > 0
+			and (
+				(sync.outlineDirty and (now - sync.outlineLast >= OUTLINE_DEBOUNCE or now - sync.outlineFirst >= OUTLINE_MAX_WAIT))
+				or now - sync.outlineScan >= OUTLINE_RESCAN
+			)
+		then
+			-- The outline is only for display: a failure waits for the next rescan, sync keeps going.
+			local ok, err = pcall(sendOutline, sync.generation)
+			if not ok then
+				warn("[Forge Bridge] Forge Sync outline: " .. tostring(err))
+				sync.outlineDirty = false
+				sync.outlineScan = os.clock()
 			end
 		end
 		if sync.wanted and not sync.session then

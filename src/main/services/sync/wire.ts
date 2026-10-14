@@ -9,7 +9,7 @@ import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING } from '../../../shared/sync/typ
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import type { ServiceState } from '../../../shared/types.ts'
 import { findTool, run, toolEnv } from '../tools.ts'
-import { engineSetting, SyncService, type SyncEngineLike, type SyncHandler, type SyncMapping } from './service.ts'
+import { engineSetting, SyncService, type LiveStudioNode, type SyncEngineLike, type SyncHandler, type SyncMapping } from './service.ts'
 
 export interface SyncWireDeps {
   settings: { get<T>(key: string, fallback: T): T; set(key: string, value: unknown): void }
@@ -27,6 +27,10 @@ export interface SyncWireDeps {
   engine?: (root: string) => SyncEngineLike
   mapping?: SyncMapping
   git?: (root: string, args: string[]) => Promise<{ code: number; stdout: string; stderr: string }>
+  // The open project's active place file (Game tab "Save to repo" acts on that place).
+  activePlace?: () => string | null
+  // The live Studio tree changed shape (throttled): the Game tab re-reads liveTree().
+  onStudioTree?: () => void
 }
 
 export interface GitLike {
@@ -48,6 +52,8 @@ export interface SyncWiring {
   resolveStudioConflict(path: string, take: 'studio' | 'repo', placeKey?: string): Promise<void>
   // Wraps GitSync so every Forge-initiated pull / branch switch checks for uncommitted Studio edits.
   guardGit<G extends GitLike>(git: G, autoCommit: () => boolean): G
+  // Game tab: the live Studio tree of a place file, or null (no Studio session / Forge Sync off).
+  liveTree(projectFile: string): { nodes: LiveStudioNode[]; truncated: boolean } | null
 }
 
 function defaultGit(root: string, args: string[]) {
@@ -66,6 +72,12 @@ export function syncSummary(status: SyncStatus): { state: ServiceState; detail: 
     return { state: 'running', detail: `Forge Sync: ${n} conflict${n === 1 ? '' : 's'} held` }
   }
   return { state: 'running', detail: live.length ? `Forge Sync: ${live.length} Studio session${live.length === 1 ? '' : 's'}` : 'Forge Sync: waiting for Studio' }
+}
+
+// An instance path from the renderer: 1-64 non-empty names.
+function cleanPath(v: unknown): string[] {
+  if (!Array.isArray(v) || v.length < 1 || v.length > 64 || !v.every((n) => typeof n === 'string' && n.length > 0 && n.length <= 256)) throw new Error('Invalid instance path')
+  return v as string[]
 }
 
 export function createSync(deps: SyncWireDeps): SyncWiring {
@@ -92,7 +104,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
   const handler: SyncHandler = {
     config: async (q) => (current ? current.handler.config(q) : { enabled: false, sessionToken: '', roots: [], skip: [], reason: 'No project open in Forge' }),
     snapshot: async (body) => (current ? current.handler.snapshot(body) : offAnswer),
-    changes: async (body) => (current ? current.handler.changes(body) : offAnswer)
+    changes: async (body) => (current ? current.handler.changes(body) : offAnswer),
+    outline: async (body) => (current?.handler.outline ? current.handler.outline(body) : offAnswer)
   }
 
   const emptyStatus = (): SyncStatus => ({ engine: settings().engine, places: [], recent: [], pendingStudioEdits: [] })
@@ -105,6 +118,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     syncServeAnyway: (placeKey: string) => need().serveAnyway(String(placeKey)),
     syncCommitStudioEdits: (message?: string): Promise<SyncCommitResult> => need().commitStudioEdits(message),
     syncDisableLegacyPlugin: () => need().disableLegacyPlugin(),
+    syncSaveTarget: async (instancePath: unknown) => (current ? current.saveTarget(deps.activePlace?.() ?? 'default.project.json', cleanPath(instancePath)) : { reason: 'No project open' }),
+    syncSaveToRepo: (instancePath: unknown) => need().saveToRepo(deps.activePlace?.() ?? 'default.project.json', cleanPath(instancePath)),
     forgeSyncSettings: () => settings(),
     setForgeSyncSettings: async (patch: Partial<ForgeSyncSettings>) => {
       if (patch.engine === 'forge' || patch.engine === 'project' || patch.engine === 'off') deps.settings.set(SYNC_ENGINE_SETTING, patch.engine)
@@ -132,9 +147,13 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
         studio: deps.studio,
         onGate: (file, gate, detail) => deps.supervisor.setGate(file, gate, detail),
         emit,
-        log: deps.log
+        log: deps.log,
+        onStudioTree: deps.onStudioTree
       })
       await current.start().catch((e) => deps.log?.(`sync: ${(e as Error).message}`, 'stderr'))
+    },
+    liveTree(projectFile) {
+      return current ? current.liveTree(projectFile) : null
     },
     onProjectClose() {
       current?.close()

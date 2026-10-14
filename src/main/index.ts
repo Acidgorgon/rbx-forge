@@ -300,6 +300,8 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   await closeProject()
   const opened = await Project.open(full, { activePlace: activePlaces()[full] })
   project = opened
+  // Game tab: Studio-only instances from Forge Sync's live tree (Forge Bridge), else tree.json.
+  opened.setLiveStudio((file) => forgeSync.liveTree(file))
   settings.setLastProject(full)
   harnessLog(`opened ${full}`)
   // Before project:changed reaches the renderer: its "since you were away" request (3.5 s later)
@@ -483,7 +485,9 @@ const forgeSync = createSync({
     return info ? { placeId: info.placeId, connected: studio.bridge.connected() } : null
   },
   engine: (root) => new SyncEngine({ root }),
-  mapping: { loadPlaces, placeFor }
+  mapping: { loadPlaces, placeFor },
+  activePlace: () => project?.activePlace ?? null,
+  onStudioTree: () => project?.studioChanged()
 })
 studio.bridge.setSyncHandler(forgeSync.handler)
 // Lab gating (services/gating): code gates before big-model calls in the labs (skip the critic,

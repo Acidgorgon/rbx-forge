@@ -8,7 +8,7 @@ import { Icon } from '../components/Icons'
 import { ClassIcon, FileGlyph } from '../components/ClassIcon'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { basename, featuresOf, initSuffix, realmOfFile, realmOfInstance, requireExpression, roots, scriptsFlat, findNode, instancePathOfFile } from '../lib/roblox'
-import { createHint, createItem, defaultTarget, dirForInstance, instanceForDir, realmOfDir, type NewKind } from '../lib/templates'
+import { createHint, createItem, defaultTarget, dirForInstance, instanceForDir, realmOfDir, storyCovered, type NewKind } from '../lib/templates'
 import { validateName } from '../shell/Overlays'
 import { errorText, isMac, keyHint } from '../lib/format'
 import { entryTarget, isUnder, protectedReason } from '@shared/fileOps'
@@ -225,7 +225,7 @@ export function ExplorerView() {
       for (let i = 1; i <= ip!.length; i++) n.add(ip!.slice(0, i).join('/'))
       return n
     })
-    const name = kind === 'Feature' ? 'NewFeature' : kind === 'Folder' ? 'NewFolder' : kind === 'ModuleScript' ? 'NewModule' : kind === 'Script' ? 'NewScript' : 'NewLocalScript'
+    const name = kind === 'Feature' ? 'NewFeature' : kind === 'Folder' ? 'NewFolder' : kind === 'ModuleScript' ? 'NewModule' : kind === 'Script' ? 'NewScript' : kind === 'Story' ? 'NewStory' : kind === 'Storybook' ? 'Stories' : 'NewLocalScript'
     setCreating({ kind, parentKey: key, instancePath: ip, dir: dirForInstance(state.tree, ip), depth: ip.length, name })
   }
 
@@ -235,9 +235,16 @@ export function ExplorerView() {
     beginCreate(r.kind as NewKind)
   }, [state.createRequest])
 
+  // Story modules are named "<Name>.story" / "<Name>.storybook" in the tree.
+  const siblingNames = (c: Creating) => {
+    const names = (findNode(state.tree, c.instancePath)?.children ?? []).map((n) => n.name)
+    if (c.kind !== 'Story' && c.kind !== 'Storybook') return names
+    const suffix = c.kind === 'Story' ? '.story' : '.storybook'
+    return names.filter((n) => n.endsWith(suffix)).map((n) => n.slice(0, -suffix.length))
+  }
+
   const commitCreate = async (c: Creating, el?: HTMLElement | null) => {
-    const siblings = (findNode(state.tree, c.instancePath)?.children ?? []).map((n) => n.name)
-    const taken = c.kind === 'Feature' ? featuresOf(scripts).map((f) => f.name) : siblings
+    const taken = c.kind === 'Feature' ? featuresOf(scripts).map((f) => f.name) : siblingNames(c)
     const problem = validateName(c.name, taken)
     if (problem) return
     setCreating(null)
@@ -251,9 +258,19 @@ export function ExplorerView() {
       if (isFeature) {
         actions.toast({ text: `Feature "${c.name}" forged`, detail: `+ ${c.name}Service · + ${c.name}Controller · ${r.written.length} files`, kind: 'hot' })
         setFlashKey(['ReplicatedStorage', 'Shared', 'Features', c.name].join('/'))
+      } else if (c.kind === 'Story') {
+        const list = await window.harness.uiPreviewStories().catch(() => null)
+        const covered = list ? storyCovered(list, r.written[0]) : null
+        actions.toast({
+          text: `Story ${c.name} created`,
+          detail: covered === false ? `${r.written[0]} · no storybook covers this folder; add New > Storybook here or above to group it in UI Preview` : r.written[0],
+          kind: covered === false ? 'info' : 'ok',
+          ms: covered === false ? 6000 : 3500
+        })
+        setFlashKey([...c.instancePath, `${c.name}.story`].join('/'))
       } else {
         actions.toast({ text: `${c.kind} ${c.name} created`, detail: r.written[0], kind: 'ok', ms: 3500 })
-        setFlashKey([...c.instancePath, c.name].join('/'))
+        setFlashKey([...c.instancePath, c.kind === 'Storybook' ? `${c.name}.storybook` : c.name].join('/'))
       }
     } catch (e) {
       actions.toast({ text: `Could not create ${c.name}`, detail: errorText(e), kind: 'err' })
@@ -273,6 +290,9 @@ export function ExplorerView() {
     items.push({ label: 'Feature', accel: 'f', icon: <Icon name="trio" />, sub: 'shared/Features + Service + Controller', onSelect: () => beginCreate('Feature') })
     items.push({ label: 'Folder', accel: 'd', icon: <Icon name="folderPlus" />, disabled: !!blocked, reason: blocked, onSelect: () => beginCreate('Folder', ip) })
     items.push({ label: 'Blink event', accel: 'e', icon: <Icon name="bolt" />, sub: 'appends to events.blink', onSelect: () => actions.requestCreate('Blink') })
+    items.push({ header: 'UI' })
+    items.push({ label: 'Story', accel: 'u', icon: <ClassIcon className="ModuleScript" realm={realm ?? undefined} size={14} />, sub: '.story.luau (UI Labs, Vide)', disabled: !!blocked, reason: blocked, onSelect: () => beginCreate('Story', ip) })
+    items.push({ label: 'Storybook', accel: 'b', icon: <ClassIcon className="ModuleScript" realm={realm ?? undefined} size={14} />, sub: '.storybook.luau for this folder', disabled: !!blocked, reason: blocked, onSelect: () => beginCreate('Storybook', ip) })
     return items
   }
 
@@ -493,10 +513,9 @@ export function ExplorerView() {
 
   // ---- render helpers
   const createRow = (c: Creating) => {
-    const siblings = (findNode(state.tree, c.instancePath)?.children ?? []).map((n) => n.name)
-    const problem = validateName(c.name, c.kind === 'Feature' ? featuresOf(scripts).map((f) => f.name) : siblings)
+    const problem = validateName(c.name, c.kind === 'Feature' ? featuresOf(scripts).map((f) => f.name) : siblingNames(c))
     const hint = createHint(c.kind, c.dir, c.instancePath)
-    const glyph = c.kind === 'Feature' ? 'ModuleScript' : c.kind
+    const glyph = c.kind === 'Feature' || c.kind === 'Story' || c.kind === 'Storybook' ? 'ModuleScript' : c.kind
     return (
       <div className="create-row item-in" style={{ paddingLeft: 8 + c.depth * 12 }}>
         <div className="row" style={{ gap: 6 }}>
@@ -518,7 +537,7 @@ export function ExplorerView() {
           />
         </div>
         {problem ? <div className="create-msg err">{problem}</div> : hint ? <div className={`create-msg ${hint.level}`}>{hint.text}</div> : null}
-        {!problem && c.dir && c.kind !== 'Feature' && <div className="create-msg">{c.dir}/{c.name}{c.kind === 'Script' ? '.server.luau' : c.kind === 'LocalScript' ? '.client.luau' : c.kind === 'Folder' ? '/' : '.luau'}</div>}
+        {!problem && c.dir && c.kind !== 'Feature' && <div className="create-msg">{c.dir}/{c.name}{c.kind === 'Script' ? '.server.luau' : c.kind === 'LocalScript' ? '.client.luau' : c.kind === 'Folder' ? '/' : c.kind === 'Story' ? '.story.luau' : c.kind === 'Storybook' ? '.storybook.luau' : '.luau'}</div>}
       </div>
     )
   }

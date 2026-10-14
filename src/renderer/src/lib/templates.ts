@@ -2,9 +2,12 @@
 // to tools/watch-features.sh sync_feature(), and every file is written only when missing, so it does
 // not matter whether Forge or the dev watcher writes first.
 import type { TreeNode } from '@shared/types'
+import { storybookFile, storyFile } from '@shared/storyTemplates'
 import { dirname, findNode, roots } from './roblox'
 
-export type NewKind = 'ModuleScript' | 'Script' | 'LocalScript' | 'Feature' | 'Folder'
+export { storyCovered } from '@shared/storyTemplates'
+
+export type NewKind = 'ModuleScript' | 'Script' | 'LocalScript' | 'Feature' | 'Folder' | 'Story' | 'Storybook'
 
 export function featureFiles(name: string): { path: string; contents: string }[] {
   return [
@@ -21,7 +24,7 @@ export function featureFiles(name: string): { path: string; contents: string }[]
   ]
 }
 
-export function scriptFile(kind: Exclude<NewKind, 'Feature' | 'Folder'>, dir: string, name: string): { path: string; contents: string } {
+export function scriptFile(kind: 'ModuleScript' | 'Script' | 'LocalScript', dir: string, name: string): { path: string; contents: string } {
   if (kind === 'Script') {
     return { path: `${dir}/${name}.server.luau`, contents: `local ServerScriptService = game:GetService("ServerScriptService")\nlocal ReplicatedStorage = game:GetService("ReplicatedStorage")\n\n` }
   }
@@ -93,6 +96,8 @@ export function defaultTarget(tree: TreeNode[], kind: NewKind): string[] | null 
     Feature: [['ReplicatedStorage', 'Shared', 'Features']],
     ModuleScript: [['ReplicatedStorage', 'Shared', 'Modules'], ['ReplicatedStorage', 'Shared']],
     Folder: [['ReplicatedStorage', 'Shared']],
+    Story: [['ReplicatedStorage', 'Shared', 'Interface', 'Stories'], ['ReplicatedStorage', 'Shared', 'Interface'], ['ReplicatedStorage', 'Shared']],
+    Storybook: [['ReplicatedStorage', 'Shared', 'Interface', 'Stories'], ['ReplicatedStorage', 'Shared', 'Interface'], ['ReplicatedStorage', 'Shared']],
     Script: [['ServerScriptService', 'Server']],
     LocalScript: [['StarterPlayer', 'StarterPlayerScripts', 'Client']]
   }
@@ -114,6 +119,8 @@ export function createHint(kind: NewKind, dir: string | null, instancePath: stri
   if (kind === 'LocalScript' && instancePath[0] === 'ReplicatedStorage') return { level: 'warn', text: "LocalScripts in ReplicatedStorage don't run." }
   if (kind === 'ModuleScript' && dir && /client\/Client\/Controllers/.test(dir)) return { level: 'info', text: 'Loaded as a controller by ModuleLoader (Init/Start).' }
   if (kind === 'Feature') return { level: 'info', text: 'Creates shared/Features + Service + Controller.' }
+  if (kind === 'Story') return { level: 'info', text: 'UI Labs story (Vide); shows up in UI Preview.' }
+  if (kind === 'Storybook') return { level: 'info', text: 'Lists the stories in this folder and below.' }
   if (kind === 'Folder' && dir && /src\/shared\/Features$/.test(dir)) return { level: 'info', text: 'A folder here is a Feature: the watcher adds a Service and Controller.' }
   return null
 }
@@ -146,9 +153,10 @@ export async function createItem(kind: NewKind, dir: string | null, name: string
     await put(`${dir}/${name}/.gitkeep`, '')
     return { written, open: null, line: 1 }
   }
-  const f = scriptFile(kind, dir, name)
+  const f = kind === 'Story' ? storyFile(dir, name) : kind === 'Storybook' ? storybookFile(dir, name) : scriptFile(kind, dir, name)
   await put(f.path, f.contents)
   if (!written.length) throw new Error(`${f.path} already exists.`)
+  if (kind === 'Story') return { written, open: f.path, line: f.contents.split('\n').indexOf('\tstory = function(props)') + 2 }
   const line = f.contents.split('\n').findIndex((l) => /:Init\(/.test(l))
   return { written, open: f.path, line: line >= 0 ? line + 2 : f.contents.split('\n').length }
 }

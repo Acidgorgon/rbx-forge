@@ -891,6 +891,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         h.getAppSettings().catch(() => null)
       ])
       set({ project, services, git, studioConflicts, syncSettings, chats, agents, hasApiKey, appSettings })
+      // Turns still running in main (the window reloaded mid-turn) show as working, with Stop.
+      for (const c of chats) if (c.busy) dispatch({ type: 'busy', sessionId: c.id, busy: true })
       dispatch({ type: 'logs', lines: logs })
       void Promise.all([h.listProviders(), h.getDefaultModel()])
         .then(([providers, defaultModel]) => set({ providers, defaultModel }))

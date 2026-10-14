@@ -330,6 +330,8 @@ export interface ChatSession {
   orchestrations?: string[]
   // Chat mode (Ask / Plan / Edit with approval / Auto-accept); unset = 'edit'.
   chatMode?: ChatMode
+  // A turn is running in main (set when listed mid-turn, e.g. after a renderer reload).
+  busy?: boolean
 }
 
 export type TestAgentState = 'queued' | 'running' | 'passed' | 'failed' | 'error' | 'cancelled'

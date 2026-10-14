@@ -178,6 +178,9 @@ export class ChatManager {
   private deps: ChatDeps
   private chats: StoredChat[]
   private running = new Map<string, AbortController>()
+  // Chats whose turn is being set up (between the busy check and running.set): a second send, a
+  // double-clicked "Yes, go" or "Approve & run" must not start a second turn on the same chat.
+  private starting = new Set<string>()
   private saveTimer: NodeJS.Timeout | null = null
   private group: GroupChat
   // Group-chat room of each running chat (host tools look it up).
@@ -292,6 +295,8 @@ export class ChatManager {
     if (c.orchestrate && c.orchestrate !== 'auto') s.orchestrate = c.orchestrate
     if (c.orchestrations?.length) s.orchestrations = c.orchestrations
     if (c.mode && c.mode !== DEFAULT_CHAT_MODE) s.chatMode = c.mode
+    // A turn still running in main (the renderer reloaded mid-turn): it shows "working" and Stop.
+    if (this.busy(c.id)) s.busy = true
     return s
   }
 
@@ -300,7 +305,18 @@ export class ChatManager {
   }
 
   busy(id: string): boolean {
-    return this.running.has(id)
+    return this.running.has(id) || this.starting.has(id)
+  }
+
+  // Runs fn as the only turn being started on this chat; throws 'chat is busy' otherwise.
+  private async claim<T>(id: string, fn: () => Promise<T>): Promise<T> {
+    if (this.busy(id)) throw new Error('chat is busy')
+    this.starting.add(id)
+    try {
+      return await fn()
+    } finally {
+      this.starting.delete(id)
+    }
   }
 
   // Starts a turn and returns once it is underway; progress arrives as chat:message events.
@@ -310,7 +326,7 @@ export class ChatManager {
   // budget stop, restate card posted) busy is cleared here so the composer does not stay "working…".
   async send(id: string, text: string, imageIds: string[] = [], opts: { mode?: ChatMode; display?: string } = {}): Promise<void> {
     try {
-      await this.startSend(id, text, imageIds, opts)
+      await this.claim(id, () => this.startSend(id, text, imageIds, opts))
     } finally {
       if (!this.running.has(id)) this.ctx.emit('chat:busy', { sessionId: id, busy: false })
     }
@@ -319,7 +335,6 @@ export class ChatManager {
   private async startSend(id: string, text: string, imageIds: string[], opts: { mode?: ChatMode; display?: string }): Promise<void> {
     const chat = this.find(id)
     if (!chat) throw new Error(`unknown chat ${id}`)
-    if (this.running.has(id)) throw new Error('chat is busy')
     const root = this.ctx.project()?.root
     const images = await this.imageRefs(imageIds)
     const user = userMessage('main', opts.display ?? text)
@@ -386,9 +401,16 @@ export class ChatManager {
   // "Yes, go" (edited: the person's edit of the card). Saves the confirmed reading on the card, notes
   // a substantial correction in memory, then runs the request with the reading attached.
   async confirmRestate(id: string, messageId: string, edited?: Restatement): Promise<void> {
+    try {
+      await this.claim(id, () => this.startConfirmRestate(id, messageId, edited))
+    } finally {
+      if (!this.running.has(id)) this.ctx.emit('chat:busy', { sessionId: id, busy: false })
+    }
+  }
+
+  private async startConfirmRestate(id: string, messageId: string, edited?: Restatement): Promise<void> {
     const chat = this.find(id)
     if (!chat) throw new Error(`unknown chat ${id}`)
-    if (this.running.has(id)) throw new Error('chat is busy')
     const card = chat.messages.find((m) => m.id === messageId)
     if (!card?.restate) throw new Error('no restatement card')
     if (card.restate.state !== 'pending') throw new Error(`the restatement is already ${card.restate.state}`)
@@ -539,13 +561,25 @@ export class ChatManager {
         chat.lastProvider = provider
         chat.lastModel = modelId
         this.deps.meter?.setLive(chat.id, null)
+        // A diff card the ended turn never got an answer for (the SDK stopped or crashed while it
+        // waited) is expired, so it cannot be "accepted" with nothing applying it.
+        this.modes.expireWaiting(id)
         this.rooms.delete(id)
         this.turnModes.delete(id)
         this.running.delete(id)
         this.ctx.emit('chat:busy', { sessionId: id, busy: false })
         this.save()
         // Blocking findings: the host addresses them in a follow-up turn (not reviewed again).
-        if (fix && !abort.signal.aborted) void this.turn(chat, fix, [])
+        if (fix && !abort.signal.aborted) {
+          void this.claim(id, () => this.turn(chat, fix!, []))
+            .catch((e) => {
+              chat.crossCheckFix = undefined
+              this.push(chat, systemMessage('main', `Cross-check fix not started: ${(e as Error).message}`))
+            })
+            .finally(() => {
+              if (!this.running.has(id)) this.ctx.emit('chat:busy', { sessionId: id, busy: false })
+            })
+        }
       })
   }
 
@@ -599,15 +633,20 @@ export class ChatManager {
       this.push(chat, { ...card, planMode: { ...plan, state: 'kept' } })
       return
     }
-    if (this.running.has(id)) throw new Error('chat is busy')
     const runMode: RunMode = opts.runMode === 'auto' ? 'auto' : 'edit'
-    this.push(chat, { ...card, text: plan.text, planMode: { ...plan, state: 'approved', runMode } })
-    chat.mode = runMode === DEFAULT_CHAT_MODE ? undefined : runMode
-    this.updated(chat)
-    const user = userMessage('main', `Approved the plan: run it (${modeLabel(runMode)}).`)
-    user.mode = runMode
-    this.push(chat, user)
-    return this.turn(chat, planRunPrompt(plan), [], runMode)
+    try {
+      await this.claim(id, async () => {
+        this.push(chat, { ...card, text: plan.text, planMode: { ...plan, state: 'approved', runMode } })
+        chat.mode = runMode === DEFAULT_CHAT_MODE ? undefined : runMode
+        this.updated(chat)
+        const user = userMessage('main', `Approved the plan: run it (${modeLabel(runMode)}).`)
+        user.mode = runMode
+        this.push(chat, user)
+        await this.turn(chat, planRunPrompt(plan), [], runMode)
+      })
+    } finally {
+      if (!this.running.has(id)) this.ctx.emit('chat:busy', { sessionId: id, busy: false })
+    }
   }
 
   command(id: string, name: string, args = ''): Promise<ChatCommandResult> {
@@ -643,7 +682,7 @@ export class ChatManager {
       updated: (c) => this.updated(c as StoredChat),
       list: () => this.list(),
       choice: (c) => this.choice(c as StoredChat),
-      busy: (id) => this.running.has(id),
+      busy: (id) => this.busy(id),
       send: (id, text, o) => this.send(id, text, [], o),
       setModel: (id, p, m) => void this.setModel(id, p, m),
       setEffort: (id, e) => void this.setEffort(id, e),
@@ -1074,6 +1113,8 @@ export class ChatManager {
     }
     const s = this.group.groupSettings()
     if (!s.crossCheck) return null
+    // A spending cap or chat budget reached during the turn: no extra review call.
+    if (this.deps.meter?.checkChat(chat.id).level === 'stop') return null
     const tools = chat.messages
       .slice(from)
       .filter((m) => m.role === 'tool' && m.tool && m.agentId === 'main' && (!m.speaker || sameModel(m.speaker, this.choice(chat))))
@@ -1113,7 +1154,7 @@ export class ChatManager {
   // Applies a guest's proposal through the host's write_script (src/ and events.blink only).
   async applyPatchProposal(id: string, messageId: string): Promise<void> {
     const { chat, card } = this.patchCard(id, messageId)
-    if (this.running.has(id)) throw new Error('chat is busy')
+    if (this.busy(id)) throw new Error('chat is busy')
     if (card.patch.state === 'applied') throw new Error('already applied')
     const write = gentreeTools(this.ctx, this.deps.toolFs ? { fs: this.deps.toolFs } : {}).find((t) => t.name === 'write_script')
     if (!write) throw new Error('the host cannot write here')
@@ -1135,6 +1176,8 @@ export class ChatManager {
   // Hands the proposal to the host: it merges it in its own turn (and may adapt it).
   async mergePatchProposal(id: string, messageId: string): Promise<void> {
     const { chat, card } = this.patchCard(id, messageId)
+    // Busy: say so and leave the card as it was (not stuck on "merging").
+    if (this.busy(id)) throw new Error('chat is busy')
     this.push(chat, { ...card, patch: { ...card.patch, state: 'merging' } })
     await this.send(id, `Merge ${card.patch.by.label}'s proposed patch (${card.patch.files.map((f) => f.path).join(', ')}). Check it against the current files first and adapt it where needed:\n\`\`\`diff\n${card.patch.diff.slice(0, 12_000)}\n\`\`\``)
   }
@@ -1211,10 +1254,13 @@ export class ChatManager {
   async roundtable(id: string, topic: string, rounds?: number): Promise<void> {
     const chat = this.find(id)
     if (!chat) throw new Error(`unknown chat ${id}`)
-    if (this.running.has(id)) throw new Error('chat is busy')
+    if (this.busy(id)) throw new Error('chat is busy')
     const t = String(topic ?? '').trim()
     if (!t) throw new Error('a roundtable needs a topic')
     if (!chat.guests?.length) throw new Error('add a guest model first')
+    // Budget / spending cap: a roundtable is several paid calls, so it is refused like a turn.
+    const check = this.deps.meter?.checkChat(chat.id)
+    if (check?.level === 'stop') throw new Error(budgetStopText(check.reason))
     if (chat.title === 'New chat') chat.title = `Roundtable: ${t}`.replace(/\s+/g, ' ').slice(0, 48)
     this.push(chat, userMessage('main', `Roundtable: ${t}`))
     const abort = new AbortController()

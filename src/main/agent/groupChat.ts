@@ -36,6 +36,7 @@ import { allowServer, executableOption, sdkQuery, toChatMessages, type QueryFn }
 import { chatImageStore, hasChatImageStore } from './chatImages.ts'
 import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './imageParts.ts'
 import { supportsVision } from '../../shared/modelCaps.ts'
+import { spendBlock } from '../services/spend/gate.ts'
 import { defineTool, gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
 
 // Read tools a guest may use, when guest tools are on. Never any of WRITE_TOOLS.
@@ -366,6 +367,12 @@ export class GroupChat {
   // chat (tool chips still show). A guest's reply with a unified diff also posts a patch card.
   async speakFull(room: Room, p: GroupParticipant, prompt: string, opts: SpeakOptions = {}): Promise<SpeakResult> {
     const speaker = speakerOf(p)
+    // The app-wide spending cap: no guest / consult / roundtable / review call once it is reached.
+    const block = spendBlock()
+    if (block) {
+      room.push({ id: randomUUID(), role: 'system', text: `${p.label}: ${block}`, at: Date.now(), agentId: 'main', speaker })
+      return { text: '', tokens: 0, tools: [] }
+    }
     const tools = opts.tools ?? room.guestTools
     const rules = p.role === 'host' && !opts.system ? ((await this.deps.rules?.().catch(() => '')) ?? '') : ''
     const system = opts.system ?? (p.role === 'host' ? HOST_SYSTEM(speaker) + rules : GUEST_SYSTEM(speaker, room.host, tools))
@@ -592,6 +599,8 @@ export class GroupChat {
         if (room.signal.aborted) return ''
         const pack = await this.contextPack(room, topic, recent)
         const text = await this.speak(room, p, `${pack}\n\n---\n${modeInstruction('roundtable', '', topic, { round, rounds: n, topic })}`)
+        // Spending cap reached mid-roundtable: stop instead of one refusal per remaining turn.
+        if (!text && spendBlock()) return ''
         if (text) room.note(`${p.label} (roundtable, round ${round}): ${clip(text, 600)}`)
       }
     }

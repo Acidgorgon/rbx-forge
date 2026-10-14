@@ -316,6 +316,19 @@ export class ChatModes {
     for (const c of chats) for (const m of c.messages) if (m.diff?.state === 'pending') m.diff = { ...m.diff, state: 'expired' }
   }
 
+  // The turn ended while cards still waited (the query stopped or crashed without aborting them):
+  // they are expired and their waiters get "stopped", so nothing applies a late Accept.
+  expireWaiting(chatId: string): void {
+    for (const [id, w] of [...this.waiting]) {
+      if (w.chatId !== chatId) continue
+      this.waiting.delete(id)
+      const chat = this.host.find(chatId)
+      const m = chat?.messages.find((x) => x.id === id)
+      if (chat && m?.diff?.state === 'pending') this.host.push(chat, { ...m, diff: { ...m.diff, state: 'expired' } })
+      w.resolve({ accept: false, note: 'stopped' })
+    }
+  }
+
   pendingReviews(chatId: string): number {
     return [...this.waiting.values()].filter((w) => w.chatId === chatId).length
   }

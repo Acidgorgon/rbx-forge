@@ -80,6 +80,11 @@ class FakeEngine implements SyncEngineLike {
   async resolveAll(placeKey: string, take: 'studio' | 'disk') {
     for (const c of this.held.filter((x) => x.placeKey === placeKey)) await this.resolve(placeKey, c.file, take)
   }
+  endSession(placeKey: string) {
+    this.calls.push(`end ${placeKey}`)
+    this.gates.set(placeKey, 'idle')
+    this.changed()
+  }
   gate(placeKey: string): GateState {
     return this.gates.get(placeKey) ?? 'idle'
   }
@@ -113,7 +118,7 @@ function gitRepo(): string {
   return root
 }
 
-function setup(opts: { settings?: Record<string, unknown>; root?: string } = {}) {
+function setup(opts: { settings?: Record<string, unknown>; root?: string; staleMs?: number } = {}) {
   const root = opts.root ?? gitRepo()
   const engine = new FakeEngine(root)
   const gates: [string, GateState, string | undefined][] = []
@@ -128,7 +133,8 @@ function setup(opts: { settings?: Record<string, unknown>; root?: string } = {})
     git: (args) => run('git', args, root),
     pluginsDir: () => pluginDir,
     onGate: (file, gate, detail) => gates.push([file, gate, detail]),
-    emit: (event, payload) => events.push([event, payload])
+    emit: (event, payload) => events.push([event, payload]),
+    staleMs: opts.staleMs
   })
   return { root, engine, service, gates, events, values, pluginDir }
 }
@@ -393,4 +399,19 @@ test('unsynced references: collected over a chunked snapshot, replaced by change
   await service.handler.changes({ session: sessionToken, place, changes: [], refs: [], refsTotal: 0 })
   await service.handler.changes({ session: menu.sessionToken, place: { placeId: 222 }, changes: [], refs: [] })
   assert.equal((await service.status()).unsyncedRefs, undefined)
+})
+
+test('a snapshot that stalls releases the hold, also when Studio reopened and the new session never sent a chunk', async () => {
+  const { engine, service, gates } = setup({ staleMs: 30 })
+  await service.start()
+  const place = { placeId: 111, name: 'FSF Match' }
+  const first = await service.handler.config({ placeId: 111 })
+  await service.handler.snapshot({ session: first.sessionToken, place, seq: 0, final: false, nodes: [node(['ReplicatedStorage', 'Skills'])] })
+  await tick()
+  assert.equal(gates.at(-1)?.[1], 'checking')
+  // Studio closed mid-snapshot and opened again: a new config drops the old token.
+  await service.handler.config({ placeId: 111 })
+  await new Promise((r) => setTimeout(r, 80))
+  assert.ok(engine.calls.includes('end 111'))
+  assert.equal(gates.at(-1)?.[1], 'idle')
 })

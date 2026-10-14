@@ -114,6 +114,8 @@ export interface SyncServiceDeps {
   emit: (event: 'sync:status' | 'sync:entry', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   now?: () => number
+  // Tests: how long a snapshot may stall before the hold is released (default SNAPSHOT_STALE_MS).
+  staleMs?: number
 }
 
 const RECENT_MAX = 200
@@ -336,14 +338,17 @@ export class SyncService {
     const timer = setTimeout(() => {
       this.snapshotTimers.delete(placeKey)
       const session = this.sessions.get(token)
-      if (!session || session.ready) return
-      this.sessions.delete(token)
+      if (session?.ready) return
+      // A new config for the place (Studio reopened) drops the old token; until the new session sends
+      // its first chunk nothing else would release the gate, so a missing token still releases it.
+      if ([...this.sessions.values()].some((x) => x.placeKey === placeKey && x.ready)) return
+      if (session) this.sessions.delete(token)
       this.deps.log?.(`sync: Studio stopped sending the snapshot for ${placeKey}; rojo may serve again`, 'stderr')
       void this.serial(async () => {
         await this.deps.engine?.endSession?.(placeKey)
         this.refresh()
       })
-    }, SNAPSHOT_STALE_MS)
+    }, this.deps.staleMs ?? SNAPSHOT_STALE_MS)
     ;(timer as { unref?: () => void }).unref?.()
     this.snapshotTimers.set(placeKey, timer)
   }

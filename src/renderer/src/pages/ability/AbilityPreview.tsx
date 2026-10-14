@@ -12,6 +12,7 @@ import type { Background } from '../vfx/preview/scene'
 import { AbilityScene, type AbilityView } from './preview/abilityScene'
 import { applyScreen, type ScreenEls } from './preview/screenFx'
 import { AbilityTimeline } from './AbilityTimeline'
+import { webglMessage } from '../../lib/webgl'
 
 const SPEEDS = [1, 0.5, 0.25, 0.1]
 
@@ -69,7 +70,7 @@ export function AbilityPreview({
     try {
       scene = new AbilityScene(canvas, { resolver: (ref) => window.harness.vfxResolveTexture(ref) })
     } catch (e) {
-      setError(`WebGL is not available: ${(e as Error).message}`)
+      setError(webglMessage(e))
       return
     }
     scene.shakeEnabled = !reduced

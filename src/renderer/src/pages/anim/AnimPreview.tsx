@@ -7,6 +7,7 @@ import { Icon } from '../../components/Icons'
 import { prefersReducedMotion } from '../vfx/motion'
 import { AnimScene, type AnimView } from './preview/rig'
 import { AnimTimeline } from './AnimTimeline'
+import { webglMessage } from '../../lib/webgl'
 
 const SPEEDS = [1, 0.5, 0.25]
 
@@ -44,7 +45,7 @@ export function AnimPreview({
     try {
       scene = new AnimScene(canvasRef.current!)
     } catch (e) {
-      setError(`WebGL is not available: ${(e as Error).message}`)
+      setError(webglMessage(e))
       return
     }
     sceneRef.current = scene

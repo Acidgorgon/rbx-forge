@@ -3,6 +3,7 @@
 // loadKey changes, and draws it at the compare clock's time for this side.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import { useCompareTime, type PaneContext } from './CompareView'
+import { webglMessage } from '../../lib/webgl'
 
 export interface PaneScene {
   setTime(t: number): unknown
@@ -39,7 +40,7 @@ export function ScenePane<S extends PaneScene>({
     try {
       scene = create(canvasRef.current!)
     } catch (e) {
-      setError(`WebGL is not available: ${(e as Error).message}`)
+      setError(webglMessage(e))
       return
     }
     sceneRef.current = scene

@@ -7,6 +7,7 @@ import { Icon } from '../../components/Icons'
 import { VfxScene, type Background, type View } from './preview/scene'
 import { hasTimeline, TimelineStrip } from './TimelineStrip'
 import { prefersReducedMotion } from './motion'
+import { webglMessage } from '../../lib/webgl'
 
 const SPEEDS = [1, 0.5, 0.25, 0.1]
 
@@ -35,7 +36,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEf
     try {
       scene = new VfxScene(canvas, { resolver: (ref) => window.harness.vfxResolveTexture(ref) })
     } catch (e) {
-      setError(`WebGL is not available: ${(e as Error).message}`)
+      setError(webglMessage(e))
       return
     }
     sceneRef.current = scene

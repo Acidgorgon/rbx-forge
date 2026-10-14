@@ -301,6 +301,7 @@ export class ChatManager {
     }
     if (c.route) s.route = c.route
     if (c.effort) s.effort = c.effort
+    if (c.todos?.length) s.todos = c.todos
     const last = c.messages[c.messages.length - 1]
     if (last) s.lastAt = last.at
     if (c.orchestrate && c.orchestrate !== 'auto') s.orchestrate = c.orchestrate

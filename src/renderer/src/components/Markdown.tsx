@@ -1,79 +1,8 @@
-// Tiny markdown renderer for chat prose: paragraphs, headings, fenced code,
-// inline code, bold/italic, links, ordered/unordered lists, blockquotes.
-import { useState, type ReactNode } from 'react'
+// Tiny markdown renderer for chat prose: paragraphs, headings, fenced code (with Copy), inline
+// code, bold/italic, links, nested ordered/unordered lists, blockquotes, rules and tables.
+import { useMemo, useState, type ReactNode } from 'react'
 import { IconCheck, IconCopy } from './Icons'
-
-type Block =
-  | { kind: 'p'; text: string }
-  | { kind: 'h'; level: number; text: string }
-  | { kind: 'code'; lang: string; text: string }
-  | { kind: 'ul' | 'ol'; items: string[]; start: number }
-  | { kind: 'quote'; text: string }
-
-function parse(src: string): Block[] {
-  const lines = src.replace(/\r\n/g, '\n').split('\n')
-  const blocks: Block[] = []
-  let i = 0
-  while (i < lines.length) {
-    const line = lines[i]
-    const fence = line.match(/^\s*```\s*([\w+-]*)/)
-    if (fence) {
-      const body: string[] = []
-      i++
-      while (i < lines.length && !/^\s*```\s*$/.test(lines[i])) body.push(lines[i++])
-      i++ // closing fence (or EOF while streaming)
-      blocks.push({ kind: 'code', lang: fence[1] || '', text: body.join('\n') })
-      continue
-    }
-    if (!line.trim()) {
-      i++
-      continue
-    }
-    const h = line.match(/^(#{1,4})\s+(.*)$/)
-    if (h) {
-      blocks.push({ kind: 'h', level: h[1].length, text: h[2] })
-      i++
-      continue
-    }
-    if (/^\s*[-*+]\s+/.test(line) || /^\s*\d+[.)]\s+/.test(line)) {
-      const ordered = /^\s*\d+[.)]\s+/.test(line)
-      const start = ordered ? parseInt(line.trim(), 10) : 1
-      const items: string[] = []
-      while (i < lines.length) {
-        const l = lines[i]
-        const m = ordered ? l.match(/^\s*\d+[.)]\s+(.*)$/) : l.match(/^\s*[-*+]\s+(.*)$/)
-        if (m) {
-          items.push(m[1])
-          i++
-        } else if (l.trim() && /^\s{2,}/.test(l) && items.length) {
-          items[items.length - 1] += ' ' + l.trim()
-          i++
-        } else break
-      }
-      blocks.push({ kind: ordered ? 'ol' : 'ul', items, start })
-      continue
-    }
-    if (/^>\s?/.test(line)) {
-      const body: string[] = []
-      while (i < lines.length && /^>\s?/.test(lines[i])) body.push(lines[i++].replace(/^>\s?/, ''))
-      blocks.push({ kind: 'quote', text: body.join(' ') })
-      continue
-    }
-    const body: string[] = []
-    while (
-      i < lines.length &&
-      lines[i].trim() &&
-      !/^\s*```/.test(lines[i]) &&
-      !/^#{1,4}\s/.test(lines[i]) &&
-      !/^\s*([-*+]|\d+[.)])\s+/.test(lines[i]) &&
-      !/^>\s?/.test(lines[i])
-    ) {
-      body.push(lines[i++])
-    }
-    blocks.push({ kind: 'p', text: body.join('\n') })
-  }
-  return blocks
-}
+import { parseMarkdown, type Block, type ListItem } from './markdownParse'
 
 // Inline: `code`, **bold**, *italic* / _italic_, [text](url)
 function inline(text: string, keyPrefix = ''): ReactNode[] {
@@ -134,40 +63,87 @@ function CodeBlock({ lang, text }: { lang: string; text: string }) {
   )
 }
 
-export function Markdown({ text }: { text: string }) {
-  const blocks = parse(text)
+function Items({ items, k }: { items: ListItem[]; k: string }) {
   return (
-    <div className="md">
+    <>
+      {items.map((it, j) => (
+        <li key={j}>
+          {inline(it.text, `${k}-${j}-`)}
+          {it.children.length > 0 && <Blocks blocks={it.children} k={`${k}-${j}`} />}
+        </li>
+      ))}
+    </>
+  )
+}
+
+function Blocks({ blocks, k = '' }: { blocks: Block[]; k?: string }) {
+  return (
+    <>
       {blocks.map((b, i) => {
+        const key = `${k}${i}`
         switch (b.kind) {
           case 'p':
-            return <p key={i}>{inline(b.text, `p${i}-`)}</p>
+            return <p key={key}>{inline(b.text, `p${key}-`)}</p>
           case 'h': {
-            const Tag = (['h3', 'h3', 'h4', 'h5'] as const)[b.level - 1]
-            return <Tag key={i}>{inline(b.text, `h${i}-`)}</Tag>
+            const Tag = (['h2', 'h3', 'h4', 'h5', 'h5', 'h5'] as const)[b.level - 1]
+            return <Tag key={key}>{inline(b.text, `h${key}-`)}</Tag>
           }
           case 'code':
-            return <CodeBlock key={i} lang={b.lang} text={b.text} />
+            return <CodeBlock key={key} lang={b.lang} text={b.text} />
           case 'ul':
             return (
-              <ul key={i}>
-                {b.items.map((it, j) => (
-                  <li key={j}>{inline(it, `u${i}-${j}-`)}</li>
-                ))}
+              <ul key={key}>
+                <Items items={b.items} k={`u${key}`} />
               </ul>
             )
           case 'ol':
             return (
-              <ol key={i} start={b.start}>
-                {b.items.map((it, j) => (
-                  <li key={j}>{inline(it, `o${i}-${j}-`)}</li>
-                ))}
+              <ol key={key} start={b.start}>
+                <Items items={b.items} k={`o${key}`} />
               </ol>
             )
           case 'quote':
-            return <blockquote key={i}>{inline(b.text, `q${i}-`)}</blockquote>
+            return <blockquote key={key}>{inline(b.text, `q${key}-`)}</blockquote>
+          case 'hr':
+            return <hr key={key} />
+          case 'table':
+            return (
+              <div key={key} className="md-table-wrap">
+                <table>
+                  <thead>
+                    <tr>
+                      {b.head.map((c, j) => (
+                        <th key={j} style={b.align[j] ? { textAlign: b.align[j]! } : undefined}>
+                          {inline(c, `th${key}-${j}-`)}
+                        </th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {b.rows.map((r, ri) => (
+                      <tr key={ri}>
+                        {b.head.map((_, j) => (
+                          <td key={j} style={b.align[j] ? { textAlign: b.align[j]! } : undefined}>
+                            {inline(r[j] ?? '', `td${key}-${ri}-${j}-`)}
+                          </td>
+                        ))}
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+            )
         }
       })}
+    </>
+  )
+}
+
+export function Markdown({ text }: { text: string }) {
+  const blocks = useMemo(() => parseMarkdown(text), [text])
+  return (
+    <div className="md">
+      <Blocks blocks={blocks} />
     </div>
   )
 }

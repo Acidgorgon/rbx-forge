@@ -1,11 +1,12 @@
-// Theme (dark / light / system) and motion (full / reduced / off), applied as data-theme and
-// data-motion on <html> (SPEC §2, §6). "System" follows prefers-color-scheme and its changes;
+// Theme (dark / light / system), motion (full / reduced / off) and the chat font (readable sans or
+// the terminal monospace), applied as data-theme, data-motion and data-chat-font on <html> (SPEC §2, §6). "System" follows prefers-color-scheme and its changes;
 // the user can always override it, so there is no bare @media colour block in the CSS.
 import { useSyncExternalStore } from 'react'
 
 export type ThemeMode = 'dark' | 'light' | 'system'
 export type MotionMode = 'full' | 'reduced' | 'off'
 export type Theme = 'dark' | 'light'
+export type ChatFont = 'sans' | 'mono'
 
 const KEY = 'forge.appearance'
 const lightQuery = () => window.matchMedia('(prefers-color-scheme: light)')
@@ -14,13 +15,15 @@ const reduceQuery = () => window.matchMedia('(prefers-reduced-motion: reduce)')
 let mode: ThemeMode = 'dark'
 let motion: MotionMode = 'full'
 let resolved: Theme = 'dark'
+let chatFont: ChatFont = 'sans'
 const listeners = new Set<() => void>()
 
 function read(): void {
   try {
-    const saved = JSON.parse(localStorage.getItem(KEY) ?? '{}') as { theme?: ThemeMode; motion?: MotionMode }
+    const saved = JSON.parse(localStorage.getItem(KEY) ?? '{}') as { theme?: ThemeMode; motion?: MotionMode; chatFont?: ChatFont }
     if (saved.theme === 'dark' || saved.theme === 'light' || saved.theme === 'system') mode = saved.theme
     if (saved.motion === 'full' || saved.motion === 'reduced' || saved.motion === 'off') motion = saved.motion
+    if (saved.chatFont === 'sans' || saved.chatFont === 'mono') chatFont = saved.chatFont
   } catch {
     // Storage blocked: defaults.
   }
@@ -28,7 +31,7 @@ function read(): void {
 
 function save(): void {
   try {
-    localStorage.setItem(KEY, JSON.stringify({ theme: mode, motion }))
+    localStorage.setItem(KEY, JSON.stringify({ theme: mode, motion, chatFont }))
   } catch {
     // Not persisted; still applied for this session.
   }
@@ -41,6 +44,7 @@ function apply(): void {
   window.forgeFiles?.setTitlebarTheme?.(resolved)
   if (motion === 'full') delete html.dataset.motion
   else html.dataset.motion = motion
+  html.dataset.chatFont = chatFont
   listeners.forEach((l) => l())
 }
 
@@ -59,6 +63,12 @@ export function setThemeMode(next: ThemeMode): void {
 
 export function setMotionMode(next: MotionMode): void {
   motion = next
+  save()
+  apply()
+}
+
+export function setChatFont(next: ChatFont): void {
+  chatFont = next
   save()
   apply()
 }
@@ -86,8 +96,8 @@ export function useTheme(): Theme {
   return useSyncExternalStore(subscribe, () => resolved)
 }
 
-export function useAppearance(): { theme: ThemeMode; motion: MotionMode; resolved: Theme } {
-  const key = useSyncExternalStore(subscribe, () => `${mode}|${motion}|${resolved}`)
-  const [t, m, r] = key.split('|') as [ThemeMode, MotionMode, Theme]
-  return { theme: t, motion: m, resolved: r }
+export function useAppearance(): { theme: ThemeMode; motion: MotionMode; resolved: Theme; chatFont: ChatFont } {
+  const key = useSyncExternalStore(subscribe, () => `${mode}|${motion}|${resolved}|${chatFont}`)
+  const [t, m, r, f] = key.split('|') as [ThemeMode, MotionMode, Theme, ChatFont]
+  return { theme: t, motion: m, resolved: r, chatFont: f }
 }

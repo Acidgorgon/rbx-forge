@@ -47,7 +47,7 @@ import type { GatingApi, GatingEvents } from './gating/types.ts'
 export type * from './gating/types.ts'
 import type { RestateApi, RestateCard } from './restateTypes.ts'
 import type { ChatModesApi } from './chatModesApi.ts'
-import type { ChatMode, DiffCardData, PlanCardData } from './chatModes.ts'
+import type { ChatMode, ChatTodo, DiffCardData, PlanCardData } from './chatModes.ts'
 export type * from './restateTypes.ts'
 import type { ThumbsApi, ThumbsEvents } from './thumbs/types.ts'
 export type * from './thumbs/types.ts'
@@ -362,6 +362,8 @@ export interface ChatSession {
   chatMode?: ChatMode
   // A turn is running in main (set when listed mid-turn, e.g. after a renderer reload).
   busy?: boolean
+  // The agent's task list (update_todos), shown as a checklist card in the thread.
+  todos?: ChatTodo[]
 }
 
 export type TestAgentState = 'queued' | 'running' | 'passed' | 'failed' | 'error' | 'cancelled'

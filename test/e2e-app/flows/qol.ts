@@ -301,6 +301,8 @@ export const providerQolFlows: Flow[] = [
       })
       await idle(page)
       check(readFileSync(file, 'utf8') === before, 'Ask mode let the model change InventoryService.luau')
+      // The refused call is folded into one activity line (Thread.tsx), not a row per call.
+      check((await page.locator(`${ASSISTANT} .ta-head`).count()) > 0, 'the tool call is not shown as a folded activity line')
       const first = fake.requests.slice(n).find((r) => r.rule === 'write-attempt')
       check(first && !first.toolNames.some((t) => /write_script/.test(t)), 'write_script was offered to the model in Ask mode')
       const echoed = fake.requests.slice(n).find((r) => r.lastRole === 'tool')?.lastTool ?? ''

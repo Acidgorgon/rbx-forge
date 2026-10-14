@@ -12,7 +12,8 @@ import { Markdown } from '../components/Markdown'
 import { ModelPicker, ProviderMark } from '../components/ModelPicker'
 import { ago, errorText } from '../lib/format'
 import { MemoryProposals } from '../pages/memory/MemoryProposals'
-import { Composer, groupMessages, Message, ToolGroup } from './AssistantPanel'
+import { Composer } from './AssistantPanel'
+import { MessageList } from './Thread'
 import { EffortPicker, RouteSummary } from './EffortPicker'
 import { accentOf, ChecklistCard, participants } from './GroupChat'
 import { BoardPanel, ConsultSettings, fmtUsd } from './GroupCards'
@@ -342,14 +343,13 @@ function Conversation({ chat }: { chat: ChatSession }) {
   const { state } = useStore()
   const messages = state.messages[chat.id] ?? []
   const busy = !!state.busy[chat.id]
-  const items = useMemo(() => groupMessages(messages), [messages])
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
   const [mode, setMode] = useState<OrchestrateMode>('single')
   useLayoutEffect(() => {
     const el = scroller.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
-  }, [items, busy])
+  }, [messages, busy, chat.todos])
   const last = messages[messages.length - 1]
   const thinking = busy && (!last || last.role !== 'assistant')
   const choice = { provider: chat.provider, model: chat.model }
@@ -370,12 +370,7 @@ function Conversation({ chat }: { chat: ChatSession }) {
       >
         <div className="gp-thread">
           {!messages.length && <div className="as-empty">@ to ask a guest · enter to send · start a roundtable on the right</div>}
-          {items.map((it, i) => (it.kind === 'msg' ? <Message key={it.m.id} m={it.m} /> : <ToolGroup key={it.id} ms={it.ms} last={i === items.length - 1} busy={busy} />))}
-          {thinking && (
-            <div className="thinking" aria-label="Working">
-              <span /><span /><span />
-            </div>
-          )}
+          <MessageList chat={chat} messages={messages} busy={busy} thinking={thinking} />
           <MemoryProposals sessionId={chat.id} />
         </div>
       </div>

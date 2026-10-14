@@ -9,16 +9,17 @@ import './modes.css'
 
 const STATE = { pending: 'waiting for you', accepted: 'accepted', rejected: 'rejected', partial: 'partly accepted', expired: 'expired' } as const
 
-export function DiffCard({ m }: { m: ChatMessage }) {
+// expanded: shown inside an opened activity row, so the hunks show without another click.
+export function DiffCard({ m, expanded }: { m: ChatMessage; expanded?: boolean }) {
   const { state, actions } = useStore()
   const d = m.diff!
   const sessionId = m.sessionId ?? state.activeChatId
   const live = d.state === 'pending'
   const [on, setOn] = useState<Set<number>>(() => new Set(d.hunks.map((h) => h.id)))
-  const [open, setOpen] = useState(live)
+  const [open, setOpen] = useState(live || !!expanded)
   const [sending, setSending] = useState(false)
   useEffect(() => {
-    if (!live) setOpen(false)
+    if (!live && !expanded) setOpen(false)
   }, [live])
 
   const decide = async (accept: boolean) => {

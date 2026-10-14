@@ -128,7 +128,7 @@
 .cm-hunk-head label { display: inline-flex; align-items: center; gap: 5px; color: var(--fg-muted); cursor: pointer; }
 .cm-hunk-head input { margin: 0; accent-color: var(--ember); }
 .cm-hunk.skip .cm-code { opacity: .45; }
-.cm-code { margin: 0; padding: 2px 0; font-family: var(--font-mono); font-size: 11.5px; line-height: 17px; overflow-x: auto; }
+.cm-code { margin: 0; padding: 2px 0; tab-size: 4; font-family: var(--font-mono); font-size: 11.5px; line-height: 17px; overflow-x: auto; }
 .cm-ln { display: block; padding: 0 10px 0 22px; white-space: pre; position: relative; min-width: max-content; }
 .cm-ln::before { position: absolute; left: 8px; color: var(--fg-faint); }
 .cm-ln.add { background: color-mix(in srgb, var(--ok) 9%, transparent); color: var(--fg); }

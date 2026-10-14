@@ -13,6 +13,8 @@ import { UpdatesSection } from '../updates/UpdatesSection'
 import { ForgeSyncSettings } from './ForgeSyncSettings'
 import { LabsSettings } from './LabsSettings'
 import { RestateSettingRow } from './RestateSettings'
+import { DoctorBanner } from './qolc/Doctor'
+import { SpendSettingsSection } from './qolc/Spend'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -30,6 +32,7 @@ const SECTIONS = [
   ['model', 'Default model'],
   ['chat', 'Chat'],
   ['providers', 'Providers'],
+  ['usage', 'Usage'],
   ['budgets', 'Budgets'],
   ['labs', 'Labs'],
   ['places', 'Places'],
@@ -295,6 +298,7 @@ export function SettingsPage() {
             <div className="sub">{providers ? `${ready} of ${providers.length} providers ready` : 'Loading...'}</div>
           </div>
         </div>
+        <DoctorBanner />
         <nav className="set-nav" aria-label="Settings sections">
           {SECTIONS.map(([id, label]) => (
             <button key={id} className="chip" onClick={() => jump(id)}>{label}</button>
@@ -345,6 +349,11 @@ export function SettingsPage() {
             other providers get the project tools.
           </p>
           <div className="pv-list">{providers?.map((p) => <ProviderCard key={p.id} p={p} />)}</div>
+        </section>
+
+        <section className="set-sec" id="set-usage">
+          <h2>Usage and spending cap</h2>
+          <SpendSettingsSection />
         </section>
 
         <section className="set-sec" id="set-budgets">

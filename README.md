@@ -218,6 +218,43 @@ DAU, retention, session length, revenue and concurrent players for the experienc
 
 The Team panel shows **claims** (shared "working on" markers in `.forge/claims.json`, flagged when stale or contested), open pull requests (through `gh`, or a GitHub compare link), an activity feed that merges git history with Studio sync events, the history and blame of the open file, and lint problems. Team settings are kept in `.forge/project.json` and committed. Forge has light and dark themes. Use the sun/moon button in the title bar.
 
+### Doctor, budget, Add to game
+
+![Forge Doctor with failing, to-check and OK checks](docs/screenshots/210-doctor-issues-dark.png)
+
+**Forge Doctor** (Help menu `ⓘ`, the command palette, or the banner at the top of Settings) checks your whole setup in one run and lists each check as OK, check, or failing. The checks cover:
+
+- the rokit toolchain and its pinned versions
+- Python (for the project sync engine)
+- git and `gh`
+- Studio, the Forge Bridge plugin version and any legacy StudioSync plugins
+- the bridge and `rojo serve` ports
+- the Studio connection, and whether HTTP requests are allowed
+- Forge Sync gate state and conflicts
+- whether a key is set for each provider (keys are never shown)
+- Open Cloud key scopes, checked with Roblox's [API key introspection](https://create.roblox.com/docs/cloud/auth/api-keys) endpoint
+- the OpenAI key used for Art
+- free disk space
+- the project files, Wally packages and sourcemap
+- the updater
+- the macOS screen-recording permission
+
+Each problem comes with a one-click fix or the exact command to run. **Copy as Markdown** puts the report into a bug report, with your home folder replaced by `~`.
+
+![Usage and spending cap settings near the daily cap](docs/screenshots/214-settings-usage-warn-dark.png)
+
+**Spending cap** (Settings > Usage) sets one daily and one monthly USD budget for every AI call: chat, group chats, test agents, team runs, the Labs and image generation. At 80% (adjustable) you get a toast and a status-bar pill. At 100%, new calls are refused with a clear message and a **Raise cap for today** button. The page breaks spending down by provider and by feature and shows the last 14 days. Days and months are counted in your local time. The data stays on your computer in `spend.json` in the app data folder.
+
+![Add to game dialog with a diff to confirm before overwriting](docs/screenshots/217-a2g-diff-light.png)
+
+**Add to game** (VFX Lab, Animation Lab, Ability Composer) writes a lab result into your game:
+
+1. Pick the place (`*.project.json`) and the folder. Forge suggests one from your project layout and remembers your last choice for each lab.
+2. Review the files. The dialog lists every file it will write, using the labs' own exporters and the Rojo mapping. Each one is marked new, unchanged or changed.
+3. Confirm any overwrites. A changed file is only overwritten after you open its diff and tick it.
+
+The result shows the `require` line to paste into Studio's command bar. Other labs can add their own adapter to the same dialog.
+
 ## Install
 
 Download the installer for your computer from the **[latest release](https://github.com/Acidgorgon/rbx-forge/releases/latest)**.

@@ -9,6 +9,7 @@ import { EditorArea } from './shell/EditorArea'
 import { BottomPanel } from './shell/BottomPanel'
 import { Palette } from './shell/Palette'
 import { Dialogs, Toasts } from './shell/Overlays'
+import { QolcOverlays } from './pages/qolc/QolcOverlays'
 import { buildCommands, keySpec, normalizeSpec } from './shell/commands'
 import { ExplorerView } from './views/ExplorerView'
 import { ScriptsView } from './views/ScriptsView'
@@ -190,6 +191,7 @@ function Shell() {
       <Palette />
       <Dialogs />
       <Toasts />
+      <QolcOverlays />
       <ToolchainGate />
     </div>
   )

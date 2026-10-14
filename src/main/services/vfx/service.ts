@@ -11,7 +11,7 @@ import type { LabGate } from '../../../shared/gating/hooks.ts'
 import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
 import { composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
-import { basename, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
 import { CRITIC_SYSTEM, critiquePrompt, DEFAULT_MAX_ITERATIONS, DEFAULT_THRESHOLD, heuristicCritique, parseCritique, refineLoop, stageFrameTimes, type RefineResult } from '../../../shared/vfx/critique.ts'
 import { CHOREOGRAPHY_GUIDE, draftScript, kitReference, TIMELINE_API } from '../../../shared/vfx/choreo.ts'
@@ -599,27 +599,51 @@ export class VfxService {
   async writeProjectFiles(entry: VfxEntry): Promise<VfxEntry> {
     const root = this.deps.projectRoot()
     if (!root || !entry.effect) return entry
-    const hit = await this.find(entry.id)
-    const store = hit?.store ?? this.user
     let dir = entry.written ? entry.written.module.replace(/\/init\.luau$/, '') : `${VFX_SRC_DIR}/${entry.effect.name}`
     if (!entry.written) {
       // Do not overwrite an effect folder another entry (or a person) owns.
       for (let i = 2; await exists(join(root, dir)); i++) dir = `${VFX_SRC_DIR}/${entry.effect.name}${i}`
     }
-    const abs = resolve(root, dir)
-    if (!abs.startsWith(resolve(root) + sep)) throw new VfxError('effect path escapes the project')
-    await mkdir(abs, { recursive: true })
-    // Custom textures: forgetex:// -> rbxassetid:// (uploaded) or a built-in fallback (not yet).
-    const fx = await this.exportTextures(entry.effect)
-    await writeFile(join(abs, 'init.luau'), luauModule(fx, { description: entry.description }), 'utf8')
-    await writeFile(join(abs, 'Effect.rbxmx'), writeRbxmx(fx.roots), 'utf8')
-    const timelineFile = join(abs, 'Timeline.luau')
-    if (fx.script) await writeFile(timelineFile, timelineModule(fx.script), 'utf8')
-    else if (await exists(timelineFile)) await writeFile(timelineFile, '-- No timeline script (the effect plays its compiled cues).\nreturn nil\n', 'utf8')
-    if (needsRuntime(fx)) await this.writeRuntime(root)
+    for (const f of await this.exportFiles(entry, dir)) {
+      const abs = resolve(root, f.path)
+      if (!abs.startsWith(resolve(root) + sep)) throw new VfxError('effect path escapes the project')
+      const cur = await readFile(abs, 'utf8').catch(() => null)
+      if (f.onlyIfExists && cur === null) continue
+      if (cur !== null && f.owned && !f.owned(cur)) continue
+      if (cur === f.content) continue
+      await mkdir(dirname(abs), { recursive: true })
+      await writeFile(abs, f.content, 'utf8')
+    }
+    return this.markWritten(entry, dir)
+  }
+
+  // Records where an effect lives in the project (later edits write back there).
+  async markWritten(entry: VfxEntry, dir: string): Promise<VfxEntry> {
     const written = { module: `${dir}/init.luau`, model: `${dir}/Effect.rbxmx` }
     if (entry.written?.module === written.module) return entry
-    return store.save({ ...entry, written })
+    const hit = await this.find(entry.id)
+    return (hit?.store ?? this.user).save({ ...entry, written })
+  }
+
+  // The files an effect writes when it lives in `dir` (repo-relative): the module, its model, the
+  // timeline script and the shared ForgeFX runtime next to the effect folders. One exporter for
+  // writeProjectFiles and "Add to game". owned: overwrite an existing file only when it says yes;
+  // onlyIfExists: only rewrite a file that is already there.
+  async exportFiles(entry: VfxEntry, dir: string): Promise<{ path: string; content: string; role: string; owned?: (current: string) => boolean; onlyIfExists?: boolean }[]> {
+    if (!entry.effect) throw new VfxError(`"${entry.name}" is a media reference; there is nothing to export`)
+    // Custom textures: forgetex:// -> rbxassetid:// (uploaded) or a built-in fallback (not yet).
+    const fx = await this.exportTextures(entry.effect)
+    const out: { path: string; content: string; role: string; owned?: (current: string) => boolean; onlyIfExists?: boolean }[] = [
+      { path: `${dir}/init.luau`, content: luauModule(fx, { description: entry.description }), role: 'effect module' },
+      { path: `${dir}/Effect.rbxmx`, content: writeRbxmx(fx.roots), role: 'effect model' }
+    ]
+    if (fx.script) out.push({ path: `${dir}/Timeline.luau`, content: timelineModule(fx.script), role: 'timeline script' })
+    else out.push({ path: `${dir}/Timeline.luau`, content: '-- No timeline script (the effect plays its compiled cues).\nreturn nil\n', role: 'timeline script', onlyIfExists: true })
+    // ForgeFX: rewritten when it is ours (starts with the runtime header), left alone when someone
+    // replaced it with their own.
+    const parent = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : ''
+    if (needsRuntime(fx)) out.push({ path: `${parent ? parent + '/' : ''}${RUNTIME_MODULE}.luau`, content: FORGEFX_SOURCE, role: 'ForgeFX runtime', owned: isOwnRuntime })
+    return out
   }
 
   private async prepareTextures(effect: VfxEffect, scope?: VfxScope): Promise<VfxEffect> {
@@ -636,17 +660,6 @@ export class VfxService {
     const plan = await this.deps.textures.exportEffect(effect)
     for (const f of plan.fallbacks) this.deps.log?.(`vfx: ${f.ref} ${f.reason}; wrote ${f.to} instead (upload it in the VFX Lab textures tab)`, 'info')
     return plan.effect
-  }
-
-  // src/shared/VFX/ForgeFX.luau, the runtime scripted effects require. Rewritten when it is ours (starts
-  // with the runtime header), left alone when someone replaced it with their own.
-  private async writeRuntime(root: string): Promise<void> {
-    const file = join(root, ...VFX_SRC_DIR.split('/'), `${RUNTIME_MODULE}.luau`)
-    const cur = await readFile(file, 'utf8').catch(() => null)
-    if (cur !== null && !isOwnRuntime(cur)) return
-    if (cur === FORGEFX_SOURCE) return
-    await mkdir(join(root, ...VFX_SRC_DIR.split('/')), { recursive: true })
-    await writeFile(file, FORGEFX_SOURCE, 'utf8')
   }
 
   // ------------------------------------------------------------ render

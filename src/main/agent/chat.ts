@@ -15,6 +15,7 @@ import { routeModel, type Route } from './budget/budget.ts'
 import { compactHistory, needsCompaction, SUMMARY_INSTRUCTIONS } from './budget/compact.ts'
 import { shouldOrchestrate, type OrchestrateMode } from './orchestrator/heuristic.ts'
 import type { Meter } from './meter.ts'
+import { chargeTokens } from '../services/spend/gate.ts'
 import { toSummary } from './meter.ts'
 import { withRules } from './projectRules.ts'
 import { GroupChat, planChecklist, type Room } from './groupChat.ts'
@@ -703,7 +704,11 @@ export class ChatManager {
         chat.guests = [...(chat.guests ?? []).filter((g) => !sameModel(g, p)), p]
         this.updated(chat)
       },
-      recordUsage: (speaker, u) => this.recordUsage(chat, speaker, u),
+      recordUsage: (speaker, u) => {
+        this.recordUsage(chat, speaker, u)
+        // Group-chat turns are not in the usage ledger: charge the spending cap here.
+        chargeTokens(speaker.provider, speaker.model, u, 'group')
+      },
       // Images of the latest user message, for guests that read images.
       get images() {
         for (let i = chat.messages.length - 1; i >= 0; i--) {

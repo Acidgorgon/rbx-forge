@@ -20,6 +20,7 @@ import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '..
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
+import { AddToGameButton } from '../qolc/AddToGame'
 
 const SUGGESTIONS = ['charged palm blast that knocks me back', 'dash punch', 'ground slam shockwave', 'rising uppercut with sparks', 'quick sword slash']
 const EXAMPLES = [{ key: 'hollow-purple', label: 'Hollow Purple' }]
@@ -150,6 +151,7 @@ function ExportPanel({ entry, status, onExport, result, busy }: { entry: Ability
         <button className="btn small primary" onClick={onExport} disabled={busy || !status?.projectRoot} title={status?.projectRoot ? `Write ${status.exportDir}/${entry.name}.luau and AbilityRunner.luau` : 'Open a project first'}>
           {busy ? <span className="spinner" aria-hidden /> : <Icon name="code" size={11} />} Export to game
         </button>
+        <AddToGameButton lab="ability" id={entry.id} disabled={busy || !status?.projectRoot} title="Choose the place and folder, review the files first" />
         <span className="note mono">{status?.exportDir ? `${status.exportDir}/` : 'open a project to export'}</span>
       </div>
       <p className="note">
@@ -334,6 +336,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
         <button className="btn small" onClick={() => void doExport()} disabled={!!busy || !status?.projectRoot} title={status?.projectRoot ? 'Write the client module and AbilityRunner into the game' : 'Open a project to export'}>
           <Icon name="code" size={11} /> Export
         </button>
+        <AddToGameButton lab="ability" id={entry.id} disabled={!!busy || !status?.projectRoot} />
         {issues > 0 && (
           <button className="badge-o ab-issues" onClick={() => setTab('critique')}>
             <Icon name="warn" size={10} /> {issues} timing issue{issues === 1 ? '' : 's'}

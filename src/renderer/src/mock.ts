@@ -37,6 +37,7 @@ import { studioMock } from './mockStudio'
 import { forgeSyncMock } from './mockForgeSync'
 import { principlesMock } from './mockPrinciples'
 import { gatingMock } from './mockGating'
+import { addToGameMock, doctorMock, spendMock } from './mockQolc'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -909,6 +910,10 @@ const api: HarnessApi = {
   ...forgeSync.api,
   // Lab gating (mockGating.ts): seeded decisions, cost table and decision models.
   ...gatingMock(emit),
+  // Forge Doctor, spending cap, Add to game (mockQolc.ts): ?doctor=ok|issues, ?spend=ok|warn|stop.
+  ...doctorMock(emit),
+  ...spendMock(emit),
+  ...addToGameMock(),
 
   on(event, handler) {
     let set = listeners.get(event)

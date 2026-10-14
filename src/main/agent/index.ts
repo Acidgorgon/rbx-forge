@@ -1,7 +1,7 @@
 // IPC entry point for the agent layer. main/index.ts calls registerAgentIpc once.
 
 import type { IpcMain } from 'electron'
-import type { ChatMessage, ModelChoice, OrchestrateMode, ProviderId } from '@shared/types'
+import type { ChatMessage, ModelChoice, OrchestrateMode, ProviderId, ProviderInfo } from '@shared/types'
 import { INVOKE_PREFIX } from '../../shared/types.ts'
 import type { NewChatOptions } from '@shared/types'
 import { join } from 'node:path'
@@ -16,9 +16,10 @@ import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
 import { ChatManager, type TeamRunner } from './chat.ts'
 import { Credentials } from './credentials.ts'
 import { Meter } from './meter.ts'
-import { fromOpenAiUsage, priced, SdkUsageTracker, type Usage } from './budget/usage.ts'
+import { estimateCost, fromOpenAiUsage, priced, SdkUsageTracker, type Usage } from './budget/usage.ts'
+import { assertSpend, chargeSpend, sourceOfRecord, spendBlock } from '../services/spend/gate.ts'
 import type { FetchFn } from './openaiLoop.ts'
-import { capsBudget, classifyTool, defaultWriteTargets, openAiRunAgent, Orchestrator, sdkRunAgent, type RunAgent, type ToolClass, type WriteTargets } from './orchestrator/index.ts'
+import { capsBudget, classifyTool, defaultWriteTargets, openAiRunAgent, Orchestrator, sdkRunAgent, type AgentEvent, type RunAgent, type ToolClass, type WriteTargets } from './orchestrator/index.ts'
 import { projectRulesLoader, withRules } from './projectRules.ts'
 import { withMemoryLoader, type MemoryHooks } from './memory/hooks.ts'
 import { extraBody, isProviderId, Providers } from './providers.ts'
@@ -91,6 +92,8 @@ export function createAgentLayer(
   // and orchestrator roles alike.
   const rules = withMemoryLoader(projectRulesLoader(ctx), opts.memory)
   const meter = new Meter(ctx, { saveDelayMs: opts.meterSaveDelayMs })
+  // Every ledger record (chat, test agents, one-shot Labs calls) also charges the spending cap.
+  meter.ledger.onRecord((r) => chargeSpend({ provider: r.provider, source: sourceOfRecord(r), costUsd: r.costUsd, at: r.at }))
   const orchestrator = createOrchestrator(ctx, { ...opts, credentials, providers, rules, meter })
   const team = teamRunner(ctx, orchestrator)
   let chats: ChatManager
@@ -163,6 +166,8 @@ async function oneShot(
   tier?: LabTier,
   onUsage?: ShotOptions['onUsage']
 ): Promise<string> {
+  // Spending cap (Settings > Usage): refuse before the call.
+  assertSpend('labs')
   const base = w.providers.defaultModel()
   const tiers = ctx.getSetting('modelTiers', undefined)
   const model = tier
@@ -192,7 +197,10 @@ async function oneShot(
         maxTurns: 1
       }
     })) {
-      if (onUsage) for (const r of tracker.onMessage(m as never)) report(onUsage, r.model, r)
+      const records = tracker.onMessage(m as never)
+      // One-shot calls go into the usage ledger too (day totals and the spending cap).
+      w.meter.ledger.recordAll(records)
+      if (onUsage) for (const r of records) report(onUsage, r.model, r)
       if (m.type === 'result') {
         if (m.subtype === 'success' && !m.is_error) out = m.result
         else throw new Error(m.subtype === 'success' ? m.result : m.errors?.join('; ') || m.subtype)
@@ -242,8 +250,14 @@ interface OrchestratorWiring {
 function createOrchestrator(ctx: HarnessContext, w: OrchestratorWiring): Orchestrator {
   // Adapters are built per spec: auth/endpoint are resolved when a task starts. The project rules
   // block is appended to each role's constant prompt (constant per project, so still cacheable).
-  const runAgent: RunAgent = (spec) => ({
+  const runAgent: RunAgent = (spec) => withSpendCharges(inner, spec)
+  const inner: RunAgent = (spec) => ({
     async *[Symbol.asyncIterator]() {
+      const block = spendBlock()
+      if (block) {
+        yield { type: 'error' as const, message: block }
+        return
+      }
       const rules = await w.rules().catch(() => '')
       const withRulesSpec = { ...spec, system: withRules(spec.system, rules) }
       const provider = spec.provider ?? 'anthropic'
@@ -284,6 +298,30 @@ function createOrchestrator(ctx: HarnessContext, w: OrchestratorWiring): Orchest
       ctx.emit('orchestrator:event', e)
     }
   })
+}
+
+// Orchestrated runs are not in the usage ledger: their usage events charge the spending cap.
+// Anthropic (SDK) runs report tokens without cost and the cost on the result (cost-only delta), so
+// only explicit costs count there; other providers are priced from the table when no cost is given.
+export function orchestratorCharge(provider: ProviderId, model: string, u: Usage): number {
+  if (u.costUsd !== undefined) return u.costUsd
+  if (provider === 'anthropic') return 0
+  return estimateCost(model, u, { provider }) ?? 0
+}
+
+export function withSpendCharges(run: RunAgent, spec: Parameters<RunAgent>[0]): AsyncIterable<AgentEvent> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      const provider = spec.provider ?? 'anthropic'
+      for await (const e of run(spec)) {
+        if (e.type === 'usage') {
+          const cost = orchestratorCharge(provider, spec.model, e.usage)
+          if (cost > 0) chargeSpend({ provider, source: 'orchestrator', costUsd: cost })
+        }
+        yield e
+      }
+    }
+  }
 }
 
 // One orchestration for a chat message; resolves when the run ends.
@@ -351,7 +389,7 @@ export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
   opts: { memory?: MemoryHooks; userDataDir?: string } = {}
-): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string> } {
+): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string>; providers(): Promise<ProviderInfo[]>; defaultProvider(): ProviderId } {
   const layer = createAgentLayer(ctx, { memory: opts.memory })
   // Chat images live under userData/chat-images (history keeps only references).
   setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))
@@ -497,6 +535,9 @@ export function registerAgentIpc(
 
   return {
     vision: (system, prompt, images, o) => layer.visionShot(system, prompt, images, o),
+    // Forge Doctor: which providers have a key (never the key itself).
+    providers: () => providers.list(),
+    defaultProvider: () => providers.defaultModel().provider,
     summarize: (prompt) =>
       layer.oneShot('Summarize these incoming git changes for a teammate on a Roblox (Luau, Rojo) game: what changed, by whom, which features are touched and anything that may conflict with local work. Terse bullet points, at most 200 words.', prompt),
     dispose() {

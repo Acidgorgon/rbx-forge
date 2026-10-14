@@ -23,6 +23,7 @@ import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import './vfx.css'
 import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
+import { AddToGameButton } from '../qolc/AddToGame'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['sword slash', 'fire aura', 'lightning impact', 'heal burst', 'dash trail', 'energy beam']
@@ -286,6 +287,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
           <button className="btn small" onClick={() => void studio()} title="Write src/shared/VFX/<Name>, sync with Rojo, copy a command-bar line">
             <Icon name="studio" size={11} /> Test in Studio
           </button>
+          {entry.effect && <AddToGameButton lab="vfx" id={entry.id} />}
           {entry.written && <span className="note mono vfx-written" title={`${entry.written.module}\n${entry.written.model}`}>{entry.written.module}</span>}
           <span className="grow" />
           <button className="btn small ghost danger" onClick={() => void remove()} aria-label="Delete">

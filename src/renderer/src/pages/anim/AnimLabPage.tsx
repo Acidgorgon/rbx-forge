@@ -27,6 +27,7 @@ import './anim.css'
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
+import { AddToGameButton } from '../qolc/AddToGame'
 
 const IMPORT_HINT = '.rbxm · .rbxmx (KeyframeSequence) · .bvh (mocap; FBX: export BVH from Blender) · folders · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['heavy overhead punch', 'quick jab', 'roundhouse kick', 'dodge roll back', 'fireball cast', 'stagger from a hit', 'combat idle']
@@ -521,6 +522,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
         <button className="btn small" onClick={() => void exportIt()} disabled={!status?.projectRoot || !!busy} title="Write src/shared/Animations/<Name>/init.luau + Sequence.rbxmx and copy a command-bar line">
           {busy === 'Export' ? <span className="spinner" aria-hidden /> : <Icon name="studio" size={11} />} Export
         </button>
+        <AddToGameButton lab="anim" id={entry.id} disabled={!status?.projectRoot || !!busy} />
         <button className="btn small" onClick={() => void upload()} disabled={!status?.upload || !!busy} title={status?.upload ? 'Upload as an Animation asset with Open Cloud (Art page key)' : 'Add an Open Cloud key (asset:read + asset:write) and creator on the Art page'}>
           {busy === 'Upload' ? <span className="spinner" aria-hidden /> : <Icon name="upload" size={11} />} Upload
         </button>

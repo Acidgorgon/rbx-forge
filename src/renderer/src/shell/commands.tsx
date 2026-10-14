@@ -7,6 +7,7 @@ import { instancePathOfFile, featuresOf, scriptsFlat, realmOfFile } from '../lib
 import { sparks } from '../lib/sparks'
 import { newTerminal, requestFocus, runTask, startTerminals, termStore } from '../terminal/session'
 import { requestPack } from '../pages/memory/MemoryPack'
+import { openDoctor, openUsageSettings } from '../pages/qolc/events'
 
 export interface Command {
   id: string
@@ -91,6 +92,9 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Navigate', 'go.line', 'Go to line…', () => actions.openPalette(':'), { keys: 'ctrl+g', icon: <Icon name="arrowRight" /> })
   add('Navigate', 'forge', 'Open Forge tab', () => actions.openPage('forge'), { keys: 'mod+shift+h', icon: <Icon name="hammer" /> })
   add('Navigate', 'toolchain', 'Toolchain: install or repair tools', () => (actions.openPage('settings'), setTimeout(() => document.getElementById('set-toolchain')?.scrollIntoView({ block: 'start' }), 80)), { icon: <Icon name="tool" />, detail: 'rokit · rojo · wally · lune · luau-lsp…' })
+  add('Help', 'doctor', 'Forge Doctor: check my setup', openDoctor, { icon: <Icon name="check" />, detail: 'toolchain · Studio · ports · sync · keys · disk · project' })
+  add('Help', 'spend.settings', 'Spending cap and usage', () => openUsageSettings(actions), { icon: <Icon name="chart" />, detail: 'daily + monthly AI budget' })
+  add('Help', 'spend.raise', 'Raise spending cap for today', () => void window.harness.spendRaiseToday().then((s) => actions.toast({ text: `Cap raised for today (+$${s.overrideToday.toFixed(2)})`, kind: 'ok', ms: 3000 })), { icon: <Icon name="arrowUp" /> })
   add('Navigate', 'settings', 'Open Settings', () => actions.openPage('settings'), { keys: 'mod+comma', icon: <Icon name="gear" /> })
   add('Navigate', 'packages', 'Open Packages (Wally, Rokit)', () => actions.openPage('packages'), { icon: <Icon name="package" /> })
   add('Navigate', 'release', 'Open Release', () => actions.openPage('release'), { icon: <Icon name="rocket" /> })

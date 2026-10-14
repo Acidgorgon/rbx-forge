@@ -3,6 +3,7 @@ import * as monaco from 'monaco-editor'
 import EditorWorker from 'monaco-editor/editor/editor.worker?worker'
 import { loader } from '@monaco-editor/react'
 import { semanticTokenRules } from './lsp/semanticTheme'
+import { registerBlink } from './blinkLanguage'
 
 declare global {
   interface Window {
@@ -125,6 +126,31 @@ const SYN = {
   light: { kw: '2f6aa8', fn: '2b2b2b', str: '4f7a33', num: '6f7a1f', com: '5f8a50', glob: '2f6aa8', type: '3a3a3a', prop: '3a3a3a', op: '666666', brk: '9a6b12', fg: '2b2b2b' }
 }
 
+// Blink is all declarations, so it gets more hues than Luau: fields, values, primitives and
+// type names each read apart (token names: src/shared/blink/language.ts).
+const BLINK_SYN = {
+  dark: { field: 'c9b6f2', value: 'd9a26f', prim: '5fc4b4', ref: 'e5c07b', decl: 'e5c07b', member: '9cc4e4', option: 'c9b6f2' },
+  light: { field: '6b4fb0', value: 'a8551f', prim: '1b7f74', ref: '8a6110', decl: '8a6110', member: '2f5f8a', option: '6b4fb0' }
+}
+
+function blinkRules(theme: 'dark' | 'light'): monaco.editor.ITokenThemeRule[] {
+  const b = BLINK_SYN[theme]
+  const c = SYN[theme]
+  return [
+    { token: 'keyword.blink', foreground: c.kw },
+    { token: 'keyword.field.blink', foreground: b.field },
+    { token: 'keyword.option.blink', foreground: b.option },
+    { token: 'constant.blink', foreground: b.value },
+    { token: 'type.primitive.blink', foreground: b.prim },
+    { token: 'type.ref.blink', foreground: b.ref },
+    { token: 'type.declaration.blink', foreground: b.decl, fontStyle: 'bold' },
+    { token: 'variable.member.blink', foreground: b.member },
+    { token: 'identifier.blink', foreground: c.fg },
+    { token: 'comment.blink', foreground: c.com, fontStyle: 'italic' },
+    { token: 'operator.blink', foreground: c.op }
+  ]
+}
+
 function rules(theme: 'dark' | 'light'): monaco.editor.ITokenThemeRule[] {
   const c = SYN[theme]
   return [
@@ -149,7 +175,8 @@ function rules(theme: 'dark' | 'light'): monaco.editor.ITokenThemeRule[] {
     { token: 'delimiter.square', foreground: c.brk },
     { token: 'delimiter.angle', foreground: c.brk },
     { token: 'identifier', foreground: c.prop },
-    ...semanticTokenRules(theme)
+    ...semanticTokenRules(theme),
+    ...blinkRules(theme)
   ]
 }
 
@@ -237,70 +264,8 @@ monaco.editor.defineTheme('forge-light', {
   }
 })
 
-// Blink (github.com/1Axen/blink) networking IDL, for events.blink. Grammar from Blink 0.18.1
-// src/Lexer.luau + src/Settings.luau: keywords, primitives, -- and --[[ ]] comments, ranges.
-monaco.languages.register({ id: 'blink', extensions: ['.blink'], aliases: ['Blink', 'blink'] })
-
-monaco.languages.setLanguageConfiguration('blink', {
-  comments: { lineComment: '--', blockComment: ['--[[', ']]'] },
-  brackets: [['{', '}'], ['[', ']'], ['(', ')'], ['<', '>']],
-  autoClosingPairs: [
-    { open: '{', close: '}' }, { open: '[', close: ']' }, { open: '(', close: ')' },
-    { open: '"', close: '"', notIn: ['string'] }
-  ],
-  surroundingPairs: [{ open: '{', close: '}' }, { open: '(', close: ')' }, { open: '[', close: ']' }, { open: '"', close: '"' }],
-  indentationRules: { increaseIndentPattern: /\{\s*$/, decreaseIndentPattern: /^\s*\}/ }
-})
-
-monaco.languages.setMonarchTokensProvider('blink', {
-  defaultToken: '',
-  keywords: ['map', 'set', 'type', 'enum', 'struct', 'event', 'function', 'scope', 'option', 'export', 'import', 'as'],
-  primitives: [
-    'u8', 'u16', 'u32', 'i8', 'i16', 'i32', 'f16', 'f32', 'f64', 'boolean', 'string', 'vector', 'buffer',
-    'Color3', 'CFrame', 'Instance', 'BrickColor', 'unknown', 'DateTime', 'DateTimeMillis'
-  ],
-  // Values of the event/function fields and booleans.
-  constants: [
-    'Server', 'Client', 'Reliable', 'Unreliable', 'SingleSync', 'SingleAsync', 'ManySync', 'ManyAsync', 'Polling',
-    'Coroutine', 'Future', 'Promise', 'true', 'false', 'Pascal', 'Camel', 'Snake'
-  ],
-  fields: ['From', 'Type', 'Call', 'Poll', 'Data', 'Return', 'Yield'],
-  tokenizer: {
-    root: [
-      [/--\[(=*)\[/, { token: 'comment', next: '@blockComment.$1' }],
-      [/--.*$/, 'comment'],
-      // Declaration names: `event Name`, `struct Name<T>`, `option Name`
-      [/(event|function|struct|enum|map|set|type|scope)(\s+)([A-Za-z_]\w*)/, ['keyword', '', 'function']],
-      [/(option)(\s+)([A-Za-z_]\w*)/, ['keyword', '', 'keyword.type']],
-      // `Key:` in events, functions and structs
-      [/([A-Za-z_]\w*)(\s*)(:)/, [{ cases: { '@fields': 'keyword.type', '@default': 'identifier' } }, '', 'delimiter']],
-      [/\.\.[A-Za-z_]\w*/, 'predefined'],
-      [/[A-Za-z_][\w]*(\.[A-Za-z_]\w*)+/, 'type'],
-      [/[A-Za-z_]\w*/, {
-        cases: {
-          '@keywords': 'keyword',
-          '@primitives': 'type',
-          '@constants': 'predefined',
-          // Capitalised names are type references (Item, Inventory, HitKind...).
-          '[A-Z]\\w*': 'type',
-          '@default': 'identifier'
-        }
-      }],
-      [/"([^"\\]|\\.)*"/, 'string'],
-      [/'([^'\\]|\\.)*'/, 'string'],
-      [/-?\d*\.?\d+/, 'number'],
-      [/\.\./, 'operator'],
-      [/[?=]/, 'operator'],
-      [/[{}()[\]<>]/, '@brackets'],
-      [/[,:]/, 'delimiter']
-    ],
-    blockComment: [
-      [/\](=*)\]/, { cases: { '$1==$S2': { token: 'comment', next: '@pop' }, '@default': 'comment' } }],
-      [/[^\]]+/, 'comment'],
-      [/./, 'comment']
-    ]
-  }
-} as monaco.languages.IMonarchLanguage)
+// Blink (github.com/1Axen/blink) networking IDL, for events.blink: src/shared/blink.
+registerBlink(monaco)
 
 // Editor language for a repo path.
 export function languageForPath(path: string): string {

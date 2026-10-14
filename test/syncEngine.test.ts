@@ -687,3 +687,23 @@ test('the first-run bulk choice only decides first-run conflicts, not files both
   assert.deepEqual(ctx.engine.conflicts(MK).map((c) => c.file), [config])
   assert.equal(ctx.engine.gate(MK), 'blocked')
 })
+
+test('a failed first load (index.json locked) is retried by the next snapshot instead of sticking', async () => {
+  let fail = true
+  const fs: SyncFs = {
+    ...nodeFs,
+    rename: (async (a: string, b: string) => {
+      if (fail && String(b).endsWith('index.json')) throw new Error('EPERM: operation not permitted')
+      return nodeFs.rename(a, b)
+    }) as SyncFs['rename']
+  }
+  const root = makeFsfProject()
+  roots.push(root)
+  const engine = new SyncEngine({ root, fs })
+  const maps = await engine.places().catch(() => null)
+  assert.equal(maps, null)
+  fail = false
+  const match = (await engine.places()).find((m) => m.projectFile === 'default.project.json')!
+  await snapshot(engine, MK, MATCH, studioFromDisk(root, match))
+  assert.equal(engine.gate(MK), 'clear')
+})

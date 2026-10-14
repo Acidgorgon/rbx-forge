@@ -296,13 +296,20 @@ export class SyncEngine {
   }
 
   private ensureLoaded(): Promise<void> {
-    this.loaded ??= (async () => {
+    if (this.loaded) return this.loaded
+    const loading = (async () => {
       this.maps = await loadPlaces(this.root)
       await this.store.load()
       const def = this.maps.find((m) => m.projectFile === 'default.project.json') ?? this.maps[0]
       await migrateLegacy(this.root, this.store, (def?.placeIds ?? []).map(String), this.fs)
     })()
-    return this.loaded
+    this.loaded = loading
+    // A failure (e.g. index.json locked for a moment on Windows) must not stick: retry next time,
+    // or every snapshot would fail and the place would stay "checking" with rojo held.
+    loading.catch(() => {
+      if (this.loaded === loading) this.loaded = null
+    })
+    return loading
   }
 
   private session(placeKey: string, place: SyncPlace): Session {

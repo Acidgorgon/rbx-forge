@@ -562,7 +562,8 @@ const groupDeps = {
   emit,
   chats,
   messages: chatMessages,
-  models: async () => (await providers.api.listProviders()).flatMap((p) => p.models.map((model) => ({ provider: p.id, model })))
+  models: async () => (await providers.api.listProviders()).flatMap((p) => p.models.map((model) => ({ provider: p.id, model }))),
+  readyModels: async () => (await providers.api.listProviders()).filter((p) => p.ready).flatMap((p) => p.models.map((model) => ({ provider: p.id, model })))
 }
 seedGroupChat(groupDeps)
 const group = groupMock(groupDeps)

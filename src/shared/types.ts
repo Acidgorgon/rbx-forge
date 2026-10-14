@@ -9,6 +9,8 @@ export type * from './uiPreviewTypes.ts'
 export type * from './artTypes.ts'
 import type { SetupApi, SetupEvents } from './setupTypes.ts'
 import type { ChatExtrasApi, ChatImage, EffortChoice, ModelMeta, NewChatOptions } from './chatTypes.ts'
+import type { BoardItem, ConclusionData, GroupApi, PatchProposal, ReviewData } from './groupTypes.ts'
+export type * from './groupTypes.ts'
 // Collab, release, tests, analytics, usage, orchestrator and feature-rename IPC types.
 export type * from './integrationTypes.ts'
 import type { MemoryApi, MemoryEvents } from './memoryTypes.ts'
@@ -212,8 +214,14 @@ export interface ChatMessage {
   speaker?: Speaker
   // Group chats: 'plan' = the host's roundtable synthesis, 'checklist' = a plan turned into a task list.
   // 'restate' = "Restate first": Forge's reading of a big request, waiting for a yes or an edit.
-  card?: 'plan' | 'checklist' | 'restate'
+  card?: 'plan' | 'checklist' | 'restate' | 'conclusion' | 'patch' | 'review'
   restate?: RestateCard
+  // Group chat v2 cards (groupTypes.ts): consult conclusion, guest patch proposal, cross-check review.
+  conclusion?: ConclusionData
+  patch?: PatchProposal
+  review?: ReviewData
+  // System notice with a fix: a model whose provider is not set up links to Settings → Providers.
+  settingsLink?: ProviderId
   // Attached (user) or produced (assistant/tool) images, as store references.
   images?: ChatImage[]
 }
@@ -239,6 +247,8 @@ export interface GroupUsage {
   input: number
   output: number
   calls: number
+  // Cost in USD (provider-reported or from the price table); unset when the model has no price.
+  costUsd?: number
 }
 
 // AI providers. 'anthropic' runs through the Claude Agent SDK; the others through Forge's own
@@ -285,6 +295,8 @@ export interface ChatSession {
   guestTools?: boolean
   // Group chat: per-model token usage.
   usage?: GroupUsage[]
+  // Group chat: the Board (decisions, open questions, conclusions).
+  board?: BoardItem[]
   // Token/cost meter for the whole chat (all models), from the usage ledger.
   meter?: UsageSummary
   // Model routing of the last turn (budget/budget.ts routeModel): which model ran and why.
@@ -496,7 +508,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

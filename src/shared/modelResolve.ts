@@ -212,3 +212,78 @@ export function resolveModel<T extends ModelChoice & { alias?: string }>(phrase:
   }
   return { kind: 'ok', choice: top.c }
 }
+
+// ---------------------------------------------------------------- consults: flagship + not set up
+
+// Variant rank within a family: the flagship wins when a bare family name ("gemini", "claude")
+// matches several models. Lower-tier words lose; unknown words are neutral.
+const TIER_WORDS: Record<string, number> = { opus: 3, ultra: 3, pro: 3, max: 3, sonnet: 2, plus: 2, flash: 1, haiku: 0, mini: 0, lite: 0, nano: 0, small: 0, tiny: 0 }
+
+function tierOf(model: string): number {
+  const bare = model.includes('/') ? model.slice(model.lastIndexOf('/') + 1) : model
+  const ranks = tokenize(bare)
+    .map((t) => TIER_WORDS[t])
+    .filter((x): x is number => x !== undefined)
+  return ranks.length ? Math.min(...ranks) : 1.5
+}
+
+function versionOf(model: string): number[] {
+  const n = tokenize(model).find(isNum)
+  return n ? n.split('.').map(Number) : [0]
+}
+
+function cmpVersion(a: number[], b: number[]): number {
+  for (let i = 0; i < Math.max(a.length, b.length); i++) {
+    const d = (a[i] ?? 0) - (b[i] ?? 0)
+    if (d) return d
+  }
+  return 0
+}
+
+// One clear flagship among ambiguous options (highest tier, then newest version), else null.
+export function pickFlagship<T extends ModelChoice>(options: T[]): T | null {
+  if (options.length < 2) return options[0] ?? null
+  const ranked = [...options].sort((a, b) => tierOf(b.model) - tierOf(a.model) || cmpVersion(versionOf(b.model), versionOf(a.model)))
+  const [a, b] = ranked
+  if (tierOf(a.model) === tierOf(b.model) && cmpVersion(versionOf(a.model), versionOf(b.model)) === 0) return null
+  return a
+}
+
+export type ConsultResolution<T extends ModelChoice = ModelChoice> =
+  | Resolution<T>
+  // A model that matches, but its provider is not set up (no key / not running).
+  | { kind: 'unconfigured'; choice: ModelChoice; provider: ProviderId }
+
+// Resolves a consult phrase: against the room and ready models first (a bare family name picks the
+// flagship), then against every known model so "gpt 6.1 sol" without an OpenAI key says so.
+export function resolveConsultModel<T extends ModelChoice & { alias?: string }>(phrase: string, ready: T[], known: ModelChoice[] = [], prefer?: ModelChoice): ConsultResolution<T> {
+  const r = resolveModel(phrase, ready, prefer)
+  if (r.kind === 'ok') return r
+  if (r.kind === 'ambiguous') {
+    const top = pickFlagship(r.options)
+    return top ? { kind: 'ok', choice: top } : r
+  }
+  const readyKeys = new Set(ready.map((c) => `${c.provider}/${c.model}`))
+  const rest = known.filter((c) => !readyKeys.has(`${c.provider}/${c.model}`))
+  const k = resolveModel(phrase, rest, prefer)
+  if (k.kind === 'ok') return { kind: 'unconfigured', choice: k.choice, provider: k.choice.provider }
+  if (k.kind === 'ambiguous') {
+    const top = pickFlagship(k.options) ?? k.options[0]
+    return { kind: 'unconfigured', choice: top, provider: top.provider }
+  }
+  return { kind: 'none' }
+}
+
+const PROVIDER_NAMES: Record<ProviderId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter', gemini: 'Google Gemini', ollama: 'Ollama', custom: 'the custom provider' }
+
+export function providerName(id: ProviderId): string {
+  return PROVIDER_NAMES[id] ?? id
+}
+
+// The chat notice for a model whose provider is not set up.
+export function unconfiguredText(choice: ModelChoice): string {
+  const p = providerName(choice.provider)
+  const a = /^[aeiou]/i.test(p) ? 'an' : 'a'
+  const how = choice.provider === 'ollama' ? 'Start Ollama, or pick another model' : choice.provider === 'custom' ? 'Set its base URL' : `Add ${a} ${p} API key`
+  return `${modelLabel(choice.model)} is ${a} ${p} model, and ${p} isn't set up in Forge yet. ${how} in Settings → Providers, then ask again.`
+}

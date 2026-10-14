@@ -15,6 +15,7 @@ import { MemoryProposals } from '../pages/memory/MemoryProposals'
 import { Composer, groupMessages, Message, ToolGroup } from './AssistantPanel'
 import { EffortPicker, RouteSummary } from './EffortPicker'
 import { accentOf, ChecklistCard, participants } from './GroupChat'
+import { BoardPanel, ConsultSettings, fmtUsd } from './GroupCards'
 import './groupspage.css'
 
 function fmtTokens(n: number): string {
@@ -217,7 +218,7 @@ function ParticipantsRail({ chat, onBack }: { chat: ChatSession; onBack: () => v
       </div>
       <ModelPicker value={null} providers={state.providers} direction="down" placeholder="Add a model" icon={<Icon name="plus" size={12} />} disabled={busy} onChange={(c) => void actions.addGuest(c)} onAddKey={(p) => actions.openSettings(p)} />
       <div className="gp-rail-foot note">
-        @alias in a message asks one guest directly; “talk to sol about…” lets the host consult it.
+        @alias asks one guest directly. “Ask sol … and report back” runs a consult that ends in a Conclusion card.
       </div>
     </aside>
   )
@@ -234,6 +235,7 @@ function RoundPanel({ chat }: { chat: ChatSession }) {
   const usage = chat.usage ?? []
   const max = Math.max(1, ...usage.map((u) => u.input + u.output))
   const total = usage.reduce((n, u) => n + u.input + u.output, 0)
+  const cost = usage.reduce((n, u) => n + (u.costUsd ?? 0), 0)
   const start = () => {
     if (!topic.trim() || busy) return
     void actions.startRoundtable(topic.trim(), rounds)
@@ -281,22 +283,25 @@ function RoundPanel({ chat }: { chat: ChatSession }) {
         </label>
       </section>
 
+      <BoardPanel chat={chat} />
+      <ConsultSettings chat={chat} />
+
       <section className="gp-box">
         <div className="gp-sec-label">
           Usage <span className="grow" />
-          {total > 0 && <span className="faint">{fmtTokens(total)} tokens</span>}
+          {total > 0 && <span className="faint">{fmtTokens(total)} tokens{cost > 0 ? ` · ${fmtUsd(cost)}` : ''}</span>}
         </div>
         {usage.length ? (
           <div className="gp-usage">
             {usage.map((u) => (
-              <div key={`${u.provider}/${u.model}`} className="gp-urow" title={`${u.label}: ${u.input} in · ${u.output} out · ${u.calls} call${u.calls === 1 ? '' : 's'}`}>
+              <div key={`${u.provider}/${u.model}`} className="gp-urow" title={`${u.label}: ${u.input} in · ${u.output} out · ${u.calls} call${u.calls === 1 ? '' : 's'}${u.costUsd !== undefined ? ` · ${fmtUsd(u.costUsd)}` : ' · no price known'}`}>
                 <span className="gp-uname ellipsis">
                   <span className={`gc-dot gc-a${accentOf(chat, u)}`} /> {u.label}
                 </span>
                 <span className="gp-ubar">
                   <span className={`gc-a${accentOf(chat, u)}`} style={{ width: `${Math.round(((u.input + u.output) / max) * 100)}%` }} />
                 </span>
-                <span className="gp-unum">{fmtTokens(u.input + u.output)}</span>
+                <span className="gp-unum">{u.costUsd ? fmtUsd(u.costUsd) : fmtTokens(u.input + u.output)}</span>
               </div>
             ))}
           </div>

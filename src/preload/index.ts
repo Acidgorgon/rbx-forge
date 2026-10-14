@@ -8,6 +8,7 @@ const methods = [
   'getStudioConflicts', 'resolveStudioConflict',
   'listChats', 'newChat', 'getChat', 'sendChat', 'stopChat', 'hasApiKey', 'setApiKey',
   'addGuest', 'removeGuest', 'setGuestTools', 'startRoundtable', 'planToChecklist',
+  'getGroupSettings', 'setGroupSettings', 'applyPatchProposal', 'mergePatchProposal', 'dismissPatchProposal', 'saveBoard',
   'setChatEffort', 'getDefaultEffort', 'setDefaultEffort', 'addChatImage', 'getChatImage',
   'listProviders', 'setProviderKey', 'setProviderConfig', 'listModels', 'setChatModel',
   'getDefaultModel', 'setDefaultModel', 'getAnthropicUseClaudeLogin', 'setAnthropicUseClaudeLogin',

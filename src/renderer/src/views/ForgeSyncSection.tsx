@@ -109,6 +109,27 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
           </button>
         </div>
       )}
+      {status.notice && (
+        <div className={`callout ${status.notice.level === 'warn' ? 'warn' : 'info'} fs-callout`} role="status">
+          <div>{status.notice.text}</div>
+          {status.notice.action === 'install-plugin' && (
+            <button
+              className="mini-btn hot"
+              style={{ alignSelf: 'flex-start' }}
+              disabled={busy === 'plugin'}
+              onClick={() =>
+                void act('plugin', async () => {
+                  await window.harness.studioInstallPlugin()
+                  actions.toast({ text: 'Forge Bridge plugin installed', detail: 'Restart Roblox Studio to load it.', kind: 'ok' })
+                  return window.harness.syncStatus()
+                })
+              }
+            >
+              {busy === 'plugin' ? 'Installing…' : 'Install plugin'}
+            </button>
+          )}
+        </div>
+      )}
       {status.warning && <div className="callout warn fs-callout">{status.warning}</div>}
       {!!status.unsyncedRefs?.length && (
         <div className="fs-refs">
@@ -143,6 +164,11 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
               <span className={`tag ${g.cls}`}>{p.gate === 'blocked' ? `${p.conflicts} held` : g.label}</span>
             </div>
             <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}</div>
+            {!!p.missingRoots?.length && (
+              <div className="fs-sub note" style={{ color: 'var(--warn)' }} title="Nothing under these is synced until they exist in Studio (connect Rojo in Studio to build them).">
+                not in Studio yet: {p.missingRoots.join(', ')}
+              </div>
+            )}
 
             {firstRun.length > 0 && (
               <div className="callout info fs-callout">

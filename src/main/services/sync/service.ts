@@ -15,12 +15,14 @@ import type {
   SyncAction,
   SyncConflictInfo,
   SyncEntry,
+  SyncNotice,
   SyncPlace,
   SyncRef,
   SyncStatus
 } from '../../../shared/sync/types.ts'
 import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
+import { PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
 
 // ---- What the service needs from the engine worker's modules (engine.ts, mapping.ts) ----
@@ -108,7 +110,9 @@ export interface SyncServiceDeps {
   git: GitRun
   pluginsDir: () => string | null
   // The Forge Bridge's view of Studio (the plugin long-polls), to show "connected" per place.
-  studio?: () => { placeId?: number; connected: boolean } | null
+  studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
+  // The Forge Bridge plugin file in Studio's plugins folder (null: no plugins folder on this OS).
+  plugin?: () => Promise<{ installed: boolean; version?: number } | null>
   // Gate per project file, for the supervisor (rojo serve waits while 'checking' / 'blocked').
   onGate?: (projectFile: string, gate: GateState, detail?: string) => void
   emit: (event: 'sync:status' | 'sync:entry', payload: unknown) => void
@@ -135,6 +139,8 @@ interface Session {
   placeKey: string
   nextSeq: number
   ready: boolean
+  // Root instance paths (joined with \0) seen in the snapshot being received.
+  rootsSeen: Set<string>
 }
 
 interface PlaceState {
@@ -150,6 +156,15 @@ interface PlaceState {
   refs: SyncRef[]
   refsTotal: number
   snapshotRefs?: SyncRef[]
+  // Mapped roots the last snapshot did not have (instance paths).
+  missingRoots: string[][]
+}
+
+interface ConfigSeen {
+  at: number
+  placeId: number
+  name?: string
+  reason?: string
 }
 
 export function placeKeyOf(place: SyncPlace, projectFile?: string): string {
@@ -212,6 +227,8 @@ export class SyncService {
   private warning: string | undefined
   private refreshQueued = false
   private closed = false
+  // The plugin's last /sync/config request (refused ones carry the reason).
+  private lastConfig: ConfigSeen | null = null
 
   constructor(deps: SyncServiceDeps) {
     this.deps = deps
@@ -261,7 +278,13 @@ export class SyncService {
   }
 
   private async config(q: SyncConfigQuery): Promise<SyncConfigAnswer> {
-    const off = (reason: string): SyncConfigAnswer => ({ enabled: false, sessionToken: '', roots: [], skip: [], reason })
+    const seen: ConfigSeen = { at: this.now(), placeId: Number(q.placeId) || 0, ...(q.place ? { name: String(q.place) } : {}) }
+    this.lastConfig = seen
+    const off = (reason: string): SyncConfigAnswer => {
+      seen.reason = reason
+      this.refresh()
+      return { enabled: false, sessionToken: '', roots: [], skip: [], reason }
+    }
     if (!this.active()) return off(this.settings().engine === 'forge' ? 'Forge Sync is not available in this build' : `Studio sync is set to "${this.settings().engine}"`)
     if (!this.maps.length) await this.reload()
     const placeId = Number(q.placeId) || 0
@@ -278,7 +301,7 @@ export class SyncService {
     const placeKey = placeKeyOf(place, map.projectFile)
     for (const [token, s] of this.sessions) if (s.placeKey === placeKey) this.sessions.delete(token)
     const token = randomUUID()
-    this.sessions.set(token, { token, placeKey, nextSeq: 0, ready: false })
+    this.sessions.set(token, { token, placeKey, nextSeq: 0, ready: false, rootsSeen: new Set() })
     const state = this.placeState(placeKey, map.projectFile, place)
     state.lastSeen = this.now()
     const roots = map.roots.filter((r) => !PACKAGES.test(r.path)).map((r) => r.instance)
@@ -301,6 +324,7 @@ export class SyncService {
           // A (re)starting snapshot: gate goes 'checking', so a running rojo serve for this place stops.
           session.nextSeq = 0
           session.ready = false
+          session.rootsSeen = new Set()
           state.override = false
           state.counts = {}
           state.snapshotRefs = []
@@ -312,7 +336,13 @@ export class SyncService {
           session.nextSeq = 0
           return { ok: false, error: `snapshot chunk ${body.seq} out of order (expected ${expected})`, resend: true } as SyncAnswer
         }
-        await engine.addSnapshot(session.placeKey, Array.isArray(body.nodes) ? body.nodes : [])
+        const nodes = Array.isArray(body.nodes) ? body.nodes : []
+        await engine.addSnapshot(session.placeKey, nodes)
+        const rootKeys = new Set(this.rootsOf(state.projectFile).map((r) => r.join('\u0000')))
+        for (const n of nodes) {
+          const k = n.path.join('\u0000')
+          if (rootKeys.has(k)) session.rootsSeen.add(k)
+        }
         if (Array.isArray(body.refs)) (state.snapshotRefs ??= []).push(...body.refs)
         session.nextSeq++
         this.watchSnapshot(session.token, session.placeKey, !!body.final)
@@ -320,6 +350,7 @@ export class SyncService {
           const entries = await engine.finishSnapshot(session.placeKey)
           session.ready = true
           state.lastSnapshot = this.now()
+          state.missingRoots = this.rootsOf(state.projectFile).filter((r) => !session.rootsSeen.has(r.join('\u0000')))
           this.setRefs(state, state.snapshotRefs ?? [], body.refsTotal)
           state.snapshotRefs = undefined
           await this.record(session.placeKey, entries)
@@ -370,6 +401,10 @@ export class SyncService {
     try {
       if (Array.isArray(body.refs)) this.setRefs(state, body.refs, body.refsTotal)
       const changes = Array.isArray(body.changes) ? body.changes : []
+      for (const c of changes) {
+        if (c.kind === 'added') state.missingRoots = state.missingRoots.filter((r) => r.join('\u0000') !== c.node.path.join('\u0000'))
+        else if (c.kind === 'removed' && this.rootsOf(state.projectFile).some((r) => r.join('\u0000') === c.path.join('\u0000')) && !state.missingRoots.some((r) => r.join('\u0000') === c.path.join('\u0000'))) state.missingRoots = [...state.missingRoots, c.path]
+      }
       const entries = changes.length ? await this.serial(() => this.deps.engine!.applyChanges(session.placeKey, changes)) : []
       await this.record(session.placeKey, entries)
       this.refresh()
@@ -497,7 +532,7 @@ export class SyncService {
     const out: PlaceSyncStatus[] = []
     const studio = this.deps.studio?.() ?? null
     for (const state of this.placeStates.values()) {
-      const viaBridge = !!studio?.connected && studio.placeId === state.place.placeId
+      const viaBridge = !!studio?.connected && this.isStudioPlace(studio, state.place)
       out.push({
         placeKey: state.placeKey,
         projectFile: state.projectFile,
@@ -506,7 +541,8 @@ export class SyncService {
         connected: viaBridge || this.now() - state.lastSeen < SEEN_MS,
         ...(state.lastSnapshot ? { lastSnapshot: state.lastSnapshot } : {}),
         counts: { ...state.counts },
-        conflicts: this.conflictsFor(state.placeKey).length
+        conflicts: this.conflictsFor(state.placeKey).length,
+        ...(state.lastSnapshot && state.missingRoots.length ? { missingRoots: state.missingRoots.map((r) => r.join('.')) } : {})
       })
     }
     // Places no Studio session has opened yet (idle: rojo serves them normally).
@@ -534,7 +570,64 @@ export class SyncService {
       status.unsyncedRefsTotal = refs.total
     }
     if (this.warning && status.pendingStudioEdits.length) status.warning = this.warning
+    if (status.engine === 'forge') {
+      const notice = await this.notice(status.places)
+      if (notice) status.notice = notice
+    }
     return status
+  }
+
+  // Unpublished places share PlaceId 0: the place name tells them apart.
+  private isStudioPlace(studio: { placeId?: number; place?: string }, place: SyncPlace): boolean {
+    const id = studio.placeId ?? 0
+    if (id !== (place.placeId ?? 0)) return false
+    return id !== 0 || !studio.place || !place.name || studio.place === place.name
+  }
+
+  private rootsOf(projectFile: string): string[][] {
+    const map = this.maps.find((m) => m.projectFile === projectFile)
+    return (map?.roots ?? []).filter((r) => !PACKAGES.test(r.path)).map((r) => r.instance)
+  }
+
+  // Why Studio edits are not reaching disk, when they are not. Shown in the Sync view and the status bar.
+  async notice(places: PlaceSyncStatus[] = this.places()): Promise<SyncNotice | undefined> {
+    if (!this.active()) return undefined
+    const studio = this.deps.studio?.() ?? null
+    if (!studio?.connected) {
+      // A place the plugin talked to in the last minute is live even if the poll is between beats.
+      if (places.some((p) => p.connected)) return undefined
+      const plugin = this.deps.plugin ? await this.deps.plugin().catch(() => null) : null
+      if (plugin && !plugin.installed) {
+        return { level: 'warn', action: 'install-plugin', text: 'Not syncing: the Forge Bridge plugin is not installed in Roblox Studio. Install it, then restart Studio. Until it connects, Studio edits do not reach disk.' }
+      }
+      return { level: 'warn', text: 'Not syncing: no Forge Bridge plugin connected. Open the place in Roblox Studio (restart Studio after installing or updating the plugin, and allow HTTP requests to 127.0.0.1 when it asks). Until it connects, Studio edits do not reach disk.' }
+    }
+    const v = studio.pluginVersion ?? 0
+    if (v > 0 && v < 2) return { level: 'warn', action: 'restart-studio', text: `Studio connected, place not synced: Studio runs Forge Bridge v${v}, which has no Forge Sync. Restart Studio to load v${PLUGIN_VERSION}.` }
+    const name = studio.place ? `"${studio.place}"` : 'the place'
+    const cfg = this.lastConfig
+    if (cfg?.reason && this.isStudioPlace(studio, { placeId: cfg.placeId, name: cfg.name }) && this.now() - cfg.at < 5 * 60_000) {
+      return { level: 'warn', text: `Studio connected, ${name} not synced: ${cfg.reason}.` }
+    }
+    const state = [...this.placeStates.values()].find((s) => this.isStudioPlace(studio, s.place))
+    if (!state) {
+      return { level: 'warn', text: `Studio connected, ${name} not synced yet: the Forge Bridge plugin has not started Forge Sync for it.${v < PLUGIN_VERSION ? ` Restart Studio to load plugin v${PLUGIN_VERSION}.` : ''}`, ...(v < PLUGIN_VERSION ? { action: 'restart-studio' as const } : {}) }
+    }
+    const roots = this.rootsOf(state.projectFile)
+    if (state.lastSnapshot && state.missingRoots.length) {
+      const list = state.missingRoots.map((r) => r.join('.')).join(', ')
+      const all = state.missingRoots.length >= roots.length
+      const later = v >= PLUGIN_VERSION ? 'Forge picks them up as soon as they appear.' : `Restart Studio to load plugin v${PLUGIN_VERSION}, which picks them up when they appear (v${v} does not).`
+      return {
+        level: 'warn',
+        text: all
+          ? `Studio connected, ${name} not synced: none of the mapped folders exist in Studio yet (${list}). Connect Rojo in Studio to build them. ${later}`
+          : `Studio connected; not synced in ${name}: ${list} (not in Studio yet). ${later}`,
+        ...(v < PLUGIN_VERSION ? { action: 'restart-studio' as const } : {})
+      }
+    }
+    if (v > 0 && v < PLUGIN_VERSION) return { level: 'info', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (syncs folders Rojo creates after Studio opened, and Script Editor text in unpublished places).` }
+    return undefined
   }
 
   // References reported by connected Studio sessions, de-duplicated across places, capped.
@@ -628,7 +721,7 @@ export class SyncService {
   private placeState(placeKey: string, projectFile: string, place: SyncPlace): PlaceState {
     let state = this.placeStates.get(placeKey)
     if (!state) {
-      state = { placeKey, projectFile, place, counts: {}, lastSeen: 0, override: false, refs: [], refsTotal: 0 }
+      state = { placeKey, projectFile, place, counts: {}, lastSeen: 0, override: false, refs: [], refsTotal: 0, missingRoots: [] }
       this.placeStates.set(placeKey, state)
     }
     state.projectFile = projectFile

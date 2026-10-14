@@ -117,6 +117,18 @@ export interface PlaceSyncStatus {
   lastSnapshot?: number
   counts: Partial<Record<SyncAction, number>>
   conflicts: number
+  // Mapped roots (instance paths joined with '.') the last Studio snapshot did not have: nothing
+  // under them is synced until they exist in Studio (e.g. Rojo has not connected yet).
+  missingRoots?: string[]
+}
+
+// Why Studio edits are NOT reaching disk right now, when they are not (shown in the Sync view and the
+// status bar). 'install-plugin': the Forge Bridge plugin is missing; 'restart-studio': Studio runs an
+// older plugin than the one installed.
+export interface SyncNotice {
+  level: 'warn' | 'info'
+  text: string
+  action?: 'install-plugin' | 'restart-studio'
 }
 
 export interface SyncStatus {
@@ -134,6 +146,7 @@ export interface SyncStatus {
   // sessions (not synced; they stay in Studio). Capped at UNSYNCED_REFS_MAX; the total is uncapped.
   unsyncedRefs?: SyncRef[]
   unsyncedRefsTotal?: number
+  notice?: SyncNotice
 }
 
 export const UNSYNCED_REFS_MAX = 100

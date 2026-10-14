@@ -1,7 +1,7 @@
 // Process-wide hook to the spending cap, so the agent layer and the image services can charge and
 // check it without new constructor plumbing. Unset (tests, or before main wires it) = no cap.
 
-import type { SpendSource } from '../../../shared/spend/types.ts'
+import { SPEND_SOURCES, type SpendSource } from '../../../shared/spend/types.ts'
 import { estimateCost } from '../../agent/budget/usage.ts'
 import type { SpendService } from './service.ts'
 
@@ -35,7 +35,8 @@ export function spendBlock(): string | null {
 }
 
 // Source for a usage-ledger record (chat / test agent / orchestrator / one-shot lab call).
-export function sourceOfRecord(r: { chatId?: string; agentId?: string }): SpendSource {
+export function sourceOfRecord(r: { chatId?: string; agentId?: string; source?: string }): SpendSource {
+  if (r.source && (SPEND_SOURCES as string[]).includes(r.source)) return r.source as SpendSource
   if (r.chatId) return 'chat'
   if (r.agentId) return r.agentId.startsWith('orch:') ? 'orchestrator' : r.agentId === 'summary' ? 'labs' : 'agents'
   return 'labs'

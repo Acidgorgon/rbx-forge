@@ -400,7 +400,7 @@ export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
   opts: { memory?: MemoryHooks; userDataDir?: string; gating?: () => Promise<GatingCostRow[] | null> } = {}
-): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string>; providers(): Promise<ProviderInfo[]>; defaultProvider(): ProviderId } {
+): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string>; providers(): Promise<ProviderInfo[]>; defaultProvider(): ProviderId; credentials: Credentials; meter: Meter } {
   const layer = createAgentLayer(ctx, { memory: opts.memory, ...(opts.userDataDir ? { userCommandsDir: join(opts.userDataDir, 'commands') } : {}), ...(opts.gating ? { gating: opts.gating } : {}) })
   // Chat images live under userData/chat-images (history keeps only references).
   setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))
@@ -559,6 +559,9 @@ export function registerAgentIpc(
     // Forge Doctor: which providers have a key (never the key itself).
     providers: () => providers.list(),
     defaultProvider: () => providers.defaultModel().provider,
+    // Editor inline completions (services/editorAssist): API keys and the usage meter.
+    credentials,
+    meter,
     summarize: (prompt) =>
       layer.oneShot('Summarize these incoming git changes for a teammate on a Roblox (Luau, Rojo) game: what changed, by whom, which features are touched and anything that may conflict with local work. Terse bullet points, at most 200 words.', prompt),
     dispose() {

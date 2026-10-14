@@ -75,6 +75,9 @@ import { createSpendWiring } from './services/spend/wire.ts'
 import { createDoctorWiring } from './services/doctor/wire.ts'
 import { doctorMarkdown } from '../shared/doctor/format.ts'
 import { createAddToGameWiring } from './services/addToGame/wire.ts'
+import { createEditorAssistWiring } from './services/editorAssist/wire.ts'
+import { completionBlock } from './services/editorAssist/completions.ts'
+import { spendBlock } from './services/spend/gate.ts'
 
 // Name and data folder. The data folder stays "rbx-forge" (what development builds have always
 // used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
@@ -809,6 +812,25 @@ ipcMain.on('forge:titlebarTheme', (event, theme: unknown) => {
   win?.setBackgroundColor(light ? '#e4e7eb' : '#0c0e11')
 })
 const agentIpc = registerAgentIpc(ctx, ipcMain, { memory, userDataDir: app.getPath('userData'), gating: async () => (await gating.service.view()).costs })
+// Editor assist (services/editorAssist): StyLua format on save / Format Document, autosave settings,
+// AI inline completions on a fast model (charged to the usage meter and the spending cap).
+const editorAssist = createEditorAssistWiring({
+  root: () => project?.info.root ?? null,
+  getSetting: (key, fallback) => settings.get(key, fallback),
+  setSetting: (key, value) => settings.set(key, value),
+  emit: (status) => emit('editorAssist:status', status),
+  completions: {
+    getKey: (provider) => agentIpc.credentials.getKey(provider),
+    claudeLoginOnly: async () => (await agentIpc.credentials.anthropicAuth()).source === 'claudeLogin',
+    blocked: () => completionBlock(spendBlock(), agentIpc.meter.ledger.day().costUsd, agentIpc.meter.limits().dailyMaxCostUsd),
+    record: (r) => agentIpc.meter.ledger.record(r),
+    log: (text) => logs.push({ service: 'harness', stream: 'info', text: `[completions] ${text}` })
+  }
+})
+for (const [name, handler] of Object.entries(editorAssist.handlers)) {
+  if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
+  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
+}
 
 function preloadPath(): string {
   const dir = join(__dirname, '../preload')

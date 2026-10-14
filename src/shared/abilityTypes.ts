@@ -10,7 +10,6 @@ export type * from './ability/types.ts'
 export interface AbilityApi {
   abilityStatus(): Promise<AbilityStatus>
   abilityList(): Promise<AbilityEntry[]>
-  abilityGet(id: string): Promise<AbilityEntry>
   // Create (no id) or replace an ability; the result is normalised (AbilityError on bad input).
   abilitySave(ability: Ability, opts?: { id?: string; origin?: string; scope?: AbilityScope }): Promise<AbilityEntry>
   abilityDelete(id: string): Promise<boolean>
@@ -21,14 +20,12 @@ export interface AbilityApi {
   // Timing rules (+ vision critic on frames at the key beats when available); apply: fix the timings.
   abilityCritique(id: string, opts?: { vision?: boolean; apply?: boolean }): Promise<{ entry: AbilityEntry; critique: AbilityCritique; applied: string[] }>
   abilityExport(id: string): Promise<AbilityExportResult>
-  abilityExamples(): Promise<{ key: string; name: string; description: string; tags: string[] }[]>
   abilityAddExample(key: string): Promise<AbilityEntry>
   // An entry file (frames/..., thumbs/...) as a data URL.
   abilityFile(id: string, file: string): Promise<string | null>
   abilitySaveThumb(id: string, pngDataUrl: string): Promise<AbilityEntry>
   // Native picker for local sound files ([] when cancelled); a local sound as a data URL for the preview.
   abilityChooseSounds(): Promise<string[]>
-  abilitySoundUrl(path: string): Promise<string | null>
 }
 
 export interface AbilityEvents {

@@ -35,8 +35,6 @@ const isoDay = (t: number) => new Date(t).toISOString().slice(0, 10)
 
 // ---------------------------------------------------------------- collab data
 
-const people = ['Alex', 'Sam Lee', 'Jordan']
-
 let claims: ClaimView[] = [
   { who: 'Sam Lee', what: 'feature:Shop', since: new Date(now() - 3 * 3600_000).toISOString(), note: 'new sword tiers', stale: false, contested: false, others: [] },
   { who: 'Jordan', what: 'src/server/Features/Data', since: new Date(now() - 5 * DAY).toISOString(), stale: true, contested: false, others: [] }
@@ -241,20 +239,6 @@ export function integrationsMock(emit: Emit, log: (text: string) => void): Integ
         { at: now() - DAY, who: 'Alex', kind: 'commit', files: [{ path: 'src/server/Features/Data/init.luau', change: 'M' }], message: 'fix(data): retry on throttle', commit: 'd4e5f6a7' }
       ]
     },
-    async blameFile(path) {
-      return {
-        path,
-        head: 'a1b2c3d4',
-        lines: ['local Shop = {}', '', 'function Shop:Init(janitor)', '\tself.janitor = janitor', 'end'].map((content, i) => ({
-          line: i + 1,
-          author: people[i % people.length],
-          at: now() - (i + 1) * DAY,
-          commit: ['a1b2c3d4', 'd4e5f6a7', 'beefcafe'][i % 3],
-          summary: ['feat(shop): legendary tier', 'fix(data): retry on throttle', 'chore: init'][i % 3],
-          content
-        }))
-      }
-    },
     async fileHistory(path, limit) {
       return [
         { commit: 'a1b2c3d4', author: 'Sam Lee', at: now() - 2 * 3600_000, subject: 'feat(shop): legendary tier', path, change: 'M' },
@@ -295,9 +279,6 @@ export function integrationsMock(emit: Emit, log: (text: string) => void): Integ
     async runLint() {
       const problems = [{ path: 'src/server/Features/Shop/init.luau', line: 41, col: 8, severity: 'warning' as const, message: 'price is assigned a value, but never used', source: 'selene' as const, code: 'unused_variable' }]
       return { selene: { ran: true, problems }, stylua: { ran: false, problems: [], note: 'stylua not found: add JohnnyMorganz/StyLua to rokit.toml' } }
-    },
-    async formatFiles() {
-      return { ran: true, problems: [] }
     },
     async preSyncCheck() {
       return { files: ['src/server/Features/Shop/init.luau'], problems: [], errors: 0, warnings: 0, ok: true, notes: [] }
@@ -445,14 +426,6 @@ export function integrationsMock(emit: Emit, log: (text: string) => void): Integ
       await delay(200)
       return { range: { start: isoDay(now() - 29 * DAY), end: isoDay(now() - DAY) }, source: 'api', series: [series(query.metric, 28, 4500)], notes: [], releases: [{ tag: 'v1.4.2', at: new Date(now() - 2 * DAY).toISOString() }] }
     },
-    async analyticsCompare(options) {
-      return {
-        a: { start: isoDay(now() - 8 * DAY), end: isoDay(now() - DAY) },
-        b: { start: isoDay(now() - 15 * DAY), end: isoDay(now() - 8 * DAY) },
-        rows: options.metrics.map((m, i) => ({ metric: m, label: m, unit: 'users', source: 'api' as const, a: 4800 + i * 10, b: 4400 + i * 10, change: 0.09 })),
-        notes: []
-      }
-    },
     async analyticsAcquisition() {
       const range = { start: isoDay(now() - 8 * DAY), end: isoDay(now() - DAY) }
       const previous = { start: isoDay(now() - 15 * DAY), end: isoDay(now() - 8 * DAY) }
@@ -549,9 +522,6 @@ export function integrationsMock(emit: Emit, log: (text: string) => void): Integ
     },
     async getOrchestrations() {
       return boards
-    },
-    async getOrchestration(runId) {
-      return boards.find((b) => b.runId === runId) ?? null
     },
     async getTaskTranscript(runId, taskId): Promise<ChatMessage[]> {
       const agentId = `orch:${runId}:${taskId}`

@@ -171,8 +171,6 @@ export function providersMock(emit: Emit) {
     | 'listModels'
     | 'getDefaultModel'
     | 'setDefaultModel'
-    | 'getAnthropicUseClaudeLogin'
-    | 'setAnthropicUseClaudeLogin'
     | 'hasApiKey'
     | 'setApiKey'
     | 'accountsList'
@@ -183,10 +181,6 @@ export function providersMock(emit: Emit) {
     | 'accountsUseExistingLogin'
     | 'accountsTest'
     | 'accountsCancelTest'
-    | 'codexStatus'
-    | 'codexSignIn'
-    | 'codexCancelSignIn'
-    | 'codexSignOut'
   > = {
     async accountsList() {
       return accounts()
@@ -255,21 +249,6 @@ export function providersMock(emit: Emit) {
       return check
     },
     async accountsCancelTest() {},
-    async codexStatus() {
-      return info('codex').codex!
-    },
-    async codexSignIn() {
-      await new Promise((r) => setTimeout(r, 600))
-      codexSignedIn = true
-      changed()
-      return { ok: true, message: 'Signed in with ChatGPT' }
-    },
-    async codexCancelSignIn() {},
-    async codexSignOut() {
-      codexSignedIn = false
-      changed()
-      return info('codex').codex!
-    },
     async listProviders() {
       return list()
     },
@@ -299,13 +278,6 @@ export function providersMock(emit: Emit) {
     },
     async setDefaultModel(provider, model) {
       defaultModel = { provider, model }
-    },
-    async getAnthropicUseClaudeLogin() {
-      return useClaudeLogin
-    },
-    async setAnthropicUseClaudeLogin(on) {
-      useClaudeLogin = on
-      changed()
     },
     async hasApiKey() {
       return info('anthropic').ready

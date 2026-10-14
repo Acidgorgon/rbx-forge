@@ -32,7 +32,6 @@ export function chatModeHandlers(chats: ChatManager): Record<string, (...args: a
     },
     listChatCommands: () => chats.commands(),
     runChatCommand: (sessionId: unknown, name: unknown, args?: unknown) => chats.command(id(sessionId), String(name ?? ''), String(args ?? '')),
-    listChatCheckpoints: (sessionId: unknown) => chats.checkpointsOf(id(sessionId)),
     rewindChat: (sessionId: unknown, checkpointId: unknown, what?: unknown) =>
       chats.rewind(id(sessionId), id(checkpointId), (what === 'files' || what === 'chat' ? what : 'both') as RewindWhat)
   }

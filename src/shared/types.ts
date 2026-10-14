@@ -356,7 +356,7 @@ export interface ChatSession {
   lastAt?: number
   // Team (orchestrator) mode for this chat; default 'auto'.
   orchestrate?: OrchestrateMode
-  // Orchestrator runs started from this chat, oldest first (see getOrchestration).
+  // Orchestrator runs started from this chat, oldest first (see getOrchestrations).
   orchestrations?: string[]
   // Chat mode (Ask / Plan / Edit with approval / Auto-accept); unset = 'edit'.
   chatMode?: ChatMode
@@ -558,7 +558,6 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   // Provider readiness/keys/models changed (a key was saved, a base URL edited...).
   'providers:changed': ProviderInfo[]
   // Codex sign-in progress (url: the login page, for when the browser did not open).
-  'codex:signin': { url?: string; message?: string }
   // JSON-RPC message from luau-lsp (or a harness/lsp* bridge notification), see lsp/index.ts.
   'lsp:message': unknown
   // events.blink (or an import) was re-parsed or re-checked.
@@ -636,16 +635,6 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   setChatModel(sessionId: string, provider: ProviderId, model: string): Promise<void>
   getDefaultModel(): Promise<ModelChoice>
   setDefaultModel(provider: ProviderId, model: string): Promise<void>
-  // Opt-in: let the anthropic provider fall back to an existing Claude Code login
-  // (or CLAUDE_CODE_OAUTH_TOKEN) when no API key is set. Personal use only.
-  getAnthropicUseClaudeLogin(): Promise<boolean>
-  setAnthropicUseClaudeLogin(on: boolean): Promise<void>
-  // Codex (ChatGPT plan): the CLI's sign-in. signIn runs `codex login` (opens the browser) and resolves
-  // when it finishes; signOut runs `codex logout`. Forge never sees the credentials.
-  codexStatus(refresh?: boolean): Promise<CodexAccount>
-  codexSignIn(): Promise<{ ok: boolean; message?: string }>
-  codexCancelSignIn(): Promise<void>
-  codexSignOut(): Promise<CodexAccount>
 
   // Test agents
   getAgents(): Promise<TestAgent[]>

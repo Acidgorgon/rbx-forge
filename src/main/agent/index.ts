@@ -1,7 +1,7 @@
 // IPC entry point for the agent layer. main/index.ts calls registerAgentIpc once.
 
 import type { IpcMain } from 'electron'
-import type { ChatMessage, CodexAccount, ModelChoice, OrchestrateMode, ProviderId, ProviderInfo } from '@shared/types'
+import type { ChatMessage, ModelChoice, OrchestrateMode, ProviderId, ProviderInfo } from '@shared/types'
 import { INVOKE_PREFIX } from '../../shared/types.ts'
 import type { NewChatOptions } from '@shared/types'
 import { join } from 'node:path'
@@ -28,7 +28,7 @@ import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './im
 import { executableOption, OPENAI_TOOLS_NOTE, sdkQuery, type QueryFn } from './sdk.ts'
 import { SERVICE_WRITE_TOOLS } from './serviceTools.ts'
 import { TestAgentRunner } from './testAgents.ts'
-import { CodexService, codexService, setCodexService, type CodexStatus } from './codex/service.ts'
+import { CodexService, codexService, setCodexService } from './codex/service.ts'
 import { privateCodexPrefix } from './codex/install.ts'
 import { defaultGroupIo } from './group/io.ts'
 import { Restater } from './restate.ts'
@@ -495,10 +495,6 @@ function choice(c: unknown): ModelChoice | undefined {
   return isProviderId(p) && typeof model === 'string' && model.trim() ? { provider: p, model } : undefined
 }
 
-function codexAccount(s: CodexStatus): CodexAccount {
-  return { installed: s.installed, loggedIn: s.loggedIn, ...(s.method ? { method: s.method } : {}), ...(s.version ? { version: s.version } : {}), ...(s.path ? { path: s.path } : {}), ...(codexService().signingInNow() ? { signingIn: true } : {}) }
-}
-
 export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
@@ -594,30 +590,6 @@ export function registerAgentIpc(
     },
     getDefaultModel: () => providers.defaultModel(),
     setDefaultModel: (p: unknown, model: string) => providers.setDefaultModel(provider(p), String(model ?? '')),
-    getAnthropicUseClaudeLogin: () => credentials.useClaudeLogin(),
-    setAnthropicUseClaudeLogin: async (on: unknown) => {
-      credentials.setUseClaudeLogin(on === true)
-      await providersChanged()
-    },
-    // Codex (ChatGPT plan): the CLI signs in and keeps the credentials (agent/codex/service.ts).
-    codexStatus: async (refresh?: unknown) => codexAccount(await codexService().status({ refresh: refresh === true })),
-    codexSignIn: async () => {
-      const abort = new AbortController()
-      const p = codexService().signIn({
-        signal: abort.signal,
-        progress: (u) => ctx.emit('codex:signin', u)
-      })
-      void providersChanged()
-      const r = await p
-      await providersChanged()
-      return r
-    },
-    codexCancelSignIn: () => codexService().cancelSignIn(),
-    codexSignOut: async () => {
-      const s = await codexService().signOut()
-      await providersChanged()
-      return codexAccount(s)
-    },
 
     // Token usage meter and budgets.
     getUsage: (scope: unknown, id?: unknown) => {
@@ -653,7 +625,6 @@ export function registerAgentIpc(
       return orchestrator.board(runId)
     },
     getOrchestrations: () => orchestrator.list(),
-    getOrchestration: (runId: unknown) => orchestrator.board(String(runId ?? '')),
     getTaskTranscript: (runId: unknown, taskId: unknown): ChatMessage[] => orchestrator.transcript(String(runId ?? ''), String(taskId ?? '')) ?? [],
     cancelOrchestration: (runId: unknown) => orchestrator.cancel(String(runId ?? '')),
     cancelOrchestrationTask: (runId: unknown, taskId: unknown) => orchestrator.cancelTask(String(runId ?? ''), String(taskId ?? '')),

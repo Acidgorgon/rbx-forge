@@ -141,7 +141,6 @@ const analytics = new AnalyticsService({
 | `analytics:setExperience` | `{ placeId?: number; universeId?: number }` | `AnalyticsStatus` (calls `configure`; persisting to .forge/project.json is the Release service's job) |
 | `analytics:overview` | `{ range?: string; metrics?: string[] }` | `AnalyticsOverview` |
 | `analytics:series` | `{ metric; range?; granularity?; breakdown?; filter?; limit?; source? }` | `AnalyticsSeriesResult` |
-| `analytics:compare` | `{ metrics: string[]; a: string; b?: string }` | `AnalyticsCompare` |
 | `analytics:acquisition` | `{ range?: string }` | `AnalyticsAcquisition` |
 | `analytics:importCsv` | `{ path: string; metricHint?: string }` (renderer gets the path from a file dialog / drop) | `AnalyticsCsvImportResult` |
 | `analytics:removeImport` | `{ metric: string; breakdown?: Record<string,string> }` | `boolean` (`(await importStore()).remove`) |

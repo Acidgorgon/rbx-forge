@@ -4,7 +4,7 @@
 import type { Ability, AbilityApi, AbilityCritique, AbilityEntry, HarnessEvents, VfxEntry } from '@shared/types'
 import { applyTimingFixes, keyBeats, summarize, timingChecks, timingScore, type CritiqueContext } from '@shared/ability/critique'
 import { draftAbility } from '@shared/ability/draft'
-import { ABILITY_EXAMPLES, findAbilityExample } from '@shared/ability/examples'
+import { findAbilityExample } from '@shared/ability/examples'
 import { abilityModule } from '@shared/ability/luau'
 import { normalizeAbility, slug } from '@shared/ability/model'
 import { placeholderClips } from '@shared/ability/placeholder'
@@ -109,10 +109,6 @@ export function abilityMock(emit: Emit): AbilityApi {
       await seeded
       return [...entries].sort((a, b) => (a.scope === b.scope ? b.updatedAt - a.updatedAt : a.scope === 'project' ? -1 : 1))
     },
-    async abilityGet(id) {
-      await seeded
-      return find(id)
-    },
     async abilitySave(ability, opts) {
       const e = put(ability, opts)
       changed()
@@ -172,9 +168,6 @@ export function abilityMock(emit: Emit): AbilityApi {
         warnings: [...mod.skipped, ...(e.ability.animation && !e.ability.animation.assetId ? ['the animation has no asset id yet: publish the clip and set it, or the runner skips the animation'] : [])]
       }
     },
-    async abilityExamples() {
-      return ABILITY_EXAMPLES.map(({ key, name, description, tags }) => ({ key, name, description, tags }))
-    },
     async abilityAddExample(key) {
       const e = await addExample(key)
       changed()
@@ -193,9 +186,6 @@ export function abilityMock(emit: Emit): AbilityApi {
     },
     async abilityChooseSounds() {
       return ['/Users/you/Sounds/whoosh.ogg']
-    },
-    async abilitySoundUrl() {
-      return null
     }
   }
 }

@@ -2,7 +2,7 @@
 // HarnessApi extends ChatModesApi.
 
 import type { ChatCommandInfo, ChatCommandResult } from './chatCommands.ts'
-import type { ChatMode, CheckpointInfo, RewindWhat, RunMode } from './chatModes.ts'
+import type { ChatMode, RewindWhat, RunMode } from './chatModes.ts'
 import type { ChatSession } from './types.ts'
 
 export type * from './chatModes.ts'
@@ -22,6 +22,5 @@ export interface ChatModesApi {
   listChatCommands(): Promise<ChatCommandInfo[]>
   runChatCommand(sessionId: string, name: string, args?: string): Promise<ChatCommandResult>
   // /rewind: the chat's checkpoints and restoring one (files, conversation or both).
-  listChatCheckpoints(sessionId: string): Promise<CheckpointInfo[]>
   rewindChat(sessionId: string, checkpointId: string, what?: RewindWhat): Promise<{ files: string[]; removed: number }>
 }

@@ -214,7 +214,7 @@ export function chatModesMock(d: Deps) {
     return out(`Unknown command /${name}. Type /help for the list.`)
   }
 
-  const api: Pick<HarnessApi, 'setChatMode' | 'sendChatMode' | 'reviewChatEdit' | 'planCardAction' | 'listChatCommands' | 'runChatCommand' | 'listChatCheckpoints' | 'rewindChat'> = {
+  const api: Pick<HarnessApi, 'setChatMode' | 'sendChatMode' | 'reviewChatEdit' | 'planCardAction' | 'listChatCommands' | 'runChatCommand' | 'rewindChat'> = {
     async setChatMode(sessionId, mode) {
       const c = d.chats.find((x) => x.id === sessionId)
       if (!c) throw new Error('unknown chat')
@@ -258,9 +258,6 @@ export function chatModesMock(d: Deps) {
       return [...BUILTIN_COMMANDS.map((c) => ({ ...c, source: 'builtin' as const })), commandInfo(CUSTOM)]
     },
     runChatCommand: (sessionId, name, args) => command(sessionId, name.replace(/^\//, '').toLowerCase(), args ?? ''),
-    async listChatCheckpoints(sessionId) {
-      return checkpoints[sessionId] ?? []
-    },
     async rewindChat(sessionId, checkpointId, what) {
       const cp = checkpoints[sessionId]?.find((c) => c.id === checkpointId)
       if (!cp) throw new Error('checkpoint not found')

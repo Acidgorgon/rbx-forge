@@ -2,13 +2,14 @@
   "name": "forge-ui-figma-plugin",
   "private": true,
   "version": "0.1.0",
-  "description": "Figma plugin for RBX Forge UI Preview: imports Forge JSON frames and exports edited frames back.",
+  "description": "Figma plugin for RBX Forge: UI Preview round trip (Forge JSON in and out) and Send selection to Forge for the UI Motion Lab.",
   "scripts": {
-    "build": "tsc -p .",
-    "watch": "tsc -p . --watch"
+    "build": "tsc -p . && esbuild code.ts --bundle --outfile=code.js --target=es2017 --format=iife",
+    "watch": "esbuild code.ts --bundle --outfile=code.js --target=es2017 --format=iife --watch"
   },
   "devDependencies": {
     "@figma/plugin-typings": "1.141.0",
-    "typescript": "^5.9.0"
+    "typescript": "^5.9.0",
+    "esbuild": "^0.25.0"
   }
 }

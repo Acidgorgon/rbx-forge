@@ -3,9 +3,9 @@
 // decision, shadow mode, and the cost per kept result. Shared by main (services/gating), the renderer
 // (Decisions list, Settings > Labs) and the tests. No node or electron imports.
 
-export type LabId = 'vfx' | 'anim' | 'ability'
-export const LAB_IDS: readonly LabId[] = ['vfx', 'anim', 'ability']
-export const LAB_NAMES: Record<LabId, string> = { vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer' }
+export type LabId = 'vfx' | 'anim' | 'ability' | 'uimotion'
+export const LAB_IDS: readonly LabId[] = ['vfx', 'anim', 'ability', 'uimotion']
+export const LAB_NAMES: Record<LabId, string> = { vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', uimotion: 'UI Motion Lab' }
 
 // Decision gates: shadow = decide and log, never act (the default for one release); on = act;
 // off = do not evaluate (the old behaviour, nothing logged). Principle-weight updates follow the

@@ -1,0 +1,143 @@
+/* UI Motion Lab: builds on the VFX Lab styles (vfx.css) for the page frame, make box, library and
+   detail; this adds the live preview + timeline column, the effect stack, the critique checks and the
+   Figma import. Terminal tokens only; the preview stays dark in both themes (it is a scene). */
+.uimotion .um-work { display: grid; grid-template-columns: minmax(0, 1.35fr) minmax(320px, 1fr); gap: 14px; align-items: start; margin-top: 14px; }
+@container (max-width: 980px) { .uimotion .um-work { grid-template-columns: minmax(0, 1fr); } }
+
+/* Preview column */
+.um-preview { display: flex; flex-direction: column; gap: 8px; min-width: 0; }
+.um-bar { flex-wrap: wrap; gap: 8px; }
+.um-comp { width: auto; min-width: 140px; height: 24px; font: 11.5px var(--font-mono); }
+.um-seg { flex: none; }
+.um-seg button { flex: none; }
+.um-check { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--fg-muted); cursor: pointer; }
+.um-check input { accent-color: var(--ember); margin: 0; }
+.um-stage-wrap { width: 100%; min-width: 0; }
+.um-stage { position: relative; width: 100%; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: #14171b; }
+.um-scaler { position: absolute; left: 0; top: 0; transform-origin: 0 0; }
+.um-stage .uip-stage { background: radial-gradient(ellipse at 50% 40%, #232830 0%, #15181c 70%); }
+.um-stage .uip-stage::before { content: ''; position: absolute; inset: 0; background-image: radial-gradient(rgba(255, 255, 255, .05) 1px, transparent 1px); background-size: 16px 16px; pointer-events: none; }
+.um-stage-empty, .um-stage-busy { position: absolute; inset: 0; display: grid; place-items: center; padding: 16px; text-align: center; color: #9aa1ab; font-size: 12px; pointer-events: none; }
+.um-stage-busy { place-items: start; justify-content: start; display: flex; align-items: flex-start; gap: 6px; padding: 8px 10px; font-size: 11px; }
+.um-stage-msg { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.um-compare { flex-wrap: wrap; gap: 8px; font-size: 11px; }
+.um-compare select.input { width: auto; min-width: 120px; height: 24px; font: 11.5px var(--font-mono); }
+
+/* Timeline */
+.um-tl { display: flex; flex-direction: column; gap: 4px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-editor); padding: 6px 8px 6px; }
+.um-tl-head { flex-wrap: wrap; gap: 4px 12px; font-size: 11px; }
+.um-metric { color: var(--fg-muted); }
+.um-metric b { font-weight: 500; color: var(--ok); }
+.um-metric b.warn { color: var(--warn); }
+.um-readout { font-size: 10.5px; }
+.um-tl-svg { width: 100%; height: 150px; display: block; cursor: crosshair; touch-action: none; }
+.um-band { fill: var(--bg-active); }
+.um-band.hover { fill: color-mix(in srgb, var(--realm-client) 30%, transparent); }
+.um-band.pressed { fill: color-mix(in srgb, var(--ember) 38%, transparent); }
+.um-band.hidden { fill: color-mix(in srgb, var(--fg-faint) 22%, transparent); }
+.um-band-t, .um-ev-t, .um-axis { font: 9px var(--font-mono); fill: var(--fg-muted); }
+.um-rest { stroke: var(--line-strong); stroke-dasharray: 2 3; }
+.um-ev { stroke: var(--line-strong); }
+.um-head { stroke: var(--fg); stroke-width: 1; }
+.um-c-scale, .um-c-lift, .um-c-glow, .um-c-fade { fill: none; stroke-width: 1.6; vector-effect: non-scaling-stroke; stroke-linejoin: round; }
+.um-c-scale { stroke: var(--ember); stroke-width: 2; }
+.um-c-lift { stroke: var(--realm-client); }
+.um-c-glow { stroke: var(--warn); stroke-dasharray: 4 3; }
+.um-c-fade { stroke: var(--lav); }
+.um-legend { display: flex; flex-wrap: wrap; gap: 10px; font-size: 10px; }
+.um-legend .k::before { content: ''; display: inline-block; width: 10px; height: 2px; margin-right: 4px; vertical-align: middle; background: var(--k); }
+.um-legend .scale { --k: var(--ember); }
+.um-legend .lift { --k: var(--realm-client); }
+.um-legend .glow { --k: var(--warn); }
+.um-legend .fade { --k: var(--lav); }
+
+/* Detail column */
+.um-detail { min-width: 0; }
+.um-detail .vfx-detail-head .btn.on { color: var(--ember-text); background: var(--ember-fill); border-color: var(--ember-lo); }
+.uimotion .btn.on { color: var(--fg); background: var(--bg-active); }
+
+/* Effect stack */
+.um-stack { display: flex; flex-direction: column; gap: 8px; }
+.um-target select.input { height: 24px; font: 11.5px var(--font-mono); }
+.um-lib { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px 12px; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-editor); }
+.um-lib-group { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.um-lib-h { font-size: 10px; letter-spacing: .06em; text-transform: uppercase; padding: 0 6px; }
+.um-lib-item { display: flex; flex-direction: column; align-items: flex-start; gap: 1px; padding: 4px 6px; border-radius: var(--r-sm); text-align: left; font-size: 11px; color: var(--fg-2); }
+.um-lib-item b { font-weight: 500; font-size: 11.5px; color: var(--fg); }
+.um-lib-item:hover:not(:disabled) { background: var(--bg-hover); }
+.um-lib-item:focus-visible { outline: none; box-shadow: inset 0 0 0 1px var(--line-focus); }
+.um-lib-item:disabled { opacity: .45; cursor: default; }
+.um-none { margin: 2px 0; }
+.um-fx { --k: var(--fg-muted); border: 1px solid var(--line); border-left: 2px solid var(--k); border-radius: var(--r-md); padding: 6px 8px 8px; display: flex; flex-direction: column; gap: 6px; }
+.um-fx.g-feedback { --k: var(--ember); }
+.um-fx.g-accent { --k: var(--warn); }
+.um-fx.g-ambient { --k: var(--realm-client); }
+.um-fx.g-transition { --k: var(--lav); }
+.um-fx-head { display: flex; align-items: center; gap: 6px; min-width: 0; font-size: 11.5px; }
+.um-fx-head b { font-weight: 500; color: var(--fg); white-space: nowrap; }
+.um-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--k); flex: none; }
+.um-drives { font-size: 10.5px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.um-spring { font-size: 10px; color: var(--ok); white-space: nowrap; }
+.um-spring.slow { color: var(--warn); }
+.um-params { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 4px 14px; }
+.um-param { display: grid; grid-template-columns: 64px minmax(60px, 1fr) 54px 20px; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-muted); min-width: 0; }
+.um-param:has(.seg), .um-param:has(.um-color) { grid-template-columns: 64px minmax(0, 1fr); }
+.um-param input[type='range'] { width: 100%; min-width: 0; accent-color: var(--ember); }
+.um-num { height: 22px; padding: 0 4px; font-size: 11px; }
+.um-unit { font-size: 10px; }
+.um-color { width: 34px; height: 20px; padding: 0; border: 1px solid var(--line-strong); border-radius: var(--r-sm); background: transparent; cursor: pointer; }
+.um-reduced { flex-wrap: wrap; font-size: 11px; margin-top: 2px; }
+.um-reduced .note { flex-basis: 100%; }
+
+/* Critique */
+.um-crit { display: flex; flex-direction: column; gap: 10px; }
+.um-checks { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.um-checks li { display: grid; grid-template-columns: 112px 70px 30px minmax(0, 1fr); align-items: center; gap: 8px; font-size: 11px; color: var(--fg-2); }
+.um-checks li b { font-weight: 400; text-align: right; }
+.um-checks li.ok b { color: var(--ok); }
+.um-checks li.warn b { color: var(--warn); }
+.um-checks li.err b { color: var(--err); }
+.um-ck-id { color: var(--fg-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.um-ck-note { min-width: 0; }
+.um-vision { display: flex; flex-direction: column; gap: 8px; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); }
+.um-vision .btn { align-self: flex-start; }
+.um-changes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--fg-2); }
+.um-changes li::before { content: '› '; color: var(--ember-text); }
+.um-frames { display: grid; grid-template-columns: repeat(auto-fill, minmax(110px, 1fr)); gap: 6px; }
+.um-frame { margin: 0; display: flex; flex-direction: column; gap: 2px; }
+.um-frame figcaption { font-size: 10px; }
+
+/* Luau + export */
+.um-luau, .um-export { display: flex; flex-direction: column; gap: 8px; }
+.um-export > .btn { align-self: flex-start; }
+.um-code { margin: 0; max-height: 420px; overflow: auto; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-editor); font-size: 11px; line-height: 1.5; color: var(--fg-2); white-space: pre; tab-size: 4; }
+.um-code:focus-visible { outline: none; border-color: var(--line-focus); }
+.um-files-list { list-style: none; margin: 0; padding: 0; font-size: 11px; display: flex; flex-direction: column; gap: 2px; color: var(--fg-2); }
+
+/* Figma import */
+.um-import { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.um-import > .row b { font-weight: 500; font-size: 12.5px; }
+.um-json { min-height: 90px; max-height: 220px; resize: vertical; font-size: 11px; }
+.um-name { max-width: 260px; height: 26px; }
+.um-report { display: flex; flex-direction: column; gap: 6px; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-editor); }
+.um-report .ok { color: var(--ok); }
+.um-notes { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 3px; font-size: 11px; }
+.um-notes li { display: flex; flex-wrap: wrap; align-items: baseline; gap: 6px; color: var(--fg-2); }
+.um-note-d { flex-basis: 100%; padding-left: 4px; color: var(--fg-muted); }
+@container (min-width: 700px) { .um-note-d { flex-basis: auto; flex: 1; min-width: 200px; } }
+.um-files summary { cursor: pointer; font-size: 11px; }
+.um-files ul { margin: 4px 0 0; padding-left: 16px; font-size: 11px; color: var(--fg-2); }
+.uimotion .note.warn { color: var(--warn); }
+.uimotion .note.err { color: var(--err); }
+.uimotion .note.ok { color: var(--ok); }
+
+/* Library */
+.um-lib-list { margin-top: 10px; }
+.um-thumb { aspect-ratio: 16 / 7; }
+.um-chip-demo { padding: 6px 14px; border-radius: 999px; background: linear-gradient(180deg, #3aa0ff, #1f6fd1); color: #fff; font-size: 11px; font-weight: 700; letter-spacing: .04em; box-shadow: 0 2px 0 #144a8c; }
+.um-scope { margin-left: auto; font-size: 10px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .um-tl-svg { cursor: default; }
+}
+:root[data-motion='reduced'] .um-chip-demo, :root[data-motion='off'] .um-chip-demo { transition: none; }

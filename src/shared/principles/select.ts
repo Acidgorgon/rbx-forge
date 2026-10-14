@@ -27,6 +27,7 @@ export function vfxKind(text: string): VfxKind {
 export function requestKinds(lab: PrincipleLab, text: string): RequestKind[] {
   if (lab === 'anim') return [animKind(text)]
   if (lab === 'vfx') return [vfxKind(text)]
+  if (lab === 'uimotion') return []
   return [animKind(text), vfxKind(text)]
 }
 
@@ -43,7 +44,7 @@ export function relevance(p: Principle, kinds: RequestKind[]): number {
 export function selectPrinciples(lab: PrincipleLab, text: string, opts: { weights?: PrincipleWeights; max?: number; planOnly?: boolean; looped?: boolean } = {}): Principle[] {
   const kinds = requestKinds(lab, text)
   if (opts.looped && !kinds.includes('idle')) kinds.push('idle')
-  const domains: PrincipleDomain[] = lab === 'ability' ? ['anim', 'vfx'] : [lab]
+  const domains: PrincipleDomain[] = lab === 'ability' ? ['anim', 'vfx'] : lab === 'uimotion' ? ['ui'] : [lab]
   const pool = domains.flatMap((d) => principlesFor(d)).filter((p) => !opts.planOnly || p.plan)
   // In the ability composer, effects follow the move: cohesion is always core there.
   const rel = (p: Principle) => (lab === 'ability' && p.id === 'fx-cohesion' ? 1.3 : relevance(p, kinds))
@@ -64,7 +65,7 @@ export const CRITIC_TOKEN_BUDGET = 520
 // (script labs) or a "plan" object (the ability composer's JSON). Trimmed to the token budget.
 export function principlePlan(lab: PrincipleLab, text: string, opts: { weights?: PrincipleWeights; max?: number; looped?: boolean; budget?: number } = {}): string {
   const picked = selectPrinciples(lab, text, { weights: opts.weights, max: opts.max ?? (lab === 'ability' ? 5 : 4), planOnly: true, looped: opts.looped })
-  const json = lab === 'ability'
+  const json = lab === 'ability' || lab === 'uimotion'
   const head = json
     ? 'Principle plan: add "plan":{"<id>":"a few words"} to your JSON answering:'
     : 'Principle plan: start the script with a "-- Plan:" comment, one short line per item, then write the code to match it:'

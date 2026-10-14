@@ -17,6 +17,8 @@ import { animKind, CRITIC_TOKEN_BUDGET, estimateTokens, parsePlanObject, parseSc
 import { anticipationCheck, arcsCheck, animPrincipleChecks, followThroughCheck, loopabilityCheck, slowInOutCheck, timingCheck } from '../src/shared/principles/animChecks.ts'
 import { breakupCheck, budgetCheck, contrastCheck, dissipationCheck, layersCheck, vfxAnticipationCheck, vfxPrincipleChecks, vfxTimingCheck } from '../src/shared/principles/vfxChecks.ts'
 import { abilityPrincipleChecks } from '../src/shared/principles/abilityChecks.ts'
+import { uiPrincipleChecks } from '../src/shared/principles/uiChecks.ts'
+import { presetSpec } from '../src/shared/uimotion/spec.ts'
 import { blendOverall, focusPrinciples, mergePrincipleScores, orderChanges, parsePrincipleScores, principleOverall, scorePrinciples } from '../src/shared/principles/score.ts'
 import { applyFeedback, learnProfile, MAX_WEIGHT, MIN_WEIGHT, noteMentions, prioritiesText } from '../src/shared/principles/learn.ts'
 import { withAnimPrinciples, withVfxPrinciples } from '../src/shared/principles/attach.ts'
@@ -73,6 +75,7 @@ test('catalogues: the 12 animation principles plus 4 game ones, the VFX set, com
   for (const c of vfxPrincipleChecks(effectFromSpec(LAYERED))) produced.add(c.id)
   for (const c of vfxPrincipleChecks(seqEffect())) produced.add(c.id)
   for (const c of abilityPrincipleChecks(punchAbility())) produced.add(c.id)
+  for (const c of uiPrincipleChecks(presetSpec('bouncy', 'Button'))) produced.add(c.id)
   for (const id of produced) assert.ok(m.has(id), `${id} is produced by code but not marked measurable`)
   for (const id of m) assert.ok(produced.has(id), `${id} is marked measurable but no check produced it`)
 })

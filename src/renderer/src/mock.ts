@@ -33,6 +33,7 @@ import { vfxTexturesMock } from './mockVfxTextures'
 import { animMock } from './mockAnim'
 import { refMock } from './mockRef'
 import { abilityMock } from './mockAbility'
+import { uiMotionMock } from './mockUiMotion'
 import { studioMock } from './mockStudio'
 import { forgeSyncMock } from './mockForgeSync'
 import { principlesMock } from './mockPrinciples'
@@ -902,6 +903,7 @@ const api: HarnessApi = {
   // Video references (mockRef.ts) layer over both lab mocks.
   ...refMock(emit, vfxMock(emit), animMock(emit)),
   ...abilityMock(emit),
+  ...uiMotionMock(emit),
   // Studio check (mockStudio.ts): fake Forge Bridge + SVG Studio frames; ?studio=ready|offline|noplugin|outdated|nocapture.
   ...studioMock(emit),
   // Principle priorities (mockPrinciples.ts): weights learned from a seeded rating log.

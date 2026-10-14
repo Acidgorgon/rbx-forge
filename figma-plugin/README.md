@@ -1,6 +1,26 @@
 # Forge UI: Figma plugin
 
-This plugin moves a RBX Forge UI Preview frame into Figma and brings your edits back to Forge.
+This plugin does two jobs:
+
+- **Send selection to Forge** (UI Motion Lab): it snapshots any frame, component, instance or layer you designed in Figma, so you can test springs and effects on it in Forge.
+- **Round trip** (UI Preview): it moves a Forge UI Preview frame into Figma and brings your edits back.
+
+## Send selection to Forge
+
+1. Select the frame or component and click **Send selection to Forge**.
+2. The plugin writes a `forge-figma` JSON document. It contains:
+   - the node tree in the same shape as the Figma REST API's `GET /v1/files/:key/nodes`;
+   - image fills, read by hash;
+   - vectors and icons, rendered to PNG at 2x.
+3. The status line lists what Forge will approximate, using Forge's own mapper (`src/shared/uimotion/figma/map.ts`). It also names anything that could not be exported.
+4. Click **Copy** or **Download .json** (the file is named `<Name>.forge-figma.json`).
+5. In Forge, open **UI Motion Lab › Import from Figma**, then paste the JSON or drop the file.
+
+Forge writes the component module, a story and the PNGs (under `art/ui/<Name>/`), and shows the mapping report. Nothing goes over the network.
+
+If you would rather not copy JSON around, paste the Figma link into the same dialog. That path uses the REST API with a personal access token, set under *Settings › Integrations*.
+
+## UI Preview round trip
 
 - **Import:** the plugin turns Forge JSON into Figma frames.
   - `UIListLayout` becomes auto layout; `UIGridLayout` becomes wrapping auto layout.
@@ -17,7 +37,7 @@ This plugin moves a RBX Forge UI Preview frame into Figma and brings your edits 
 
 ## Install (Figma desktop)
 
-1. Build `code.js` (it is committed, so this step only matters after you change `code.ts`):
+1. Build `code.js`. It is committed, so you only need this step after you change `code.ts` or `send.ts`. `npm run build` type-checks the plugin, then bundles it with esbuild, together with Forge's shared Figma mapper.
    ```sh
    cd figma-plugin
    npm install

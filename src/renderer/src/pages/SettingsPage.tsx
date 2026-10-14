@@ -13,6 +13,7 @@ import { UpdatesSection } from '../updates/UpdatesSection'
 import { ForgeSyncSettings } from './ForgeSyncSettings'
 import { LabsSettings } from './LabsSettings'
 import { RestateSettingRow } from './RestateSettings'
+import { FigmaTokenSettings } from './FigmaTokenSettings'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -32,6 +33,7 @@ const SECTIONS = [
   ['providers', 'Providers'],
   ['budgets', 'Budgets'],
   ['labs', 'Labs'],
+  ['integrations', 'Integrations'],
   ['places', 'Places'],
   ['sync', 'Sync'],
   ['toolchain', 'Toolchain'],
@@ -363,6 +365,11 @@ export function SettingsPage() {
           <h2>Labs</h2>
           <LabsSettings />
           <RestateSettingRow scope="labs" />
+        </section>
+
+        <section className="set-sec" id="set-integrations">
+          <h2>Integrations</h2>
+          <FigmaTokenSettings />
         </section>
 
         <section className="set-sec" id="set-places">

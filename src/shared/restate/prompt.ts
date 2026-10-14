@@ -8,7 +8,8 @@ const WHAT: Record<RestateKind, string> = {
   chat: 'a request to the coding assistant of a Roblox game project (Luau, Rojo)',
   vfx: 'a brief for a Roblox visual effect in the VFX Lab (particles, beams, trails, lights, multi-stage sequences)',
   anim: 'a brief for a Roblox character animation in the Animation Lab (R15 / R6 keyframes, timing, poses)',
-  ability: 'a brief for a game "move" in the Ability Composer (an animation, VFX, camera shake, hit-stop and movement on one timeline)'
+  ability: 'a brief for a game "move" in the Ability Composer (an animation, VFX, camera shake, hit-stop and movement on one timeline)',
+  uimotion: 'a brief for how a Roblox UI element (a button or panel) should feel in the UI Motion Lab (hover / press springs, pops, shine, glow, ripples, transitions)'
 }
 
 // A correction the person made to an earlier restatement (newest last), so the next one reads

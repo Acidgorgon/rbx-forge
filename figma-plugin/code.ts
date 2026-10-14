@@ -7,8 +7,13 @@
 // Export: turns the selected Forge frame (after edits) back into Forge JSON, which Forge's
 // "Import from Figma" diffs against the live tree.
 //
-// Types below mirror src/shared/uiPreview/figma.ts (ForgeUiDoc v1). This file is a plain script
-// (no imports), compiled with `npm run build` to code.js.
+// Send: "Send selection to Forge" snapshots any frame, component or layer (no Forge data needed) for
+// the UI Motion Lab's Figma import (see send.ts).
+//
+// Types below mirror src/shared/uiPreview/figma.ts (ForgeUiDoc v1). `npm run build` type-checks and
+// bundles this file (with send.ts and Forge's shared Figma mapper) into code.js with esbuild.
+
+import { sendSelection } from './send.ts'
 
 interface FPaint {
   color: string
@@ -82,7 +87,7 @@ const DOC_KEY = 'forge-doc'
 const TEXT_LAYER = '#text'
 const IMAGE_LAYER = '#image'
 
-figma.showUI(__html__, { width: 380, height: 460, themeColors: true })
+figma.showUI(__html__, { width: 380, height: 520, themeColors: true })
 
 // ---- helpers
 
@@ -450,6 +455,10 @@ figma.ui.onmessage = async (msg: { type: string; json?: string }) => {
     } else if (msg.type === 'export') {
       const doc = exportSelection()
       figma.ui.postMessage({ type: 'exported', json: JSON.stringify(doc, null, 2), story: doc.story })
+    } else if (msg.type === 'send') {
+      const sent = await sendSelection(figma)
+      figma.ui.postMessage({ type: 'sent', ...sent })
+      figma.notify(`Ready to send ${sent.name} to Forge`)
     } else if (msg.type === 'close') {
       figma.closePlugin()
     }

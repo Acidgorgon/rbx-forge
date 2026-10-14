@@ -28,6 +28,13 @@
   animation: rf-pop-in var(--dur-base) var(--ease-out);
   transition: right var(--dur-panel) var(--ease-out);
 }
+/* Inline banner in the editor area (QolRoot portals the card into this slot). */
+.qol-digest-slot { flex: none; }
+.qol-digest-slot:empty { display: none; }
+.qol-digest-slot .qol-digest {
+  position: static; width: auto; max-height: min(34vh, 260px);
+  margin: 8px 10px 2px; box-shadow: none; transition: none;
+}
 .qol-digest-head { display: flex; align-items: flex-start; gap: 8px; padding: 10px 10px 8px 12px; border-bottom: 1px solid var(--line); color: var(--ember-text); }
 .qol-digest-head > .i { margin-top: 2px; flex: none; }
 .qol-digest-head .grow { flex: 1; min-width: 0; }

@@ -290,6 +290,7 @@ export function EditorArea() {
   return (
     <div className="editor-area">
       <Tabs />
+      <div className="qol-digest-slot" />
       {fileVisible && filePath && <Crumbs path={filePath} />}
       {fileVisible && generatedBy && (
         <div className="notice-bar" role="note">

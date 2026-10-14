@@ -116,8 +116,10 @@ export interface QolApi {
   qolReportError(error: { message: string; stack?: string }): Promise<void>
   qolLoadSession(): Promise<SessionState>
   qolSaveSession(state: SessionState): Promise<void>
-  // null when the setting is off, no project is open or nothing happened.
-  qolDigest(request: { reason: 'open' | 'idle'; since?: number }): Promise<Digest | null>
+  // null when the setting is off, no project is open or nothing happened. An automatic 'open' digest
+  // is answered once per project open in this app session (a renderer reload gets null); `again`
+  // (the Show digest command, a refresh of the open card) always answers.
+  qolDigest(request: { reason: 'open' | 'idle'; since?: number; again?: boolean }): Promise<Digest | null>
   // The user saw / dismissed the digest, or is active: moves "last seen" to now.
   qolSeen(): Promise<void>
   qolTestNotify(): Promise<void>

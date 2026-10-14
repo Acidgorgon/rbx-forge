@@ -1,6 +1,7 @@
 // Quality-of-life layer mounted once in the shell: renderer error capture, session save/restore,
 // notification clicks, the bug report dialog and the "since you were away" digest.
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useRef, useState, type ReactElement, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import type { Digest } from '@shared/types'
 import { restorePlan } from '@shared/qol/session'
 import { useStore, type Layout, type PageKind } from '../store'
@@ -142,8 +143,8 @@ function useDigest(): [Digest | null, () => void] {
   const lastSeen = useRef(0)
   const shownFor = useRef<string | null>(null)
 
-  const show = async (reason: 'open' | 'idle', since?: number) => {
-    const d = await window.harness.qolDigest({ reason, since }).catch(() => null)
+  const show = async (reason: 'open' | 'idle', since?: number, again?: boolean) => {
+    const d = await window.harness.qolDigest({ reason, since, again }).catch(() => null)
     setDigest(d)
   }
   const dismiss = () => {
@@ -167,7 +168,7 @@ function useDigest(): [Digest | null, () => void] {
     let t: ReturnType<typeof setTimeout> | null = null
     const off = window.harness.on('sync:entry', () => {
       if (t) clearTimeout(t)
-      t = setTimeout(() => void show(digest.reason, digest.reason === 'idle' ? digest.since : undefined), 2000)
+      t = setTimeout(() => void show(digest.reason, digest.reason === 'idle' ? digest.since : undefined, true), 2000)
     })
     return () => {
       off()
@@ -193,7 +194,7 @@ function useDigest(): [Digest | null, () => void] {
     }
     const events = ['pointerdown', 'keydown', 'wheel', 'focus'] as const
     for (const e of events) window.addEventListener(e, onActive, { passive: true })
-    const onShow = () => void show('open')
+    const onShow = () => void show('open', undefined, true)
     window.addEventListener('forge:show-digest', onShow)
     return () => {
       for (const e of events) window.removeEventListener(e, onActive)
@@ -202,6 +203,13 @@ function useDigest(): [Digest | null, () => void] {
   }, [root, digest])
 
   return [digest, dismiss]
+}
+
+// The digest is an inline banner at the top of the editor area (EditorArea's .qol-digest-slot), so
+// it pushes the page down instead of covering its buttons. Floating card only if there is no slot.
+function digestCard(card: ReactElement): ReactNode {
+  const slot = document.querySelector('.qol-digest-slot')
+  return slot ? createPortal(card, slot) : card
 }
 
 export function QolRoot() {
@@ -230,7 +238,7 @@ export function QolRoot() {
 
   return (
     <>
-      {digest && !bug && <AwayDigest digest={digest} onDismiss={dismiss} />}
+      {digest && !bug && digestCard(<AwayDigest digest={digest} onDismiss={dismiss} />)}
       {bug && <BugReportDialog screenshot={bug.screenshot} onClose={() => setBug(null)} />}
     </>
   )

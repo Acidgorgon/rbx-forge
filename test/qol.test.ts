@@ -588,3 +588,24 @@ test('service: idle digest covers lab runs since the user left', async () => {
   assert.deepEqual(d.items.map((i) => i.text), ['VFX Lab run finished'])
   assert.deepEqual(d.items[0].target, { kind: 'page', page: 'vfx', entryId: 'e9' })
 })
+
+test('service: the automatic open digest is answered once per project open (a renderer reload gets null)', async () => {
+  const f = fake()
+  const root = join(f.dir, 'Tree')
+  await f.service.onProjectOpen(root)
+  await f.service.onProjectClose()
+  f.clock.now += 3_600_000
+  await f.service.onProjectOpen(root)
+  f.clock.now += 1000
+  f.service.observe('sync:entry', [{ file: 'src/a.luau', action: 'pulled', instancePath: [], at: f.clock.now }])
+  assert.ok(await f.service.digest({ reason: 'open' }), 'first open shows the digest')
+  assert.equal(await f.service.digest({ reason: 'open' }), null, 'a reloaded renderer asking again gets nothing')
+  assert.ok(await f.service.digest({ reason: 'open', again: true }), 'Show digest / a refresh of the card still answers')
+  assert.ok(await f.service.digest({ reason: 'idle', since: f.clock.now - 2000 }), 'idle digests are unaffected')
+  // Opening the project again (new session) shows it again.
+  await f.service.onProjectClose()
+  await f.service.onProjectOpen(root)
+  f.service.observe('sync:entry', [{ file: 'src/b.luau', action: 'pulled', instancePath: [], at: f.clock.now + 5 }])
+  f.clock.now += 10
+  assert.ok(await f.service.digest({ reason: 'open' }))
+})

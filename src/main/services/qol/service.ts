@@ -97,6 +97,8 @@ export class QolService {
   private pendingShot: { at: number; png: Uint8Array } | null = null
   private previousSeen: Seen | null = null
   private openedAt = 0
+  // The automatic 'open' digest was already asked for since this project opened (renderer reloads).
+  private openDigestAsked = false
   private headSamples: { at: number; head: string }[] = []
   private extra: (() => Promise<string | null>) | null = null
 
@@ -289,6 +291,7 @@ export class QolService {
   async onProjectOpen(root: string): Promise<void> {
     this.previousSeen = this.seenAll()[root] ?? null
     this.openedAt = this.now()
+    this.openDigestAsked = false
     this.headSamples = []
     const head = await this.head(root)
     if (head) this.headSamples.push({ at: this.now(), head })
@@ -328,10 +331,14 @@ export class QolService {
     return commitsByOthers(parseGitLog(r.stdout), { email: email?.code === 0 ? email.stdout : undefined, name: name?.code === 0 ? name.stdout : undefined })
   }
 
-  async digest(request: { reason: 'open' | 'idle'; since?: number }): Promise<Digest | null> {
+  async digest(request: { reason: 'open' | 'idle'; since?: number; again?: boolean }): Promise<Digest | null> {
     if (!this.settings().digest) return null
     const root = this.deps.root()
     if (!root) return null
+    if (request.reason === 'open' && !request.again) {
+      if (this.openDigestAsked) return null
+      this.openDigestAsked = true
+    }
     let since: number
     let head: string | undefined
     if (request.reason === 'open') {

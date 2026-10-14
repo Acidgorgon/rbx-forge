@@ -76,7 +76,7 @@ export function createQol(wiring: Wiring) {
     qolReportError: (error: { message: string; stack?: string }) => service.recordError('renderer', String(error?.message ?? 'Unknown error'), typeof error?.stack === 'string' ? error.stack : undefined),
     qolLoadSession: () => service.loadSession(),
     qolSaveSession: (state: SessionState) => service.saveSession(state),
-    qolDigest: (request: { reason: 'open' | 'idle'; since?: number }) => service.digest(request ?? { reason: 'open' }),
+    qolDigest: (request: { reason: 'open' | 'idle'; since?: number; again?: boolean }) => service.digest(request ?? { reason: 'open' }),
     qolSeen: () => service.seen(),
     qolTestNotify: () => service.testNotify()
   }

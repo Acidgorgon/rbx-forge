@@ -29,7 +29,7 @@ export function AwayDigest({ digest, onDismiss }: { digest: Digest; onDismiss: (
   const { actions } = useStore()
   const since = digest.since > 0 ? ago(digest.since) : null
   return (
-    <section className="qol-digest" role="dialog" aria-label="Since you were away">
+    <section className="qol-digest" role="region" aria-label="Since you were away">
       <header className="qol-digest-head">
         <Icon name="clock" size={13} />
         <div className="grow">

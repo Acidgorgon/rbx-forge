@@ -154,9 +154,23 @@ export const qolFlows: Flow[] = [
             return s ? Number(s.props.Scale) : null
           })
         )
-      await page.waitForFunction(() => window.harness.uiPreviewState().then((st) => !!st?.tree.nodes.some((n) => n.name === 'ForgeMotionScale')), undefined, { timeout: 20_000 })
-      const rest = await scaleOf()
-      check(rest != null, 'no ForgeMotionScale under BOOSTButton: the stack did not attach to the live instance')
+      // Wait for the Bouncy stack itself: before the lab story picks up the new Spec1 control it still
+      // runs the previous draft (the Scratch stack sits on the slot), so "any ForgeMotionScale" is
+      // not enough.
+      let rest: number | null = null
+      for (let i = 0; i < 100 && rest == null; i++) {
+        rest = await scaleOf()
+        if (rest == null) await page.waitForTimeout(200)
+      }
+      if (rest == null) {
+        const where = await page.evaluate(() =>
+          window.harness.uiPreviewState().then((st) => {
+            const nodes = st?.tree.nodes ?? []
+            return `${st?.file} ${st?.status}; scales under: ${nodes.filter((n) => n.name === 'ForgeMotionScale').map((n) => nodes.find((p) => p.id === n.parent)?.name).join(', ') || 'none'}; buttons: ${nodes.filter((n) => n.name === 'BOOSTButton').length}`
+          })
+        )
+        throw new Error(`no ForgeMotionScale under BOOSTButton: the stack did not attach to the live instance (${where})`)
+      }
       const btn = lab.locator('.um-stage .uip-node.uip-btn', { has: page.locator('.uip-node', { hasText: /^BOOST$/ }) }).last()
       await btn.hover()
       let hovered = rest!

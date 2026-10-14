@@ -15,6 +15,9 @@ import type { AnimClipRef } from '../../../shared/anim/types.ts'
 import type { AnimCheckReport, AnimClip, AnimCritique, AnimEntry, AnimExportResult, AnimImportResult, AnimIteration, AnimLabStatus, AnimRefineOptions, AnimRefineProgress, AnimScope, AnimScriptResult, AnimStyle, AnimStyleProfile, AnimUploadResult, LearnedPose, RigType } from '../../../shared/anim/model.ts'
 import type { AnimCoverage, AnimImportOptions, AnimImportPreview } from '../../../shared/animTypes.ts'
 import type { LabTier } from '../../../shared/labModels.ts'
+import type { LabGate } from '../../../shared/gating/hooks.ts'
+import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
+import { composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
 import { bvhToClip, BvhError, parseBvh } from '../../../shared/anim/bvh.ts'
 import { clipFromSequence, readKeyframeSequencesXml, writeKeyframeSequenceXml, type RawSequence } from '../../../shared/anim/rbxmx.ts'
 import { clipSummary, finishAnimRun, compileAnim, type AnimRecordResult } from '../../../shared/anim/compile.ts'
@@ -80,6 +83,8 @@ export interface AnimServiceDeps {
   now?: () => number
   // Principle priorities: the user's learned weights (critique, compose plan) and the rating log.
   principles?: PrincipleHooks
+  // Lab gating (services/gating): skip the critic, early stop, retry routes. Optional.
+  gate?: LabGate
 }
 
 const ANIM_EXT = new Set(['.rbxm', '.rbxmx', '.bvh'])
@@ -842,21 +847,26 @@ export class AnimService {
       ].filter(Boolean)
       try {
         const system = animComposeSystem(rig)
-        let raw = await writer(system, lines.join('\n\n'), pinned?.images ?? [])
-        for (let attempt = 0; attempt < 2; attempt++) {
-          const s = extractAnimScript(raw)
-          if (!s) throw new Error('no script in the answer')
-          const r = await this.recordScript(s, { name: animScriptName(s, text), rig })
-          if (r.ok) {
-            script = s
-            result = r
-            source = 'model'
-            break
-          }
-          if (attempt === 1) throw new Error(r.error?.message ?? 'the script failed')
-          const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
-          raw = await writer(system, `${lines.join('\n\n')}\n\nYour script:\n\`\`\`lua\n${s}\`\`\`\nfailed: ${r.error?.message}${where}\nFix it and answer with the whole corrected script.`, pinned?.images ?? [])
-        }
+        const images = pinned?.images ?? []
+        const prompt = lines.join('\n\n')
+        const done = await composeWithGate({
+          lab: 'anim',
+          gate: this.deps.gate,
+          ask: () => writer(system, prompt, images),
+          check: async (raw): Promise<AttemptResult<{ s: string; r: AnimScriptResult }>> => {
+            const s = extractAnimScript(raw)
+            if (!s) return { ok: false, kind: 'no-script', message: 'no script in the answer' }
+            const r = await this.recordScript(s, { name: animScriptName(s, text), rig })
+            if (r.ok) return { ok: true, value: { s, r } }
+            const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
+            return { ok: false, kind: 'script-error', message: `${r.error?.message ?? 'the script failed'}${where}` }
+          },
+          repair: (raw, message) => writer(system, `${prompt}\n\nYour script:\n\`\`\`lua\n${extractAnimScript(raw) ?? raw.slice(0, 4000)}\`\`\`\nfailed: ${message}\nFix it and answer with the whole corrected script.`, images),
+          rephrase: () => writer(system, `${prompt}\n\n${rephraseNote('script')}`, images)
+        })
+        script = done.value.s
+        result = done.value.r
+        source = 'model'
       } catch (e) {
         this.deps.log?.(`anim: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
       }
@@ -993,6 +1003,9 @@ export class AnimService {
     const base = hit.entry.iterations?.length ?? 0
     const reference = await this.referenceClip(hit.entry)
     const pngs = new Map<number, Buffer[]>()
+    const threshold = opts.threshold ?? ANIM_DEFAULT_THRESHOLD
+    const maxIt = Math.max(1, Math.min(10, Math.floor(opts.maxIterations ?? ANIM_DEFAULT_MAX_ITERATIONS)))
+    const stopAfter = new Map<number, boolean>()
     try {
       const result = await animRefineLoop(
         hit.entry.clip,
@@ -1013,9 +1026,15 @@ export class AnimService {
           },
           critique: async (clip, _files, times, n, previous) => {
             this.progress({ entryId: id, iteration: base + n, phase: 'critique' })
+            const gate = this.deps.gate
+            const g = gate && pngs.get(n)?.length ? await gate.beforeCritique({ lab: 'anim', entryId: id, iteration: base + n, frames: pngs.get(n) ?? [], previousScore: previous?.overall ?? null, changes: previous?.changes.length ?? 0, threshold }) : null
+            if (g?.skip && previous) return skippedCritique(previous, g.reason)
             const current = (await hit.store.read(id)) ?? hit.entry
-            return this.critique(current, clip, pngs.get(n) ?? [], times, base + n, previous)
+            const c = await this.critique(current, clip, pngs.get(n) ?? [], times, base + n, previous)
+            if (gate) stopAfter.set(n, (await gate.afterCritique({ lab: 'anim', entryId: id, iteration: base + n, score: c.overall, threshold, remaining: maxIt - n, changes: c.changes.length, summary: c.summary })).stop)
+            return c
           },
+          shouldStop: async (_c, n) => stopAfter.get(n) ?? false,
           onIteration: async (it) => {
             const current = (await hit.store.read(id)) ?? hit.entry
             const iteration: AnimIteration = { n: base + it.n, at: this.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique }
@@ -1045,6 +1064,7 @@ export class AnimService {
       throw e
     } finally {
       this.running.delete(id)
+      this.deps.gate?.endRun('anim', id)
     }
   }
 

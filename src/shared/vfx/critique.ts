@@ -137,9 +137,12 @@ export interface RefineDeps {
   onPhase?(phase: 'render' | 'critique' | 'adjust', iteration: number): void
   // Stops early (user cancelled).
   cancelled?(): boolean
+  // Lab gating (services/gating): after a critique below the threshold with rounds left, true ends
+  // the loop now (score plateau). Not called on the last round or at the threshold.
+  shouldStop?(critique: VfxCritique, iteration: number, remaining: number): Promise<boolean>
 }
 
-export type StopReason = 'threshold' | 'max-iterations' | 'no-changes' | 'cancelled'
+export type StopReason = 'threshold' | 'max-iterations' | 'no-changes' | 'cancelled' | 'plateau'
 
 export interface RefineResult {
   best: RefineIteration
@@ -174,6 +177,11 @@ export async function refineLoop(initial: VfxEffect, deps: RefineDeps, opts: { m
     if (n === max) {
       await deps.onIteration?.(it)
       stop = 'max-iterations'
+      break
+    }
+    if (await deps.shouldStop?.(critique, n, max - n)) {
+      await deps.onIteration?.(it)
+      stop = 'plateau'
       break
     }
     deps.onPhase?.('adjust', n)

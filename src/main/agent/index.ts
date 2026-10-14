@@ -16,6 +16,7 @@ import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
 import { ChatManager, type TeamRunner } from './chat.ts'
 import { Credentials } from './credentials.ts'
 import { Meter } from './meter.ts'
+import { fromOpenAiUsage, priced, SdkUsageTracker, type Usage } from './budget/usage.ts'
 import type { FetchFn } from './openaiLoop.ts'
 import { capsBudget, classifyTool, defaultWriteTargets, openAiRunAgent, Orchestrator, sdkRunAgent, type RunAgent, type ToolClass, type WriteTargets } from './orchestrator/index.ts'
 import { projectRulesLoader, withRules } from './projectRules.ts'
@@ -40,8 +41,14 @@ export interface AgentLayer {
   oneShot(system: string, prompt: string, opts?: { tier?: LabTier }): Promise<string>
   // One-shot answer about images (VFX critique) on the default model, which should see images.
   // opts.tier picks a Labs model tier instead (shared/labModels.ts: cheap / default / critic).
-  visionShot(system: string, prompt: string, images: ImagePayload[], opts?: { tier?: LabTier }): Promise<string>
+  visionShot(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string>
   dispose(): void
+}
+
+// One-shot options: a Labs tier, and a callback with the call's usage (lab gating: cost per kept).
+export interface ShotOptions {
+  tier?: LabTier
+  onUsage?: (u: { model: string; input: number; output: number; costUsd?: number }) => void
 }
 
 // Orchestrator tool classes for tools the default classifier does not know: the service write
@@ -96,7 +103,7 @@ export function createAgentLayer(
     orchestrator,
     team,
     oneShot: (system, prompt, o) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt, [], o?.tier),
-    visionShot: (system, prompt, images, o) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt, images, o?.tier),
+    visionShot: (system, prompt, images, o) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt, images, o?.tier, o?.onUsage),
     dispose() {
       orchestrator.cancelAll()
       chats.dispose()
@@ -123,6 +130,14 @@ function tapChatBusy(ctx: HarnessContext, memory: MemoryHooks, messages: (id: st
   return tapped
 }
 
+function report(cb: NonNullable<ShotOptions['onUsage']>, model: string, u: Usage): void {
+  try {
+    cb({ model, input: u.input + u.cacheRead + u.cacheWrite, output: u.output, ...(u.costUsd !== undefined ? { costUsd: u.costUsd } : {}) })
+  } catch {
+    // accounting must never break the call
+  }
+}
+
 async function oneShot(
   ctx: HarnessContext,
   w: { queryFn?: QueryFn; fetchFn?: FetchFn; credentials: Credentials; providers: Providers; meter: Meter },
@@ -131,7 +146,8 @@ async function oneShot(
   // With images: the default model (not the cheap tier), images sent inline.
   images: ImagePayload[] = [],
   // A Labs tier (cheap / default / critic) overrides the rule above.
-  tier?: LabTier
+  tier?: LabTier,
+  onUsage?: ShotOptions['onUsage']
 ): Promise<string> {
   const base = w.providers.defaultModel()
   const tiers = ctx.getSetting('modelTiers', undefined)
@@ -144,6 +160,7 @@ async function oneShot(
     const auth = await w.credentials.anthropicAuth()
     if (!auth.ready) throw new Error(auth.error ?? 'Anthropic is not set up.')
     let out = ''
+    const tracker = new SdkUsageTracker(model)
     for await (const m of (w.queryFn ?? sdkQuery)({
       prompt: images.length ? anthropicPrompt(prompt, images) : prompt,
       options: {
@@ -161,6 +178,7 @@ async function oneShot(
         maxTurns: 1
       }
     })) {
+      if (onUsage) for (const r of tracker.onMessage(m as never)) report(onUsage, r.model, r)
       if (m.type === 'result') {
         if (m.subtype === 'success' && !m.is_error) out = m.result
         else throw new Error(m.subtype === 'success' ? m.result : m.errors?.join('; ') || m.subtype)
@@ -188,6 +206,8 @@ async function oneShot(
     fetchFn: w.fetchFn,
     onUsage: (raw) => {
       w.meter.ledger.recordOpenAi(raw, { provider: base.provider, model })
+      const u = onUsage ? fromOpenAiUsage(raw) : null
+      if (u && onUsage) report(onUsage, model, priced(model, u, { provider: base.provider }).usage)
     }
   })
   if (res.outcome === 'error') throw new Error(res.error ?? 'request failed')
@@ -312,7 +332,7 @@ export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
   opts: { memory?: MemoryHooks; userDataDir?: string } = {}
-): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: { tier?: LabTier }): Promise<string> } {
+): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string> } {
   const layer = createAgentLayer(ctx, { memory: opts.memory })
   // Chat images live under userData/chat-images (history keeps only references).
   setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))

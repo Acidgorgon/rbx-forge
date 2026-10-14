@@ -74,6 +74,8 @@ const methods = [
   'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
   // Principle priorities (learned from Labs ratings)
   'principlesView', 'principlesReset',
+  // Lab gating (decision log, decision models, cost per kept)
+  'labGatingView', 'labGatingSet', 'labGatingRetrain', 'labGatingReset',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

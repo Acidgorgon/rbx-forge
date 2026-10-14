@@ -185,9 +185,12 @@ export interface AnimRefineDeps {
   critique(clip: AnimClip, frames: string[], times: number[], iteration: number, previous: AnimCritique | null): Promise<AnimCritique>
   onIteration?(it: AnimRefineIteration): void | Promise<void>
   cancelled?(): boolean
+  // Lab gating (services/gating): true after a critique below the threshold with rounds left ends
+  // the loop now (score plateau).
+  shouldStop?(critique: AnimCritique, iteration: number, remaining: number): Promise<boolean>
 }
 
-export type AnimStopReason = 'threshold' | 'max-iterations' | 'no-changes' | 'cancelled'
+export type AnimStopReason = 'threshold' | 'max-iterations' | 'no-changes' | 'cancelled' | 'plateau'
 
 export async function animRefineLoop(initial: AnimClip, deps: AnimRefineDeps, opts: { maxIterations?: number; threshold?: number } = {}): Promise<{ best: AnimRefineIteration; iterations: AnimRefineIteration[]; stop: AnimStopReason }> {
   const max = Math.max(1, Math.min(10, Math.floor(opts.maxIterations ?? ANIM_DEFAULT_MAX_ITERATIONS)))
@@ -209,6 +212,11 @@ export async function animRefineLoop(initial: AnimClip, deps: AnimRefineDeps, op
     if (critique.overall >= threshold || n === max) {
       await deps.onIteration?.(it)
       stop = critique.overall >= threshold ? 'threshold' : 'max-iterations'
+      break
+    }
+    if (await deps.shouldStop?.(critique, n, max - n)) {
+      await deps.onIteration?.(it)
+      stop = 'plateau'
       break
     }
     const r = applyAnimChanges(clip, critique.changes)

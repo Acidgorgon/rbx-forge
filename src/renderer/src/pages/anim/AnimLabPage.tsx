@@ -24,6 +24,7 @@ import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '..
 import { principleLabel } from '@shared/principles/catalog'
 import '../vfx/vfx.css'
 import './anim.css'
+import { LabCostLine, LabDecisions } from '../gating/LabGating'
 
 const IMPORT_HINT = '.rbxm · .rbxmx (KeyframeSequence) · .bvh (mocap; FBX: export BVH from Blender) · folders · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['heavy overhead punch', 'quick jab', 'roundhouse kick', 'dodge roll back', 'fireball cast', 'stagger from a hit', 'combat idle']
@@ -572,6 +573,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
       {tab === 'studio' && <StudioCheckPanel kind="anim" id={entry.id} />}
       {tab === 'iterations' && entry.refId && <PinnedCompare entry={entry} />}
       {tab === 'iterations' && <Iterations entry={entry} onRestore={(c, n) => void h.animUpdate(entry.id, { clip: c }).then(() => actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
+      {tab === 'iterations' && <LabDecisions lab="anim" entryId={entry.id} />}
       {tab === 'info' && (
         <div className="vfx-info">
           <p className="vfx-desc">{entry.description || <span className="faint">No description.</span>}</p>
@@ -966,6 +968,7 @@ export function AnimLabPage() {
               ))}
             </span>
           </div>
+          <LabCostLine lab="anim" />
         </section>
 
         {review && <ImportReview rows={review} scope={scope} onChange={setReview} onCancel={() => setReview(null)} onImport={() => void doImport()} busy={!!busy} convert={importRig} onConvert={setImportRig} />}

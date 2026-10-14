@@ -54,6 +54,8 @@ import { createAbilityWiring } from './services/ability/wire.ts'
 import { abilityElectronDeps } from './services/ability/electron.ts'
 import { withAbilityTools } from './services/ability/tools.ts'
 import { createPrincipleWiring } from './services/principles/wire.ts'
+import { createGatingWiring } from './services/gating/wire.ts'
+import type { LabTier } from '../shared/labModels.ts'
 import { createStudioWiring } from './services/studio/wire.ts'
 import { studioElectronDeps } from './services/studio/electron.ts'
 import { withStudioTools } from './services/studio/tools.ts'
@@ -430,9 +432,22 @@ const studio = createStudioWiring({
   ...studioElectronDeps(preloadPath())
 })
 
+// Lab gating (services/gating): code gates before big-model calls in the labs (skip the critic,
+// early stop, retry routes), learned decision models, shadow mode, and cost per kept result.
+const gating = createGatingWiring({
+  userDataDir: app.getPath('userData'),
+  settings,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[gating] ${text}` })
+})
+// The labs' model calls, with each call's tokens + cost charged to the current lab run.
+const labModel = (tier: LabTier) => (system: string, prompt: string, images: Parameters<typeof agentIpc.vision>[2]) =>
+  agentIpc.vision(system, prompt, images, { tier, onUsage: (u) => void gating.service.charge(tier, u) })
+
 // Principle priorities (services/principles): per-principle weights learned from Labs ratings; the
 // VFX Lab, Animation Lab and Ability Composer critics weigh their principle scores by them.
 const principles = createPrincipleWiring({
+  gate: gating.service,
   userDataDir: app.getPath('userData'),
   memory,
   emit: (event, payload) => emit(event, payload as never),
@@ -450,7 +465,8 @@ const vfx = createVfxWiring({
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[vfx] ${text}` }),
   memory,
-  vision: (tier) => (system, prompt, images) => agentIpc.vision(system, prompt, images, { tier }),
+  vision: (tier) => labModel(tier ?? 'default'),
+  gate: gating.service,
   rojo: {
     running: () => supervisor.statuses().some((s) => s.id === 'rojo' && (s.state === 'running' || s.state === 'starting')),
     start: () => supervisor.start('rojo')
@@ -475,7 +491,8 @@ const anim = createAnimWiring({
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[anim] ${text}` }),
   memory,
-  model: (tier) => (system, prompt, images) => agentIpc.vision(system, prompt, images, { tier }),
+  model: (tier) => labModel(tier),
+  gate: gating.service,
   openCloud: integrations.openCloud,
   ...animElectron,
   capture: studio.wrap.anim(animElectron.capture)
@@ -505,7 +522,8 @@ const ability = createAbilityWiring({
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[ability] ${text}` }),
   memory,
-  model: (tier) => (system, prompt, images) => agentIpc.vision(system, prompt, images, { tier }),
+  model: (tier) => labModel(tier),
+  gate: gating.service,
   vfx: { get: (id) => vfx.service.get(id), list: () => vfx.service.list(), search: (q, o) => vfx.service.search(q, o), addExample: (k) => vfx.service.addExample(k), writeProjectFiles: (e) => vfx.service.writeProjectFiles(e) },
   anim: () => anim.service.listAnimClips(),
   tools: () => {
@@ -580,11 +598,11 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 for (const [name, handler] of Object.entries(handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers, ...studio.handlers, ...refs.handlers, ...principles.handlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...gating.wrap('vfx', vfx.handlers), ...gating.wrap('anim', anim.handlers), ...studio.handlers, ...refs.handlers, ...principles.handlers, ...gating.handlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries(ability.handlers)) {
+for (const [name, handler] of Object.entries(gating.wrap('ability', ability.handlers))) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }

@@ -57,6 +57,12 @@ const RULES: Rule[] = [
       return `${quote}${name}${quote}${sep}${q}${REDACTED}${q}`
     }
   },
+  // Email addresses (git config, commit authors, account names). git@host remotes stay readable.
+  {
+    name: 'email',
+    re: /(?<![A-Za-z0-9._%+-])[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)*\.[A-Za-z]{2,}(?![A-Za-z0-9-])/g,
+    replace: (m) => (/^git@/i.test(m) ? m : REDACTED)
+  },
   // Long random-looking strings (base64 / base62 with upper, lower and digits). Pure hex (git hashes,
   // UUIDs) is left alone.
   {
@@ -100,9 +106,34 @@ export interface RedactOptions {
   replace?: { from: string; to: string }[]
 }
 
+// A path from `replace` as a pattern: either separator (also JSON-escaped "\\"), any case
+// (Windows and macOS paths are case-insensitive; logs often show "c:\users\..."), a URI-encoded
+// drive colon ("file:///c%3A/Users/..."), and not when the path continues into a longer name.
+function pathPattern(from: string): RegExp | null {
+  const trimmed = from.replace(/[\\/]+$/, '')
+  if (trimmed.length < 2) return null
+  const parts = trimmed.split(/[\\/]+/)
+  const escape = (s: string) => s.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  const body = parts.map((part, i) => (i === 0 && /^[A-Za-z]:$/.test(part) ? `${escape(part[0])}(?::|%3A)` : escape(part))).join('(?:\\\\{1,2}|/)')
+  return new RegExp(`${body}(?![A-Za-z0-9_-])`, 'gi')
+}
+
+// Home folders that were not passed in `replace` (another account, 8.3 short names, URIs):
+// C:\Users\<name>, /Users/<name>, /home/<name> -> ~.
+const HOME_PATHS = [
+  /\b[A-Za-z](?::|%3A)(?:\\{1,2}|\/)Users(?:\\{1,2}|\/)(?!(?:Public|Default|All Users)(?![^\\/\s"'`<>|]))[^\\/\s"'`<>|:*?]+/gi,
+  /(?<![A-Za-z0-9_.-])\/(?:Users|home)\/(?!(?:Shared)(?![^/\s]))[^/\s"'`<>|:*?]+/g
+]
+
 export function redact(input: string, options: RedactOptions = {}): RedactResult {
   let text = input
   let count = 0
+  // Exact paths first (the project root before the home folder that holds it), so the key rules
+  // below never see half a path.
+  for (const { from, to } of options.replace ?? []) {
+    const re = from ? pathPattern(from) : null
+    if (re) text = text.replace(re, () => to)
+  }
   for (const rule of RULES) {
     text = text.replace(rule.re, (...args) => {
       const match = args[0] as string
@@ -112,11 +143,6 @@ export function redact(input: string, options: RedactOptions = {}): RedactResult
       return next
     })
   }
-  for (const { from, to } of options.replace ?? []) {
-    if (!from || from.length < 2) continue
-    // Paths: match both separators.
-    const variants = new Set([from, from.replace(/\\/g, '/'), from.replace(/\//g, '\\')])
-    for (const v of [...variants].sort((a, b) => b.length - a.length)) text = text.split(v).join(to)
-  }
+  for (const re of HOME_PATHS) text = text.replace(re, '~')
   return { text, count }
 }

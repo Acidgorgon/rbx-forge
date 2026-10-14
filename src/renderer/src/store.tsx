@@ -171,7 +171,8 @@ export type DialogRequest =
   | { kind: 'blinkEvent' }
   | { kind: 'featureBranch' }
   | { kind: 'pullRequest' }
-  | { kind: 'confirm'; title: string; body: string; confirm: string; danger?: boolean; run: () => void }
+  // list: paths shown under the body; dontAsk: the AppSettings switch a "Don't ask again" box turns off.
+  | { kind: 'confirm'; title: string; body: string; confirm: string; danger?: boolean; run: () => void; list?: string[]; dontAsk?: 'confirmFileDelete' | 'confirmStudioDelete' }
 
 export type CreateKind = 'ModuleScript' | 'Script' | 'LocalScript' | 'Feature' | 'Folder' | 'Blink'
 

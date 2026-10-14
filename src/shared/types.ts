@@ -211,6 +211,11 @@ export interface AppSettings {
   serveAllPlaces: boolean
   // Route simple chat turns to a cheaper model tier (agent/budget routeModel); off = always the chosen model.
   autoRoute: boolean
+  // Delete confirmations ("Don't ask again" turns one off; Settings > Editor turns it back on). File
+  // deletes go to the Recycle Bin / Trash; Delete in Studio is undone with Ctrl+Z in Studio. Deletes
+  // that would lose unsaved editor changes are confirmed regardless.
+  confirmFileDelete: boolean
+  confirmStudioDelete: boolean
 }
 
 export interface PlacesChanged {

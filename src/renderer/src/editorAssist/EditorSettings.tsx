@@ -1,4 +1,4 @@
-// Settings > Editor: format on save (StyLua), autosave, AI inline completions.
+// Settings > Editor: format on save (StyLua), autosave, AI inline completions, delete confirmations.
 import type { ReactNode } from 'react'
 import type { AutoSaveMode } from '@shared/types'
 import { useStore } from '../store'
@@ -26,7 +26,9 @@ const AUTO_SAVE: [AutoSaveMode, string][] = [
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 
 export function EditorSettingsSection() {
-  const { actions } = useStore()
+  const { state, actions } = useStore()
+  const app = state.appSettings
+  const bin = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows') ? 'Recycle Bin' : 'Trash'
   const s = useEditorAssist()
   const save = (patch: Parameters<typeof setEditorAssist>[0]) =>
     void setEditorAssist(patch).catch((e) => actions.toast({ text: 'Could not save the editor settings', detail: (e as Error).message, kind: 'err' }))
@@ -76,6 +78,12 @@ export function EditorSettingsSection() {
         }
       >
         <input type="checkbox" className="switch" checked={!!s?.effective.aiCompletions} disabled={!s || !ready} onChange={(e) => save({ aiCompletions: e.target.checked })} aria-label="AI completions" />
+      </Row>
+      <Row title="Confirm file deletes" desc={`Ask before Delete moves a file, folder or feature to the ${bin} (you can restore it from there). Deletes that would lose unsaved changes always ask.`}>
+        <input type="checkbox" className="switch" checked={app?.confirmFileDelete !== false} disabled={!app} onChange={(e) => void actions.setAppSettings({ confirmFileDelete: e.target.checked })} aria-label="Confirm file deletes" />
+      </Row>
+      <Row title="Confirm Delete in Studio" desc="Ask before the Game tab deletes a Studio-only instance in the open place (Ctrl+Z in Studio brings it back).">
+        <input type="checkbox" className="switch" checked={app?.confirmStudioDelete !== false} disabled={!app} onChange={(e) => void actions.setAppSettings({ confirmStudioDelete: e.target.checked })} aria-label="Confirm Delete in Studio" />
       </Row>
     </section>
   )

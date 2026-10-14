@@ -110,6 +110,34 @@ export interface FeatureInfo {
   controller?: string
 }
 
+// What "Delete Feature" moves to the trash: each part's own folder (or file, for a single-file part),
+// as featuresOf found them. Controller and Service first, the shared part last: the template's ./dev
+// watcher deletes a feature's Service and Controller (for good, not to the trash) when its shared
+// folder goes, so by then there is nothing left for it to delete.
+export interface FeatureDeleteTarget {
+  part: 'Controller' | 'Service' | 'shared'
+  path: string
+  isDir: boolean
+}
+
+export function featureDeleteTargets(f: FeatureInfo): FeatureDeleteTarget[] {
+  const out: FeatureDeleteTarget[] = []
+  const name = f.name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  if (f.controller) {
+    const m = new RegExp(`^(.*/Controllers/${name}Controller)/init\\.luau?$`).exec(f.controller)
+    out.push(m ? { part: 'Controller', path: m[1], isDir: true } : { part: 'Controller', path: f.controller, isDir: false })
+  }
+  if (f.service) {
+    const m = new RegExp(`^(src/server/Features/${name})/${name}Service\\.luau?$`).exec(f.service)
+    out.push(m ? { part: 'Service', path: m[1], isDir: true } : { part: 'Service', path: f.service, isDir: false })
+  }
+  if (f.shared) {
+    const m = new RegExp(`^(src/shared/Features/${name})/init\\.luau?$`).exec(f.shared)
+    out.push(m ? { part: 'shared', path: m[1], isDir: true } : { part: 'shared', path: f.shared, isDir: false })
+  }
+  return out
+}
+
 export function featuresOf(scripts: ScriptEntry[]): FeatureInfo[] {
   const map = new Map<string, FeatureInfo>()
   const get = (name: string) => {

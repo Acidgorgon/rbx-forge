@@ -13,6 +13,8 @@ import { validateName } from '../shell/Overlays'
 import { errorText, isMac, keyHint } from '../lib/format'
 import { entryTarget, isUnder, protectedReason } from '@shared/fileOps'
 import { sparks } from '../lib/sparks'
+import { shouldConfirmDelete } from '../lib/deleteConfirm'
+import { deleteFeature, deleteInStudio, trashName } from './deleteFlows'
 
 type Mode = 'tree' | 'files' | 'features'
 
@@ -342,22 +344,33 @@ export function ExplorerView() {
     if (!entry) return
     const target = entryTarget(entry.path, entry.isDir)
     const unsaved = state.files.filter((f) => isUnder(f.path, target.path) && f.current !== f.saved).length
-    const bin = navigator.userAgent.includes('Windows') ? 'Recycle Bin' : 'Trash'
+    const bin = trashName()
     const what = target.isDir ? `the folder ${target.path} and everything in it` : target.path
+    const run = () => {
+      actions
+        .trashPath(target.path, target.isDir)
+        .then(() => actions.toast({ text: `Deleted ${basename(target.path)}`, detail: `Moved to the ${bin}`, kind: 'ok', ms: 3500 }))
+        .catch((err) => actions.toast({ text: `Could not delete ${basename(target.path)}`, detail: errorText(err), kind: 'err' }))
+    }
+    if (!shouldConfirmDelete(state.appSettings?.confirmFileDelete, unsaved)) return run()
     actions.openDialog({
       kind: 'confirm',
       title: `Delete ${basename(target.path)}?`,
       body: `Moves ${what} to the ${bin}; you can restore it from there.${unsaved ? ` ${unsaved === 1 ? 'An open file has' : `${unsaved} open files have`} unsaved changes that will be lost.` : ''}`,
       confirm: `Move to ${bin}`,
       danger: true,
-      run: () => {
-        actions
-          .trashPath(target.path, target.isDir)
-          .then(() => actions.toast({ text: `Deleted ${basename(target.path)}`, detail: `Moved to the ${bin}`, kind: 'ok', ms: 3500 }))
-          .catch((err) => actions.toast({ text: `Could not delete ${basename(target.path)}`, detail: errorText(err), kind: 'err' }))
-      }
+      dontAsk: 'confirmFileDelete',
+      run
     })
   }
+
+  // Del / Delete: a Studio-only instance goes through the Forge Bridge, anything else to the trash.
+  const deleteRow = (r: Row) => {
+    if (r.studio && r.instancePath && mode === 'tree') void deleteInStudio(state, actions, r.instancePath, r.className)
+    else confirmDelete(r)
+  }
+
+  const featureInfo = (name: string) => featuresOf(scripts).find((x) => x.name === name)
 
   const rowMenu = (e: MouseEvent, r: Row) => {
     setSelected(r.key)
@@ -373,32 +386,42 @@ export function ExplorerView() {
         items.push({ label: 'Copy slash path', icon: <Icon name="copy" />, onSelect: () => void actions.copy(paths.slash) })
         items.push('separator', { label: 'Ask Assistant about this', icon: <Icon name="at" />, onSelect: () => actions.ask(`\`${paths.dot}\` (${r.className}, Studio only) `) })
       }
-      if (!ip || SCRIPT_CLASSES.has(r.className)) {
+      if (!ip) {
         menu.openAt(e, items)
         return
       }
       // "Save to repo": a .model.json at its mapped place, only inside a Rojo $path (main decides).
+      // "Delete in Studio": through the Forge Bridge plugin (v7), disabled with the reason otherwise.
       const at = { clientX: e.clientX, clientY: e.clientY }
       e.preventDefault()
-      void window.harness
-        .syncSaveTarget(ip)
-        .catch((err) => ({ reason: errorText(err) }))
-        .then((target) => {
-          const save: MenuEntry =
-            'file' in target
-              ? {
-                  label: 'Save to repo',
-                  icon: <Icon name="download" />,
-                  sub: target.file,
-                  onSelect: () =>
-                    void window.harness
-                      .syncSaveToRepo(ip)
-                      .then((entry) => actions.toast({ text: `Saved ${r.name} to the repo`, detail: `${entry.file} (Rojo owns it from now on)`, kind: 'ok' }))
-                      .catch((err) => actions.toast({ text: 'Could not save to repo', detail: errorText(err), kind: 'err' }))
-                }
-              : { label: 'Save to repo', icon: <Icon name="download" />, disabled: true, reason: target.reason }
-          menu.openAt(at, [...items.slice(0, 4), save, ...items.slice(4)])
-        })
+      const saveable = !SCRIPT_CLASSES.has(r.className)
+      void Promise.all([
+        saveable ? window.harness.syncSaveTarget(ip).catch((err) => ({ reason: errorText(err) })) : Promise.resolve(null),
+        window.harness.syncDeleteCheck(ip).catch((err) => ({ reason: errorText(err) }))
+      ]).then(([target, check]) => {
+        const del: MenuEntry =
+          'ok' in check
+            ? { label: 'Delete in Studio', icon: <Icon name="trash" />, hint: isMac ? '⌘⌫' : 'Del', danger: true, onSelect: () => void deleteInStudio(state, actions, ip, r.className) }
+            : { label: 'Delete in Studio', icon: <Icon name="trash" />, disabled: true, reason: check.reason }
+        if (!target) {
+          menu.openAt(at, [...items, 'separator', del])
+          return
+        }
+        const save: MenuEntry =
+          'file' in target
+            ? {
+                label: 'Save to repo',
+                icon: <Icon name="download" />,
+                sub: target.file,
+                onSelect: () =>
+                  void window.harness
+                    .syncSaveToRepo(ip)
+                    .then((entry) => actions.toast({ text: `Saved ${r.name} to the repo`, detail: `${entry.file} (Rojo owns it from now on)`, kind: 'ok' }))
+                    .catch((err) => actions.toast({ text: 'Could not save to repo', detail: errorText(err), kind: 'err' }))
+              }
+            : { label: 'Save to repo', icon: <Icon name="download" />, disabled: true, reason: target.reason }
+        menu.openAt(at, [...items.slice(0, 4), save, ...items.slice(4), 'separator', del])
+      })
       return
     }
     if (r.blinkOut) {
@@ -430,7 +453,11 @@ export function ExplorerView() {
       items.push({ label: 'Open', icon: <Icon name="file" />, hint: '↵', onSelect: () => void actions.openFile(r.filePath!) })
     }
     const feature = featureOf(r.filePath, ip ?? undefined)
-    if (feature) items.push({ label: `Rename Feature ${feature}…`, icon: <Icon name="pencil" />, hint: 'F2', onSelect: () => actions.openDialog({ kind: 'renameFeature', from: feature }) })
+    if (feature) {
+      items.push({ label: `Rename Feature ${feature}…`, icon: <Icon name="pencil" />, hint: 'F2', onSelect: () => actions.openDialog({ kind: 'renameFeature', from: feature }) })
+      const info = featureInfo(feature)
+      if (info) items.push({ label: `Delete Feature ${feature}…`, icon: <Icon name="trash" />, danger: true, sub: 'shared, Service and Controller', onSelect: () => deleteFeature(state, actions, info) })
+    }
     items.push('separator')
     if (paths) {
       items.push({
@@ -511,7 +538,7 @@ export function ExplorerView() {
       else beginRename(r)
     } else if ((e.key === 'Delete' || (isMac && e.key === 'Backspace' && e.metaKey)) && r) {
       e.preventDefault()
-      confirmDelete(r)
+      deleteRow(r)
     } else if (mod && e.altKey && e.key.toLowerCase() === 'c' && r?.instancePath) {
       e.preventDefault()
       void actions.copy(robloxPaths(r.instancePath).dot)
@@ -721,6 +748,7 @@ function FeaturesList({ features, onNew }: { features: ReturnType<typeof feature
               menu.openAt(e, [
                 { header: `Feature ${f.name}` },
                 { label: 'Rename Feature…', icon: <Icon name="pencil" />, hint: 'F2', onSelect: () => actions.openDialog({ kind: 'renameFeature', from: f.name }) },
+                { label: 'Delete Feature…', icon: <Icon name="trash" />, danger: true, sub: [f.shared && 'shared', f.service && 'Service', f.controller && 'Controller'].filter(Boolean).join(', '), onSelect: () => deleteFeature(state, actions, f) },
                 { label: 'Ask Assistant about this feature', icon: <Icon name="at" />, onSelect: () => actions.ask(`Feature ${f.name} (${[f.shared, f.service, f.controller].filter(Boolean).join(', ')}) `) },
                 ...(f.shared ? [{ label: 'Reveal in game tree', icon: <Icon name="reveal" />, onSelect: () => actions.revealInstance(['ReplicatedStorage', 'Shared', 'Features', f.name]) }] : [])
               ])

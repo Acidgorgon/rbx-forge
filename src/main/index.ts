@@ -222,7 +222,9 @@ function syncSettings(): SyncSettings {
 function appSettings(): AppSettings {
   return {
     serveAllPlaces: settings.get<boolean>('serveAllPlaces', false) === true,
-    autoRoute: settings.get<boolean>('autoRoute', true) !== false
+    autoRoute: settings.get<boolean>('autoRoute', true) !== false,
+    confirmFileDelete: settings.get<boolean>('confirmFileDelete', true) !== false,
+    confirmStudioDelete: settings.get<boolean>('confirmStudioDelete', true) !== false
   }
 }
 
@@ -784,6 +786,8 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     const before = appSettings()
     if (typeof patch.serveAllPlaces === 'boolean') settings.set('serveAllPlaces', patch.serveAllPlaces)
     if (typeof patch.autoRoute === 'boolean') settings.set('autoRoute', patch.autoRoute)
+    if (typeof patch.confirmFileDelete === 'boolean') settings.set('confirmFileDelete', patch.confirmFileDelete)
+    if (typeof patch.confirmStudioDelete === 'boolean') settings.set('confirmStudioDelete', patch.confirmStudioDelete)
     const after = appSettings()
     // rojo's job list depends on serveAllPlaces; restart a running rojo so it serves the new set.
     const rojo = supervisor.statuses().find((s) => s.id === 'rojo')

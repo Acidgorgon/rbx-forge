@@ -4,12 +4,14 @@
 //   GET  /forge-bridge/sync/config?placeId=&gameId=&place=  -> SyncConfig ({ enabled:false } when off)
 //   POST /forge-bridge/sync/snapshot  SnapshotBody  -> SyncReply   (chunked: seq 0.., last has final)
 //   POST /forge-bridge/sync/changes   ChangesBody   -> SyncReply   (debounced by the plugin)
+//   POST /forge-bridge/sync/outline   OutlineBody   -> SyncReply   (plugin v5: Game-tab outline of the
+//        config's `outline` containers outside the synced roots; debounced, re-sent only when changed)
 //
 // SyncReply is { ok: true } or { ok: false, error, resend?: true }; resend asks the plugin for a fresh
 // full snapshot. Everything that arrives is checked here (pure, no I/O) before main sees it: shapes,
 // sizes and bounds, so a broken or hostile client cannot hand the engine odd paths or huge strings.
 
-import type { StudioChange, StudioNode, SyncPlace, SyncRef, SyncValue } from './types.ts'
+import type { StudioChange, StudioNode, StudioOutlineNode, SyncPlace, SyncRef, SyncValue } from './types.ts'
 
 export interface SyncConfigQuery {
   placeId: number
@@ -22,6 +24,18 @@ export interface SyncConfig {
   sessionToken?: string
   roots?: string[][]
   skip?: string[][]
+  // Plugin v5: containers (top-level services the project maps) to outline for the Game tab, and the
+  // most nodes to send. Older plugins ignore both.
+  outline?: string[][]
+  outlineMax?: number
+}
+
+export interface OutlineBody {
+  session: string
+  place: SyncPlace
+  nodes: StudioOutlineNode[]
+  // The plugin stopped at outlineMax nodes (or its depth limit).
+  truncated?: boolean
 }
 
 export interface SnapshotBody {
@@ -51,6 +65,7 @@ export interface SyncHandler {
   config(q: SyncConfigQuery): Promise<SyncConfig>
   snapshot(body: SnapshotBody): Promise<SyncReply>
   changes(body: ChangesBody): Promise<SyncReply>
+  outline?(body: OutlineBody): Promise<SyncReply>
 }
 
 // ---- bounds ----
@@ -71,7 +86,11 @@ export const SYNC_LIMITS = {
   maxTags: 100,
   maxTag: 128,
   maxPlaceName: 200,
-  maxRefs: 500
+  maxRefs: 500,
+  // Game-tab outline nodes per body (the plugin is asked for OUTLINE_MAX, see service.ts).
+  maxOutline: 5000,
+  maxOutlineProps: 8,
+  maxOutlineProp: 1024
 } as const
 
 const CLASS_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
@@ -268,6 +287,41 @@ export function parseChangesBody(v: unknown): ChangesBody {
   return withRefs<ChangesBody>({ session: str(v.session, 'session', SYNC_LIMITS.maxSession), place: parsePlace(v.place), changes }, v)
 }
 
+function parseOutlineNode(v: unknown, what: string): StudioOutlineNode {
+  if (!isObj(v)) return fail(`${what} must be an object`)
+  const node: StudioOutlineNode = {
+    path: parsePath(v.path, `${what}.path`),
+    className: typeof v.className === 'string' && CLASS_RE.test(v.className) ? v.className : fail(`${what}.className is not a class name`)
+  }
+  if (v.props !== undefined) {
+    if (!isObj(v.props)) fail(`${what}.props must be an object`)
+    const keys = Object.keys(v.props as object)
+    if (keys.length > SYNC_LIMITS.maxOutlineProps) fail(`${what}.props has too many keys`)
+    const props: Record<string, string> = {}
+    for (const k of keys) {
+      if (!PROP_RE.test(k)) fail(`${what}.props key is not a property name`)
+      props[k] = str((v.props as Record<string, unknown>)[k], `${what}.props.${k}`, SYNC_LIMITS.maxOutlineProp, 0)
+    }
+    if (keys.length) node.props = props
+  }
+  return node
+}
+
+export function parseOutlineBody(v: unknown): OutlineBody {
+  if (!isObj(v)) return fail('body must be an object')
+  if (!Array.isArray(v.nodes) || v.nodes.length > SYNC_LIMITS.maxOutline) fail(`nodes must be an array of up to ${SYNC_LIMITS.maxOutline}`)
+  const body: OutlineBody = {
+    session: str(v.session, 'session', SYNC_LIMITS.maxSession),
+    place: parsePlace(v.place),
+    nodes: (v.nodes as unknown[]).map((n, i) => parseOutlineNode(n, `nodes[${i}]`))
+  }
+  if (v.truncated !== undefined) {
+    if (typeof v.truncated !== 'boolean') fail('truncated must be a boolean')
+    if (v.truncated) body.truncated = true
+  }
+  return body
+}
+
 // Query string of GET /sync/config. placeId is required (0 for an unpublished place).
 export function parseConfigQuery(params: URLSearchParams): SyncConfigQuery {
   const raw = params.get('placeId')
@@ -289,5 +343,10 @@ export function parseConfigQuery(params: URLSearchParams): SyncConfigQuery {
 export function sanitizeConfig(c: SyncConfig): SyncConfig {
   if (!c.enabled) return { enabled: false }
   const paths = (list: string[][] | undefined) => (list ?? []).filter((p) => Array.isArray(p) && p.length > 0 && p.every((n) => typeof n === 'string'))
-  return { enabled: true, sessionToken: String(c.sessionToken ?? ''), roots: paths(c.roots), skip: paths(c.skip) }
+  const out: SyncConfig = { enabled: true, sessionToken: String(c.sessionToken ?? ''), roots: paths(c.roots), skip: paths(c.skip) }
+  if (c.outline?.length) {
+    out.outline = paths(c.outline)
+    out.outlineMax = Math.max(1, Math.min(SYNC_LIMITS.maxOutline, Math.floor(Number(c.outlineMax) || SYNC_LIMITS.maxOutline)))
+  }
+  return out
 }

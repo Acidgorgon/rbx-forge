@@ -382,3 +382,41 @@ export function insideMappedRoots(map: PlaceMap, rel: string): boolean {
   if (isSkipped(map.skipGlobs, rel)) return false
   return map.roots.some((r) => (r.isFile ? rel === r.path : rel.startsWith(r.path + '/')))
 }
+
+// ---- Game tab: Studio-only instances ----
+
+export const NOT_UNDER_PATH = 'Not under a Rojo $path; add a folder mapping in default.project.json first'
+
+export type SaveTarget = { file: string } | { reason: string }
+
+// Where "Save to repo" writes a Studio-only, non-script instance: a .model.json next to its siblings,
+// inside a mapped $path directory whose parent directory already exists (so Rojo only takes over this
+// one instance, never a parent that has other Studio-only children). Otherwise why not.
+export function saveTarget(map: PlaceMap, node: { path: string[]; className: string; hasScriptDescendants?: boolean }, probe: DiskProbe = fsProbe(map.root)): SaveTarget {
+  if (isScriptClass(node.className)) return { reason: 'Scripts sync on their own' }
+  const hit = findRoot(map, node.path)
+  if (!hit) return { reason: map.projectFile === 'default.project.json' ? NOT_UNDER_PATH : NOT_UNDER_PATH.replace('default.project.json', map.projectFile) }
+  if (!hit.root) return { reason: 'Inside a folder Forge never syncs (Packages or a sync skip rule)' }
+  const { root, rest } = hit
+  if (rest.length === 0) return { reason: 'This is a Rojo $path root; it is already in the repo' }
+  if (root.isFile) return { reason: `Its $path is a single file (${root.path})` }
+  for (const seg of rest) {
+    const why = unsafeName(seg)
+    if (why) return { reason: `"${seg}" cannot be a file name (${why})` }
+  }
+  if (node.hasScriptDescendants) return { reason: 'It holds scripts: Forge Sync writes it as a folder on its own' }
+  let dir = root.path
+  for (let i = 0; i < rest.length - 1; i++) {
+    const seg = rest[i]
+    if (!probe.isDir(join2(dir, seg))) {
+      if (probe.isFile(join2(dir, `${seg}.model.json`))) return { reason: `Already in the repo inside ${join2(dir, `${seg}.model.json`)}` }
+      return { reason: `Its parent ${rest.slice(0, i + 1).join('.')} is Studio-only too; save that instead` }
+    }
+    dir = join2(dir, seg)
+  }
+  const leaf = rest[rest.length - 1]
+  const own = join2(dir, leaf)
+  const taken = [`${own}.model.json`, `${own}.model.jsonc`, own, ...OTHER_FORMS.map((ext) => own + ext), `${own}.luau`, `${own}.lua`].find((c) => probe.isFile(c) || probe.isDir(c))
+  if (taken) return { reason: `Already in the repo (${taken})` }
+  return { file: `${own}.model.json` }
+}

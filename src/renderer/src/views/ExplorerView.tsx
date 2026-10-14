@@ -16,6 +16,8 @@ import { sparks } from '../lib/sparks'
 
 type Mode = 'tree' | 'files' | 'features'
 
+const SCRIPT_CLASSES = new Set(['ModuleScript', 'Script', 'LocalScript'])
+
 interface Row {
   key: string
   name: string
@@ -351,7 +353,32 @@ export function ExplorerView() {
         items.push({ label: 'Copy slash path', icon: <Icon name="copy" />, onSelect: () => void actions.copy(paths.slash) })
         items.push('separator', { label: 'Ask Assistant about this', icon: <Icon name="at" />, onSelect: () => actions.ask(`\`${paths.dot}\` (${r.className}, Studio only) `) })
       }
-      menu.openAt(e, items)
+      if (!ip || SCRIPT_CLASSES.has(r.className)) {
+        menu.openAt(e, items)
+        return
+      }
+      // "Save to repo": a .model.json at its mapped place, only inside a Rojo $path (main decides).
+      const at = { clientX: e.clientX, clientY: e.clientY }
+      e.preventDefault()
+      void window.harness
+        .syncSaveTarget(ip)
+        .catch((err) => ({ reason: errorText(err) }))
+        .then((target) => {
+          const save: MenuEntry =
+            'file' in target
+              ? {
+                  label: 'Save to repo',
+                  icon: <Icon name="download" />,
+                  sub: target.file,
+                  onSelect: () =>
+                    void window.harness
+                      .syncSaveToRepo(ip)
+                      .then((entry) => actions.toast({ text: `Saved ${r.name} to the repo`, detail: `${entry.file} (Rojo owns it from now on)`, kind: 'ok' }))
+                      .catch((err) => actions.toast({ text: 'Could not save to repo', detail: errorText(err), kind: 'err' }))
+                }
+              : { label: 'Save to repo', icon: <Icon name="download" />, disabled: true, reason: target.reason }
+          menu.openAt(at, [...items.slice(0, 4), save, ...items.slice(4)])
+        })
       return
     }
     if (r.blinkOut) {

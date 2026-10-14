@@ -146,6 +146,17 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
     async syncStatus() {
       return status()
     },
+    async syncSaveTarget(instancePath) {
+      return instancePath[0] === 'ServerStorage' && instancePath.length === 2 ? { file: `src/ServerStorage/${instancePath[1]}.model.json` } : { reason: 'Not under a Rojo $path; add a folder mapping in default.project.json first' }
+    },
+    async syncSaveToRepo(instancePath) {
+      await delay(200)
+      const file = `src/ServerStorage/${instancePath[instancePath.length - 1]}.model.json`
+      const entry: SyncEntry = { file, action: 'created', instancePath, at: Date.now(), note: 'saved to repo from Studio' }
+      recent = [entry, ...recent]
+      changed()
+      return entry
+    },
     async syncResolve(placeKey, file, take) {
       await delay(200)
       resolveOne(placeKey, file, take)

@@ -22,6 +22,36 @@ export interface StudioNode {
   children?: StudioNode[]
 }
 
+// The live Studio tree as Forge Sync has it (flat, see sync/service.ts liveTree), when Studio is
+// connected through the Forge Bridge plugin.
+export interface LiveStudioTree {
+  nodes: { path: string[]; className: string; props?: Record<string, unknown> }[]
+  truncated?: boolean
+}
+
+// Nests Forge Sync's flat live tree into .studio-sync/tree.json's shape (services at the top).
+// Ancestors the list lacks (the services themselves) are filled in; one node per name path.
+export function studioTreeFromLive(nodes: LiveStudioTree['nodes']): StudioNode[] {
+  const top: StudioNode[] = []
+  const byKey = new Map<string, StudioNode>()
+  const sorted = [...nodes].filter((n) => Array.isArray(n.path) && n.path.length > 0).sort((a, b) => a.path.length - b.path.length)
+  const ensure = (path: string[], className?: string, props?: Record<string, unknown>): StudioNode => {
+    const key = path.join('\u0000')
+    let node = byKey.get(key)
+    if (!node) {
+      const name = path[path.length - 1]
+      node = { name, className: className ?? (path.length === 1 && KNOWN_SERVICES.has(name) ? name : 'Folder'), children: [] }
+      byKey.set(key, node)
+      if (path.length === 1) top.push(node)
+      else ensure(path.slice(0, -1)).children!.push(node)
+    } else if (className && node.className === 'Folder' && className !== 'Folder') node.className = className
+    if (props && !node.props) node.props = props
+    return node
+  }
+  for (const n of sorted) ensure(n.path, n.className, n.props)
+  return top
+}
+
 interface SourcemapNode {
   name: string
   className: string
@@ -134,11 +164,39 @@ async function fromDirectory(root: string, relDir: string, name: string): Promis
       const script = scriptFromFileName(entry.name)
       if (script) {
         node.children.push({ name: script.name, className: script.kind, filePath: toPosix(childRel), children: [] })
+      } else if (/\.model\.json$/.test(entry.name)) {
+        // Rojo model files (Forge Sync's non-script instances, "Save to repo"): in the repo, with their
+        // children, so they merge with Studio as one node instead of showing as Studio-only.
+        const model = await modelNode(join(root, childRel), entry.name.replace(/\.model\.json$/, ''))
+        if (model) node.children.push(model)
       }
     }
   }
   node.children.sort(byName)
   return node
+}
+
+const MODEL_MAX_BYTES = 4 * 1024 * 1024
+
+// A .model.json as tree nodes (name, class, children; camelCase or PascalCase keys), null when unreadable.
+async function modelNode(file: string, name: string): Promise<TreeNode | null> {
+  try {
+    if ((await stat(file)).size > MODEL_MAX_BYTES) return { name, className: 'Model', children: [] }
+    const json = JSON.parse(await readFile(file, 'utf8')) as unknown
+    const convert = (v: unknown, fallback: string, depth: number): TreeNode | null => {
+      if (!v || typeof v !== 'object' || depth > 64) return null
+      const o = v as Record<string, unknown>
+      const className = o.className ?? o.ClassName
+      const n = depth === 0 ? fallback : (o.name ?? o.Name)
+      if (typeof className !== 'string' || typeof n !== 'string') return null
+      const kids = o.children ?? o.Children
+      const children = (Array.isArray(kids) ? kids : []).map((c) => convert(c, '', depth + 1)).filter((c): c is TreeNode => !!c).sort(byName)
+      return { name: n, className, children }
+    }
+    return convert(json, name, 0)
+  } catch {
+    return null
+  }
 }
 
 function projectPath(node: Record<string, unknown>): string | undefined {
@@ -483,6 +541,8 @@ export class Project {
   private pollTimer: ReturnType<typeof setInterval> | null = null
   private debounce: ReturnType<typeof setTimeout> | null = null
   private studioTree: StudioNode[] | null = null
+  // Forge Sync's live Studio tree for a place file (preferred over .studio-sync/tree.json).
+  private liveStudio: ((placeFile: string) => LiveStudioTree | null) | null = null
   private closed = false
   private onChange: ((change: ProjectChange) => void) | null = null
 
@@ -552,10 +612,21 @@ export class Project {
       repoTree = await buildRepoTree(this.root, projectJson)
     }
     // A half-written snapshot keeps the previous one; a deleted snapshot drops Studio nodes.
-    const treeFile = join(this.root, '.studio-sync', 'tree.json')
-    const snapshot = await readJson<{ roots?: StudioNode[] }>(treeFile)
-    if (snapshot && Array.isArray(snapshot.roots)) this.studioTree = snapshot.roots
-    else if (!(await stat(treeFile).catch(() => null))) this.studioTree = null
+    // Studio side: Forge Sync's live tree when a Bridge session has sent one, else tools/studio-sync.py's
+    // tree.json. A half-written tree.json keeps the previous tree; a deleted one drops Studio nodes.
+    let live: LiveStudioTree | null = null
+    try {
+      live = this.liveStudio?.(activeFile) ?? null
+    } catch {
+      live = null
+    }
+    if (live) this.studioTree = studioTreeFromLive(live.nodes)
+    else {
+      const treeFile = join(this.root, '.studio-sync', 'tree.json')
+      const snapshot = await readJson<{ roots?: StudioNode[] }>(treeFile)
+      if (snapshot && Array.isArray(snapshot.roots)) this.studioTree = snapshot.roots
+      else if (!(await stat(treeFile).catch(() => null))) this.studioTree = null
+    }
     const tree = mergeStudioTree(repoTree, this.studioTree)
     const scripts = buildScriptGroups(repoTree)
     if (places.length > 1) {
@@ -578,6 +649,16 @@ export class Project {
     this.tree = tree
     this.scripts = scripts
     return change
+  }
+
+  // Feeds Forge Sync's live Studio tree into the Game tab; call studioChanged() when it changes.
+  setLiveStudio(source: ((placeFile: string) => LiveStudioTree | null) | null): void {
+    this.liveStudio = source
+  }
+
+  // The live Studio tree changed (Forge Sync throttles these): rebuild through the usual debounce.
+  studioChanged(): void {
+    this.schedule()
   }
 
   // Watches the Rojo folders, the project files and .studio-sync/tree.json. Debounced 300ms.

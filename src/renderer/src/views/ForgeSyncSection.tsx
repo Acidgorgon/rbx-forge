@@ -37,7 +37,8 @@ const ACTION: Partial<Record<SyncAction, { letter: string; cls: string; label: s
   renamed: { letter: 'R', cls: 'info', label: 'renamed in Studio' },
   trashed: { letter: 'D', cls: 'err', label: 'deleted in Studio (moved to .forge/sync/trash)' },
   conflict: { letter: '!', cls: 'warn', label: 'conflict held' },
-  'disk-ahead': { letter: '↑', cls: '', label: 'disk ahead: Rojo will push it' }
+  'disk-ahead': { letter: '↑', cls: '', label: 'disk ahead: Rojo will push it' },
+  unmapped: { letter: 'S', cls: '', label: 'stays in Studio' }
 }
 
 const COUNT_ORDER: SyncAction[] = ['same', 'pulled', 'merged', 'created', 'renamed', 'trashed', 'disk-ahead', 'conflict']
@@ -143,6 +144,11 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
               <span className={`tag ${g.cls}`}>{p.gate === 'blocked' ? `${p.conflicts} held` : g.label}</span>
             </div>
             <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}</div>
+            {p.leftInStudio && (
+              <div className="fs-sub note ellipsis" title={`${p.leftInStudio.note}\n\nRojo only manages what a $path maps; Studio-only instances outside it, or under $ignoreUnknownInstances, are place content and are never written to the repo on their own.`}>
+                {p.leftInStudio.note}
+              </div>
+            )}
 
             {firstRun.length > 0 && (
               <div className="callout info fs-callout">
@@ -192,7 +198,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         <>
           <div className="lrow static fs-recent-head">Recent from Studio</div>
           {status.recent.slice(0, 12).map((e, i) => (
-            <RecentRow key={`${e.file}:${e.at}:${i}`} entry={e} onOpen={() => (e.action === 'conflict' ? actions.openConflict(e.file) : e.action !== 'trashed' && void actions.openFile(e.file))} />
+            <RecentRow key={`${e.file}:${e.at}:${i}`} entry={e} onOpen={() => (e.action === 'conflict' ? actions.openConflict(e.file) : e.action === 'unmapped' ? actions.revealInstance(e.instancePath) : e.action !== 'trashed' && void actions.openFile(e.file))} />
           ))}
         </>
       )}
@@ -203,7 +209,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
 function RecentRow({ entry, onOpen }: { entry: SyncEntry; onOpen: () => void }) {
   const a = ACTION[entry.action] ?? { letter: '·', cls: '', label: entry.action }
   return (
-    <div className="lrow fs-recent" onClick={onOpen} title={`${a.label}\n${entry.from ? `${entry.from} → ` : ''}${entry.file}\n${entry.instancePath.join('.')}`}>
+    <div className="lrow fs-recent" onClick={onOpen} title={`${a.label}${entry.note ? `: ${entry.note}` : ''}\n${entry.from ? `${entry.from} → ` : ''}${entry.file ? `${entry.file}\n` : ''}${entry.instancePath.join('.')}`}>
       <span className={`mono fs-letter ${a.cls}`}>{a.letter}</span>
       <span className="ellipsis fs-name">{entry.instancePath.at(-1) ?? basename(entry.file)}</span>
       <span className="grow ellipsis faint fs-parent">{entry.instancePath.slice(-3, -1).join('.')}</span>

@@ -5,7 +5,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { CONNECTED_MS, parseEvent, POLL_HOLD_MS, type BridgeEvent, type BridgeJob } from '../../../shared/studio/protocol.ts'
-import { parseChangesBody, parseConfigQuery, parseSnapshotBody, sanitizeConfig, SYNC_LIMITS, SyncProtocolError, type SyncHandler } from '../../../shared/sync/protocol.ts'
+import { parseChangesBody, parseConfigQuery, parseOutlineBody, parseSnapshotBody, sanitizeConfig, SYNC_LIMITS, SyncProtocolError, type SyncHandler } from '../../../shared/sync/protocol.ts'
 
 export class BridgeError extends Error {
   readonly code: 'not-listening' | 'busy' | 'not-accepted' | 'timeout' | 'plugin-error' | 'cancelled'
@@ -264,7 +264,7 @@ export class StudioBridge {
         return send(200, { enabled: false, error: (e as Error).message })
       }
     }
-    if (req.method !== 'POST' || (route !== 'snapshot' && route !== 'changes')) return send(404, { ok: false, error: 'not found' })
+    if (req.method !== 'POST' || (route !== 'snapshot' && route !== 'changes' && route !== 'outline')) return send(404, { ok: false, error: 'not found' })
     let raw: string
     try {
       raw = await readBody(req, SYNC_LIMITS.maxBody)
@@ -274,7 +274,7 @@ export class StudioBridge {
     let parsed
     try {
       const json: unknown = JSON.parse(raw)
-      parsed = route === 'snapshot' ? { snapshot: parseSnapshotBody(json) } : { changes: parseChangesBody(json) }
+      parsed = route === 'snapshot' ? { snapshot: parseSnapshotBody(json) } : route === 'outline' ? { outline: parseOutlineBody(json) } : { changes: parseChangesBody(json) }
     } catch (e) {
       const error = e instanceof SyncProtocolError ? e.message : 'bad JSON'
       this.log?.(`studio bridge: sync ${route} refused: ${error}`, 'stderr')
@@ -282,7 +282,13 @@ export class StudioBridge {
     }
     if (!this.sync) return send(200, { ok: false, error: 'Forge Sync is off' })
     try {
-      const reply = parsed.snapshot ? await this.sync.snapshot(parsed.snapshot) : await this.sync.changes(parsed.changes!)
+      const reply = parsed.snapshot
+        ? await this.sync.snapshot(parsed.snapshot)
+        : parsed.outline
+          ? this.sync.outline
+            ? await this.sync.outline(parsed.outline)
+            : { ok: false as const, error: 'outline not supported' }
+          : await this.sync.changes(parsed.changes!)
       return send(200, reply)
     } catch (e) {
       this.log?.(`studio bridge: sync ${route} failed: ${(e as Error).message}`, 'stderr')

@@ -36,6 +36,15 @@ export interface SyncRef {
   property: string
 }
 
+// One instance of the Game-tab outline (plugin version 5): the services/containers the project maps,
+// outside the synced $path roots (e.g. ReplicatedStorage.Assets). Names and classes only, plus a
+// few asset ids for display. Never written to disk.
+export interface StudioOutlineNode {
+  path: string[]
+  className: string
+  props?: Record<string, string>
+}
+
 export interface SyncPlace {
   // Roblox PlaceId (0 when unpublished) and GameId.
   placeId: number
@@ -117,6 +126,9 @@ export interface PlaceSyncStatus {
   lastSnapshot?: number
   counts: Partial<Record<SyncAction, number>>
   conflicts: number
+  // Studio-only instances Forge leaves in Studio (outside every Rojo $path, or Studio-only children of
+  // an $ignoreUnknownInstances root): how many top-level ones, a few examples and why, in one line.
+  leftInStudio?: { count: number; examples: string[]; note: string }
 }
 
 export interface SyncStatus {

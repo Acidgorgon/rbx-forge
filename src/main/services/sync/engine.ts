@@ -11,7 +11,7 @@
 import * as nodeFs from 'node:fs/promises'
 import { join, resolve as resolvePath } from 'node:path'
 import type { GateState, PlaceSyncStatus, StudioChange, StudioNode, SyncAction, SyncConflictInfo, SyncEntry, SyncPlace } from '../../../shared/sync/types.ts'
-import { cleanRel, type DiskProbe, findRoot, fromDisk, insideMappedRoots, isProjectNode, isScriptClass, isSkipped, loadPlaces, PACKAGE_DIRS, parseFileName, type PlaceMap, placeFor, type SyncRoot, toDisk, unsafeName } from './mapping.ts'
+import { cleanRel, type DiskProbe, findRoot, fromDisk, insideMappedRoots, isProjectNode, isScriptClass, isSkipped, loadPlaces, PACKAGE_DIRS, parseFileName, type PlaceMap, placeFor, saveTarget, type SaveTarget, type SyncRoot, toDisk, unsafeName } from './mapping.ts'
 import { diff3, normalise, toFileText } from './merge.ts'
 import { canonicalJson, canonicalModel, detectStyle, modelFromStudio, readModel, writeMeta, writeModel } from './modelJson.ts'
 import { atomicWrite, BaseStore, hashText, migrateLegacy, type SyncFs, TRASH_DIR } from './store.ts'
@@ -84,7 +84,15 @@ interface Session {
   counts: Partial<Record<SyncAction, number>>
   conflicts: Map<string, HeldConflict>
   protect: Set<string>
+  // Bumped when the tree's shape changes (snapshot, add, remove, rename, move): the Game tab rebuilds
+  // only then, not on script edits.
+  version: number
+  // Studio-only children of $ignoreUnknownInstances roots that the last pass left in Studio.
+  leftInStudio: string[][]
 }
+
+// Why plan() leaves a Studio-only instance of an $ignoreUnknownInstances root alone.
+export const LEFT_IN_STUDIO = 'left in Studio ($ignoreUnknownInstances): Rojo leaves it alone; right-click it in the Game tab > Save to repo to track it'
 
 const KEY = '\u0000'
 const pkey = (path: string[]): string => path.join(KEY)
@@ -189,6 +197,7 @@ export class SyncEngine {
       for (const node of s.buffer) if (node && typeof node.id === 'string' && Array.isArray(node.path)) tree.set(node.id, node)
       s.buffer = null
       s.tree = tree
+      s.version++
       s.protect.clear()
       s.conflicts.clear()
       const entries = await this.reconcile(s, null)
@@ -205,6 +214,7 @@ export class SyncEngine {
       if (!s || !s.tree) throw new SyncResendError()
       const entries: SyncEntry[] = []
       const scope: string[][] = []
+      if (changes.some((c) => c.kind !== 'source' && c.kind !== 'props')) s.version++
       for (const change of changes) {
         if (change.kind === 'renamed' || change.kind === 'moved') {
           entries.push(...(await this.applyRename(s, change)))
@@ -239,7 +249,93 @@ export class SyncEngine {
     s.buffer = null
     s.conflicts.clear()
     s.gate = 'idle'
+    s.version++
     this.emit(placeKey)
+  }
+
+  // ---- Game tab ----
+
+  // The place's live Studio instances under the mapped roots (null without a snapshot), and a counter
+  // that changes when their shape does.
+  liveTree(placeKey: string): { nodes: StudioNode[]; version: number } | null {
+    const s = this.sessions.get(placeKey)
+    if (!s?.tree) return null
+    return { nodes: [...s.tree.values()], version: s.version }
+  }
+
+  treeVersion(placeKey: string): number | null {
+    const s = this.sessions.get(placeKey)
+    return s?.tree ? s.version : null
+  }
+
+  leftInStudio(placeKey: string): string[][] {
+    return this.sessions.get(placeKey)?.leftInStudio.map((p) => [...p]) ?? []
+  }
+
+  // Where "Save to repo" would write a Studio-only instance of this place, or why it cannot.
+  async saveTarget(placeKey: string, path: string[]): Promise<SaveTarget & { className?: string }> {
+    await this.ensureLoaded()
+    const s = this.sessions.get(placeKey)
+    if (!s) return { reason: 'No Studio session for this place' }
+    const found = this.findForSave(s, path)
+    const probe = this.ciProbe(await this.scan(s.map))
+    // Not in the synced tree (an outline node outside the roots, or no snapshot yet): the mapping's
+    // reason first, it says what to do.
+    if ('reason' in found) {
+      const t = saveTarget(s.map, { path, className: 'Folder' }, probe)
+      return 'reason' in t ? t : found
+    }
+    return { ...saveTarget(s.map, found, probe), className: found.className }
+  }
+
+  // Writes a Studio-only, non-script instance (and its non-script descendants) as a Rojo .model.json
+  // at its mapped place. From then on Rojo owns it and Forge Sync keeps it in step like any other file.
+  saveToRepo(placeKey: string, path: string[]): Promise<SyncEntry> {
+    return this.serial(async () => {
+      await this.ensureLoaded()
+      const s = this.sessions.get(placeKey)
+      if (!s?.tree) throw new Error('Studio is not connected to Forge Sync for this place')
+      const found = this.findForSave(s, path)
+      const probe = this.ciProbe(await this.scan(s.map))
+      if ('reason' in found) {
+        const t = saveTarget(s.map, { path, className: 'Folder' }, probe)
+        throw new Error('reason' in t ? t.reason : found.reason)
+      }
+      const target = saveTarget(s.map, found, probe)
+      if ('reason' in target) throw new Error(target.reason)
+      const subtree = [...s.tree.values()].filter((n) => n.path.length > path.length && startsWith(n.path, path))
+      const text = writeModel(modelFromStudio(found.node, subtree))
+      await this.writeFile(s.map, target.file, toFileText(text))
+      await this.store.set(s.placeKey, target.file, canon('model', text))
+      const entry = this.entry(target.file, 'created', [...path], { note: 'saved to repo from Studio' })
+      // Settle the rest of the pass (base, gate) for that subtree.
+      await this.reconcile(s, [path])
+      s.version++
+      this.updateGate(s)
+      return (await this.finish(s, [entry]))[0]
+    })
+  }
+
+  private findForSave(s: Session, path: string[]): { node: StudioNode; path: string[]; className: string; hasScriptDescendants: boolean } | { reason: string } {
+    const k = pkey(path)
+    const hits = [...(s.tree?.values() ?? [])].filter((n) => pkey(n.path) === k)
+    if (hits.length === 0) return { reason: 'Not in the synced Studio tree' }
+    const lower = path[path.length - 1].toLowerCase()
+    const parent = pkey(path.slice(0, -1))
+    const twins = [...s.tree!.values()].filter((n) => n.path.length === path.length && pkey(n.path.slice(0, -1)) === parent && n.path[n.path.length - 1].toLowerCase() === lower)
+    if (hits.length > 1 || twins.length > 1) return { reason: 'Another instance with the same name (ignoring case) sits next to it; rename one in Studio first' }
+    const node = hits[0]
+    if (isScriptClass(node.className)) return { reason: 'Scripts sync on their own' }
+    const hasScriptDescendants = [...s.tree!.values()].some((n) => n.path.length > path.length && startsWith(n.path, path) && isScriptClass(n.className))
+    return { node, path: node.path, className: node.className, hasScriptDescendants }
+  }
+
+  // Case-insensitive probe over a scan: on Windows and macOS "Sword.model.json" and "sword.model.json"
+  // are one file, and a repo cloned there must not get both.
+  private ciProbe(disk: { files: Set<string>; dirs: Set<string> }): DiskProbe {
+    const files = new Set([...disk.files].map((f) => f.toLowerCase()))
+    const dirs = new Set([...disk.dirs].map((f) => f.toLowerCase()))
+    return { isFile: (rel) => files.has(rel.toLowerCase()), isDir: (rel) => dirs.has(rel.toLowerCase()) }
   }
 
   gate(placeKey: string): GateState {
@@ -316,7 +412,7 @@ export class SyncEngine {
     let s = this.sessions.get(placeKey)
     const map = placeFor(this.maps, place.placeId) ?? { projectFile: 'default.project.json', name: '', root: this.root, placeIds: [], emitLegacyScripts: true, roots: [], skipped: [], virtual: [], skipGlobs: [] }
     if (!s) {
-      s = { placeKey, place, map, gate: 'idle', connected: false, buffer: null, tree: null, counts: {}, conflicts: new Map(), protect: new Set() }
+      s = { placeKey, place, map, gate: 'idle', connected: false, buffer: null, tree: null, counts: {}, conflicts: new Map(), protect: new Set(), version: 0, leftInStudio: [] }
       this.sessions.set(placeKey, s)
     } else s.place = place
     if (this.maps.length) s.map = map
@@ -546,7 +642,7 @@ export class SyncEngine {
       if (!script && !hasScripts(node) && !probe.isFile(m.file) && !probe.isDir(m.file)) {
         const parent = node.path.slice(0, -1)
         if (map.roots.some((r) => r.ignoreUnknown && pkey(r.instance) === pkey(parent))) {
-          plan.refused.push({ path: node.path, note: 'left in Studio ($ignoreUnknownInstances)' })
+          plan.refused.push({ path: node.path, note: LEFT_IN_STUDIO })
           return
         }
       }
@@ -589,6 +685,7 @@ export class SyncEngine {
     const disk = await this.scan(map)
     const probe: DiskProbe = { isFile: (rel) => disk.files.has(rel), isDir: (rel) => disk.dirs.has(rel) }
     const plan = this.plan(s, probe)
+    s.leftInStudio = plan.refused.filter((r) => r.note === LEFT_IN_STUDIO).map((r) => r.path)
     const inScope = (path: string[]): boolean => !scope || scope.some((p) => related(p, path))
     const entries: SyncEntry[] = []
     const stamp = this.stamp()

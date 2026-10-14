@@ -4,6 +4,7 @@
 // agent's task list (update_todos) shows once, as a checklist at its latest update.
 
 import type { ChatMessage } from '../../../shared/types.ts'
+import { plural } from '../lib/format.ts'
 
 export type ChatItem =
   | { kind: 'msg'; m: ChatMessage }
@@ -92,8 +93,6 @@ const SEARCH = /^(search_code|find_symbol|find_instance|Grep|Glob|wally_search|W
 const WRITE = /^(write_script|edit_script|Edit|Write|MultiEdit|NotebookEdit|create_script|delete_script)$/
 const RUN = /^(Bash|run_in_terminal|run_code|execute_luau)$/
 const TEST = /^(run_tests|run_test_agents|blink_check|lint|run_lint)$/
-
-const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
 
 // "Edited 2 files, added 2 Blink events, read 3 files". Empty when nothing stands out.
 export function activitySummary(entries: ChatMessage[]): string {

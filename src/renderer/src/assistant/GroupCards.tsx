@@ -9,13 +9,8 @@ import { Icon } from '../components/Icons'
 import { InlineMarkdown, Markdown } from '../components/Markdown'
 import { ProviderMark } from '../components/ModelPicker'
 import { errorText } from '../lib/format'
-import { accentOf, useActiveChat } from './GroupChat'
+import { accentOf, fmtTokens, useActiveChat } from './GroupChat'
 import './groupcards.css'
-
-function fmtTokens(n: number): string {
-  if (n < 1000) return String(n)
-  return n < 100_000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`
-}
 
 export function fmtUsd(n: number | undefined): string {
   if (n === undefined) return ''

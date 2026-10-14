@@ -1,0 +1,347 @@
+-- A tiny fake Roblox Studio for running resources/studio/ForgeBridge.luau under Lune (test/syncPlugin.test.ts).
+-- Just enough of the DataModel (Instances with Name/Parent/Source, Changed / DescendantAdded /
+-- DescendantRemoving / AncestryChanged signals), HttpService (over @lune/net, JSON encoded the way
+-- Roblox does it: an empty table is []) and ScriptEditorService to drive the plugin's Forge Sync
+-- against Forge's real bridge.
+--
+-- lune run forgeBridgeStudio.luau <plugin.luau> <scenario>
+
+local fs = require("@lune/fs")
+local luau = require("@lune/luau")
+local net = require("@lune/net")
+local process = require("@lune/process")
+local serde = require("@lune/serde")
+local task = require("@lune/task")
+
+local pluginFile, scenario = process.args[1], process.args[2]
+
+-- ---------------------------------------------------------------- signals
+
+local Signal = {}
+Signal.__index = Signal
+
+function Signal.new()
+	return setmetatable({ list = {} }, Signal)
+end
+
+function Signal:Connect(fn)
+	local conn = { Connected = true }
+	function conn.Disconnect()
+		conn.Connected = false
+	end
+	table.insert(self.list, { conn = conn, fn = fn })
+	return conn
+end
+
+function Signal:Fire(...)
+	for _, e in table.clone(self.list) do
+		if e.conn.Connected then
+			e.fn(...)
+		end
+	end
+end
+
+-- ---------------------------------------------------------------- instances
+
+local data = setmetatable({}, { __mode = "k" })
+local SIGNALS = { Changed = true, AttributeChanged = true, AncestryChanged = true, DescendantAdded = true, DescendantRemoving = true }
+local SCRIPTS = { Script = true, LocalScript = true, ModuleScript = true }
+local methods = {}
+local mt = {}
+
+local function chain(inst)
+	local out = {}
+	while inst do
+		table.insert(out, inst)
+		inst = data[inst].props.Parent
+	end
+	return out
+end
+
+function methods.GetChildren(self)
+	return table.clone(data[self].children)
+end
+
+function methods.GetDescendants(self)
+	local out = {}
+	local function walk(i)
+		for _, c in data[i].children do
+			table.insert(out, c)
+			walk(c)
+		end
+	end
+	walk(self)
+	return out
+end
+
+function methods.FindFirstChild(self, name)
+	for _, c in data[self].children do
+		if data[c].props.Name == name then
+			return c
+		end
+	end
+	return nil
+end
+
+function methods.IsA(self, class)
+	local own = data[self].props.ClassName
+	if class == own or class == "Instance" then
+		return true
+	end
+	if class == "LuaSourceContainer" then
+		return SCRIPTS[own] == true
+	end
+	if class == "BaseScript" then
+		return own == "Script" or own == "LocalScript"
+	end
+	return false
+end
+
+function methods.IsDescendantOf(self, other)
+	local node = data[self].props.Parent
+	while node do
+		if node == other then
+			return true
+		end
+		node = data[node].props.Parent
+	end
+	return false
+end
+
+function methods.GetAttributes(self)
+	return table.clone(data[self].attrs)
+end
+
+function methods.GetPropertyChangedSignal(self, name)
+	local d = data[self]
+	d.propSignals[name] = d.propSignals[name] or Signal.new()
+	return d.propSignals[name]
+end
+
+function methods.Destroy(self)
+	self.Parent = nil
+end
+
+local function setParent(self, parent)
+	local d = data[self]
+	local old = d.props.Parent
+	local moving = { self }
+	for _, x in methods.GetDescendants(self) do
+		table.insert(moving, x)
+	end
+	if old then
+		for _, a in chain(old) do
+			for _, x in moving do
+				data[a].signals.DescendantRemoving:Fire(x)
+			end
+		end
+		local list = data[old].children
+		table.remove(list, table.find(list, self))
+	end
+	d.props.Parent = parent
+	if parent then
+		table.insert(data[parent].children, self)
+		for _, a in chain(parent) do
+			for _, x in moving do
+				data[a].signals.DescendantAdded:Fire(x)
+			end
+		end
+	end
+	d.signals.AncestryChanged:Fire(self, parent)
+end
+
+mt.__index = function(self, key)
+	local d = data[self]
+	if methods[key] then
+		return methods[key]
+	end
+	if SIGNALS[key] then
+		return d.signals[key]
+	end
+	return d.props[key]
+end
+
+mt.__newindex = function(self, key, value)
+	local d = data[self]
+	if key == "Parent" then
+		setParent(self, value)
+	else
+		d.props[key] = value
+	end
+	d.signals.Changed:Fire(key)
+	if d.propSignals[key] then
+		d.propSignals[key]:Fire()
+	end
+end
+
+mt.__tostring = function(self)
+	return data[self].props.Name
+end
+
+local function new(className, name, parent, source)
+	local self = setmetatable({}, mt)
+	local signals = {}
+	for k in SIGNALS do
+		signals[k] = Signal.new()
+	end
+	data[self] = { props = { ClassName = className, Name = name or className }, children = {}, attrs = {}, signals = signals, propSignals = {} }
+	if SCRIPTS[className] then
+		data[self].props.Source = source or ""
+	end
+	if parent then
+		self.Parent = parent
+	end
+	return self
+end
+
+-- ---------------------------------------------------------------- services
+
+local function encode(v)
+	local t = type(v)
+	if t == "table" then
+		if next(v) == nil then
+			return "[]"
+		end
+		if #v > 0 then
+			local parts = {}
+			for _, x in v do
+				table.insert(parts, encode(x))
+			end
+			return "[" .. table.concat(parts, ",") .. "]"
+		end
+		local parts = {}
+		for k, x in v do
+			table.insert(parts, serde.encode("json", tostring(k)) .. ":" .. encode(x))
+		end
+		return "{" .. table.concat(parts, ",") .. "}"
+	end
+	return serde.encode("json", v)
+end
+
+local HttpService = {}
+function HttpService:JSONEncode(v)
+	return encode(v)
+end
+function HttpService:JSONDecode(s)
+	return serde.decode("json", s)
+end
+function HttpService:UrlEncode(s)
+	return (string.gsub(s, "[^%w%-_%.~]", function(c)
+		return string.format("%%%02X", string.byte(c))
+	end))
+end
+function HttpService:RequestAsync(req)
+	local res = net.request({ url = req.Url, method = req.Method, body = req.Body, headers = req.Headers })
+	return { Success = res.ok, StatusCode = res.statusCode, Body = res.body }
+end
+
+local editorText = {}
+local ScriptEditorService = { TextDocumentDidChange = Signal.new() }
+function ScriptEditorService:GetEditorSource(inst)
+	return editorText[inst] or inst.Source
+end
+
+local stubs = {
+	HttpService = HttpService,
+	ScriptEditorService = ScriptEditorService,
+	RunService = {
+		IsRunning = function()
+			return false
+		end,
+		Heartbeat = Signal.new(),
+	},
+	CollectionService = {
+		GetTags = function()
+			return {}
+		end,
+	},
+}
+
+local game = new("DataModel", "Place1")
+data[game].props.PlaceId = 0
+data[game].props.GameId = 0
+function methods.GetService(self, name)
+	if stubs[name] then
+		return stubs[name]
+	end
+	return methods.FindFirstChild(self, name) or new(name, name, self)
+end
+
+for _, name in { "ReplicatedStorage", "ServerScriptService", "ServerStorage", "StarterPlayer", "Players", "Lighting", "CoreGui" } do
+	new(name, name, game)
+end
+local starterPlayerScripts = new("StarterPlayerScripts", "StarterPlayerScripts", methods.FindFirstChild(game, "StarterPlayer"))
+
+-- ---------------------------------------------------------------- plugin
+
+local unloading = Signal.new()
+local plugin = {
+	Unloading = unloading,
+	CreateToolbar = function()
+		return {
+			CreateButton = function()
+				return { SetActive = function() end, Click = Signal.new() }
+			end,
+		}
+	end,
+	GetSetting = function()
+		return nil
+	end,
+	SetSetting = function() end,
+}
+
+local env = {
+	game = game,
+	plugin = plugin,
+	task = task,
+	warn = function(...)
+		print("WARN", ...)
+	end,
+	CFrame = {
+		new = function()
+			return {}
+		end,
+	},
+	Enum = { RunContext = { Legacy = "Legacy" } },
+}
+local run = luau.load(fs.readFile(pluginFile), { debugName = "ForgeBridge", environment = env })
+run()
+
+-- ---------------------------------------------------------------- scenarios
+
+local function rojoBuildsClient()
+	-- What Rojo's Studio plugin creates for StarterPlayerScripts.Client ($path src/client).
+	local client = new("Folder", "Client", nil)
+	local script = new("LocalScript", "Client", client, "")
+	new("Folder", "Controllers", script)
+	client.Parent = starterPlayerScripts
+	return client, script
+end
+
+if scenario == "late-root" then
+	-- Studio opened a fresh place; the Forge Bridge started before Rojo built the mapped folders.
+	task.wait(1.5)
+	local _, script = rojoBuildsClient()
+	task.wait(4)
+	script.Source = "adawdawdawd"
+	task.wait(1.5)
+	local controllers = methods.FindFirstChild(script, "Controllers")
+	new("ModuleScript", "Shop", controllers, "return {}")
+	task.wait(1.5)
+elseif scenario == "editor-only" then
+	-- The mapped folders exist from the start; the user types in the Script Editor and Studio has not
+	-- written Script.Source (yet).
+	local _, script = rojoBuildsClient()
+	task.wait(2)
+	editorText[script] = "print(\"typed\")"
+	ScriptEditorService.TextDocumentDidChange:Fire({
+		GetScript = function()
+			return script
+		end,
+	})
+	task.wait(1.5)
+end
+
+print("SCENARIO DONE")
+unloading:Fire()
+process.exit(0)

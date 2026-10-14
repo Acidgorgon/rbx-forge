@@ -12,7 +12,7 @@
 -- mode and only talks to 127.0.0.1. Studio asks once to allow HTTP requests to 127.0.0.1 and to allow
 -- script injection (it creates the job's ModuleScripts from Forge's Luau).
 --
--- Forge Sync (plugin version 2; 3 adds the unsynced-reference report): in edit mode the plugin also streams the scripts and instances under
+-- Forge Sync (plugin version 2; 3 adds the unsynced-reference report; 5 watches for late roots): in edit mode the plugin also streams the scripts and instances under
 -- the project's Rojo-mapped roots to Forge (a chunked snapshot, then debounced change events), so Forge
 -- can reconcile Studio with disk before Rojo serves. It only reads: it never changes the DataModel.
 --
@@ -445,6 +445,15 @@ end
 -- Script.Source property", Creator Hub, ScriptEditorService). Drafts stay local until committed, so
 -- Forge never writes someone's unfinished draft to disk.
 --
+-- An unpublished place (PlaceId 0) cannot be in Team Create, so it has no drafts: there the editor
+-- text is the script, and the plugin also listens to ScriptEditorService.TextDocumentDidChange and
+-- reads GetEditorSource, so a script typed in the Script Editor reaches Forge even when Studio has
+-- not written Script.Source yet.
+--
+-- Mapped roots that do not exist yet (a fresh place before Rojo has connected and built
+-- StarterPlayerScripts.Client and the rest) are checked every few seconds; when one appears the
+-- plugin sends a fresh snapshot, so its scripts are watched from then on.
+--
 -- Cost: no per-frame work. One Changed (+ AttributeChanged) connection per mapped instance, two
 -- connections per root, a 10 Hz check of a dirty flag, and a walk that yields every few hundred
 -- instances when a snapshot is taken.
@@ -458,6 +467,7 @@ local SYNC_MAX_CHANGE_BYTES = 4 * 1024 * 1024
 local SYNC_YIELD_EVERY = 300
 local SYNC_RECHECK_OFF = 20
 local SYNC_RECHECK_OLD = 120
+local SYNC_ROOT_RECHECK = 2
 -- Wally packages and the bridge's own job instances never sync.
 local SYNC_SKIP_NAMES = {
 	Packages = true,
@@ -536,6 +546,9 @@ local sync = {
 	session = nil :: string?,
 	generation = 0,
 	roots = {} :: { Instance },
+	-- Config roots not in the DataModel yet (checked every SYNC_ROOT_RECHECK seconds).
+	missing = {} :: { { string } },
+	rootCheckAt = 0,
 	skip = {} :: { string },
 	known = {} :: { [Instance]: Known },
 	conns = {} :: { [Instance]: { RBXScriptConnection } },
@@ -744,12 +757,31 @@ local function defaultsFor(inst: Instance, props: { string }): { [string]: any }
 	return values
 end
 
+local scriptEditor: any = nil
+pcall(function()
+	scriptEditor = game:GetService("ScriptEditorService")
+end)
+
+-- The script's text: the editor's text in an unpublished place (no Team Create, so no drafts),
+-- otherwise the committed Source.
+local function scriptSource(inst: Instance): (boolean, any)
+	if game.PlaceId == 0 and scriptEditor then
+		local ok, text = pcall(function()
+			return scriptEditor:GetEditorSource(inst)
+		end)
+		if ok and type(text) == "string" then
+			return true, text
+		end
+	end
+	return pcall(function()
+		return (inst :: any).Source
+	end)
+end
+
 local function buildNode(inst: Instance, path: { string }): any
 	local node: any = { id = idFor(inst), path = path, className = inst.ClassName }
 	if inst:IsA("LuaSourceContainer") then
-		local ok, source = pcall(function()
-			return (inst :: any).Source
-		end)
+		local ok, source = scriptSource(inst)
 		if ok and type(source) == "string" then
 			if #source > SYNC_MAX_SOURCE then
 				node.oversize = true
@@ -909,6 +941,7 @@ local function stopSync()
 	sync.refs = {}
 	sync.refsDirty = false
 	sync.dirty = false
+	sync.missing = {}
 end
 
 local function resolve(path: { string }): Instance?
@@ -1023,10 +1056,14 @@ local function startSync(): string
 	for _, path in config.skip or {} do
 		table.insert(sync.skip, pathKey(path))
 	end
+	sync.missing = {}
+	sync.rootCheckAt = os.clock() + SYNC_ROOT_RECHECK
 	for _, path in config.roots or {} do
 		local root = resolve(path)
 		if root then
 			table.insert(sync.roots, root)
+		else
+			table.insert(sync.missing, path)
 		end
 	end
 	-- Watch before walking: anything that changes during the walk is diffed against the walk afterwards.
@@ -1043,6 +1080,13 @@ local function startSync(): string
 	end
 	local count = sendSnapshot(gen)
 	print(("[Forge Bridge] Forge Sync: sent %d instances from %d roots"):format(count, #sync.roots))
+	if #sync.missing > 0 then
+		local names = {}
+		for _, path in sync.missing do
+			table.insert(names, table.concat(path, "."))
+		end
+		print("[Forge Bridge] Forge Sync: not in Studio yet (synced once they appear, e.g. after Rojo connects): " .. table.concat(names, ", "))
+	end
 	return "ok"
 end
 
@@ -1179,6 +1223,23 @@ local function flush()
 	end
 end
 
+-- Typing in the Script Editor of an unpublished place: the document changed, Source may not have yet.
+if scriptEditor then
+	pcall(function()
+		scriptEditor.TextDocumentDidChange:Connect(function(doc)
+			if game.PlaceId ~= 0 or not sync.session then
+				return
+			end
+			local ok, inst = pcall(function()
+				return doc:GetScript()
+			end)
+			if ok and inst and sync.known[inst] then
+				touch(inst, "source")
+			end
+		end)
+	end)
+end
+
 local function syncLoop()
 	while alive do
 		if not enabled then
@@ -1190,6 +1251,17 @@ local function syncLoop()
 			continue
 		end
 		local now = os.clock()
+		if sync.session and #sync.missing > 0 and now >= sync.rootCheckAt then
+			sync.rootCheckAt = now + SYNC_ROOT_RECHECK
+			for _, path in sync.missing do
+				if resolve(path) then
+					print("[Forge Bridge] Forge Sync: " .. table.concat(path, ".") .. " is in Studio now; sending a fresh snapshot")
+					sync.wanted = true
+					sync.retryAt = 0
+					break
+				end
+			end
+		end
 		if sync.wanted and not sync.waitingForForge and now >= sync.retryAt then
 			sync.wanted = false
 			local ok, result = pcall(startSync)

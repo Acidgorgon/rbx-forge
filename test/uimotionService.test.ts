@@ -5,7 +5,7 @@
 // running in Lune through the UI Preview service (hover / click drive the effects; skipped without
 // Lune).
 import assert from 'node:assert/strict'
-import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs'
+import { cpSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { test } from 'node:test'
@@ -15,6 +15,7 @@ import type { FetchLike } from '../src/shared/uimotion/figma/rest.ts'
 import { labSpecJson } from '../src/shared/uimotion/compile.ts'
 import { presetSpec } from '../src/shared/uimotion/spec.ts'
 import { absoluteRequire } from '../src/shared/uimotion/codegen.ts'
+import { storyTargets } from '../src/shared/uimotion/story.ts'
 import { findLune } from '../src/main/services/tests/index.ts'
 import { UiPreviewService } from '../src/main/services/uiPreview/service.ts'
 
@@ -161,7 +162,82 @@ test('library, compose (fake model, restated), critique with frames, rate, expor
   assert.ok(h.entry.spec.targets[0].effects.some((e) => e.kind === 'shine'))
 })
 
+const RACING = 'src/shared/Interface/Stories/RacingHud.story.luau'
+const BOOST = 'RacingHud.BOOSTButton'
+
+test('story source: compose / save keep the story; export writes only the module and the lines to paste', async () => {
+  const root = project()
+  const before = readFileSync(join(root, RACING), 'utf8')
+  const s = make(root)
+  // No model: the heuristic stack lands on the picked element, not the story's slot.
+  const c = await s.compose('bouncy boost button', { story: RACING, target: BOOST, elements: [{ path: BOOST, className: 'TextButton' }] })
+  assert.equal(c.entry.story, RACING)
+  assert.equal(c.entry.component, undefined)
+  assert.deepEqual(c.entry.spec.targets.map((t) => t.path), [BOOST])
+  assert.match(c.entry.name, /^RacingHud/)
+  // Same stack on the DRIFT button, a different one on the panel's close button.
+  const both = await s.save({ ...c.entry.spec, targets: [...c.entry.spec.targets, { path: 'RacingHud.DRIFTButton', effects: c.entry.spec.targets[0].effects }, { path: 'RacingHud.UpgradePanel.Close', effects: presetSpec('snappy').targets[0].effects }] }, { id: c.entry.id })
+  assert.equal(both.story, RACING)
+  const ex = await s.export(c.entry.id)
+  const module = `src/shared/Interface/Motion/${c.entry.name}Effects.luau`
+  assert.deepEqual(ex.files, [module])
+  assert.equal(ex.story, undefined)
+  assert.deepEqual(ex.warnings, [])
+  const req = `game:GetService("ReplicatedStorage").Shared.Interface.Motion.${c.entry.name}Effects`
+  assert.equal(ex.requirePath, req)
+  assert.equal(ex.snippet, `local Effects = require(${req})\nEffects.attach(boostButton) -- RacingHud > BOOSTButton\nEffects.attach(driftButton) -- RacingHud > DRIFTButton\nEffects.attach(close, Effects.stacks.Close) -- RacingHud > UpgradePanel > Close`)
+  const src = readFileSync(join(root, module), 'utf8')
+  assert.match(src, /\(RacingHud story \/ /)
+  assert.match(src, /local SPEC = \{[\s\S]*?targets = \{\s*\{\s*path = "",/)
+  assert.match(src, /Effects\.stacks = \{\n\tClose = /)
+  // The user's story is never rewritten, and no lab story is added next to it.
+  assert.equal(readFileSync(join(root, RACING), 'utf8'), before)
+  assert.ok(!existsSync(join(root, 'src/shared/Interface/Stories', `RacingHud${c.entry.name}.story.luau`)))
+  assert.equal((await s.get(c.entry.id)).written?.module, module)
+  // Only story files are accepted as a story source.
+  await assert.rejects(s.export(c.entry.id, { story: '../../etc/passwd' }), /not a story file/)
+  await assert.rejects(s.save(presetSpec('snappy'), { story: 'src/x.luau' }), /not a story file/)
+})
+
 const lune = findLune(process.env.LUNE_PATH || null)
+test('story source in Lune: the lab renders RacingHud, effects attach to the picked button; the exported module does the same in the user\'s code', { skip: lune ? false : 'lune not found (set LUNE_PATH)', timeout: 120_000 }, async () => {
+  const root = project()
+  const s = make(root)
+  const preview = new UiPreviewService({ lunePath: () => lune, projectFile: () => 'default.project.json' })
+  preview.setRoot(root)
+  const list = await preview.listStories()
+  const racing = list.storybooks.flatMap((b) => b.stories).find((x) => x.file === RACING)
+  assert.ok(racing, JSON.stringify(list))
+  const lab = await s.labStory({ kind: 'story', require: absoluteRequire(racing!.path), name: racing!.name })
+  const spec = presetSpec('bouncy', BOOST, 'HudBouncy')
+  const r = await preview.render({ file: lab.file, width: 960, height: 540, controls: { Slots: 1, Spec1: labSpecJson(spec), Label1: 'Bouncy' }, clicks: ['BOOSTButton'] })
+  assert.equal(r.error ?? null, null, JSON.stringify(r.console))
+  const byId = new Map(r.tree.nodes.map((n) => [n.id, n]))
+  const slot = r.tree.nodes.find((n) => n.name === 'Slot1')!
+  const targets = storyTargets(byId, slot.id)
+  const buttons = targets.filter((t) => t.button).map((t) => t.path)
+  for (const b of ['RacingHud.BOOSTButton', 'RacingHud.DRIFTButton']) assert.ok(buttons.includes(b), buttons.join(', '))
+  assert.ok(targets.findIndex((t) => !t.button) >= buttons.length, 'buttons are listed first')
+  assert.ok(targets.some((t) => t.path === 'RacingHud.Speedometer' && t.className === 'Frame'))
+  const scale = r.tree.nodes.find((n) => n.name === 'ForgeMotionScale')
+  assert.ok(scale, r.tree.nodes.map((n) => n.name).join(','))
+  assert.equal(byId.get(scale!.parent!)?.name, 'BOOSTButton')
+  // The story still works under the effects: BOOST opened the upgrades panel (its own Activated).
+  assert.equal(targets.find((t) => t.path === 'RacingHud.UpgradePanel')?.hidden, false)
+  assert.ok(!r.console.some((c) => c.level === 'error'), JSON.stringify(r.console))
+  // Export, then attach it the way the snippet says, from a component-style story of the user's.
+  const e = await s.save(spec, { story: RACING })
+  const ex = await s.export(e.id)
+  writeFileSync(
+    join(root, 'src/shared/Interface/Stories/BoostAttach.story.luau'),
+    `local Effects = require(${ex.requirePath})\nreturn function(target)\n\tlocal boostButton = Instance.new("TextButton")\n\tboostButton.Name = "BOOSTButton"\n\tboostButton.Size = UDim2.fromOffset(118, 36)\n\tboostButton.Parent = target\n\t${ex.snippet!.split('\n')[1]}\n\treturn function()\n\t\tboostButton:Destroy()\n\tend\nend\n`
+  )
+  const u = await preview.render({ file: 'src/shared/Interface/Stories/BoostAttach.story.luau', width: 400, height: 200, clicks: ['BOOSTButton'] })
+  assert.equal(u.error ?? null, null, JSON.stringify(u.console))
+  const uScale = u.tree.nodes.find((n) => n.name === 'ForgeMotionScale')
+  assert.ok(uScale && u.tree.nodes.find((n) => n.id === uScale.parent)?.name === 'BOOSTButton', u.tree.nodes.map((n) => n.name).join(','))
+})
+
 test('generated story and the 3-slot lab story run in Lune; hover and click drive the effects', { skip: lune ? false : 'lune not found (set LUNE_PATH)', timeout: 120_000 }, async () => {
   const root = project()
   const s = make(root)

@@ -12,6 +12,7 @@ import { applyChanges, heuristicStack, type UiMotionChange, type UiMotionVision 
 import { buildCritique } from '@shared/uimotion/critique'
 import { MotionEngine, type MotionValues } from '@shared/uimotion/engine'
 import { LAB_HOLDER } from '@shared/uimotion/compile'
+import { storyExportPlan, storySnippet } from '@shared/uimotion/story'
 import { mockImages, mockStorySources } from './mockUiPreview'
 import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
 import figma from './mockUiMotionFigma.json'
@@ -327,7 +328,7 @@ export function uiMotionMock(emit: Emit): UiMotionApi {
     if (!e) throw new Error(`no motion stack "${id}"`)
     return e
   }
-  const put = (spec: MotionSpec, opts: { id?: string; origin?: string; scope?: 'user' | 'project'; component?: string; name?: string } = {}): UiMotionEntry => {
+  const put = (spec: MotionSpec, opts: { id?: string; origin?: string; scope?: 'user' | 'project'; component?: string; story?: string; name?: string } = {}): UiMotionEntry => {
     const prev = opts.id ? find(opts.id) : null
     const s = normalizeSpec(spec, opts.name ?? prev?.name ?? 'Motion')
     if (opts.name) s.name = luauName(opts.name)
@@ -341,6 +342,7 @@ export function uiMotionMock(emit: Emit): UiMotionApi {
       updatedAt: now,
       ...(opts.origin ? { origin: opts.origin } : {}),
       ...(opts.component ? { component: opts.component } : {}),
+      ...(opts.story ? { story: opts.story } : {}),
       spec: s
     } as UiMotionEntry
     if (prev) entries.splice(entries.indexOf(prev), 1, entry)
@@ -529,8 +531,16 @@ export function uiMotionMock(emit: Emit): UiMotionApi {
     async uiMotionExport(id, opts) {
       await delay(300)
       const e = find(id)
-      const comp = opts?.component ?? e.component
       const module = `src/shared/Interface/Motion/${e.name}Effects.luau`
+      const requirePath = `game:GetService("ReplicatedStorage").Shared.Interface.Motion.${e.name}Effects`
+      const storyFile = opts?.story ?? (!opts?.component && !e.component ? e.story : undefined)
+      if (storyFile) {
+        const plan = storyExportPlan(e.spec)
+        e.written = { module, at: Date.now() }
+        changed()
+        return { files: [module], module, requirePath, warnings: [], snippet: storySnippet({ requirePath, module, attach: plan.attach }), attach: plan.attach }
+      }
+      const comp = opts?.component ?? e.component
       const story = comp ? `src/shared/Interface/Stories/${comp}${e.name}.story.luau` : undefined
       e.written = { module, ...(story ? { story } : {}), at: Date.now() }
       changed()

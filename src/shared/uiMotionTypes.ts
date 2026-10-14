@@ -7,11 +7,13 @@ import type { MappingReport } from './uimotion/figma/map.ts'
 import type { LabSubject } from './uimotion/compile.ts'
 import type { MotionSpec } from './uimotion/spec.ts'
 import type { UiMotionVision } from './uimotion/ai.ts'
+import type { StoryAttach } from './uimotion/story.ts'
 
 export type { MotionSpec, MotionEffect, EffectKind, MotionTarget } from './uimotion/spec.ts'
 export type { MappingReport, MappingNote } from './uimotion/figma/map.ts'
 export type { LabSubject } from './uimotion/compile.ts'
 export type { UiMotionVision, UiMotionChange } from './uimotion/ai.ts'
+export type { StoryAttach, StoryTarget } from './uimotion/story.ts'
 
 export type UiMotionScope = 'user' | 'project'
 
@@ -60,6 +62,8 @@ export interface UiMotionEntry {
   spec: MotionSpec
   // The component it was designed on (name), when any.
   component?: string
+  // Or the UI Labs story it was designed on (repo-relative *.story.luau): "From a story" source.
+  story?: string
   rating?: 'up' | 'down'
   quality?: 'good' | 'avoid'
   restatement?: Restatement
@@ -99,6 +103,10 @@ export interface UiMotionExportResult {
   story?: string
   requirePath: string | null
   warnings: string[]
+  // Story source: the lines to add to the user's own component (require + Effects.attach per
+  // target); the user's files are never rewritten.
+  snippet?: string
+  attach?: StoryAttach[]
 }
 
 export interface FigmaTokenStatus {
@@ -112,7 +120,7 @@ export interface UiMotionApi {
   uiMotionList(): Promise<UiMotionEntry[]>
   uiMotionGet(id: string): Promise<UiMotionEntry>
   // Create (no id) or replace a stack; the spec is normalised.
-  uiMotionSave(spec: MotionSpec, opts?: { id?: string; origin?: string; scope?: UiMotionScope; component?: string; name?: string }): Promise<UiMotionEntry>
+  uiMotionSave(spec: MotionSpec, opts?: { id?: string; origin?: string; scope?: UiMotionScope; component?: string; story?: string; name?: string }): Promise<UiMotionEntry>
   uiMotionDelete(id: string): Promise<boolean>
   // Thumbs up: library "good" + memory skill; down: "avoid" + feedback memory. Both teach the UI principles.
   uiMotionRate(id: string, rating: 'up' | 'down' | null): Promise<UiMotionEntry>
@@ -130,11 +138,13 @@ export interface UiMotionApi {
   // repo-relative file for uiPreviewOpen.
   uiMotionLabStory(subject: LabSubject): Promise<{ file: string }>
   // restatement: the reading of the brief the user confirmed ("Restate first").
-  uiMotionCompose(brief: string, opts?: { restatement?: Restatement; component?: string; current?: MotionSpec }): Promise<UiMotionComposeResult>
+  // story / elements / target: a story source (its listed elements, the picked one gets the stack).
+  uiMotionCompose(brief: string, opts?: { restatement?: Restatement; component?: string; story?: string; elements?: { path: string; className: string }[]; target?: string; current?: MotionSpec }): Promise<UiMotionComposeResult>
   // frames: PNG data URLs captured from the live preview (rest, hover, press, release, settle).
   uiMotionCritique(id: string, opts?: { frames?: string[]; labels?: string[]; apply?: boolean }): Promise<{ entry: UiMotionEntry; critique: UiMotionCritique; applied: string[] }>
-  // Writes <Name>Effects.luau (and a story for the component) into the project.
-  uiMotionExport(id: string, opts?: { component?: string }): Promise<UiMotionExportResult>
+  // Writes <Name>Effects.luau (and a story for the component) into the project. With story (a story
+  // source) only the module is written and the result carries the snippet to paste.
+  uiMotionExport(id: string, opts?: { component?: string; story?: string }): Promise<UiMotionExportResult>
   // A screenshot of a rectangle of the Forge window (CSS pixels) as a PNG data URL.
   uiMotionSnap(rect: { x: number; y: number; width: number; height: number }): Promise<string | null>
   // An entry file (frames/...) as a data URL.

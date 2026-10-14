@@ -69,7 +69,17 @@ function Param({ p, value, onChange }: { p: EffectParam; value: unknown; onChang
   )
 }
 
-export function EffectStack({ spec, path, elements, onPath, onChange }: { spec: MotionSpec; path: string; elements: { path: string; className: string }[]; onPath: (p: string) => void; onChange: (spec: MotionSpec) => void }) {
+export interface StackElement {
+  path: string
+  className: string
+  // Readable name path ("RacingHud > BOOSTButton"), when it differs from the path.
+  label?: string
+  hidden?: boolean
+}
+
+// story: the elements are a story's buttons and frames (no root: the slot is not the user's UI), and
+// the stack can be copied onto other elements (the same feel on every button).
+export function EffectStack({ spec, path, elements, story = false, onPath, onChange }: { spec: MotionSpec; path: string; elements: StackElement[]; story?: boolean; onPath: (p: string) => void; onChange: (spec: MotionSpec) => void }) {
   const [adding, setAdding] = useState(false)
   const target = spec.targets.find((t) => t.path === path)
   const effects = target?.effects ?? []
@@ -88,23 +98,34 @@ export function EffectStack({ spec, path, elements, onPath, onChange }: { spec: 
     setAdding(false)
   }
   const elementsWithFx = new Set(spec.targets.filter((t) => t.effects.length).map((t) => t.path))
+  const listed: StackElement[] = story ? elements.filter((e) => e.path) : [{ path: '', className: 'root' }, ...elements.filter((e) => e.path)]
+  // A target the spec has that the rendered story does not list (yet): keep it selectable.
+  if (story && path && !listed.some((e) => e.path === path)) listed.unshift({ path, className: 'not rendered', label: path.split('.').join(' > ') })
+  const copyTargets = story ? listed.filter((e) => e.path !== path) : []
+  const copyTo = (to: string) => {
+    if (!to || !effects.length) return
+    const others = spec.targets.filter((t) => t.path !== to)
+    onChange({ ...spec, targets: [...others, { path: to, effects: structuredClone(effects) }] })
+  }
   return (
     <div className="um-stack">
       <div className="row um-target">
         <span className="faint mono">element</span>
         <select className="input grow" value={path} onChange={(e) => onPath(e.target.value)} aria-label="Element">
-          {[{ path: '', className: 'root' }, ...elements.filter((e) => e.path)].map((e) => (
+          {story && !path && <option value="">pick an element (or click one in select mode)</option>}
+          {listed.map((e) => (
             <option key={e.path} value={e.path}>
-              {e.path || '(root)'} · {e.className}
+              {e.label ?? (e.path || '(root)')} · {e.className}
+              {e.hidden ? ' (hidden)' : ''}
               {elementsWithFx.has(e.path) ? ' ●' : ''}
             </option>
           ))}
         </select>
-        <button className={`btn small${adding ? ' on' : ''}`} onClick={() => setAdding((a) => !a)} aria-expanded={adding}>
+        <button className={`btn small${adding ? ' on' : ''}`} onClick={() => setAdding((a) => !a)} aria-expanded={adding} disabled={story && !path}>
           <Icon name="plus" size={11} /> Effect
         </button>
       </div>
-      {adding && (
+      {adding && !(story && !path) && (
         <div className="um-lib" role="menu" aria-label="Effect library">
           {GROUPS.map((g) => (
             <div key={g.key} className="um-lib-group">
@@ -119,7 +140,25 @@ export function EffectStack({ spec, path, elements, onPath, onChange }: { spec: 
           ))}
         </div>
       )}
-      {!effects.length && <p className="note um-none">No effects on {path || 'the root'} yet. Add one, or describe the feel above.</p>}
+      {story && effects.length > 0 && copyTargets.length > 0 && (
+        <div className="row um-copyto">
+          <span className="faint mono">same stack on</span>
+          <select className="input grow" value="" onChange={(e) => copyTo(e.target.value)} aria-label="Copy this stack to another element">
+            <option value="">another element…</option>
+            {copyTargets.map((e) => (
+              <option key={e.path} value={e.path}>
+                {e.label ?? e.path} · {e.className}
+                {elementsWithFx.has(e.path) ? ' ●' : ''}
+              </option>
+            ))}
+          </select>
+        </div>
+      )}
+      {story && !path ? (
+        <p className="note um-none">Pick the element to animate: click it on the stage in select mode, or choose it in the list. Buttons are listed first.</p>
+      ) : (
+        !effects.length && <p className="note um-none">No effects on {path ? path.split('.').join(' > ') : 'the root'} yet. Add one, or describe the feel above.</p>
+      )}
       {effects.map((e) => {
         const info = EFFECT_LIBRARY[e.kind]
         return (

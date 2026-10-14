@@ -2,11 +2,15 @@
 // the browser preview runs the TS engine) drawn by the UI Preview Stage. Hover and click in it drive
 // the effects for real; specs, labels and reduced motion go in as story controls so slider edits
 // apply without a reload. Select mode picks an element (its path under the component root).
-import { forwardRef, useCallback, useEffect, useImperativeHandle, useRef, useState } from 'react'
+// A story source ("From a story") renders the user's UI Labs story in each slot instead; paths are
+// then under the slot ("RacingHud.BOOSTButton"), select mode picks the enclosing button / frame, and
+// the stage reports the buttons and frames it can target.
+import { forwardRef, useCallback, useEffect, useImperativeHandle, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { UiComponentRef } from '@shared/types'
 import type { LayoutResult } from '@shared/uiPreview/layout'
 import { absoluteRequire } from '@shared/uimotion/codegen'
 import { LAB_HOLDER } from '@shared/uimotion/compile'
+import { pickTarget, storyTargets, type StoryTarget } from '@shared/uimotion/story'
 import { Stage, type StageMode } from '../uipreview/Stage'
 import { useSession } from '../uipreview/useSession'
 import { errorText } from '../../lib/format'
@@ -25,8 +29,22 @@ export interface MotionStageHandle {
   trigger(action: 'appear' | 'disappear'): void
 }
 
+// A UI Labs story the lab renders (from the UI Preview's story list).
+export interface StorySubject {
+  file: string
+  name: string
+  // DataModel path of the story module.
+  path: string[]
+}
+
 interface Props {
   component: UiComponentRef | null
+  story?: StorySubject | null
+  // Story source: the element capture / replay drive (the first target with effects).
+  focusPath?: string | null
+  onTargets?: (targets: StoryTarget[]) => void
+  // Shown when there is no subject (the source choice).
+  empty?: ReactNode
   slots: StageSlot[]
   reduced: boolean
   mode: StageMode
@@ -36,10 +54,13 @@ interface Props {
 }
 
 const W = 960
-const H = 300
+const FIGMA_H = 300
+// A story is usually a whole screen (a HUD): 16:9.
+const STORY_H = 540
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 
-export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionStage({ component, slots, reduced, mode, selectedPath, onSelectPath, onStatus }, ref) {
+export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionStage({ component, story = null, focusPath = null, onTargets, empty, slots, reduced, mode, selectedPath, onSelectPath, onStatus }, ref) {
+  const H = story ? STORY_H : FIGMA_H
   const h = window.harness
   const session = useSession()
   const { tree, version, view, images, fontsVersion, input, open } = session
@@ -70,13 +91,14 @@ export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionS
 
   // Write + open the lab story when the subject changes.
   useEffect(() => {
-    if (!component?.instance) {
+    if (!story && !component?.instance) {
       setFile(null)
       return
     }
     let live = true
     setError(null)
-    h.uiMotionLabStory({ kind: 'component', require: absoluteRequire(component.instance), name: component.name })
+    const subject = story ? { kind: 'story' as const, require: absoluteRequire(story.path), name: story.name } : { kind: 'component' as const, require: absoluteRequire(component!.instance!), name: component!.name }
+    h.uiMotionLabStory(subject)
       .then(async (r) => {
         if (!live) return
         setFile(r.file)
@@ -88,7 +110,7 @@ export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionS
     return () => {
       live = false
     }
-  }, [component?.name, component?.module, component?.importedAt])
+  }, [story?.file, component?.name, component?.module, component?.importedAt])
 
   // Live control updates (only what changed).
   useEffect(() => {
@@ -111,11 +133,21 @@ export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionS
     onStatus?.(error ?? (view.status === 'error' ? (view.message ?? 'preview error') : err ? err.text : null))
   }, [view.status, view.message, view.console.length, error])
 
-  // Slot i's component root (first GuiObject under SlotN that is not the label / fade wrapper).
-  const slotRoot = useCallback(
+  const slotFrame = useCallback(
     (i: number): number | null => {
       const holder = [...tree.nodes.values()].find((n) => n.name === LAB_HOLDER)
-      const slot = holder?.children.map((c) => tree.get(c)).find((n) => n?.name === `Slot${i}`)
+      return holder?.children.map((c) => tree.get(c)).find((n) => n?.name === `Slot${i}`)?.id ?? null
+    },
+    [tree, version]
+  )
+
+  // Slot i's component root (first GuiObject under SlotN that is not the label / fade wrapper); for
+  // a story, the slot itself (the story renders into it and the runtime attaches there).
+  const slotRoot = useCallback(
+    (i: number): number | null => {
+      const id = slotFrame(i)
+      if (story || id == null) return id
+      const slot = tree.get(id)
       if (!slot) return null
       const queue = [...slot.children]
       while (queue.length) {
@@ -129,11 +161,23 @@ export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionS
       }
       return null
     },
-    [tree, version]
+    [tree, version, slotFrame, story]
   )
+
+  // The story's targetable elements (slot 1), reported when the tree changes shape.
+  const targets = useMemo(() => (story ? storyTargets(tree.nodes, slotFrame(1)) : []), [story, tree, version, slotFrame])
+  const targetsKey = targets.map((t) => `${t.path}:${t.className}:${t.hidden ? 1 : 0}`).join('|')
+  useEffect(() => onTargets?.(targets), [targetsKey])
 
   const pathOf = useCallback(
     (id: number): string | null => {
+      if (story) {
+        for (const i of [1, 2, 3]) {
+          const p = pickTarget(tree.nodes, id, slotFrame(i))
+          if (p != null) return p
+        }
+        return null
+      }
       const roots = [1, 2, 3].map(slotRoot).filter((x): x is number => x != null)
       const parts: string[] = []
       let cur = tree.get(id)
@@ -143,7 +187,7 @@ export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionS
       }
       return cur ? parts.join('.') : null
     },
-    [tree, version, slotRoot]
+    [tree, version, slotRoot, slotFrame, story]
   )
 
   const idOfPath = (path: string | null, slot = 1): number | null => {
@@ -169,9 +213,12 @@ export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionS
     return h.uiMotionSnap({ x: r.left, y: r.top, width: r.width, height: r.height }).catch(() => null)
   }
 
+  // The element hover / press drive: the component root, or a story's focused target.
+  const driven = (slot: number): number | null => (story ? (focusPath ? idOfPath(focusPath, slot) : null) : slotRoot(slot))
+
   useImperativeHandle(ref, () => ({
     async capture() {
-      const id = slotRoot(1)
+      const id = driven(1)
       const at = id != null ? centerOf(id) : null
       const frames: string[] = []
       const labels: string[] = []
@@ -200,7 +247,7 @@ export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionS
       return { frames, labels }
     },
     replay() {
-      const ids = [1, 2, 3].map(slotRoot).filter((x): x is number => x != null)
+      const ids = [1, 2, 3].map(driven).filter((x): x is number => x != null)
       const pts = ids.map((id) => ({ id, at: centerOf(id) })).filter((p) => p.at)
       const run = (delay: number, fn: () => void) => setTimeout(fn, delay)
       for (const p of pts) {
@@ -219,7 +266,7 @@ export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionS
 
   return (
     <div className="um-stage-wrap" ref={wrapRef}>
-      <div className="um-stage" style={{ height: H * scale }}>
+      <div className={`um-stage${!component && !story ? ' empty' : ''}`} style={!component && !story ? undefined : { height: H * scale }}>
         <div className="um-scaler" ref={stageRef} style={{ width: W, height: H, transform: `scale(${scale})` }}>
           <Stage
             tree={tree}
@@ -239,8 +286,8 @@ export const MotionStage = forwardRef<MotionStageHandle, Props>(function MotionS
             onLayout={(l) => (layoutRef.current = l)}
           />
         </div>
-        {!component && <div className="um-stage-empty mono">Import a Figma frame or component to preview it here.</div>}
-        {component && !component.instance && <div className="um-stage-empty mono">{component.module} is not mapped in the project file, so the preview cannot require it.</div>}
+        {!component && !story && <div className="um-stage-empty">{empty ?? <span className="mono">Import a Figma frame or component, or pick one of your UI Labs stories, to preview it here.</span>}</div>}
+        {!story && component && !component.instance && <div className="um-stage-empty mono">{component.module} is not mapped in the project file, so the preview cannot require it.</div>}
         {view.status === 'starting' && <div className="um-stage-busy mono"><span className="spinner" aria-hidden /> starting preview…</div>}
       </div>
     </div>

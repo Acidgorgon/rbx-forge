@@ -79,11 +79,16 @@ function runtimeFor(kinds: Set<string>): string {
 export interface CompileOptions {
   // Where it came from, for the header ("UI Motion Lab: Play Button / Bouncy").
   source?: string
+  // More stacks the module carries as Effects.stacks.<key> (a story source with per-element stacks):
+  // Effects.attach(button, Effects.stacks.Drift).
+  stacks?: Record<string, MotionSpec>
 }
 
 // The export module. require(it).attach(root) returns { destroy, show, hide }.
 export function compileMotionModule(spec: MotionSpec, opts: CompileOptions = {}): string {
+  const stacks = Object.entries(opts.stacks ?? {})
   const kinds = usedKinds(spec)
+  for (const [, s] of stacks) for (const k of usedKinds(s)) kinds.add(k)
   const lines = [
     '--!strict',
     `-- ${spec.name}: UI motion compiled by RBX Forge's UI Motion Lab${opts.source ? ` (${opts.source})` : ''}.`,
@@ -97,6 +102,7 @@ export function compileMotionModule(spec: MotionSpec, opts: CompileOptions = {})
     '-- overwritten on the next export.',
     '--',
     ...describeSpec(spec).split('\n').map((l) => `--   ${l}`),
+    ...stacks.flatMap(([k, s]) => describeSpec(s).split('\n').map((l) => `--   stacks.${k} ${l}`)),
     '',
     services(kinds),
     '',
@@ -107,6 +113,7 @@ export function compileMotionModule(spec: MotionSpec, opts: CompileOptions = {})
     runtimeFor(kinds),
     '',
     'Effects.spec = SPEC',
+    ...(stacks.length ? ['', '-- Per-element stacks: Effects.attach(element, Effects.stacks.<Name>)', `Effects.stacks = {\n${stacks.map(([k, s]) => `\t${k} = ${specLuau(s).replace(/\n/g, '\n\t')},`).join('\n')}\n}`] : []),
     '',
     'return Effects',
     ''

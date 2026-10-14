@@ -15,6 +15,7 @@ import { mapFigmaNode, walkInst, type MappingReport } from '../../../shared/uimo
 import { FigmaRest, FigmaRestError, parseFigmaUrl, type FetchLike } from '../../../shared/uimotion/figma/rest.ts'
 import { parseForgeFigmaDoc, type FigmaNode } from '../../../shared/uimotion/figma/types.ts'
 import { describeSpec, luauName, normalizeSpec, type MotionSpec } from '../../../shared/uimotion/spec.ts'
+import { storyExportPlan, storySnippet } from '../../../shared/uimotion/story.ts'
 import { uiPrincipleChecks } from '../../../shared/principles/uiChecks.ts'
 import { principleIds, scoresForRating } from '../../../shared/principles/attach.ts'
 import { buildCritique } from '../../../shared/uimotion/critique.ts'
@@ -161,7 +162,7 @@ export class UiMotionService {
     }
   }
 
-  async save(raw: unknown, opts: { id?: string; origin?: string; scope?: UiMotionScope; component?: string; name?: string; restatement?: Restatement } = {}): Promise<UiMotionEntry> {
+  async save(raw: unknown, opts: { id?: string; origin?: string; scope?: UiMotionScope; component?: string; story?: string; name?: string; restatement?: Restatement } = {}): Promise<UiMotionEntry> {
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new UiMotionServiceError(`no motion stack "${opts.id}"`)
     const spec = normalizeSpec(raw, opts.name ?? prev?.entry.name ?? 'Motion')
@@ -177,6 +178,7 @@ export class UiMotionService {
       updatedAt: now,
       ...(opts.origin ? { origin: opts.origin } : {}),
       ...(opts.component ? { component: opts.component } : {}),
+      ...(opts.story ? { story: checkStoryFile(opts.story) } : {}),
       ...(opts.restatement ? { restatement: opts.restatement } : {}),
       spec
     } as UiMotionEntry
@@ -394,18 +396,22 @@ export class UiMotionService {
 
   // ------------------------------------------------------------ compose
 
-  async compose(brief: string, opts: { restatement?: Restatement; component?: string; current?: MotionSpec } = {}): Promise<UiMotionComposeResult> {
+  async compose(brief: string, opts: { restatement?: Restatement; component?: string; story?: string; elements?: { path: string; className: string }[]; target?: string; current?: MotionSpec } = {}): Promise<UiMotionComposeResult> {
     const text = String(brief ?? '').trim()
     if (text.length < 3) throw new UiMotionServiceError('Describe the feel, e.g. "snappy shop button with a shine every few seconds".')
     const restatement = normalizeRestatement(opts.restatement) ?? undefined
-    const comp = opts.component ? await this.component(opts.component) : null
-    const elements = comp?.elements.filter((e) => e.path) ?? []
+    const story = opts.story ? checkStoryFile(opts.story) : null
+    const comp = !story && opts.component ? await this.component(opts.component) : null
+    // A story source: the elements of its rendered tree; the picked one stands in for the root.
+    const target = story && opts.target ? String(opts.target) : ''
+    const elements = story ? (opts.elements ?? []).filter((e) => e && typeof e.path === 'string' && e.path).slice(0, 120).map((e) => ({ path: String(e.path), className: String(e.className ?? '') })) : (comp?.elements.filter((e) => e.path) ?? [])
     const notes: string[] = []
-    const fallbackName = luauName(`${comp?.name ?? ''} ${text.split(/\s+/).slice(0, 3).join(' ')}`, 'Motion')
+    const subject = comp?.name ?? (story ? storyNameOf(story) : '')
+    const fallbackName = luauName(`${subject} ${text.split(/\s+/).slice(0, 3).join(' ')}`, 'Motion')
     let spec: MotionSpec
     let source: 'model' | 'heuristic' = 'heuristic'
     const model = this.deps.model?.('default')
-    const h = heuristicStack(text)
+    const h = heuristicStack(text, target)
     spec = { ...h.spec, name: fallbackName }
     if (model) {
       const liked = (await this.list()).filter((e) => e.rating === 'up').slice(0, 2).map((e) => ({ name: e.name, spec: e.spec }))
@@ -440,7 +446,9 @@ export class UiMotionService {
         this.deps.log?.(`uimotion: compose model: ${(e as Error).message}`, 'stderr')
       }
     } else notes.push(`no model: started from the "${h.preset}" preset`)
-    const entry = await this.save(spec, { origin: text, ...(comp ? { component: comp.name } : {}), ...(restatement ? { restatement } : {}) })
+    // The story's slot is not an element: a root target means the picked element.
+    if (story && target) spec = normalizeSpec({ ...spec, targets: spec.targets.map((t) => (t.path === '' ? { ...t, path: target } : t)) }, spec.name)
+    const entry = await this.save(spec, { origin: text, ...(comp ? { component: comp.name } : {}), ...(story ? { story } : {}), ...(restatement ? { restatement } : {}) })
     await this.ensureSkill()
     return { entry, source, notes }
   }
@@ -559,7 +567,7 @@ export class UiMotionService {
 
   // ------------------------------------------------------------ export
 
-  async export(id: string, opts: { component?: string } = {}): Promise<UiMotionExportResult> {
+  async export(id: string, opts: { component?: string; story?: string } = {}): Promise<UiMotionExportResult> {
     const root = this.needRoot()
     const entry = await this.get(id)
     const spec = entry.spec
@@ -569,6 +577,8 @@ export class UiMotionService {
     const warnings: string[] = []
     const name = luauName(spec.name)
     const moduleFile = `${layout.motion}/${name}Effects.luau`
+    const story = opts.story ? checkStoryFile(opts.story) : !opts.component && !entry.component && entry.story ? entry.story : null
+    if (story) return this.exportStory(root, id, entry, { story, moduleFile, tree, layoutMotion: layout.motion })
     await this.writeText(root, moduleFile, compileMotionModule(spec, { source: `${entry.component ? `${entry.component} / ` : ''}${entry.name}` }))
     const files = [moduleFile]
     const moduleInst = instanceOf(tree, moduleFile)
@@ -589,10 +599,41 @@ export class UiMotionService {
       const paths = new Set(comp.elements.map((e) => e.path))
       for (const t of spec.targets) if (t.path && !paths.has(t.path)) warnings.push(`target "${t.path}" is not in ${comp.name}; that part of the stack does nothing`)
     } else warnings.push('no component chosen: wrote the module only (require it and call Effects.attach(button))')
-    const requirePath = moduleInst ? `game:GetService(${JSON.stringify(moduleInst[0])})${moduleInst.slice(1).map((p) => (/^[A-Za-z_]\w*$/.test(p) ? `.${p}` : `[${JSON.stringify(p)}]`)).join('')}` : null
+    const requirePath = moduleInst ? absoluteRequirePath(moduleInst) : null
     const hit = await this.find(id)
     if (hit) await hit.store.save({ ...hit.entry, written: { module: moduleFile, ...(storyFile ? { story: storyFile } : {}), at: this.now() } })
     this.changed()
     return { files, module: moduleFile, ...(storyFile ? { story: storyFile } : {}), requirePath, warnings }
   }
+
+  // A story source: only the module (every target rebased to its own attach root) and the lines the
+  // user adds to their own component. Their story and component files are left alone.
+  private async exportStory(root: string, id: string, entry: UiMotionEntry, o: { story: string; moduleFile: string; tree: Awaited<ReturnType<typeof projectTree>>; layoutMotion: string }): Promise<UiMotionExportResult> {
+    const plan = storyExportPlan(entry.spec)
+    const warnings: string[] = []
+    await this.writeText(root, o.moduleFile, compileMotionModule(plan.spec, { source: `${storyNameOf(o.story)} story / ${entry.name}`, stacks: plan.stacks }))
+    const moduleInst = instanceOf(o.tree, o.moduleFile)
+    if (!moduleInst) warnings.push(`${o.layoutMotion} is not mapped in the project file: Rojo / Forge Sync will not sync it`)
+    const requirePath = moduleInst ? absoluteRequirePath(moduleInst) : null
+    const snippet = storySnippet({ requirePath, module: o.moduleFile, attach: plan.attach })
+    const hit = await this.find(id)
+    if (hit) await hit.store.save({ ...hit.entry, written: { module: o.moduleFile, at: this.now() } })
+    this.changed()
+    return { files: [o.moduleFile], module: o.moduleFile, requirePath, warnings, snippet, attach: plan.attach }
+  }
+}
+
+function absoluteRequirePath(inst: string[]): string {
+  return `game:GetService(${JSON.stringify(inst[0])})${inst.slice(1).map((p) => (/^[A-Za-z_]\w*$/.test(p) ? `.${p}` : `[${JSON.stringify(p)}]`)).join('')}`
+}
+
+// A repo-relative *.story.luau path (the story a stack was designed on).
+function checkStoryFile(file: string): string {
+  const f = String(file ?? '').replace(/\\/g, '/').trim()
+  if (!/\.story\.luau?$/.test(f) || f.startsWith('/') || f.split('/').includes('..') || f.length > 400) throw new UiMotionServiceError(`not a story file: ${f.slice(0, 120)}`)
+  return f
+}
+
+function storyNameOf(file: string): string {
+  return luauName((file.split('/').pop() ?? '').replace(/\.story\.luau?$/, ''), 'Story')
 }

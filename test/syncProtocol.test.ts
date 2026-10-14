@@ -8,6 +8,7 @@ import {
   parseConfigQuery,
   parseNode,
   parsePath,
+  parseRefs,
   parseSnapshotBody,
   sanitizeConfig,
   SYNC_LIMITS,
@@ -122,4 +123,31 @@ test('sync protocol: config query and config answer', () => {
     roots: [['ReplicatedStorage', 'Shared']],
     skip: []
   })
+})
+
+test('sync protocol: optional unsynced refs on snapshot and changes bodies', () => {
+  const refs = [
+    { path: ['Workspace', 'Map', 'Door', 'Hinge'], property: 'Part0' },
+    { path: ['ReplicatedStorage', 'Target'], property: 'Value' }
+  ]
+  const snap = parseSnapshotBody({ session: 's', place: { placeId: 1 }, seq: 0, final: true, nodes: [], refs, refsTotal: 7 })
+  assert.deepEqual(snap.refs, refs)
+  assert.equal(snap.refsTotal, 7)
+  // Absent stays absent (older plugins).
+  assert.equal('refs' in parseSnapshotBody({ session: 's', place: { placeId: 1 }, seq: 0, final: true, nodes: [] }), false)
+  const changes = parseChangesBody({ session: 's', place: { placeId: 1 }, changes: [], refs: [] })
+  assert.deepEqual(changes.refs, [])
+  assert.deepEqual(parseRefs([{ path: ['A'], property: 'PrimaryPart', extra: 1 }]), [{ path: ['A'], property: 'PrimaryPart' }])
+  const bad: [unknown, RegExp][] = [
+    ['x', /refs must be an array/],
+    [Array(SYNC_LIMITS.maxRefs + 1).fill({ path: ['A'], property: 'Value' }), /up to/],
+    [[{ path: [], property: 'Value' }], /refs\[0\]\.path/],
+    [[{ path: ['A'], property: 'Part 0' }], /property/],
+    [[{ path: ['A'], property: 5 }], /property/],
+    [[null], /refs\[0\] must be an object/]
+  ]
+  for (const [v, re] of bad) assert.throws(() => parseRefs(v), (e: unknown) => e instanceof SyncProtocolError && re.test((e as Error).message), String(re))
+  assert.throws(() => parseChangesBody({ session: 's', place: { placeId: 1 }, changes: [], refs: 'nope' }), SyncProtocolError)
+  assert.throws(() => parseSnapshotBody({ session: 's', place: { placeId: 1 }, seq: 0, final: true, nodes: [], refs, refsTotal: 1 }), /refsTotal/)
+  assert.throws(() => parseSnapshotBody({ session: 's', place: { placeId: 1 }, seq: 0, final: true, nodes: [], refsTotal: -1 }), /refsTotal/)
 })

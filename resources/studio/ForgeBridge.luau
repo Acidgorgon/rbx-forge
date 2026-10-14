@@ -9,7 +9,7 @@
 -- mode and only talks to 127.0.0.1. Studio asks once to allow HTTP requests to 127.0.0.1 and to allow
 -- script injection (it creates the job's ModuleScripts from Forge's Luau).
 --
--- Forge Sync (plugin version 2): in edit mode the plugin also streams the scripts and instances under
+-- Forge Sync (plugin version 2; 3 adds the unsynced-reference report): in edit mode the plugin also streams the scripts and instances under
 -- the project's Rojo-mapped roots to Forge (a chunked snapshot, then debounced change events), so Forge
 -- can reconcile Studio with disk before Rojo serves. It only reads: it never changes the DataModel.
 --
@@ -482,6 +482,22 @@ local SYNC_PROPS: { { any } } = {
 	{ "Model", { "LevelOfDetail", "ModelStreamingMode" } },
 }
 
+-- Instance-reference properties (Creator Hub API: ObjectValue.Value, JointInstance / WeldConstraint /
+-- NoCollisionConstraint Part0/Part1, Constraint / Beam / Trail Attachment0/Attachment1,
+-- Model.PrimaryPart). Forge Sync does not write references to disk; it only reports where they are
+-- set, so Forge can tell the user they stay in Studio.
+local SYNC_REF_PROPS: { { any } } = {
+	{ "ObjectValue", { "Value" } },
+	{ "JointInstance", { "Part0", "Part1" } },
+	{ "WeldConstraint", { "Part0", "Part1" } },
+	{ "NoCollisionConstraint", { "Part0", "Part1" } },
+	{ "Constraint", { "Attachment0", "Attachment1" } },
+	{ "Beam", { "Attachment0", "Attachment1" } },
+	{ "Trail", { "Attachment0", "Attachment1" } },
+	{ "Model", { "PrimaryPart" } },
+}
+local SYNC_MAX_REFS = 200
+
 type Known = { id: string, path: { string }, key: string }
 
 local sync = {
@@ -496,6 +512,8 @@ local sync = {
 	conns = {} :: { [Instance]: { RBXScriptConnection } },
 	rootConns = {} :: { RBXScriptConnection },
 	touched = {} :: { [Instance]: { [string]: boolean } },
+	refs = {} :: { [Instance]: string }, -- set reference properties, comma-joined
+	refsDirty = false,
 	dirty = false,
 	firstTouch = 0,
 	lastTouch = 0,
@@ -505,6 +523,7 @@ local syncIds: { [Instance]: string } = setmetatable({}, { __mode = "k" }) :: an
 local syncNextId = 0
 local classProps: { [string]: { string } } = {}
 local classDefaults: { [string]: { [string]: any } | false } = {}
+local classRefProps: { [string]: { string } } = {}
 
 local function pathKey(path: { string }, last: number?): string
 	return table.concat(path, "\0", 1, last or #path)
@@ -619,6 +638,60 @@ local function propsFor(inst: Instance): { string }
 	end
 	classProps[inst.ClassName] = list
 	return list
+end
+
+local function refPropsFor(inst: Instance): { string }
+	local list = classRefProps[inst.ClassName]
+	if list then
+		return list
+	end
+	list = {}
+	for _, entry in SYNC_REF_PROPS do
+		if inst:IsA(entry[1]) then
+			for _, name in entry[2] do
+				table.insert(list, name)
+			end
+		end
+	end
+	classRefProps[inst.ClassName] = list
+	return list
+end
+
+-- Re-reads which reference properties of a known instance are set; marks the list dirty on a change.
+local function updateRefs(inst: Instance)
+	local set = {}
+	if sync.known[inst] then
+		for _, name in refPropsFor(inst) do
+			local ok, value = pcall(function()
+				return (inst :: any)[name]
+			end)
+			if ok and typeof(value) == "Instance" then
+				table.insert(set, name)
+			end
+		end
+	end
+	local joined = if #set > 0 then table.concat(set, ",") else nil
+	if sync.refs[inst] ~= joined then
+		sync.refs[inst] = joined
+		sync.refsDirty = true
+	end
+end
+
+-- The reported list ({ path, property }, capped) and the uncapped count.
+local function refList(): ({ any }, number)
+	local list, total = {}, 0
+	for inst, joined in sync.refs do
+		local known = sync.known[inst]
+		if known then
+			for _, name in string.split(joined, ",") do
+				total += 1
+				if #list < SYNC_MAX_REFS then
+					table.insert(list, { path = known.path, property = name })
+				end
+			end
+		end
+	end
+	return list, total
 end
 
 local function defaultsFor(inst: Instance, props: { string }): { [string]: any }?
@@ -756,11 +829,17 @@ local function register(inst: Instance, path: { string })
 		for _, name in propsFor(inst) do
 			watched[name] = true
 		end
+		local refWatched = {}
+		for _, name in refPropsFor(inst) do
+			refWatched[name] = true
+		end
 		table.insert(list, inst.Changed:Connect(function(prop)
 			if prop == "Name" then
 				touch(inst, nil)
 			elseif watched[prop] then
 				touch(inst, "props")
+			elseif refWatched[prop] then
+				touch(inst, "refs")
 			end
 		end))
 	end
@@ -772,6 +851,10 @@ end
 
 local function unregister(inst: Instance)
 	sync.known[inst] = nil
+	if sync.refs[inst] then
+		sync.refs[inst] = nil
+		sync.refsDirty = true
+	end
 	local list = sync.conns[inst]
 	if list then
 		for _, c in list do
@@ -794,6 +877,8 @@ local function stopSync()
 	sync.known = {}
 	sync.conns = {}
 	sync.touched = {}
+	sync.refs = {}
+	sync.refsDirty = false
 	sync.dirty = false
 end
 
@@ -827,7 +912,12 @@ local function sendSnapshot(gen: number)
 	local chunk, bytes, seq, count = {}, 0, 0, 0
 	local place = syncPlace()
 	local function send(final: boolean)
-		local ok, err = syncPost("snapshot", { session = sync.session, place = place, seq = seq, final = final, nodes = chunk })
+		local body: any = { session = sync.session, place = place, seq = seq, final = final, nodes = chunk }
+		if final then
+			body.refs, body.refsTotal = refList()
+			sync.refsDirty = false
+		end
+		local ok, err = syncPost("snapshot", body)
 		if not ok then
 			error("snapshot: " .. tostring(err), 0)
 		end
@@ -846,6 +936,7 @@ local function sendSnapshot(gen: number)
 			return
 		end
 		register(inst, path)
+		updateRefs(inst)
 		local node = buildNode(inst, path)
 		local size = nodeBytes(node)
 		if bytes > 0 and bytes + size > SYNC_CHUNK_BYTES then
@@ -956,8 +1047,14 @@ local function sendChanges(changes: { any })
 	local batch, bytes = {}, 0
 	local total = 0
 	local place = syncPlace()
-	local function send()
-		local ok, err = syncPost("changes", { session = sync.session, place = place, changes = batch })
+	local function send(last: boolean?)
+		local body: any = { session = sync.session, place = place, changes = batch }
+		if last and sync.refsDirty then
+			-- The whole current list: Forge replaces what it had for this place.
+			body.refs, body.refsTotal = refList()
+			sync.refsDirty = false
+		end
+		local ok, err = syncPost("changes", body)
 		batch, bytes = {}, 0
 		if not ok then
 			error("changes: " .. tostring(err), 0)
@@ -983,8 +1080,8 @@ local function sendChanges(changes: { any })
 		table.insert(batch, change)
 		bytes += size
 	end
-	if #batch > 0 then
-		send()
+	if #batch > 0 or sync.refsDirty then
+		send(true)
 	end
 end
 
@@ -1012,6 +1109,7 @@ local function flush()
 		end
 		if path and not was then
 			register(inst, path)
+			updateRefs(inst)
 			local node = buildNode(inst, path)
 			local descendants = {}
 			for _, d in inst:GetDescendants() do
@@ -1020,6 +1118,7 @@ local function flush()
 					local dp = syncPath(d)
 					if dp then
 						register(d, dp)
+						updateRefs(d)
 						table.insert(descendants, buildNode(d, dp))
 					end
 				end
@@ -1034,15 +1133,19 @@ local function flush()
 				local from = was.path
 				local sameParent = #path == #from and pathKey(path, #path - 1) == pathKey(from, #from - 1)
 				rebase(was.key, #from, path)
+				if next(sync.refs) then
+					sync.refsDirty = true -- reported paths under it changed
+				end
 				table.insert(changes, { kind = if sameParent then "renamed" else "moved", id = was.id, from = from, node = buildNode(inst, path) })
 			elseif item.flags.source then
 				table.insert(changes, { kind = "source", node = buildNode(inst, path) })
 			elseif item.flags.props then
 				table.insert(changes, { kind = "props", node = buildNode(inst, path) })
 			end
+			updateRefs(inst)
 		end
 	end
-	if #changes > 0 then
+	if #changes > 0 or sync.refsDirty then
 		sendChanges(changes)
 	end
 end

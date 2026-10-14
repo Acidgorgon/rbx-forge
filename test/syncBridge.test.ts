@@ -78,8 +78,11 @@ test('sync bridge: routes reach the handler with parsed bodies', async () => {
     assert.deepEqual(fake.configs, [{ placeId: 42, gameId: 7, place: 'FSF' }])
 
     assert.deepEqual(await c.post('snapshot', { session: 'tok', place, seq: 0, final: false, nodes: [node] }), { status: 200, body: { ok: true } })
-    assert.deepEqual(await c.post('snapshot', { session: 'tok', place, seq: 1, final: true, nodes: [] }), { status: 200, body: { ok: true } })
+    const refs = [{ path: ['Workspace', 'Door', 'Weld'], property: 'Part1' }]
+    assert.deepEqual(await c.post('snapshot', { session: 'tok', place, seq: 1, final: true, nodes: [], refs, refsTotal: 1 }), { status: 200, body: { ok: true } })
     assert.equal(fake.snapshots.length, 2)
+    assert.deepEqual(fake.snapshots[1].refs, refs)
+    assert.equal(fake.snapshots[1].refsTotal, 1)
     assert.deepEqual(fake.snapshots[0].nodes, [node])
     assert.equal(fake.snapshots[1].final, true)
     // The handler's resend answer reaches the plugin as is.
@@ -156,6 +159,11 @@ test('sync plugin: the Studio plugin speaks the sync protocol', async () => {
   const src = await readFile(resolve(import.meta.dirname, '..', 'resources', 'studio', 'ForgeBridge.luau'), 'utf8')
   assert.ok(PLUGIN_VERSION >= 2, 'the plugin version was bumped for Forge Sync')
   for (const needle of ['/sync/config?placeId=', '"snapshot"', '"changes"', 'answer.resend', 'DescendantAdded', 'DescendantRemoving', 'AttributeChanged', 'oversize']) {
+    assert.ok(src.includes(needle), needle)
+  }
+  // Unsynced Instance references are reported (not synced): version 3.
+  assert.ok(PLUGIN_VERSION >= 3, 'the plugin version was bumped for the refs report')
+  for (const needle of ['"ObjectValue", { "Value" }', '"JointInstance", { "Part0", "Part1" }', '"WeldConstraint"', '"Beam", { "Attachment0", "Attachment1" }', '"Trail"', '"Constraint"', '"Model", { "PrimaryPart" }', 'body.refs, body.refsTotal = refList()']) {
     assert.ok(src.includes(needle), needle)
   }
   // Edit mode only: the whole plugin returns before anything else when the game is running.

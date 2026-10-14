@@ -9,7 +9,7 @@
 // full snapshot. Everything that arrives is checked here (pure, no I/O) before main sees it: shapes,
 // sizes and bounds, so a broken or hostile client cannot hand the engine odd paths or huge strings.
 
-import type { StudioChange, StudioNode, SyncPlace, SyncValue } from './types.ts'
+import type { StudioChange, StudioNode, SyncPlace, SyncRef, SyncValue } from './types.ts'
 
 export interface SyncConfigQuery {
   placeId: number
@@ -30,12 +30,19 @@ export interface SnapshotBody {
   seq: number
   final: boolean
   nodes: StudioNode[]
+  // Instance-reference properties seen (not synced). A snapshot's chunks add up; refsTotal (sent with
+  // the final chunk) counts every one found, including those over the plugin's cap.
+  refs?: SyncRef[]
+  refsTotal?: number
 }
 
 export interface ChangesBody {
   session: string
   place: SyncPlace
   changes: StudioChange[]
+  // When present: the place's complete current list of references (replaces the previous one).
+  refs?: SyncRef[]
+  refsTotal?: number
 }
 
 export type SyncReply = { ok: true } | { ok: false; error: string; resend?: true }
@@ -63,7 +70,8 @@ export const SYNC_LIMITS = {
   maxValue: 64 * 1024,
   maxTags: 100,
   maxTag: 128,
-  maxPlaceName: 200
+  maxPlaceName: 200,
+  maxRefs: 500
 } as const
 
 const CLASS_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
@@ -211,16 +219,40 @@ export function parseChange(v: unknown, what = 'change'): StudioChange {
   }
 }
 
+const PROP_RE = /^[A-Za-z][A-Za-z0-9_]{0,63}$/
+
+export function parseRefs(v: unknown, what = 'refs'): SyncRef[] {
+  if (!Array.isArray(v) || v.length > SYNC_LIMITS.maxRefs) return fail(`${what} must be an array of up to ${SYNC_LIMITS.maxRefs}`)
+  return v.map((r, i) => {
+    if (!isObj(r)) return fail(`${what}[${i}] must be an object`)
+    if (typeof r.property !== 'string' || !PROP_RE.test(r.property)) fail(`${what}[${i}].property is not a property name`)
+    return { path: parsePath(r.path, `${what}[${i}].path`), property: r.property as string }
+  })
+}
+
+// Optional refs / refsTotal on a snapshot or changes body.
+function withRefs<T extends { refs?: SyncRef[]; refsTotal?: number }>(out: T, v: Record<string, unknown>): T {
+  if (v.refs !== undefined) out.refs = parseRefs(v.refs)
+  if (v.refsTotal !== undefined) {
+    out.refsTotal = int(v.refsTotal, 'refsTotal')
+    if (out.refs && out.refsTotal < out.refs.length) fail('refsTotal is smaller than refs')
+  }
+  return out
+}
+
 export function parseSnapshotBody(v: unknown): SnapshotBody {
   if (!isObj(v)) return fail('body must be an object')
   if (typeof v.final !== 'boolean') fail('final must be a boolean')
-  return {
-    session: str(v.session, 'session', SYNC_LIMITS.maxSession),
-    place: parsePlace(v.place),
-    seq: int(v.seq, 'seq'),
-    final: v.final as boolean,
-    nodes: parseNodes(v.nodes, 'nodes', SYNC_LIMITS.maxNodes)
-  }
+  return withRefs<SnapshotBody>(
+    {
+      session: str(v.session, 'session', SYNC_LIMITS.maxSession),
+      place: parsePlace(v.place),
+      seq: int(v.seq, 'seq'),
+      final: v.final as boolean,
+      nodes: parseNodes(v.nodes, 'nodes', SYNC_LIMITS.maxNodes)
+    },
+    v
+  )
 }
 
 export function parseChangesBody(v: unknown): ChangesBody {
@@ -233,7 +265,7 @@ export function parseChangesBody(v: unknown): ChangesBody {
     return change
   })
   if (total > SYNC_LIMITS.maxNodes) fail(`changes carry more than ${SYNC_LIMITS.maxNodes} descendants`)
-  return { session: str(v.session, 'session', SYNC_LIMITS.maxSession), place: parsePlace(v.place), changes }
+  return withRefs<ChangesBody>({ session: str(v.session, 'session', SYNC_LIMITS.maxSession), place: parsePlace(v.place), changes }, v)
 }
 
 // Query string of GET /sync/config. placeId is required (0 for an unpublished place).

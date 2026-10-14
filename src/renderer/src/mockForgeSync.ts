@@ -31,6 +31,14 @@ const SHOP_STUDIO = SHOP_DISK.replace('\treturn true', '\tif not player:GetAttri
 const DASH_DISK = `return {\n\tName = "Dash",\n\tCooldown = 2,\n\tDistance = 18,\n}\n`
 const DASH_STUDIO = DASH_DISK.replace('Distance = 18', 'Distance = 22')
 
+const MOCK_REFS = [
+  { path: ['ServerScriptService', 'Server', 'Features', 'Skills', 'Moves', 'Dash', 'Target'], property: 'Value' },
+  { path: ['ReplicatedStorage', 'Shared', 'Assets', 'Sword', 'Handle', 'GripWeld'], property: 'Part0' },
+  { path: ['ReplicatedStorage', 'Shared', 'Assets', 'Sword', 'Handle', 'GripWeld'], property: 'Part1' },
+  { path: ['ReplicatedStorage', 'Shared', 'Assets', 'Sword'], property: 'PrimaryPart' },
+  { path: ['ReplicatedStorage', 'Shared', 'Assets', 'Sword', 'Blade', 'Trail'], property: 'Attachment0' }
+]
+
 export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
   const mode = new URLSearchParams(location.search).get('forgesync') ?? 'blocked'
   let settings: ForgeSyncSettings = { engine: mode === 'project' ? 'project' : mode === 'off' ? 'off' : 'forge', gateRojo: true }
@@ -110,7 +118,8 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
     recent: settings.engine === 'forge' ? recent : [],
     pendingStudioEdits: settings.engine === 'forge' ? pending : [],
     legacyPluginInstalled: legacy,
-    ...(legacy ? { legacyPlugins: ['FSFStudioSync.lua'] } : {})
+    ...(legacy ? { legacyPlugins: ['FSFStudioSync.lua'] } : {}),
+    ...(settings.engine === 'forge' && mode !== 'checking' ? { unsyncedRefs: MOCK_REFS, unsyncedRefsTotal: MOCK_REFS.length } : {})
   })
 
   const studioConflicts = (): StudioConflict[] | null =>

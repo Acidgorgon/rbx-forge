@@ -2,7 +2,7 @@
 // serves (gate), conflicts with a 3-way compare (opens the conflict tab), first-run bulk choice,
 // "Commit teammate edits", recent Studio -> disk activity and the legacy plugin banner.
 import { useEffect, useState } from 'react'
-import type { GateState, PlaceSyncStatus, SyncAction, SyncEntry, SyncStatus } from '@shared/types'
+import type { GateState, PlaceSyncStatus, SyncAction, SyncEntry, SyncRef, SyncStatus } from '@shared/types'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { ago, errorText } from '../lib/format'
@@ -42,6 +42,15 @@ const ACTION: Partial<Record<SyncAction, { letter: string; cls: string; label: s
 
 const COUNT_ORDER: SyncAction[] = ['same', 'pulled', 'merged', 'created', 'renamed', 'trashed', 'disk-ahead', 'conflict']
 
+// What kind of reference each property is, for the one-line summary.
+const REF_KIND: Record<string, string> = { Value: 'ObjectValue', Part0: 'welds', Part1: 'welds', Attachment0: 'attachments', Attachment1: 'attachments', PrimaryPart: 'PrimaryPart' }
+
+export function refsSummary(refs: SyncRef[], total: number): string {
+  const kinds = [...new Set(refs.map((r) => REF_KIND[r.property] ?? r.property))]
+  const shown = kinds.slice(0, 2).join(', ') + (kinds.length > 2 || total > refs.length ? '…' : '')
+  return `${total} reference${total === 1 ? " isn't" : "s aren't"} synced (${shown}); they stay in Studio only`
+}
+
 function countsText(p: PlaceSyncStatus): string {
   const parts = COUNT_ORDER.filter((a) => p.counts[a]).map((a) => `${p.counts[a]} ${a === 'disk-ahead' ? 'disk ahead' : a}`)
   return parts.join(' · ') || (p.connected ? 'waiting for the snapshot' : 'open the place in Studio')
@@ -51,6 +60,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
   const { state, actions } = useStore()
   const [busy, setBusy] = useState<string | null>(null)
   const [showPending, setShowPending] = useState(false)
+  const [showRefs, setShowRefs] = useState(false)
 
   if (!status || status.engine !== 'forge') return null
   const conflicts = state.studioConflicts.filter((c) => c.placeKey)
@@ -100,6 +110,26 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         </div>
       )}
       {status.warning && <div className="callout warn fs-callout">{status.warning}</div>}
+      {!!status.unsyncedRefs?.length && (
+        <div className="fs-refs">
+          <div className="lrow" onClick={() => setShowRefs(!showRefs)} title="Instance references (ObjectValue.Value, Weld/Motor6D Part0/Part1, Beam/Trail/constraint attachments, Model.PrimaryPart) are not written to disk. Rojo leaves them as they are in Studio, but a fresh place built from the repo will not have them.">
+            <Icon name="warn" size={13} style={{ color: 'var(--warn)', flex: 'none' }} />
+            <span className="grow fs-refs-line">{refsSummary(status.unsyncedRefs, status.unsyncedRefsTotal ?? status.unsyncedRefs.length)}</span>
+            <span className="link-btn">{showRefs ? 'hide' : 'list'}</span>
+          </div>
+          {showRefs && (
+            <div className="fs-refs-list">
+              {status.unsyncedRefs.map((r, i) => (
+                <div key={`${r.path.join('.')}:${r.property}:${i}`} className="lrow static" title={`${r.path.join('.')}.${r.property}`}>
+                  <span className="grow ellipsis mono">{r.path.slice(-2).join('.')}</span>
+                  <span className="sub mono">{r.property}</span>
+                </div>
+              ))}
+              {(status.unsyncedRefsTotal ?? 0) > status.unsyncedRefs.length && <div className="fs-sub note">and {status.unsyncedRefsTotal! - status.unsyncedRefs.length} more</div>}
+            </div>
+          )}
+        </div>
+      )}
 
       {status.places.map((p) => {
         const g = GATE[p.gate]

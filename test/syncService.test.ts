@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
 import type { GateState, StudioChange, StudioNode, SyncConflictInfo, SyncEntry, SyncPlace } from '../src/shared/sync/types.ts'
+import { UNSYNCED_REFS_MAX } from '../src/shared/sync/types.ts'
 import { commitMessage, parsePorcelainZ, placeKeyOf, SyncService, type PlaceMapLike, type SyncEngineLike } from '../src/main/services/sync/service.ts'
 import { createSync, syncSummary } from '../src/main/services/sync/wire.ts'
 import { disableLegacyPlugins, findLegacyPlugins, isLegacyPlugin } from '../src/main/services/sync/legacy.ts'
@@ -354,4 +355,42 @@ test('syncSummary', () => {
   assert.equal(syncSummary({ ...base, engine: 'off', places: [] }).detail, 'off')
   assert.deepEqual(syncSummary({ ...base, engine: 'forge', places: [{ placeKey: '1', projectFile: 'menu.project.json', gate: 'checking', connected: true, counts: {}, conflicts: 0 }] }), { state: 'starting', detail: 'Forge Sync: checking menu' })
   assert.equal(syncSummary({ ...base, engine: 'forge', places: [] }).detail, 'Forge Sync: waiting for Studio')
+})
+
+test('unsynced references: collected over a chunked snapshot, replaced by changes, capped in status', async () => {
+  const { service } = setup()
+  await service.start()
+  const place = { placeId: 111, name: 'FSF Match' }
+  const { sessionToken } = await service.handler.config({ placeId: 111 })
+  const ref = (name: string, property: string) => ({ path: ['ReplicatedStorage', 'Skills', name], property })
+  assert.equal((await service.status()).unsyncedRefs, undefined)
+  await service.handler.snapshot({ session: sessionToken, place, seq: 0, final: false, nodes: [node(['ReplicatedStorage', 'Skills'])], refs: [ref('Weld', 'Part0')] })
+  // Not shown until the snapshot is complete.
+  assert.equal((await service.status()).unsyncedRefs, undefined)
+  await service.handler.snapshot({ session: sessionToken, place, seq: 1, final: true, nodes: [], refs: [ref('Weld', 'Part1'), ref('Target', 'Value')], refsTotal: 3 })
+  let status = await service.status()
+  assert.deepEqual(status.unsyncedRefs, [ref('Weld', 'Part0'), ref('Weld', 'Part1'), ref('Target', 'Value')])
+  assert.equal(status.unsyncedRefsTotal, 3)
+
+  // A changes body with refs replaces the list (and an empty change list does not reach the engine).
+  await service.handler.changes({ session: sessionToken, place, changes: [], refs: [ref('Target', 'Value')], refsTotal: 1 })
+  status = await service.status()
+  assert.deepEqual(status.unsyncedRefs, [ref('Target', 'Value')])
+  // Without refs the list stays.
+  await service.handler.changes({ session: sessionToken, place, changes: [{ kind: 'source', node: node(['ReplicatedStorage', 'Skills', 'Uppercut'], 'return 3\n') }] })
+  assert.equal((await service.status()).unsyncedRefsTotal, 1)
+
+  // The menu place reports the same reference plus many more: de-duplicated, capped, total uncapped.
+  const menu = await service.handler.config({ placeId: 222 })
+  const many = Array.from({ length: 150 }, (_, i) => ref(`V${i}`, 'Value'))
+  await service.handler.snapshot({ session: menu.sessionToken, place: { placeId: 222 }, seq: 0, final: true, nodes: [], refs: [ref('Target', 'Value'), ...many], refsTotal: 400 })
+  status = await service.status()
+  assert.equal(status.unsyncedRefs!.length, UNSYNCED_REFS_MAX)
+  assert.deepEqual(status.unsyncedRefs![0], ref('Target', 'Value'))
+  assert.equal(status.unsyncedRefsTotal, 1 + 150 + (400 - 151))
+
+  // Cleared again when Studio reports none.
+  await service.handler.changes({ session: sessionToken, place, changes: [], refs: [], refsTotal: 0 })
+  await service.handler.changes({ session: menu.sessionToken, place: { placeId: 222 }, changes: [], refs: [] })
+  assert.equal((await service.status()).unsyncedRefs, undefined)
 })

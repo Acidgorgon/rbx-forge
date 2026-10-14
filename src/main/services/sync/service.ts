@@ -16,9 +16,10 @@ import type {
   SyncConflictInfo,
   SyncEntry,
   SyncPlace,
+  SyncRef,
   SyncStatus
 } from '../../../shared/sync/types.ts'
-import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING } from '../../../shared/sync/types.ts'
+import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
 
@@ -73,12 +74,17 @@ export interface SnapshotBody {
   seq: number
   final: boolean
   nodes: StudioNode[]
+  refs?: SyncRef[]
+  refsTotal?: number
 }
 
 export interface ChangesBody {
   session: string
   place: SyncPlace
   changes: StudioChange[]
+  // Present: the place's whole current list of unsynced references.
+  refs?: SyncRef[]
+  refsTotal?: number
 }
 
 export type SyncAnswer = { ok: true } | { ok: false; error: string; resend?: true }
@@ -114,6 +120,8 @@ const RECENT_MAX = 200
 const SEEN_MS = 60_000
 // A snapshot that stops arriving (Studio closed or crashed mid-send) releases the rojo hold after this.
 export const SNAPSHOT_STALE_MS = 30_000
+// Unsynced references kept per place (a snapshot may arrive in many chunks).
+const SYNC_REFS_KEEP = 2000
 const WRITTEN_FILE = join('.forge', 'sync', 'forge-written.json')
 const PACKAGES = /^(Server|Dev)?Packages(\/|$)/
 // Written from Studio: the file (and, for renames, its old path) is Forge's change, not the user's.
@@ -136,6 +144,10 @@ interface PlaceState {
   lastSeen: number
   // "Serve anyway": treat a blocked gate as clear until the next snapshot.
   override: boolean
+  // Instance references the plugin reported (not synced), and those of a snapshot still arriving.
+  refs: SyncRef[]
+  refsTotal: number
+  snapshotRefs?: SyncRef[]
 }
 
 export function placeKeyOf(place: SyncPlace, projectFile?: string): string {
@@ -282,6 +294,7 @@ export class SyncService {
           session.ready = false
           state.override = false
           state.counts = {}
+          state.snapshotRefs = []
           await engine.beginSnapshot(session.placeKey, state.place)
           this.refresh()
         }
@@ -291,12 +304,15 @@ export class SyncService {
           return { ok: false, error: `snapshot chunk ${body.seq} out of order (expected ${expected})`, resend: true } as SyncAnswer
         }
         await engine.addSnapshot(session.placeKey, Array.isArray(body.nodes) ? body.nodes : [])
+        if (Array.isArray(body.refs)) (state.snapshotRefs ??= []).push(...body.refs)
         session.nextSeq++
         this.watchSnapshot(session.token, session.placeKey, !!body.final)
         if (body.final) {
           const entries = await engine.finishSnapshot(session.placeKey)
           session.ready = true
           state.lastSnapshot = this.now()
+          this.setRefs(state, state.snapshotRefs ?? [], body.refsTotal)
+          state.snapshotRefs = undefined
           await this.record(session.placeKey, entries)
           const conflicts = engine.conflicts().filter((c) => c.placeKey === session.placeKey).length
           this.deps.log?.(`sync: ${state.projectFile} reconciled, ${entries.length} files, ${conflicts} conflict${conflicts === 1 ? '' : 's'}`)
@@ -340,7 +356,9 @@ export class SyncService {
     const state = this.placeStates.get(session.placeKey)!
     state.lastSeen = this.now()
     try {
-      const entries = await this.serial(() => this.deps.engine!.applyChanges(session.placeKey, Array.isArray(body.changes) ? body.changes : []))
+      if (Array.isArray(body.refs)) this.setRefs(state, body.refs, body.refsTotal)
+      const changes = Array.isArray(body.changes) ? body.changes : []
+      const entries = changes.length ? await this.serial(() => this.deps.engine!.applyChanges(session.placeKey, changes)) : []
       await this.record(session.placeKey, entries)
       this.refresh()
       return { ok: true }
@@ -489,8 +507,40 @@ export class SyncService {
       legacyPluginInstalled: this.legacy.length > 0
     }
     if (this.legacy.length) status.legacyPlugins = this.legacy.map((f) => basename(f))
+    const refs = this.unsyncedRefs(status.places)
+    if (refs.total) {
+      status.unsyncedRefs = refs.list
+      status.unsyncedRefsTotal = refs.total
+    }
     if (this.warning && status.pendingStudioEdits.length) status.warning = this.warning
     return status
+  }
+
+  // References reported by connected Studio sessions, de-duplicated across places, capped.
+  private unsyncedRefs(places: PlaceSyncStatus[]): { list: SyncRef[]; total: number } {
+    const live = new Set(places.filter((p) => p.connected).map((p) => p.placeKey))
+    const seen = new Set<string>()
+    const list: SyncRef[] = []
+    let total = 0
+    for (const state of this.placeStates.values()) {
+      if (!live.has(state.placeKey) || !state.refsTotal) continue
+      let fresh = 0
+      for (const r of state.refs) {
+        const key = `${r.path.join('\u0000')}\u0001${r.property}`
+        if (seen.has(key)) continue
+        seen.add(key)
+        fresh++
+        if (list.length < UNSYNCED_REFS_MAX) list.push({ path: [...r.path], property: r.property })
+      }
+      // Over the plugin's cap: count the unseen rest too (another place may share some of them).
+      total += fresh + Math.max(0, state.refsTotal - state.refs.length)
+    }
+    return { list, total }
+  }
+
+  private setRefs(state: PlaceState, refs: SyncRef[], total?: number): void {
+    state.refs = refs.slice(0, SYNC_REFS_KEEP)
+    state.refsTotal = Math.max(refs.length, typeof total === 'number' ? total : 0)
   }
 
   // Files Forge wrote from Studio that git still shows as modified / untracked / deleted.
@@ -554,7 +604,7 @@ export class SyncService {
   private placeState(placeKey: string, projectFile: string, place: SyncPlace): PlaceState {
     let state = this.placeStates.get(placeKey)
     if (!state) {
-      state = { placeKey, projectFile, place, counts: {}, lastSeen: 0, override: false }
+      state = { placeKey, projectFile, place, counts: {}, lastSeen: 0, override: false, refs: [], refsTotal: 0 }
       this.placeStates.set(placeKey, state)
     }
     state.projectFile = projectFile

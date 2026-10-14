@@ -28,6 +28,14 @@ export interface StudioNode {
   tags?: string[]
 }
 
+// An Instance-reference property set inside a mapped root (ObjectValue.Value, Weld.Part0,
+// Beam.Attachment0, Model.PrimaryPart ...). Forge Sync does not carry references to disk: the plugin
+// only reports where they are, so the UI can say they stay in Studio.
+export interface SyncRef {
+  path: string[]
+  property: string
+}
+
 export interface SyncPlace {
   // Roblox PlaceId (0 when unpublished) and GameId.
   placeId: number
@@ -122,7 +130,13 @@ export interface SyncStatus {
   // when a git pull / branch switch ran with uncommitted Studio edits.
   legacyPlugins?: string[]
   warning?: string
+  // Added by sync-polish: Instance-reference properties under the mapped roots of connected Studio
+  // sessions (not synced; they stay in Studio). Capped at UNSYNCED_REFS_MAX; the total is uncapped.
+  unsyncedRefs?: SyncRef[]
+  unsyncedRefsTotal?: number
 }
+
+export const UNSYNCED_REFS_MAX = 100
 
 // Settings keys.
 export const SYNC_ENGINE_SETTING = 'sync.engine' // 'forge' (default) | 'project' | 'off'

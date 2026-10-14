@@ -108,6 +108,14 @@ function kindOfFile(rel: string): UnitKind | null {
 
 const RECENT_LIMIT = 200
 
+// Git keeps no empty directories, so a Folder that is empty in Studio would vanish on the next clone
+// and Rojo would then delete it from Studio. Forge drops an empty .gitkeep into such a directory and
+// removes it once the folder has real children. Rojo 7 ignores it: a file no sync rule matches
+// snapshots to nothing (rojo v7.7.0 src/snapshot_middleware/mod.rs, snapshot_from_path -> Ok(None)),
+// and fromDisk/parseFileName map it to no instance.
+export const GITKEEP = '.gitkeep'
+const isGitkeep = (rel: string): boolean => rel === GITKEEP || rel.endsWith('/' + GITKEEP)
+
 export class SyncEngine {
   readonly root: string
   private readonly fs: SyncFs
@@ -580,6 +588,9 @@ export class SyncEngine {
 
     const claimed = new Set<string>()
     for (const u of plan.units) claimed.add(u.file)
+    // Directories some unit owns (folders, init-script dirs): their .gitkeep is not a deletion.
+    const dirsClaimed = new Set<string>()
+    for (const u of plan.units) if (u.kind === 'folder' || u.anchor !== u.file) dirsClaimed.add(u.anchor)
     // Folders first so files have a parent; then files.
     for (const u of plan.units) {
       if (!inScope(u.instancePath)) continue
@@ -605,9 +616,12 @@ export class SyncEngine {
     const refusedParents = new Set(plan.refused.filter((r) => /^(unsafe name|duplicate)/.test(r.note)).map((r) => pkey(r.path.slice(0, -1))))
     for (const file of [...disk.files].sort()) {
       if (claimed.has(file) || plan.keep.has(file) || s.protect.has(file)) continue
-      const kind = kindOfFile(file)
+      // A .gitkeep stands for its (empty) directory's Folder: kept while Studio has the folder.
+      const keep = isGitkeep(file)
+      if (keep && (dirsClaimed.has(dirOf(file)) || map.roots.some((r) => r.path === dirOf(file)))) continue
+      const kind = keep ? 'folder' : kindOfFile(file)
       if (!kind) continue
-      const inst = fromDisk(map, file)
+      const inst = fromDisk(map, keep ? `${dirOf(file)}/init.meta.json` : file)
       if (!inst || !inScope(inst)) continue
       const hit = findRoot(map, inst)
       // Only trash under roots Studio actually sent: a missing root means "not loaded", not "deleted".
@@ -624,7 +638,47 @@ export class SyncEngine {
         entries.push(this.entry(file, 'unmapped', inst, { note: `refused: ${(err as Error).message}` }))
       }
     }
+
+    // After trashing (which prunes directories left empty): keep empty Studio folders on disk.
+    for (const u of plan.units) {
+      if (u.kind !== 'folder' || !inScope(u.instancePath)) continue
+      try {
+        const e = await this.keepFolder(s, u, stamp)
+        if (e) entries.push(e)
+      } catch (err) {
+        entries.push(this.entry(`${u.file}/${GITKEEP}`, 'unmapped', u.instancePath, { note: `refused: ${(err as Error).message}` }))
+      }
+    }
     return entries
+  }
+
+  // A Studio folder's directory: present, and holding a .gitkeep exactly while it has nothing else.
+  private async keepFolder(s: Session, u: Unit, stamp: string): Promise<SyncEntry | null> {
+    const map = s.map
+    const dir = u.file
+    const keep = `${dir}/${GITKEEP}`
+    let names = await this.fs.readdir(this.abs(dir)).catch(() => null)
+    if (names === null) {
+      // Pruned after its last child was trashed or moved away; the folder is still in Studio.
+      await this.guard(map, keep)
+      await this.fs.mkdir(this.abs(dir), { recursive: true })
+      names = []
+    }
+    const real = names.filter((n) => n !== GITKEEP && !n.endsWith('.forge-tmp'))
+    const has = names.includes(GITKEEP)
+    if (!real.length) {
+      // Base: Studio and disk agree the folder exists, so a later Studio delete trashes the .gitkeep.
+      await this.store.set(s.placeKey, keep, '')
+      if (has) return null
+      await this.writeFile(map, keep, '')
+      return this.entry(keep, 'created', u.instancePath, { note: 'empty folder: .gitkeep so git keeps it' })
+    }
+    if (!has) return null
+    await this.store.delete(s.placeKey, keep)
+    // Real children now: Forge's (empty) .gitkeep goes to the trash; one with content is the user's.
+    if ((await this.read(keep))?.trim() !== '') return null
+    await this.trash(map, keep, stamp)
+    return this.entry(keep, 'trashed', u.instancePath, { note: 'folder has children now: .gitkeep removed' })
   }
 
   private async reconcileUnit(s: Session, u: Unit): Promise<SyncEntry> {

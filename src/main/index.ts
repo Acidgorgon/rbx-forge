@@ -53,6 +53,8 @@ import { withRefTools } from './services/videoref/tools.ts'
 import { createAbilityWiring } from './services/ability/wire.ts'
 import { abilityElectronDeps } from './services/ability/electron.ts'
 import { withAbilityTools } from './services/ability/tools.ts'
+import { createUiMotionWiring } from './services/uimotion/wire.ts'
+import { uiMotionElectronDeps } from './services/uimotion/electron.ts'
 import { createPrincipleWiring } from './services/principles/wire.ts'
 import { createGatingWiring } from './services/gating/wire.ts'
 import type { LabTier } from '../shared/labModels.ts'
@@ -676,6 +678,23 @@ const addToGame = createAddToGameWiring({
 const qolcHandlers = { ...doctor.handlers, ...spend.handlers, ...addToGame.handlers }
 // Bug reports carry a Forge Doctor section (home folder shown as ~).
 qol.service.setBugReportExtra(async () => doctorMarkdown(await doctor.service.run(), { home: homedir() }))
+// UI Motion Lab (services/uimotion): Figma imports (plugin JSON or a link; the token lives in the
+// encrypted secret store) and effect stacks compiled to client Luau modules.
+const uiMotion = createUiMotionWiring({
+  principles: principles.service,
+  userDataDir: app.getPath('userData'),
+  root: () => project?.info.root ?? null,
+  projectFile: () => project?.activePlace ?? null,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[uimotion] ${text}` }),
+  memory,
+  model: (tier) => labModel(tier),
+  gate: gating.service,
+  secrets: integrations.secrets,
+  lune: async () => (await vfx.service.status()).lune.available,
+  ...uiMotionElectronDeps()
+})
+registerPackSection({ id: 'uimotion', label: 'UI motion library', dir: () => uiMotion.service.userLibraryDir })
 
 const handlers: Record<string, (...args: any[]) => unknown> = {
   openProject: (root?: string) => openProject(root),
@@ -746,7 +765,7 @@ for (const [name, handler] of Object.entries({ ...integrations.handlers, ...term
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
 }
-for (const [name, handler] of Object.entries({ ...gating.wrap('ability', ability.handlers), ...gating.wrap('thumbs', thumbs.handlers) })) {
+for (const [name, handler] of Object.entries({ ...gating.wrap('ability', ability.handlers), ...gating.wrap('thumbs', thumbs.handlers), ...gating.wrap('uimotion', uiMotion.handlers) })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))

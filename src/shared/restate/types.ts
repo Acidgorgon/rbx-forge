@@ -6,7 +6,7 @@ export const RESTATE_MODES: readonly RestateMode[] = ['always', 'big', 'never']
 
 // Where the setting applies: the chat agent, or the Labs (VFX Lab, Animation Lab, Ability Composer).
 export type RestateScope = 'chat' | 'labs'
-export type RestateLab = 'vfx' | 'anim' | 'ability' | 'thumbs'
+export type RestateLab = 'vfx' | 'anim' | 'ability' | 'thumbs' | 'uimotion'
 export type RestateKind = 'chat' | RestateLab
 
 export interface Restatement {

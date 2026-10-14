@@ -56,6 +56,13 @@ export const LAB_HANDLERS: Record<LabId, { runs: Record<string, number | 'result
       thumbShip: (a) => (a[1] === true ? { id: batchOf(String(a[0])), kept: true } : null),
       thumbUpload: (a) => ({ id: batchOf(String(a[0])), kept: true })
     }
+  },
+  uimotion: {
+    runs: { uiMotionCompose: 'result', uiMotionCritique: 0 },
+    kept: {
+      uiMotionRate: (a) => (a[1] === 'up' ? { id: String(a[0]), kept: true } : a[1] === 'down' ? { id: String(a[0]), kept: false } : null),
+      uiMotionExport: (a) => ({ id: String(a[0]), kept: true })
+    }
   }
 }
 

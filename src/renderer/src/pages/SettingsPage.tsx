@@ -16,6 +16,7 @@ import { RestateSettingRow } from './RestateSettings'
 import { QolSettings } from '../qol/QolSettings'
 import { DoctorBanner } from './qolc/Doctor'
 import { SpendSettingsSection } from './qolc/Spend'
+import { FigmaTokenSettings } from './FigmaTokenSettings'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -36,6 +37,7 @@ const SECTIONS = [
   ['usage', 'Usage'],
   ['budgets', 'Budgets'],
   ['labs', 'Labs'],
+  ['integrations', 'Integrations'],
   ['places', 'Places'],
   ['sync', 'Sync'],
   ['toolchain', 'Toolchain'],
@@ -374,6 +376,11 @@ export function SettingsPage() {
           <h2>Labs</h2>
           <LabsSettings />
           <RestateSettingRow scope="labs" />
+        </section>
+
+        <section className="set-sec" id="set-integrations">
+          <h2>Integrations</h2>
+          <FigmaTokenSettings />
         </section>
 
         <section className="set-sec" id="set-places">

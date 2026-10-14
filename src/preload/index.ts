@@ -69,6 +69,10 @@ const methods = [
   // Ability Composer (moves: animation + VFX + shake / screen / hit-stop / movement)
   'abilityStatus', 'abilityList', 'abilityGet', 'abilitySave', 'abilityDelete', 'abilityRate', 'abilityCompose', 'abilityCritique',
   'abilityExport', 'abilityExamples', 'abilityAddExample', 'abilityFile', 'abilitySaveThumb', 'abilityChooseSounds', 'abilitySoundUrl',
+  // UI Motion Lab (Figma import, effect stacks -> client Luau)
+  'uiMotionStatus', 'uiMotionList', 'uiMotionGet', 'uiMotionSave', 'uiMotionDelete', 'uiMotionRate', 'uiMotionComponents',
+  'uiMotionImportFigmaDoc', 'uiMotionImportFigmaUrl', 'uiMotionFigmaToken', 'uiMotionSetFigmaToken', 'uiMotionClearFigmaToken',
+  'uiMotionTestFigmaToken', 'uiMotionLabStory', 'uiMotionCompose', 'uiMotionCritique', 'uiMotionExport', 'uiMotionSnap', 'uiMotionFile',
   // Studio check (Forge Bridge plugin: play in Roblox Studio, capture the key beats)
   'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile',
   // Video references (VFX Lab + Animation Lab: "make it like this")

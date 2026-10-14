@@ -5,7 +5,7 @@ import { setLabValue } from './sessionStore'
 
 // Page kinds this build can open. Lab pages from other branches (thumbnails, UI motion) are added here
 // when they land; until then their notifications only focus the window.
-export const KNOWN_PAGES: ReadonlySet<string> = new Set<PageKind>(['forge', 'settings', 'packages', 'release', 'analytics', 'memory', 'groups', 'art', 'uipreview', 'vfx', 'anim', 'ability', 'thumbs'])
+export const KNOWN_PAGES: ReadonlySet<string> = new Set<PageKind>(['forge', 'settings', 'packages', 'release', 'analytics', 'memory', 'groups', 'art', 'uipreview', 'vfx', 'anim', 'ability', 'thumbs', 'uimotion'])
 
 // Lab pages whose library selection lives under "<page>.selected" (and the library tab under "<page>.view").
 const LIBRARY_VIEW: Record<string, string> = { vfx: 'effects', anim: 'library', ability: 'moves' }

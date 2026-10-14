@@ -1,0 +1,102 @@
+{
+  "name": "Settings UI",
+  "lastModified": "2026-10-10T12:00:00Z",
+  "nodes": {
+    "40:1": {
+      "document": {
+        "id": "40:1",
+        "name": "Settings Card",
+        "type": "FRAME",
+        "absoluteBoundingBox": { "x": 0, "y": 0, "width": 320, "height": 400 },
+        "constraints": { "horizontal": "SCALE", "vertical": "CENTER" },
+        "cornerRadius": 12,
+        "rectangleCornerRadii": [12, 12, 4, 4],
+        "fills": [
+          {
+            "type": "GRADIENT_LINEAR",
+            "gradientHandlePositions": [{ "x": 0, "y": 0 }, { "x": 1, "y": 1 }, { "x": -0.5, "y": 0.5 }],
+            "gradientStops": [
+              { "position": 0, "color": { "r": 0.1, "g": 0.1, "b": 0.2, "a": 1 } },
+              { "position": 0.5, "color": { "r": 0.2, "g": 0.1, "b": 0.4, "a": 0.8 } },
+              { "position": 1, "color": { "r": 0.05, "g": 0.05, "b": 0.1, "a": 1 } }
+            ]
+          }
+        ],
+        "effects": [{ "type": "INNER_SHADOW", "visible": true, "radius": 4, "color": { "r": 0, "g": 0, "b": 0, "a": 0.3 }, "offset": { "x": 0, "y": 2 } }],
+        "layoutMode": "VERTICAL",
+        "itemSpacing": 8,
+        "paddingLeft": 16,
+        "paddingRight": 16,
+        "paddingTop": 16,
+        "paddingBottom": 16,
+        "primaryAxisAlignItems": "SPACE_BETWEEN",
+        "counterAxisAlignItems": "MIN",
+        "layoutSizingHorizontal": "FIXED",
+        "layoutSizingVertical": "FIXED",
+        "children": [
+          {
+            "id": "40:2",
+            "name": "Title",
+            "type": "TEXT",
+            "absoluteBoundingBox": { "x": 16, "y": 16, "width": 288, "height": 28 },
+            "characters": "Settings",
+            "style": { "fontFamily": "Roboto Mono", "fontWeight": 500, "fontSize": 22, "textAlignHorizontal": "LEFT", "textAlignVertical": "TOP", "lineHeightPx": 28, "textAutoResize": "HEIGHT" },
+            "fills": [{ "type": "SOLID", "color": { "r": 0.9, "g": 0.9, "b": 0.95, "a": 1 } }],
+            "layoutSizingHorizontal": "FILL",
+            "layoutSizingVertical": "HUG"
+          },
+          {
+            "id": "40:3",
+            "name": "Avatar",
+            "type": "RECTANGLE",
+            "absoluteBoundingBox": { "x": 16, "y": 52, "width": 64, "height": 64 },
+            "cornerRadius": 32,
+            "fills": [{ "type": "IMAGE", "scaleMode": "FILL", "imageRef": "abc123ref" }],
+            "layoutSizingHorizontal": "FIXED",
+            "layoutSizingVertical": "FIXED"
+          },
+          {
+            "id": "40:4",
+            "name": "Save Button",
+            "type": "FRAME",
+            "absoluteBoundingBox": { "x": 16, "y": 336, "width": 288, "height": 48 },
+            "cornerRadius": 8,
+            "opacity": 0.9,
+            "fills": [{ "type": "SOLID", "color": { "r": 0.2, "g": 0.6, "b": 1, "a": 1 } }],
+            "strokes": [{ "type": "SOLID", "color": { "r": 1, "g": 1, "b": 1, "a": 0.4 } }],
+            "strokeWeight": 1,
+            "strokeAlign": "INSIDE",
+            "layoutMode": "HORIZONTAL",
+            "primaryAxisAlignItems": "CENTER",
+            "counterAxisAlignItems": "CENTER",
+            "layoutSizingHorizontal": "FILL",
+            "layoutSizingVertical": "FIXED",
+            "children": [
+              {
+                "id": "40:5",
+                "name": "Label",
+                "type": "TEXT",
+                "absoluteBoundingBox": { "x": 130, "y": 348, "width": 60, "height": 24 },
+                "characters": "save changes",
+                "style": { "fontFamily": "Comic Neue", "fontWeight": 700, "fontSize": 18, "textAlignHorizontal": "CENTER", "textAlignVertical": "CENTER", "textCase": "TITLE", "textAutoResize": "WIDTH_AND_HEIGHT", "textDecoration": "UNDERLINE" },
+                "fills": [{ "type": "SOLID", "color": { "r": 1, "g": 1, "b": 1, "a": 1 } }],
+                "layoutSizingHorizontal": "HUG",
+                "layoutSizingVertical": "HUG"
+              }
+            ]
+          },
+          {
+            "id": "40:6",
+            "name": "Hidden",
+            "type": "FRAME",
+            "visible": false,
+            "absoluteBoundingBox": { "x": 0, "y": 0, "width": 10, "height": 10 }
+          }
+        ]
+      },
+      "components": {},
+      "styles": {},
+      "schemaVersion": 0
+    }
+  }
+}

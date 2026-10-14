@@ -9,7 +9,8 @@ const WHAT: Record<RestateKind, string> = {
   vfx: 'a brief for a Roblox visual effect in the VFX Lab (particles, beams, trails, lights, multi-stage sequences)',
   anim: 'a brief for a Roblox character animation in the Animation Lab (R15 / R6 keyframes, timing, poses)',
   ability: 'a brief for a game "move" in the Ability Composer (an animation, VFX, camera shake, hit-stop and movement on one timeline)',
-  thumbs: 'a brief for a Roblox experience thumbnail in the Thumbnail Lab (generated variations built from screenshots of the real game, in a learned style)'
+  thumbs: 'a brief for a Roblox experience thumbnail in the Thumbnail Lab (generated variations built from screenshots of the real game, in a learned style)',
+  uimotion: 'a brief for how a Roblox UI element (a button or panel) should feel in the UI Motion Lab (hover / press springs, pops, shine, glow, ripples, transitions)'
 }
 
 // A correction the person made to an earlier restatement (newest last), so the next one reads

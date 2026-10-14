@@ -231,6 +231,40 @@ The VFX Lab, Animation Lab and Ability Composer score their work against named p
 - **Your priorities.** Thumbs up and down, and the notes you write, teach a weight for each principle. A thumbs down on a result whose weak point was arcs raises the arcs weight. A thumbs up despite weak readability lowers that weight. Notes that name a principle ("floaty", "pops off") push it up. Weights range from ×0.4 to ×2.5. They are stored under `<userData>/principles`, included in .forgepack files and device sync, and summarised in memory. The **priorities** tab of each lab shows them and has a Reset button.
 - **References.** Video references list which principles they show and how, using the vision model's notes where it gave them and measured beats, flashes, palette and motion otherwise. Compose and the critic receive that list.
 
+### UI Motion Lab: springs and effects on your Figma buttons
+
+![UI Motion Lab: a Figma button with its stack next to the Snappy and Bouncy presets, with the spring timeline](docs/screenshots/150-uimotion-compare-dark.png)
+
+The **UI Motion Lab** (activity bar, tap icon) runs your real UI component in the live preview and lets you try motion on it. It works like the VFX Lab.
+
+- **Import from Figma.** There are two ways in, and both write a component module and a story into the project's UI folder (next to its storybook), with PNGs under `art/ui/<Name>/`. Both also show a mapping report that lists what was approximated or dropped.
+  - **Plugin.** Run `figma-plugin/`, select any frame, component or layer and click **Send selection to Forge**. Then paste or drop the JSON. No token is needed and the plugin has no network access.
+  - **Link.** Paste a Figma link. This uses the Figma REST API:
+    - [`GET /v1/files/:key/nodes`](https://developers.figma.com/docs/rest-api/file-endpoints/) for the node tree;
+    - `GET /v1/images/:key` for vector renders;
+    - `GET /v1/files/:key/images` for image fills.
+    It authenticates with the `X-Figma-Token` header ([REST API docs](https://developers.figma.com/docs/rest-api/)), honours `Retry-After` on 429 ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)) and caches responses for 5 minutes. The personal access token is set under *Settings › Integrations › Figma token* and needs the `file_content:read` scope. It is stored encrypted with Electron `safeStorage` in the main process, and is never sent to the renderer, written to the project or included in a pack.
+- **What maps.**
+  - Auto layout becomes `UIListLayout` (with direction, gap, alignment, space-between and wrap), plus `UIPadding` and `UIFlexItem` for fill and hug.
+  - Corners become `UICorner`, and strokes become `UIStroke`.
+  - Linear, radial and angular gradients become `UIGradient`.
+  - Text keeps its size, colour, alignment, case and line height. Fonts go through a fallback table to the nearest Roblox `Font`.
+  - Drop shadows and blurs are approximated.
+  - Constraints become Scale/Offset and `AnchorPoint`.
+- **Effects.** The effect library has 11 effects:
+  - feedback: hover spring, press spring;
+  - accents: scale pop, click squash, shine sweep, glow pulse, click ripple;
+  - ambient: tilt to cursor, idle float;
+  - transitions: appear, disappear.
+
+  Every spring takes a frequency (Hz) and a damping ratio. It is solved in closed form, so it does not depend on frame rate, and its half-response time and overshoot appear next to the sliders.
+- **Preview.** Hover and click the component in the live preview, which is driven by the same Lune runtime as UI Preview. You can compare 2 or 3 presets or library stacks side by side. The timeline plots scale, lift, glow and fade across hover, press, release and leave.
+- **Export.** The stack is a JSON spec. Export compiles it to a client Luau module, `Motion/<Name>Effects.luau`, used as `Effects.attach(button)`. It also writes a story. Both follow the project file's mapping (Rojo / Forge Sync). The module respects `GuiService.ReducedMotionEnabled`.
+- **AI.**
+  - **Make it feel** composes a stack from a description. It restates the request first, and Labs gating and the Labs tiers apply.
+  - **Critique** captures frames at rest, hover, pressed, released and settled. It scores them against six UI principles: responsiveness under 100 ms, anticipation, overshoot restraint, consistency, readability and reduced motion. Code measures all six from the springs.
+  - **Library.** Ratings feed your priorities, and stacks you keep go into the user or project library.
+
 ### Saving tokens
 
 ![Settings > Labs: decision gates, decision models and the cost per kept result](docs/screenshots/98-labs-gating-settings-dark.png)

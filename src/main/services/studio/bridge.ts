@@ -5,6 +5,7 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { CONNECTED_MS, parseEvent, POLL_HOLD_MS, type BridgeEvent, type BridgeJob } from '../../../shared/studio/protocol.ts'
+import { parseChangesBody, parseConfigQuery, parseSnapshotBody, sanitizeConfig, SYNC_LIMITS, SyncProtocolError, type SyncHandler } from '../../../shared/sync/protocol.ts'
 
 export class BridgeError extends Error {
   readonly code: 'not-listening' | 'busy' | 'not-accepted' | 'timeout' | 'plugin-error' | 'cancelled'
@@ -56,6 +57,7 @@ export class StudioBridge {
   private onChange?: () => void
   private log?: (text: string, stream?: 'info' | 'stderr') => void
   private holdMs: number
+  private sync: SyncHandler | null = null
 
   constructor(opts: { port: number; now?: () => number; onChange?: () => void; log?: (text: string, stream?: 'info' | 'stderr') => void; holdMs?: number }) {
     this.wantPort = opts.port
@@ -83,6 +85,11 @@ export class StudioBridge {
 
   connected(): boolean {
     return !!this.info && this.now() - this.info.lastSeen < CONNECTED_MS
+  }
+
+  // Forge Sync: the handler behind /forge-bridge/sync/*. Without one, config answers { enabled: false }.
+  setSyncHandler(handler: SyncHandler | null): void {
+    this.sync = handler
   }
 
   busy(): BridgeJob | null {
@@ -213,6 +220,7 @@ export class StudioBridge {
         }
         return send(200, { idle: true })
       }
+      if (path.startsWith('/forge-bridge/sync/')) return await this.handleSync(req, url, send)
       const m = /^\/forge-bridge\/event\/([\w-]{1,80})$/.exec(path)
       if (req.method === 'POST' && m) {
         const raw = await readBody(req)
@@ -233,6 +241,52 @@ export class StudioBridge {
       send(404, { error: 'not found' })
     } catch (e) {
       send(500, { error: (e as Error).message })
+    }
+  }
+
+  // ------------------------------------------------------------ Forge Sync
+
+  private async handleSync(req: IncomingMessage, url: URL, send: (status: number, body: unknown) => void): Promise<void> {
+    const route = url.pathname.slice('/forge-bridge/sync/'.length)
+    if (this.info) this.info.lastSeen = this.now()
+    if (req.method === 'GET' && route === 'config') {
+      let q
+      try {
+        q = parseConfigQuery(url.searchParams)
+      } catch (e) {
+        return send(400, { enabled: false, error: (e as Error).message })
+      }
+      if (!this.sync) return send(200, { enabled: false })
+      try {
+        return send(200, sanitizeConfig(await this.sync.config(q)))
+      } catch (e) {
+        this.log?.(`studio bridge: sync config failed: ${(e as Error).message}`, 'stderr')
+        return send(200, { enabled: false, error: (e as Error).message })
+      }
+    }
+    if (req.method !== 'POST' || (route !== 'snapshot' && route !== 'changes')) return send(404, { ok: false, error: 'not found' })
+    let raw: string
+    try {
+      raw = await readBody(req, SYNC_LIMITS.maxBody)
+    } catch (e) {
+      return send(413, { ok: false, error: (e as Error).message })
+    }
+    let parsed
+    try {
+      const json: unknown = JSON.parse(raw)
+      parsed = route === 'snapshot' ? { snapshot: parseSnapshotBody(json) } : { changes: parseChangesBody(json) }
+    } catch (e) {
+      const error = e instanceof SyncProtocolError ? e.message : 'bad JSON'
+      this.log?.(`studio bridge: sync ${route} refused: ${error}`, 'stderr')
+      return send(400, { ok: false, error })
+    }
+    if (!this.sync) return send(200, { ok: false, error: 'Forge Sync is off' })
+    try {
+      const reply = parsed.snapshot ? await this.sync.snapshot(parsed.snapshot) : await this.sync.changes(parsed.changes!)
+      return send(200, reply)
+    } catch (e) {
+      this.log?.(`studio bridge: sync ${route} failed: ${(e as Error).message}`, 'stderr')
+      return send(200, { ok: false, error: (e as Error).message })
     }
   }
 
@@ -278,13 +332,13 @@ export class StudioBridge {
   }
 }
 
-function readBody(req: IncomingMessage): Promise<string> {
+function readBody(req: IncomingMessage, max = MAX_BODY): Promise<string> {
   return new Promise((resolve, reject) => {
     let size = 0
     const chunks: Buffer[] = []
     req.on('data', (c: Buffer) => {
       size += c.length
-      if (size > MAX_BODY) {
+      if (size > max) {
         reject(new Error('body too large'))
         req.destroy()
         return

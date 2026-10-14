@@ -9,6 +9,10 @@
 -- mode and only talks to 127.0.0.1. Studio asks once to allow HTTP requests to 127.0.0.1 and to allow
 -- script injection (it creates the job's ModuleScripts from Forge's Luau).
 --
+-- Forge Sync (plugin version 2): in edit mode the plugin also streams the scripts and instances under
+-- the project's Rojo-mapped roots to Forge (a chunked snapshot, then debounced change events), so Forge
+-- can reconcile Studio with disk before Rojo serves. It only reads: it never changes the DataModel.
+--
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
 -- Players:CreateHumanoidModelFromDescription, Camera.CFrame / FieldOfView.
@@ -20,6 +24,7 @@ local Lighting = game:GetService("Lighting")
 local CoreGui = game:GetService("CoreGui")
 local ServerStorage = game:GetService("ServerStorage")
 local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
+local CollectionService = game:GetService("CollectionService")
 
 if RunService:IsRunning() then
 	return
@@ -403,6 +408,687 @@ local function runJob(job: any)
 	end
 end
 
+-- ------------------------------------------------------------ Forge Sync
+--
+-- Protocol: src/shared/sync/protocol.ts. Reads LuaSourceContainer.Source, which is the committed
+-- source; with Collaborative Editing drafts the editor text can differ and is only reachable through
+-- ScriptEditorService:GetEditorSource ("The edit-time source is not always consistent with the
+-- Script.Source property", Creator Hub, ScriptEditorService). Drafts stay local until committed, so
+-- Forge never writes someone's unfinished draft to disk.
+--
+-- Cost: no per-frame work. One Changed (+ AttributeChanged) connection per mapped instance, two
+-- connections per root, a 10 Hz check of a dirty flag, and a walk that yields every few hundred
+-- instances when a snapshot is taken.
+
+local SYNC_DEBOUNCE = 0.3
+local SYNC_MAX_WAIT = 2
+local SYNC_CHUNK_BYTES = 180 * 1024
+local SYNC_MAX_SOURCE = 2 * 1024 * 1024
+local SYNC_MAX_NODES = 50000
+local SYNC_MAX_CHANGE_BYTES = 4 * 1024 * 1024
+local SYNC_YIELD_EVERY = 300
+local SYNC_RECHECK_OFF = 20
+local SYNC_RECHECK_OLD = 120
+-- Wally packages and the bridge's own job instances never sync.
+local SYNC_SKIP_NAMES = {
+	Packages = true,
+	ServerPackages = true,
+	DevPackages = true,
+	_Index = true,
+	ForgeBridgeJob = true,
+	ForgeBridgeStage = true,
+}
+
+-- Non-script properties Forge writes into Rojo .model.json files (only values that differ from a
+-- fresh Instance.new are sent). Checked with IsA, so subclasses pick up their bases' entries.
+local SYNC_PROPS: { { any } } = {
+	{ "ValueBase", { "Value" } },
+	{ "Animation", { "AnimationId" } },
+	{
+		"Sound",
+		{ "SoundId", "Volume", "Looped", "PlaybackSpeed", "RollOffMaxDistance", "RollOffMinDistance", "RollOffMode", "PlayOnRemove", "TimePosition" },
+	},
+	{
+		"ParticleEmitter",
+		{
+			"Enabled", "Texture", "Color", "Transparency", "Size", "Squash", "Lifetime", "Rate", "Speed", "SpreadAngle",
+			"Rotation", "RotSpeed", "Acceleration", "Drag", "LightEmission", "LightInfluence", "Brightness", "ZOffset",
+			"EmissionDirection", "LockedToPart", "Orientation", "Shape", "ShapeStyle", "ShapeInOut", "ShapePartial",
+			"TimeScale", "VelocityInheritance", "WindAffectsDrag", "FlipbookLayout", "FlipbookMode", "FlipbookFramerate",
+			"FlipbookStartRandom",
+		},
+	},
+	{
+		"Trail",
+		{ "Enabled", "Texture", "Color", "Transparency", "Lifetime", "MinLength", "MaxLength", "WidthScale", "LightEmission", "LightInfluence", "Brightness", "FaceCamera", "TextureLength", "TextureMode" },
+	},
+	{
+		"Beam",
+		{ "Enabled", "Texture", "Color", "Transparency", "Width0", "Width1", "CurveSize0", "CurveSize1", "Segments", "LightEmission", "LightInfluence", "Brightness", "FaceCamera", "TextureLength", "TextureMode", "TextureSpeed", "ZOffset" },
+	},
+	{ "Attachment", { "CFrame", "Visible" } },
+	{ "Light", { "Enabled", "Brightness", "Color", "Shadows" } },
+	{ "PointLight", { "Range" } },
+	{ "SpotLight", { "Range", "Angle", "Face" } },
+	{ "SurfaceLight", { "Range", "Angle", "Face" } },
+	{ "Decal", { "Texture", "Color3", "Transparency", "Face", "ZIndex" } },
+	{ "Texture", { "StudsPerTileU", "StudsPerTileV", "OffsetStudsU", "OffsetStudsV" } },
+	{ "Highlight", { "Enabled", "FillColor", "FillTransparency", "OutlineColor", "OutlineTransparency", "DepthMode" } },
+	{
+		"BasePart",
+		{ "Size", "CFrame", "Anchored", "CanCollide", "CanQuery", "CanTouch", "CastShadow", "Transparency", "Color", "Material", "Reflectance", "Massless" },
+	},
+	{ "SpecialMesh", { "MeshType", "MeshId", "TextureId", "Scale", "Offset", "VertexColor" } },
+	{ "Model", { "LevelOfDetail", "ModelStreamingMode" } },
+}
+
+type Known = { id: string, path: { string }, key: string }
+
+local sync = {
+	wanted = true, -- start (or restart) at the next loop turn
+	retryAt = 0,
+	waitingForForge = false, -- Forge was unreachable: the poll loop restarts us when it answers again
+	session = nil :: string?,
+	generation = 0,
+	roots = {} :: { Instance },
+	skip = {} :: { string },
+	known = {} :: { [Instance]: Known },
+	conns = {} :: { [Instance]: { RBXScriptConnection } },
+	rootConns = {} :: { RBXScriptConnection },
+	touched = {} :: { [Instance]: { [string]: boolean } },
+	dirty = false,
+	firstTouch = 0,
+	lastTouch = 0,
+}
+-- Ids stay the same for an instance for the whole Studio session, across re-snapshots.
+local syncIds: { [Instance]: string } = setmetatable({}, { __mode = "k" }) :: any
+local syncNextId = 0
+local classProps: { [string]: { string } } = {}
+local classDefaults: { [string]: { [string]: any } | false } = {}
+
+local function pathKey(path: { string }, last: number?): string
+	return table.concat(path, "\0", 1, last or #path)
+end
+
+local function underKey(key: string, prefix: string): boolean
+	return key == prefix or string.sub(key, 1, #prefix + 1) == prefix .. "\0"
+end
+
+local function syncPlace(): any
+	return { placeId = game.PlaceId, gameId = game.GameId, name = game.Name }
+end
+
+local function idFor(inst: Instance): string
+	local id = syncIds[inst]
+	if not id then
+		syncNextId += 1
+		id = tostring(syncNextId)
+		syncIds[inst] = id
+	end
+	return id
+end
+
+-- The instance path when it is inside a mapped root and not skipped, else nil.
+local function syncPath(inst: Instance): { string }?
+	local root: Instance? = nil
+	for _, r in sync.roots do
+		if inst == r or inst:IsDescendantOf(r) then
+			root = r
+			break
+		end
+	end
+	if not root then
+		return nil
+	end
+	local node: Instance? = inst
+	while node and node ~= root do
+		if SYNC_SKIP_NAMES[node.Name] or node.Name == "" then
+			return nil
+		end
+		node = node.Parent
+	end
+	local path = pathOf(inst)
+	local key = pathKey(path)
+	for _, s in sync.skip do
+		if underKey(key, s) then
+			return nil
+		end
+	end
+	return path
+end
+
+local function finite(n: number): boolean
+	return n == n and n ~= math.huge and n ~= -math.huge
+end
+
+-- Rojo's explicit property syntax (rojo.space/docs/v7/properties): { "<Type>": value }. Strings,
+-- numbers and booleans stay plain (Rojo infers String/Content/Float64/Bool from the property).
+local function encodeValue(v: any): any
+	local t = typeof(v)
+	if t == "string" or t == "boolean" then
+		return v
+	elseif t == "number" then
+		return if finite(v) then v else nil
+	elseif t == "EnumItem" then
+		return { Enum = v.Value }
+	elseif t == "Vector3" then
+		return { Vector3 = { v.X, v.Y, v.Z } }
+	elseif t == "Vector2" then
+		return { Vector2 = { v.X, v.Y } }
+	elseif t == "Color3" then
+		return { Color3 = { v.R, v.G, v.B } }
+	elseif t == "BrickColor" then
+		return { BrickColor = v.Number }
+	elseif t == "NumberRange" then
+		return { NumberRange = { v.Min, v.Max } }
+	elseif t == "UDim" then
+		return { UDim = { v.Scale, v.Offset } }
+	elseif t == "UDim2" then
+		return { UDim2 = { { v.X.Scale, v.X.Offset }, { v.Y.Scale, v.Y.Offset } } }
+	elseif t == "CFrame" then
+		local x, y, z, r00, r01, r02, r10, r11, r12, r20, r21, r22 = v:GetComponents()
+		return { CFrame = { position = { x, y, z }, orientation = { { r00, r01, r02 }, { r10, r11, r12 }, { r20, r21, r22 } } } }
+	elseif t == "ColorSequence" then
+		local points = {}
+		for _, k in v.Keypoints do
+			table.insert(points, { time = k.Time, color = { k.Value.R, k.Value.G, k.Value.B } })
+		end
+		return { ColorSequence = { keypoints = points } }
+	elseif t == "NumberSequence" then
+		local points = {}
+		for _, k in v.Keypoints do
+			table.insert(points, { time = k.Time, value = k.Value, envelope = k.Envelope })
+		end
+		return { NumberSequence = { keypoints = points } }
+	end
+	return nil -- Instance refs and other types are not synced
+end
+
+local function propsFor(inst: Instance): { string }
+	local list = classProps[inst.ClassName]
+	if list then
+		return list
+	end
+	list = {}
+	for _, entry in SYNC_PROPS do
+		if inst:IsA(entry[1]) then
+			for _, name in entry[2] do
+				table.insert(list, name)
+			end
+		end
+	end
+	classProps[inst.ClassName] = list
+	return list
+end
+
+local function defaultsFor(inst: Instance, props: { string }): { [string]: any }?
+	local cached = classDefaults[inst.ClassName]
+	if cached ~= nil then
+		return if cached then cached else nil
+	end
+	local ok, fresh = pcall(Instance.new, inst.ClassName)
+	if not ok then
+		classDefaults[inst.ClassName] = false
+		return nil
+	end
+	local values = {}
+	for _, name in props do
+		pcall(function()
+			values[name] = (fresh :: any)[name]
+		end)
+	end
+	fresh:Destroy()
+	classDefaults[inst.ClassName] = values
+	return values
+end
+
+local function buildNode(inst: Instance, path: { string }): any
+	local node: any = { id = idFor(inst), path = path, className = inst.ClassName }
+	if inst:IsA("LuaSourceContainer") then
+		local ok, source = pcall(function()
+			return (inst :: any).Source
+		end)
+		if ok and type(source) == "string" then
+			if #source > SYNC_MAX_SOURCE then
+				node.oversize = true
+			else
+				node.source = source
+			end
+		end
+		if inst.ClassName == "Script" then
+			local context = (inst :: Script).RunContext
+			if context ~= Enum.RunContext.Legacy then
+				node.runContext = context.Name
+			end
+		end
+	else
+		local props = propsFor(inst)
+		if #props > 0 then
+			local defaults = defaultsFor(inst, props)
+			local out = {}
+			for _, name in props do
+				local ok, value = pcall(function()
+					return (inst :: any)[name]
+				end)
+				if ok and (not defaults or defaults[name] ~= value) then
+					out[name] = encodeValue(value)
+				end
+			end
+			if next(out) then
+				node.properties = out
+			end
+		end
+	end
+	local attributes = {}
+	for name, value in inst:GetAttributes() do
+		attributes[name] = encodeValue(value)
+	end
+	if next(attributes) then
+		node.attributes = attributes
+	end
+	local tags = CollectionService:GetTags(inst)
+	if #tags > 0 then
+		node.tags = tags
+	end
+	return node
+end
+
+-- A cheap size estimate (bytes of JSON) so chunks stay well under Forge's body limit without encoding
+-- every node twice.
+local function nodeBytes(node: any): number
+	local n = 160 + #pathKey(node.path)
+	if node.source then
+		n += math.ceil(#node.source * 1.15)
+	end
+	for _ in node.properties or {} do
+		n += 120
+	end
+	for _ in node.attributes or {} do
+		n += 120
+	end
+	return n
+end
+
+local function touch(inst: Instance, flag: string?)
+	if not sync.session then
+		return
+	end
+	local flags = sync.touched[inst]
+	if not flags then
+		flags = {}
+		sync.touched[inst] = flags
+	end
+	if flag then
+		flags[flag] = true
+	end
+	local now = os.clock()
+	if not sync.dirty then
+		sync.dirty = true
+		sync.firstTouch = now
+	end
+	sync.lastTouch = now
+end
+
+local function register(inst: Instance, path: { string })
+	sync.known[inst] = { id = idFor(inst), path = path, key = pathKey(path) }
+	if sync.conns[inst] then
+		return
+	end
+	local list = {}
+	if inst:IsA("LuaSourceContainer") then
+		table.insert(list, inst.Changed:Connect(function(prop)
+			if prop == "Source" or prop == "RunContext" then
+				touch(inst, "source")
+			elseif prop == "Name" then
+				touch(inst, nil)
+			end
+		end))
+	elseif inst:IsA("ValueBase") then
+		-- ValueBase.Changed only fires for Value (with the new value).
+		table.insert(list, inst.Changed:Connect(function()
+			touch(inst, "props")
+		end))
+		table.insert(list, inst:GetPropertyChangedSignal("Name"):Connect(function()
+			touch(inst, nil)
+		end))
+	else
+		local watched = {}
+		for _, name in propsFor(inst) do
+			watched[name] = true
+		end
+		table.insert(list, inst.Changed:Connect(function(prop)
+			if prop == "Name" then
+				touch(inst, nil)
+			elseif watched[prop] then
+				touch(inst, "props")
+			end
+		end))
+	end
+	table.insert(list, inst.AttributeChanged:Connect(function()
+		touch(inst, "props")
+	end))
+	sync.conns[inst] = list
+end
+
+local function unregister(inst: Instance)
+	sync.known[inst] = nil
+	local list = sync.conns[inst]
+	if list then
+		for _, c in list do
+			c:Disconnect()
+		end
+		sync.conns[inst] = nil
+	end
+end
+
+local function stopSync()
+	sync.generation += 1
+	sync.session = nil
+	for _, c in sync.rootConns do
+		c:Disconnect()
+	end
+	sync.rootConns = {}
+	for inst in sync.conns do
+		unregister(inst)
+	end
+	sync.known = {}
+	sync.conns = {}
+	sync.touched = {}
+	sync.dirty = false
+end
+
+local function resolve(path: { string }): Instance?
+	local node: Instance? = game
+	for _, name in path do
+		node = node and node:FindFirstChild(name)
+	end
+	return node
+end
+
+local function syncPost(route: string, body: any): (boolean, string?)
+	local ok, answer = request("POST", "/sync/" .. route, body)
+	if not ok then
+		if type(answer) ~= "number" then
+			sync.waitingForForge = true
+		end
+		return false, "Forge did not take the " .. route .. " (" .. tostring(answer) .. ")"
+	end
+	if type(answer) ~= "table" or answer.ok ~= true then
+		local err = if type(answer) == "table" then tostring(answer.error) else "no answer"
+		if type(answer) == "table" and answer.resend then
+			sync.wanted = true
+		end
+		return false, err
+	end
+	return true, nil
+end
+
+local function sendSnapshot(gen: number)
+	local chunk, bytes, seq, count = {}, 0, 0, 0
+	local place = syncPlace()
+	local function send(final: boolean)
+		local ok, err = syncPost("snapshot", { session = sync.session, place = place, seq = seq, final = final, nodes = chunk })
+		if not ok then
+			error("snapshot: " .. tostring(err), 0)
+		end
+		seq += 1
+		chunk, bytes = {}, 0
+	end
+	local function visit(inst: Instance)
+		if gen ~= sync.generation then
+			error("snapshot restarted", 0)
+		end
+		if sync.known[inst] then
+			return -- nested roots: already walked
+		end
+		local path = syncPath(inst)
+		if not path then
+			return
+		end
+		register(inst, path)
+		local node = buildNode(inst, path)
+		local size = nodeBytes(node)
+		if bytes > 0 and bytes + size > SYNC_CHUNK_BYTES then
+			send(false)
+		end
+		table.insert(chunk, node)
+		bytes += size
+		count += 1
+		if count > SYNC_MAX_NODES then
+			error("more than " .. SYNC_MAX_NODES .. " instances under the mapped roots; sync stopped", 0)
+		end
+		if count % SYNC_YIELD_EVERY == 0 then
+			task.wait()
+		end
+		for _, child in inst:GetChildren() do
+			visit(child)
+		end
+	end
+	for _, root in sync.roots do
+		visit(root)
+	end
+	send(true)
+	return count
+end
+
+-- "off": Forge has no sync for this place; "waiting": Forge unreachable; "ok": streaming.
+local function startSync(): string
+	stopSync()
+	local gen = sync.generation
+	local query = "/sync/config?placeId="
+		.. tostring(game.PlaceId)
+		.. "&gameId="
+		.. tostring(game.GameId)
+		.. "&place="
+		.. HttpService:UrlEncode(game.Name)
+	local ok, config = request("GET", query)
+	if not ok then
+		if type(config) == "number" then
+			-- An older RBX Forge without Forge Sync answers 404.
+			sync.retryAt = os.clock() + SYNC_RECHECK_OLD
+			sync.wanted = true
+			return "off"
+		end
+		sync.waitingForForge = true
+		return "waiting"
+	end
+	if type(config) ~= "table" or not config.enabled then
+		sync.retryAt = os.clock() + SYNC_RECHECK_OFF
+		sync.wanted = true
+		return "off"
+	end
+	sync.session = tostring(config.sessionToken or "")
+	sync.roots = {}
+	sync.skip = {}
+	for _, path in config.skip or {} do
+		table.insert(sync.skip, pathKey(path))
+	end
+	for _, path in config.roots or {} do
+		local root = resolve(path)
+		if root then
+			table.insert(sync.roots, root)
+		end
+	end
+	-- Watch before walking: anything that changes during the walk is diffed against the walk afterwards.
+	for _, root in sync.roots do
+		table.insert(sync.rootConns, root.DescendantAdded:Connect(function(d)
+			touch(d, nil)
+		end))
+		table.insert(sync.rootConns, root.DescendantRemoving:Connect(function(d)
+			touch(d, nil)
+		end))
+		table.insert(sync.rootConns, root.AncestryChanged:Connect(function()
+			sync.wanted = true -- a root itself moved: start over
+		end))
+	end
+	local count = sendSnapshot(gen)
+	print(("[Forge Bridge] Forge Sync: sent %d instances from %d roots"):format(count, #sync.roots))
+	return "ok"
+end
+
+-- Moves known paths under oldKey to newPath (a renamed or moved subtree).
+local function rebase(oldKey: string, oldDepth: number, newPath: { string })
+	for _, k in sync.known do
+		if underKey(k.key, oldKey) then
+			local path = table.clone(newPath)
+			for i = oldDepth + 1, #k.path do
+				table.insert(path, k.path[i])
+			end
+			k.path = path
+			k.key = pathKey(path)
+		end
+	end
+end
+
+local function forget(oldKey: string)
+	local gone = {}
+	for inst, k in sync.known do
+		if underKey(k.key, oldKey) then
+			table.insert(gone, inst)
+		end
+	end
+	for _, inst in gone do
+		unregister(inst)
+	end
+end
+
+local function sendChanges(changes: { any })
+	local batch, bytes = {}, 0
+	local total = 0
+	local place = syncPlace()
+	local function send()
+		local ok, err = syncPost("changes", { session = sync.session, place = place, changes = batch })
+		batch, bytes = {}, 0
+		if not ok then
+			error("changes: " .. tostring(err), 0)
+		end
+	end
+	for _, change in changes do
+		local size = 200
+		if change.node then
+			size += nodeBytes(change.node)
+		end
+		for _, d in change.descendants or {} do
+			size += nodeBytes(d)
+		end
+		total += size
+		if total > SYNC_MAX_CHANGE_BYTES then
+			-- Too much at once (a big paste): a fresh snapshot is cheaper to reason about.
+			sync.wanted = true
+			return
+		end
+		if bytes > 0 and bytes + size > SYNC_CHUNK_BYTES then
+			send()
+		end
+		table.insert(batch, change)
+		bytes += size
+	end
+	if #batch > 0 then
+		send()
+	end
+end
+
+local function flush()
+	local items = {}
+	for inst, flags in sync.touched do
+		local was = sync.known[inst]
+		local path = syncPath(inst)
+		local depth = if path then #path elseif was then #was.path else 0
+		table.insert(items, { inst = inst, flags = flags, path = path, depth = depth })
+	end
+	sync.touched = {}
+	sync.dirty = false
+	-- Parents first: a moved/added/removed subtree is one change, its descendants ride along.
+	table.sort(items, function(a, b)
+		return a.depth < b.depth
+	end)
+	local changes = {}
+	local handled: { [Instance]: boolean } = {}
+	for _, item in items do
+		local inst, path = item.inst, item.path
+		local was = sync.known[inst]
+		if handled[inst] then
+			continue
+		end
+		if path and not was then
+			register(inst, path)
+			local node = buildNode(inst, path)
+			local descendants = {}
+			for _, d in inst:GetDescendants() do
+				handled[d] = true
+				if not sync.known[d] then
+					local dp = syncPath(d)
+					if dp then
+						register(d, dp)
+						table.insert(descendants, buildNode(d, dp))
+					end
+				end
+			end
+			table.insert(changes, { kind = "added", node = node, descendants = if #descendants > 0 then descendants else nil })
+		elseif was and not path then
+			table.insert(changes, { kind = "removed", id = was.id, path = was.path })
+			forget(was.key)
+		elseif was and path then
+			local key = pathKey(path)
+			if key ~= was.key then
+				local from = was.path
+				local sameParent = #path == #from and pathKey(path, #path - 1) == pathKey(from, #from - 1)
+				rebase(was.key, #from, path)
+				table.insert(changes, { kind = if sameParent then "renamed" else "moved", id = was.id, from = from, node = buildNode(inst, path) })
+			elseif item.flags.source then
+				table.insert(changes, { kind = "source", node = buildNode(inst, path) })
+			elseif item.flags.props then
+				table.insert(changes, { kind = "props", node = buildNode(inst, path) })
+			end
+		end
+	end
+	if #changes > 0 then
+		sendChanges(changes)
+	end
+end
+
+local function syncLoop()
+	while alive do
+		if not enabled then
+			if sync.session then
+				stopSync()
+				sync.wanted = true
+			end
+			task.wait(1)
+			continue
+		end
+		local now = os.clock()
+		if sync.wanted and not sync.waitingForForge and now >= sync.retryAt then
+			sync.wanted = false
+			local ok, result = pcall(startSync)
+			if not ok then
+				warn("[Forge Bridge] Forge Sync: " .. tostring(result))
+				stopSync()
+				if not sync.waitingForForge then
+					sync.wanted = true
+					sync.retryAt = os.clock() + RETRY_SECONDS * 2
+				end
+			end
+		elseif sync.session and sync.dirty and (now - sync.lastTouch >= SYNC_DEBOUNCE or now - sync.firstTouch >= SYNC_MAX_WAIT) then
+			local ok, err = pcall(flush)
+			if not ok then
+				warn("[Forge Bridge] Forge Sync: " .. tostring(err) .. "; sending a fresh snapshot")
+				stopSync()
+				if not sync.waitingForForge then
+					sync.wanted = true
+					sync.retryAt = os.clock() + RETRY_SECONDS
+				end
+			end
+		end
+		if sync.wanted and not sync.session then
+			task.wait(0.5)
+		else
+			task.wait(0.1)
+		end
+	end
+	stopSync()
+end
+
 -- ------------------------------------------------------------ poll loop
 
 plugin.Unloading:Connect(function()
@@ -421,6 +1107,10 @@ task.spawn(function()
 			if connected then
 				print("[Forge Bridge] RBX Forge is not reachable; retrying")
 			end
+			if sync.session then
+				stopSync()
+				sync.waitingForForge = true
+			end
 			connected = false
 			task.wait(RETRY_SECONDS)
 			continue
@@ -429,8 +1119,16 @@ task.spawn(function()
 			connected = true
 			print("[Forge Bridge] connected to RBX Forge")
 		end
+		if sync.waitingForForge then
+			-- Forge is back (maybe restarted with a new session): fetch the config and resend everything.
+			sync.waitingForForge = false
+			sync.wanted = true
+			sync.retryAt = 0
+		end
 		if type(answer) == "table" and answer.job then
 			runJob(answer.job)
 		end
 	end
 end)
+
+task.spawn(syncLoop)

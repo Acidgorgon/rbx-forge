@@ -34,7 +34,7 @@ export interface SyncEngineLike {
   applyChanges(placeKey: string, changes: StudioChange[]): Promise<SyncEntry[]>
   conflicts(): SyncConflictInfo[]
   resolve(placeKey: string, file: string, take: 'studio' | 'disk' | 'merged', text?: string): Promise<void>
-  resolveAll(placeKey: string, take: 'studio' | 'disk'): unknown
+  resolveAll(placeKey: string, take: 'studio' | 'disk', reason?: SyncConflictInfo['reason']): unknown
   gate(placeKey: string): GateState
   // Studio went away mid-snapshot: gate back to 'idle'.
   endSession?(placeKey: string): unknown
@@ -384,10 +384,10 @@ export class SyncService {
     return this.status()
   }
 
-  async resolveAll(placeKey: string, take: 'studio' | 'disk'): Promise<SyncStatus> {
+  async resolveAll(placeKey: string, take: 'studio' | 'disk', reason?: SyncConflictInfo['reason']): Promise<SyncStatus> {
     const engine = this.requireEngine()
-    const files = engine.conflicts().filter((c) => c.placeKey === placeKey).map((c) => c.file)
-    await this.serial(async () => engine.resolveAll(placeKey, take))
+    const files = engine.conflicts().filter((c) => c.placeKey === placeKey && (!reason || c.reason === reason)).map((c) => c.file)
+    await this.serial(async () => engine.resolveAll(placeKey, take, reason))
     if (take === 'studio') await this.markWritten(files)
     this.refresh()
     return this.status()

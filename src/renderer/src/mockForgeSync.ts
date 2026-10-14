@@ -152,9 +152,9 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
       changed()
       return status()
     },
-    async syncResolveAll(placeKey, take) {
+    async syncResolveAll(placeKey, take, reason) {
       await delay(300)
-      for (const c of conflicts.filter((x) => x.placeKey === placeKey)) resolveOne(placeKey, c.file, take)
+      for (const c of conflicts.filter((x) => x.placeKey === placeKey && (!reason || x.reason === reason))) resolveOne(placeKey, c.file, take)
       changed()
       return status()
     },

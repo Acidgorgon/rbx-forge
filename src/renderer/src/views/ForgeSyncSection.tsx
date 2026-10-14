@@ -150,8 +150,8 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
                   First sync for {placeName(p)}: {firstRun.length} file{firstRun.length === 1 ? '' : 's'} differ and there is no shared version yet. Which side is right?
                 </div>
                 <div className="row">
-                  <button className="mini-btn hot" disabled={!!busy} onClick={() => void act(`all:${p.placeKey}`, () => window.harness.syncResolveAll(p.placeKey, 'studio'), 'Studio versions written to disk')}>Studio wins</button>
-                  <button className="mini-btn" disabled={!!busy} onClick={() => void act(`all:${p.placeKey}`, () => window.harness.syncResolveAll(p.placeKey, 'disk'), 'Kept the disk versions')}>Disk wins</button>
+                  <button className="mini-btn hot" disabled={!!busy} onClick={() => void act(`all:${p.placeKey}`, () => window.harness.syncResolveAll(p.placeKey, 'studio', 'first-run'), 'Studio versions written to disk')}>Studio wins</button>
+                  <button className="mini-btn" disabled={!!busy} onClick={() => void act(`all:${p.placeKey}`, () => window.harness.syncResolveAll(p.placeKey, 'disk', 'first-run'), 'Kept the disk versions')}>Disk wins</button>
                 </div>
               </div>
             )}

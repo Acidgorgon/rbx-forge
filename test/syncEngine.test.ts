@@ -668,3 +668,22 @@ test('a case-only difference this place never synced (renamed on disk) is left f
 function startsWithPath(path: string[], prefix: string[]): boolean {
   return prefix.length <= path.length && prefix.every((p, i) => path[i] === p)
 }
+
+test('the first-run bulk choice only decides first-run conflicts, not files both sides edited', async () => {
+  const ctx = await setup()
+  await agreed(ctx)
+  const config = 'src/skills/Server/Moves/Dash/Config.luau'
+  put(ctx.root, config, 'return { damage = 99 }\n')
+  // A file with no base yet (new on both sides, different): first-run.
+  put(ctx.root, 'src/skills/Definitions/Kick.luau', 'return "disk kick"\n')
+  const nodes = [...edit(studio(ctx), [...MOVES, 'Dash', 'Config'], { source: 'return { damage = 1 }' })]
+  const kick = nodes.find((n) => n.path.join('/') === [...SKILLS, 'Kick'].join('/'))!
+  const withKick = nodes.map((n) => (n === kick ? { ...n, source: 'return "studio kick"' } : n))
+  await snapshot(ctx.engine, MK, MATCH, withKick)
+  assert.deepEqual(ctx.engine.conflicts(MK).map((c) => [c.file, c.reason]).sort(), [['src/skills/Definitions/Kick.luau', 'first-run'], [config, 'both-changed']])
+  assert.equal(await ctx.engine.resolveAll(MK, 'studio', 'first-run'), 1)
+  assert.equal(get(ctx.root, 'src/skills/Definitions/Kick.luau'), 'return "studio kick"\n')
+  assert.equal(get(ctx.root, config), 'return { damage = 99 }\n')
+  assert.deepEqual(ctx.engine.conflicts(MK).map((c) => c.file), [config])
+  assert.equal(ctx.engine.gate(MK), 'blocked')
+})

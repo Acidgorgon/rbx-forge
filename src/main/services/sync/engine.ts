@@ -272,11 +272,13 @@ export class SyncEngine {
     })
   }
 
-  resolveAll(placeKey: string, take: 'studio' | 'disk'): Promise<number> {
+  // Every held conflict of the place, or only those with `reason` (the first-run "Studio wins" /
+  // "Disk wins" choice must not also decide files both sides edited).
+  resolveAll(placeKey: string, take: 'studio' | 'disk', reason?: SyncConflictInfo['reason']): Promise<number> {
     return this.serial(async () => {
       const s = this.sessions.get(placeKey)
       if (!s) return 0
-      const held = [...s.conflicts.values()]
+      const held = [...s.conflicts.values()].filter((c) => !reason || c.info.reason === reason)
       for (const c of held) await this.resolveOne(s, c, take)
       await this.store.save()
       this.updateGate(s)

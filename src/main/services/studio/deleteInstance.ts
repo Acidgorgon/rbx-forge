@@ -6,6 +6,7 @@
 
 import { BridgeError, type EventHandler, type RunOptions } from './bridge.ts'
 import { BRIDGE_VERSION, newJobId, type BridgeJob } from '../../../shared/studio/protocol.ts'
+import { collapseInstancePaths } from '../../../shared/explorerSelection.ts'
 
 // The first plugin version that knows delete jobs (an older one would treat it as an effect job).
 export const DELETE_PLUGIN_VERSION = 7
@@ -65,4 +66,30 @@ export async function deleteInStudio(deps: DeleteDeps, path: string[], className
     if (e instanceof BridgeError && e.code === 'busy') throw new Error('A Studio check is running; delete again when it finishes')
     throw e
   }
+}
+
+export interface DeleteManyResult {
+  deleted: string[][]
+  failed: { instancePath: string[]; error: string }[]
+}
+
+// Explorer multi-select "Delete N in Studio": one delete job per instance, one after another (the
+// bridge runs one job at a time), behind one confirmation. An instance inside another listed one goes
+// with it; one that fails (refused, plugin error) is reported and the rest still run. Stops early only
+// when Studio disconnects, reporting the rest as not deleted.
+export async function deleteManyInStudio(deps: DeleteDeps, items: { instancePath: string[]; className?: string }[]): Promise<DeleteManyResult> {
+  const result: DeleteManyResult = { deleted: [], failed: [] }
+  for (const it of collapseInstancePaths(items)) {
+    if (!deps.bridge.connected()) {
+      result.failed.push({ instancePath: it.instancePath, error: 'Studio disconnected' })
+      continue
+    }
+    try {
+      await deleteInStudio(deps, it.instancePath, it.className)
+      result.deleted.push(it.instancePath)
+    } catch (e) {
+      result.failed.push({ instancePath: it.instancePath, error: e instanceof Error ? e.message : String(e) })
+    }
+  }
+  return result
 }

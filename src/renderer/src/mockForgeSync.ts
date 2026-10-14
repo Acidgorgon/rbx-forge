@@ -3,6 +3,7 @@
 // from Studio, a held conflict and a first-run place.
 // ?forgesync=blocked (default) | firstrun | clear | checking | project | off
 import type { ForgeSyncSettings, HarnessEvents, StudioConflict, SyncApi, SyncConflictInfo, SyncEntry, SyncStatus, PlaceSyncStatus } from '@shared/types'
+import { collapseInstancePaths } from '@shared/explorerSelection'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -164,6 +165,15 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
     async syncDeleteInStudio(instancePath) {
       await delay(200)
       log(`deleted ${instancePath.join('.')} in Studio`)
+    },
+    async syncDeleteManyInStudio(items) {
+      const deleted: string[][] = []
+      for (const it of collapseInstancePaths(items)) {
+        await delay(120)
+        log(`deleted ${it.instancePath.join('.')} in Studio`)
+        deleted.push(it.instancePath)
+      }
+      return { deleted, failed: [] }
     },
     async syncResolve(placeKey, file, take) {
       await delay(200)

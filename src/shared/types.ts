@@ -1,7 +1,7 @@
 // Contract shared by the main process, the preload bridge and the renderer.
 // Every IPC channel the renderer can call is listed in HarnessApi.
 
-import type { PathChange } from './fileOps.ts'
+import type { PathChange, TrashBatchResult } from './fileOps.ts'
 import type { IntegrationApi, IntegrationEvents, OrchestrateMode, UsageSummary } from './integrationTypes.ts'
 import type { AccountsApi, AccountsEvents } from './accountTypes.ts'
 import type { TerminalApi, TerminalEvents } from './terminalTypes.ts'
@@ -583,6 +583,9 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   renamePath(path: string, name: string, isDir?: boolean): Promise<PathChange>
   // Explorer: moves a file or folder (an init script's folder) to the OS trash.
   trashPath(path: string, isDir?: boolean): Promise<PathChange>
+  // Explorer multi-select: moves several files / folders to the OS trash with one Rojo pause and one
+  // tree refresh. An entry inside another listed folder goes with it; failures are listed, not thrown.
+  trashPaths(entries: { path: string; isDir?: boolean }[]): Promise<TrashBatchResult>
 
   // Services
   getServices(): Promise<ServiceStatus[]>

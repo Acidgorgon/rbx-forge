@@ -130,6 +130,13 @@ export class RojoPause {
     return this.run(fn, reason, !!info?.isDirectory())
   }
 
+  // Batch variant (Explorer multi-select delete): one pause around the whole batch when any of
+  // `fulls` is a directory, none when they are all files.
+  async aroundPaths<T>(fulls: string[], fn: () => Promise<T>, reason = 'folder change'): Promise<T> {
+    const infos = await Promise.all(fulls.map((full) => lstat(full).catch(() => null)))
+    return this.run(fn, reason, infos.some((info) => !!info?.isDirectory()))
+  }
+
   private scheduleResume(): void {
     this.timer = setTimeout(() => {
       this.timer = null

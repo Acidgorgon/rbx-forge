@@ -1,12 +1,13 @@
 // Delete flows the Explorer shares between the Game, Files and Features views: Delete in Studio (a
-// Studio-only instance, through the Forge Bridge; Ctrl+Z in Studio restores it) and Delete Feature (all
-// of a feature's parts to the Recycle Bin / Trash). Each asks first unless "Don't ask again" was
-// ticked, and always when open tabs under it have unsaved changes.
+// Studio-only instance, through the Forge Bridge; Ctrl+Z in Studio restores it), Delete Feature (all
+// of a feature's parts to the Recycle Bin / Trash) and the multi-select batches of both. Each asks
+// first unless "Don't ask again" was ticked, and always when open tabs under it have unsaved changes.
 import type { Actions, State } from '../store'
 import { errorText } from '../lib/format'
 import { featureDeleteTargets, findNode, type FeatureInfo } from '../lib/roblox'
 import { shouldConfirmDelete } from '../lib/deleteConfirm'
 import { isUnder } from '@shared/fileOps'
+import { nameList, type DeletePlan } from '@shared/explorerSelection'
 import type { TreeNode } from '@shared/types'
 
 export const trashName = (): string => (navigator.userAgent.includes('Windows') ? 'Recycle Bin' : 'Trash')
@@ -70,5 +71,117 @@ export function deleteFeature(state: State, actions: Actions, feature: FeatureIn
     danger: true,
     dontAsk: 'confirmFileDelete',
     run: () => void run()
+  })
+}
+
+// ---- multi-select batches (Game and Files views)
+
+const plural = (n: number, one: string, many = `${one}s`) => `${n} ${n === 1 ? one : many}`
+
+// What a batch leaves alone, for the confirm body and the toast: read-only rows and refused ones.
+function skippedNote(skipped: DeletePlan['skipped']): string {
+  if (!skipped.length) return ''
+  const groups = new Map<string, string[]>()
+  for (const s of skipped) groups.set(s.reason, [...(groups.get(s.reason) ?? []), s.name])
+  return `Skipped ${plural(skipped.length, 'item')} that cannot be deleted here: ${[...groups].map(([why, names]) => `${nameList(names)} (${why})`).join('; ')}.`
+}
+
+// The selection's files and folders to the Recycle Bin / Trash, behind one confirmation listing
+// them, as one batch in main (one Rojo pause, one tree refresh). Studio-only rows in the same
+// selection are left for "Delete N in Studio".
+export function deleteManyFromDisk(state: State, actions: Actions, plan: DeletePlan): void {
+  const items = plan.disk
+  const studioLeft = plan.studio.length ? `${plural(plan.studio.length, 'Studio-only instance')} ${plan.studio.length === 1 ? 'stays' : 'stay'}; use Delete in Studio for ${plan.studio.length === 1 ? 'it' : 'them'}.` : ''
+  if (!items.length) {
+    actions.toast({ text: 'Nothing to delete', detail: [skippedNote(plan.skipped), studioLeft].filter(Boolean).join(' ') || undefined, kind: 'info' })
+    return
+  }
+  const bin = trashName()
+  const n = items.length
+  const what = plural(n, 'item')
+  const unsaved = state.files.filter((f) => f.current !== f.saved && items.some((t) => isUnder(f.path, t.path))).length
+  const notes = [skippedNote(plan.skipped), studioLeft].filter(Boolean).join(' ')
+  const run = async () => {
+    try {
+      const r = await actions.trashPaths(items.map(({ path, isDir }) => ({ path, isDir })))
+      if (r.failed.length) {
+        actions.toast({ text: `Deleted ${r.changes.length} of ${n}`, detail: r.failed.map((f) => `${f.path}: ${f.error}`).join('\n'), kind: 'err' })
+      } else {
+        actions.toast({ text: `Deleted ${what}`, detail: `Moved to the ${bin}${plan.skipped.length ? ` · skipped ${plan.skipped.length} read-only` : ''}`, kind: 'ok', ms: 3500 })
+      }
+    } catch (e) {
+      actions.toast({ text: `Could not delete ${what}`, detail: errorText(e), kind: 'err' })
+    }
+  }
+  if (!shouldConfirmDelete(state.appSettings?.confirmFileDelete, unsaved)) return void run()
+  const folders = items.some((t) => t.isDir)
+  actions.openDialog({
+    kind: 'confirm',
+    title: `Delete ${what}?`,
+    body: [
+      `Moves ${n === 1 ? 'it' : `these ${n}`} to the ${bin}${folders ? ' (folders with everything in them)' : ''}; you can restore them from there.`,
+      plan.covered ? `${plural(plan.covered, 'selected item')} inside ${n === 1 ? 'it goes' : 'them go'} along.` : '',
+      unsaved ? `${unsaved === 1 ? 'An open file has' : `${unsaved} open files have`} unsaved changes that will be lost.` : '',
+      notes
+    ]
+      .filter(Boolean)
+      .join(' '),
+    list: items.map((t) => (t.isDir ? `${t.path}/` : t.path)),
+    confirm: `Move to ${bin}`,
+    danger: true,
+    dontAsk: 'confirmFileDelete',
+    run: () => void run()
+  })
+}
+
+// Which of the selection's Studio-only instances Forge can delete now (the same check as the single
+// "Delete in Studio"); the rest join the skipped list with the reason.
+export async function studioDeletable(plan: DeletePlan): Promise<{ ok: DeletePlan['studio']; refused: DeletePlan['skipped'] }> {
+  const checks = await Promise.all(plan.studio.map((it) => window.harness.syncDeleteCheck(it.instancePath).catch((e) => ({ reason: errorText(e) }))))
+  const ok: DeletePlan['studio'] = []
+  const refused: DeletePlan['skipped'] = []
+  plan.studio.forEach((it, i) => {
+    const c = checks[i]
+    if ('ok' in c) ok.push(it)
+    else refused.push({ key: it.key, name: it.name, reason: c.reason })
+  })
+  return { ok, refused }
+}
+
+// "Delete N in Studio": the selection's Studio-only instances through the Forge Bridge, one job after
+// another in main, behind one confirmation (Ctrl+Z in Studio brings each back).
+export async function deleteManyInStudio(state: State, actions: Actions, plan: DeletePlan): Promise<void> {
+  if (!plan.studio.length) return
+  const { ok, refused } = await studioDeletable(plan)
+  if (!ok.length) {
+    actions.toast({ text: `Cannot delete ${plural(plan.studio.length, 'instance')} in Studio`, detail: refused[0]?.reason, kind: 'err' })
+    return
+  }
+  const n = ok.length
+  const skipped = [...plan.skipped, ...refused]
+  const run = () =>
+    void window.harness
+      .syncDeleteManyInStudio(ok.map((it) => ({ instancePath: it.instancePath, className: it.className })))
+      .then((r) => {
+        if (r.failed.length) actions.toast({ text: `Deleted ${r.deleted.length} of ${n} in Studio`, detail: r.failed.map((f) => `${f.instancePath.join('.')}: ${f.error}`).join('\n'), kind: 'err' })
+        else actions.toast({ text: `Deleted ${plural(n, 'instance')} in Studio`, detail: 'Ctrl+Z in Studio brings them back', kind: 'ok', ms: 4000 })
+      })
+      .catch((e) => actions.toast({ text: `Could not delete ${plural(n, 'instance')} in Studio`, detail: errorText(e), kind: 'err' }))
+  if (!shouldConfirmDelete(state.appSettings?.confirmStudioDelete, 0)) return run()
+  const inside = ok.reduce((sum, it) => sum + descendants(findNode(state.tree, it.instancePath)), 0)
+  actions.openDialog({
+    kind: 'confirm',
+    title: `Delete ${plural(n, 'instance')} in Studio?`,
+    body: [
+      `Deletes ${n === 1 ? 'it' : `these ${n}`}${inside ? ` (and the ${plural(inside, 'instance')} inside them)` : ''} from the place open in Studio. They are not in the repo, so Forge keeps no copy; Ctrl+Z in Studio brings them back.`,
+      skippedNote(skipped)
+    ]
+      .filter(Boolean)
+      .join(' '),
+    list: ok.map((it) => it.instancePath.join('.')),
+    confirm: 'Delete in Studio',
+    danger: true,
+    dontAsk: 'confirmStudioDelete',
+    run
   })
 }

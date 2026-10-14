@@ -221,6 +221,82 @@ export const coreFlows: Flow[] = [
     }
   },
   {
+    name: 'explorer-multi-select',
+    title: 'Explorer multi-select: Shift-click range, Esc clears, Ctrl-click two scripts, Delete, one confirm, both in the trash',
+    timeoutMs: 45_000,
+    async run({ page, root, shot }) {
+      await showSide(page, 'Explorer')
+      const side = page.locator('aside.side')
+      const filter = side.locator('input').first()
+      const dialog = page.locator('.dialog[role="dialog"]')
+      const chip = side.locator('.sel-chip')
+      const menuItem = (name: RegExp) => page.locator('.menu [role="menuitem"]', { hasText: name }).first()
+      const row = (name: string) => side.locator('[role="treeitem"]', { hasText: name }).first()
+      const selectedNames = () => side.locator('[role="treeitem"][aria-selected="true"]').allInnerTexts().then((t: string[]) => t.map((x) => x.trim()).sort())
+      const waitDisk = async (path: string, want: boolean) => {
+        for (let i = 0; i < 50 && existsSync(join(root, path)) !== want; i++) await page.waitForTimeout(100)
+        check(existsSync(join(root, path)) === want, `${path} should ${want ? 'exist' : 'be gone'}`)
+      }
+      write(root, 'src/server/E2eMultiA.server.luau', 'print("a")\n')
+      write(root, 'src/server/E2eMultiB.server.luau', 'print("b")\n')
+      write(root, 'src/server/E2eMultiC.server.luau', 'print("c")\n')
+      await filter.fill('E2eMulti')
+      for (const n of ['E2eMultiA', 'E2eMultiB', 'E2eMultiC']) await row(n).waitFor({ state: 'visible', timeout: 15_000 })
+
+      // Shift-click selects the range; the header counts it; Esc clears.
+      await row('E2eMultiA').click()
+      await row('E2eMultiC').click({ modifiers: ['Shift'] })
+      check(JSON.stringify(await selectedNames()) === JSON.stringify(['E2eMultiA', 'E2eMultiB', 'E2eMultiC']), `Shift-click selected ${JSON.stringify(await selectedNames())}`)
+      await chip.filter({ hasText: '3 selected' }).waitFor({ timeout: 3000 })
+      await page.keyboard.press('Escape')
+      await chip.waitFor({ state: 'detached', timeout: 3000 })
+      check((await selectedNames()).length === 0, 'Esc did not clear the selection')
+      // Ctrl/Cmd+A: every visible row (the matches and their ancestors).
+      await page.keyboard.press(`${mod}+a`)
+      const visible = await side.locator('[role="treeitem"]').count()
+      await chip.filter({ hasText: `${visible} selected` }).waitFor({ timeout: 3000 })
+      await page.keyboard.press('Escape')
+      await chip.waitFor({ state: 'detached', timeout: 3000 })
+
+      // Ctrl/Cmd-click two scripts: the menu acts on both, Rename is single-only.
+      await row('E2eMultiA').click()
+      await row('E2eMultiB').click({ modifiers: [mod] })
+      check(JSON.stringify(await selectedNames()) === JSON.stringify(['E2eMultiA', 'E2eMultiB']), `Ctrl-click selected ${JSON.stringify(await selectedNames())}`)
+      await chip.filter({ hasText: '2 selected' }).waitFor({ timeout: 3000 })
+      await row('E2eMultiB').click({ button: 'right' })
+      await menuItem(/^Delete 2 items/).waitFor({ state: 'visible', timeout: 5000 })
+      await shot('menu')
+      check(await menuItem(/^Open 2 scripts/).isVisible(), 'the multi-select menu has no "Open 2 scripts"')
+      check(await menuItem(/^Rename/).isDisabled(), 'Rename is enabled for two items')
+      await page.keyboard.press('Escape')
+      check((await selectedNames()).length === 2, 'closing the menu dropped the selection')
+
+      // Delete acts on the whole selection: one confirm listing both, both moved to the trash.
+      await row('E2eMultiB').click({ modifiers: [mod] })
+      check(JSON.stringify(await selectedNames()) === JSON.stringify(['E2eMultiA']), 'Ctrl-click did not toggle B off')
+      await chip.waitFor({ state: 'detached', timeout: 3000 })
+      await row('E2eMultiB').click({ modifiers: [mod] })
+      await chip.filter({ hasText: '2 selected' }).waitFor({ timeout: 3000 })
+      await page.keyboard.press('Delete')
+      await dialog.waitFor({ state: 'visible', timeout: 5000 })
+      await shot('confirm')
+      const text = await dialog.innerText()
+      check(/Delete 2 items\?/.test(text) && text.includes('src/server/E2eMultiA.server.luau') && text.includes('src/server/E2eMultiB.server.luau'), `the confirm does not list both scripts: ${text.slice(0, 300)}`)
+      check(!text.includes('E2eMultiC'), 'the confirm lists an unselected script')
+      await dialog.getByRole('button', { name: /Move to/ }).click()
+      await waitDisk('src/server/E2eMultiA.server.luau', false)
+      await waitDisk('src/server/E2eMultiB.server.luau', false)
+      await waitDisk('src/server/E2eMultiC.server.luau', true)
+      await page.waitForFunction(() => ![...document.querySelectorAll('aside.side [role="treeitem"]')].some((t) => /E2eMulti[AB]/.test(t.textContent ?? '')), undefined, { timeout: 10_000 })
+      await page.waitForFunction(() => ![...document.querySelectorAll('.tab')].some((t) => t.textContent?.includes('E2eMultiA')), undefined, { timeout: 5000 })
+      await chip.waitFor({ state: 'detached', timeout: 3000 })
+      await waitText(page, /Deleted 2 items/)
+      rmSync(join(root, 'src/server/E2eMultiC.server.luau'))
+      await filter.fill('')
+      await dismissToasts(page)
+    }
+  },
+  {
     name: 'explorer-new-story',
     title: 'Explorer New > UI > Story / Storybook writes UI Labs files; a story outside any storybook gets a hint',
     timeoutMs: 45_000,

@@ -9,7 +9,7 @@ import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING } from '../../../shared/sync/typ
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import type { ServiceState } from '../../../shared/types.ts'
 import { findTool, run, toolEnv } from '../tools.ts'
-import { deleteInStudio, deleteUnavailable, type DeleteBridge } from '../studio/deleteInstance.ts'
+import { deleteInStudio, deleteManyInStudio, deleteUnavailable, type DeleteBridge } from '../studio/deleteInstance.ts'
 import { engineSetting, SyncService, type LiveStudioNode, type SyncEngineLike, type SyncHandler, type SyncMapping } from './service.ts'
 
 export interface SyncWireDeps {
@@ -147,6 +147,15 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
       const path = cleanPath(instancePath)
       await deleteInStudio(deleteDeps(), path, typeof className === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(className) ? className : undefined)
       deps.log?.(`sync: deleted ${path.join('.')} in Studio (Ctrl+Z in Studio restores it)`)
+    },
+    // Explorer multi-select: several Studio-only instances, one job after another behind one confirm.
+    syncDeleteManyInStudio: async (items: unknown) => {
+      const list = (Array.isArray(items) ? items : [])
+        .filter((it): it is { instancePath: unknown; className?: unknown } => !!it && typeof it === 'object')
+        .map((it) => ({ instancePath: cleanPath(it.instancePath), className: typeof it.className === 'string' && /^[A-Za-z][A-Za-z0-9]{0,63}$/.test(it.className) ? it.className : undefined }))
+      const result = await deleteManyInStudio(deleteDeps(), list)
+      if (result.deleted.length) deps.log?.(`sync: deleted ${result.deleted.map((p) => p.join('.')).join(', ')} in Studio (Ctrl+Z in Studio restores them)`)
+      return result
     },
     forgeSyncSettings: () => settings(),
     setForgeSyncSettings: async (patch: Partial<ForgeSyncSettings>) => {

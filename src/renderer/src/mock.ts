@@ -48,7 +48,8 @@ import { restateMock } from './mockRestate'
 import { qolMock } from './mockQol'
 import { chatModesMock } from './mockChatModes'
 import { seedFishingChat } from './mockFishing'
-import { entryTarget, isUnder, parentDir, protectedReason, renamedPath, renameProblem, siblingsOf, type PathChange } from '@shared/fileOps'
+import { entryTarget, isUnder, parentDir, protectedReason, renamedPath, renameProblem, siblingsOf, type PathChange, type TrashBatchResult } from '@shared/fileOps'
+import { collapseEntries } from '@shared/explorerSelection'
 import { BLINK_OUTPUTS, eventsBlink, generatedClient, generatedServer, mockBlinkModel } from './mockBlink'
 
 type Handler = (payload: never) => void
@@ -769,6 +770,18 @@ const api: HarnessApi = {
   async trashPath(path, isDir) {
     await delay(60)
     return mockPathOp(path, isDir, null)
+  },
+  async trashPaths(entries) {
+    await delay(80)
+    const result: TrashBatchResult = { changes: [], failed: [] }
+    for (const e of collapseEntries(entries.map((x) => entryTarget(x.path, !!x.isDir)))) {
+      try {
+        result.changes.push(mockPathOp(e.path, e.isDir, null))
+      } catch (err) {
+        result.failed.push({ path: e.path, error: (err as Error).message })
+      }
+    }
+    return result
   },
   async getAppSettings() {
     return appSettings

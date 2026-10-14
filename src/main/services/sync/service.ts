@@ -407,9 +407,18 @@ export class SyncService {
     const files = await this.pendingStudioEdits()
     if (!files.length) return { committed: [], error: 'No uncommitted Studio edits' }
     const text = message?.trim() || commitMessage(files)
-    const added = await this.deps.git(['add', '-A', '--', ...files])
+    // Paths are literal (a Roblox name like "Sword [Gold]" is not a glob). Many paths go through a
+    // file: Windows refuses command lines over ~32K characters (a first sync can touch hundreds).
+    let spec = ['--', ...files]
+    if (files.reduce((n, f) => n + f.length + 3, 0) > 8000) {
+      const list = join(this.root, '.forge', 'sync', 'commit-paths.txt')
+      await mkdir(dirname(list), { recursive: true })
+      await writeFile(list, files.join('\0'))
+      spec = [`--pathspec-from-file=${list}`, '--pathspec-file-nul']
+    }
+    const added = await this.deps.git(['--literal-pathspecs', 'add', '-A', ...spec])
     if (added.code !== 0) return { committed: [], error: firstLine(added.stderr) || 'git add failed' }
-    const committed = await this.deps.git(['commit', '-m', text, '--only', '--', ...files])
+    const committed = await this.deps.git(['--literal-pathspecs', 'commit', '-m', text, '--only', ...spec])
     if (committed.code !== 0) return { committed: [], error: firstLine(committed.stderr || committed.stdout) || 'git commit failed' }
     for (const f of files) this.written.delete(f)
     await this.saveWritten()

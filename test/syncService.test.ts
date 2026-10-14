@@ -236,6 +236,28 @@ test('commitStudioEdits stages only the files Forge wrote', async () => {
   assert.equal((await service.commitStudioEdits()).error, 'No uncommitted Studio edits')
 })
 
+test('commitStudioEdits: bracket names are literal paths, and hundreds of files fit (pathspec file)', async () => {
+  const { root, engine, service } = setup()
+  await service.start()
+  // A user's own file that "[Gold]" would match as a glob.
+  put(root, 'src/skills/Sword G.luau', 'return "mine"\n')
+  execFileSync('git', ['-C', root, 'add', '-A'])
+  execFileSync('git', ['-C', root, 'commit', '-q', '-m', 'mine'])
+  put(root, 'src/skills/Sword G.luau', 'return "mine, edited"\n')
+  const { sessionToken } = await service.handler.config({ placeId: 111 })
+  const many = Array.from({ length: 300 }, (_, i) => `src/skills/Generated/Move_${String(i).padStart(3, '0')}_with_a_longer_name.luau`)
+  engine.next = [{ file: 'src/skills/Sword [Gold].luau', action: 'created', instancePath: ['ReplicatedStorage', 'Skills', 'Sword [Gold]'], at: 1 }, ...many.map((file) => ({ file, action: 'created' as const, instancePath: ['ReplicatedStorage', 'Skills', 'x'], at: 1 }))]
+  for (const f of many) put(root, f, 'return 1\n')
+  await service.handler.snapshot({ session: sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: [node(['ReplicatedStorage', 'Skills', 'Sword [Gold]'], 'return "gold"\n')] })
+  const result = await service.commitStudioEdits()
+  assert.equal(result.error, undefined)
+  assert.equal(result.committed.length, 301)
+  const show = execFileSync('git', ['-C', root, 'show', '--name-only', '--format=', 'HEAD'], { encoding: 'utf8' })
+  assert.ok(show.includes('src/skills/Sword [Gold].luau'))
+  assert.ok(!show.includes('Sword G.luau'))
+  assert.match(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), /^ M "?src\/skills\/Sword G\.luau/m)
+})
+
 test('conflicts block the gate; serve anyway clears it; resolve writes and clears', async () => {
   const { root, engine, service, gates } = setup()
   await service.start()

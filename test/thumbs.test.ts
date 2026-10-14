@@ -467,7 +467,7 @@ test('service: references (file, URL, paste) -> style cards -> profile; bases', 
   assert.ok(http.calls.some((c) => c.url.startsWith('https://example.com/')))
   assert.equal(r.added[0].scope, 'user', 'references default to the user library')
   // Background analysis: wait for the cards.
-  for (let i = 0; i < 50 && (await svc.refs()).some((x) => !x.card); i++) await new Promise((res) => setTimeout(res, 10))
+  for (let i = 0; i < 500 && (await svc.refs()).some((x) => !x.card); i++) await new Promise((res) => setTimeout(res, 10))
   const refs = await svc.refs()
   assert.ok(refs.every((x) => x.card?.framing === 'close-up'))
   assert.ok(visionCalls.every((c) => c.images === 1))

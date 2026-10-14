@@ -79,6 +79,10 @@ import { createAddToGameWiring } from './services/addToGame/wire.ts'
 // used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
 app.setName('RBX Forge')
 app.setPath('userData', join(app.getPath('appData'), 'rbx-forge'))
+// Windows shows toast notifications only for the AppUserModelID of a Start menu shortcut: the
+// installer's shortcut carries appId (electron-builder.yml). Without this, "run finished"
+// notifications silently never appear on Windows.
+if (process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? 'com.acidgorgon.rbxforge' : process.execPath)
 
 // One window per user: a second launch (double-clicking the app again) focuses the first.
 if (!app.requestSingleInstanceLock()) {

@@ -23,6 +23,10 @@ after(() => {
   for (const root of roots) rmSync(root, { recursive: true, force: true })
 })
 
+// The fake rojo is a sh script, so the tests that start it run on macOS and Linux only; the gate
+// logic itself has no platform-specific code.
+const shOnly = { skip: process.platform === 'win32' ? 'fake rojo is a sh script' : false }
+
 async function waitFor(check: () => boolean, ms = 5000): Promise<void> {
   const end = Date.now() + ms
   while (!check()) {
@@ -59,7 +63,7 @@ test('gate states that hold rojo serve, and the engine setting', () => {
   assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'nonsense' as T), 'forge')
 })
 
-test('rojo serve waits while the place is checking or blocked, stops for a new Studio session, restarts when clear', async () => {
+test('rojo serve waits while the place is checking or blocked, stops for a new Studio session, restarts when clear', shOnly, async () => {
   rmSync(runs, { force: true })
   const { root, supervisor, rojo, logs } = make()
   await supervisor.setRoot(root)
@@ -91,7 +95,7 @@ test('rojo serve waits while the place is checking or blocked, stops for a new S
   await supervisor.stopAll()
 })
 
-test('only the gated place waits when every place is served', async () => {
+test('only the gated place waits when every place is served', shOnly, async () => {
   rmSync(runs, { force: true })
   const { root, supervisor } = make({ serveAllPlaces: true })
   await supervisor.setRoot(root)
@@ -113,7 +117,7 @@ test('only the gated place waits when every place is served', async () => {
   await supervisor.stopAll()
 })
 
-test('no gate with the project engine or with the gate setting off; turning it off releases a held serve', async () => {
+test('no gate with the project engine or with the gate setting off; turning it off releases a held serve', shOnly, async () => {
   rmSync(runs, { force: true })
   const project = make({ 'sync.engine': 'project' })
   await project.supervisor.setRoot(project.root)

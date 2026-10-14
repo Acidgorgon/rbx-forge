@@ -4,7 +4,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { execSync } from 'node:child_process'
+import { execFileSync, execSync } from 'node:child_process'
 import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -140,7 +140,7 @@ test('checkpoints: concurrent snapshots on one project do not collide; drop remo
     const b = new Checkpoints(dir)
     const [c1, c2] = await Promise.all([a.create('same'), b.create('same')])
     assert.notEqual(c1, c2, 'same tree and label still give two commits')
-    const refs = () => execSync("git for-each-ref --format='%(refname)' refs/checkpoints", { cwd: dir, env: { ...process.env, GIT_DIR: a.gitDir } }).toString().trim().split('\n').filter(Boolean)
+    const refs = () => execFileSync('git', ['for-each-ref', '--format=%(refname)', 'refs/checkpoints'], { cwd: dir, env: { ...process.env, GIT_DIR: a.gitDir } }).toString().trim().split('\n').filter(Boolean)
     assert.equal(refs().length, 2)
     await a.drop([c1])
     assert.deepEqual(refs(), [`refs/checkpoints/${c2}`])
@@ -166,7 +166,7 @@ test('checkpoints: a chat keeps at most 50 and the dropped ones leave the shadow
     assert.equal(list.length, 50)
     assert.equal(list[0].label, 'turn 2')
     const gitDir = new Checkpoints(dir).gitDir
-    const refs = execSync("git for-each-ref --format='%(refname)' refs/checkpoints", { cwd: dir, env: { ...process.env, GIT_DIR: gitDir } }).toString().trim().split('\n').filter(Boolean)
+    const refs = execFileSync('git', ['for-each-ref', '--format=%(refname)', 'refs/checkpoints'], { cwd: dir, env: { ...process.env, GIT_DIR: gitDir } }).toString().trim().split('\n').filter(Boolean)
     assert.equal(refs.length, 50)
   } finally {
     await rm(dir, { recursive: true, force: true })

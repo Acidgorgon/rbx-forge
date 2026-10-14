@@ -9,7 +9,7 @@
 // Roblox Studio does not run on Linux, so there is no folder there.
 
 export const PLUGIN_FILE = 'ForgeBridge.rbxmx'
-export const PLUGIN_VERSION = 1
+export const PLUGIN_VERSION = 2 // 2: Forge Sync (snapshot + change stream)
 const VERSION_RE = /--\s*forge-bridge-version:\s*(\d+)/
 
 export interface PathEnv {

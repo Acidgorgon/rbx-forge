@@ -18,6 +18,8 @@ export interface StudioNode {
   className: string
   // LuaSourceContainer only: committed Source (never an unsaved collaborative draft).
   source?: string
+  // LuaSourceContainer whose Source is over the 2 MB sync limit: sent without `source`; leave its file alone.
+  oversize?: true
   // Script.RunContext when not Legacy.
   runContext?: 'Server' | 'Client' | 'Plugin'
   // Non-script instances: properties that differ from defaults, plus attributes and tags.

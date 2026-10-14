@@ -253,7 +253,7 @@ async function bridge(holdMs = 200): Promise<StudioBridge> {
 function plugin(b: StudioBridge) {
   const base = `http://127.0.0.1:${b.port}/forge-bridge`
   return {
-    poll: async (): Promise<{ job?: BridgeJob; idle?: boolean }> => (await fetch(`${base}/poll?v=1&place=MyGame&placeId=42`)).json(),
+    poll: async (): Promise<{ job?: BridgeJob; idle?: boolean }> => (await fetch(`${base}/poll?v=${PLUGIN_VERSION}&place=MyGame&placeId=42`)).json(),
     post: async (job: BridgeJob, ev: unknown): Promise<Record<string, unknown>> => (await fetch(`${base}/event/${job.id}`, { method: 'POST', body: JSON.stringify(ev), headers: { 'Content-Type': 'application/json' } })).json()
   }
 }

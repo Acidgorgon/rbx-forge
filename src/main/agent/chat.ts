@@ -16,6 +16,7 @@ import { compactHistory, needsCompaction, SUMMARY_INSTRUCTIONS } from './budget/
 import { shouldOrchestrate, type OrchestrateMode } from './orchestrator/heuristic.ts'
 import type { Meter } from './meter.ts'
 import { chargeTokens } from '../services/spend/gate.ts'
+import { SPEND_CAP_PREFIX } from '../../shared/spend/types.ts'
 import { toSummary } from './meter.ts'
 import { withRules } from './projectRules.ts'
 import { GroupChat, planChecklist, type Room } from './groupChat.ts'
@@ -137,6 +138,14 @@ export interface ChatDeps {
 const COMPACT_WINDOW = 120_000
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
+
+// The chat note when a budget stops a turn. A spending-cap refusal already says how to continue
+// (and ends in a period), so it is shown as is; other limits get the generic hint.
+export function budgetStopText(reason: string | undefined): string {
+  const r = (reason ?? 'limit reached').trim().replace(/\.+$/, '')
+  if (r.includes(SPEND_CAP_PREFIX)) return `${r}.`
+  return `Budget: ${r}. Raise the limit in settings or start a new chat.`
+}
 
 // Decides tool use for the chat agent: gentree/studio tools are pre-allowed via allowedTools;
 // built-in edits only inside the project (never Packages/); Bash only with the allowBash setting.
@@ -419,12 +428,12 @@ export class ChatManager {
     if (meter) {
       const check = meter.checkChat(chat.id)
       if (check.level === 'stop') {
-        this.push(chat, systemMessage('main', `Budget: ${check.reason ?? 'limit reached'}. Raise the limit in settings or start a new chat.`))
+        this.push(chat, systemMessage('main', budgetStopText(check.reason)))
         return
       }
       if (check.level === 'warn' && check.reason && chat.budgetWarned !== check.reason) {
         chat.budgetWarned = check.reason
-        this.push(chat, systemMessage('main', `Budget: ${check.reason}.`))
+        this.push(chat, systemMessage('main', `Budget: ${check.reason.replace(/\.+\s*$/, '')}.`))
       }
     }
 

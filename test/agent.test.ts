@@ -338,3 +338,11 @@ test('missing report, thrown errors and cancellation map to agent states', async
   assert.equal(byId.get(crash.id)!.summary, 'boom')
   assert.equal(byId.get(running.id)!.state, 'cancelled')
 })
+
+test('budgetStopText: a spending-cap refusal is shown once, without a doubled period or the per-chat hint', async () => {
+  const { budgetStopText } = await import('../src/main/agent/chat.ts')
+  const cap = 'Spending cap reached: today\'s AI spend $0.02 reached your $0.01 daily cap. Use "Raise cap for today" (status bar or Settings > Usage) to continue.'
+  assert.equal(budgetStopText(cap), cap)
+  assert.equal(budgetStopText('chat limit $1.00 reached'), 'Budget: chat limit $1.00 reached. Raise the limit in settings or start a new chat.')
+  assert.equal(budgetStopText(undefined), 'Budget: limit reached. Raise the limit in settings or start a new chat.')
+})

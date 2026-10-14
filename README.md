@@ -218,6 +218,23 @@ DAU, retention, session length, revenue and concurrent players for the experienc
 
 The Team panel shows **claims** (shared "working on" markers in `.forge/claims.json`, flagged when stale or contested), open pull requests (through `gh`, or a GitHub compare link), an activity feed that merges git history with Studio sync events, the history and blame of the open file, and lint problems. Team settings are kept in `.forge/project.json` and committed. Forge has light and dark themes. Use the sun/moon button in the title bar.
 
+### Quality of life
+
+#### Compare any two versions
+
+![VFX Lab compare: two versions side by side on one timeline, with score and parameter deltas](docs/screenshots/200-compare-vfx-iterations-dark.png)
+
+The VFX Lab, the Animation Lab and the Ability Composer have a **Compare** button next to Studio check. It opens two versions side by side in the lab's own preview, so you can see what a refine round actually changed.
+
+- **Pick any two.** A and B can each be the current version, any refine iteration (the best one is marked) or any other entry in the library. It opens on the best scored version that differs from the current one. The swap button switches A and B.
+- **One timeline.** Play, pause, loop, speed and the scrubber drive both previews together, so they are always on the same frame. **Same time** plays both in seconds, and the shorter one holds its last frame. **Stretch** scales both to the same length so you can compare phases. **A/B flip** shows one frame and switches between A and B in place (press `F`). Space plays or pauses, and `,` and `.` step one frame.
+- **What changed.** The score card shows the overall score, every rubric score and every principle score for A and B, with the change. The params list shows each parameter that changed, was added or was removed: nodes by name (`Fireball/Core.Rate`), number and color sequences as one line, joints by key times, easing and pose, and ability events by kind and label. You can filter it by text or by kind.
+- **Use a version.** In the VFX and Animation labs, **Use #n** restores the chosen iteration as the current version.
+
+![Ability Composer compare in the light theme](docs/screenshots/205-compare-ability-light.png)
+
+The compare is generic. `CompareView` / `CompareDialog` (`src/renderer/src/components/compare/`) take a list of `CompareItem`s and a `renderPane(item, ctx)`. A canvas lab wraps its scene class in `<ScenePane create load loadKey />`, and other renderers use `useCompareTime(ctx, draw)`. The data side is in `src/shared/compare/` (`flattenParams`, `diffParams`, score and principle deltas, `defaultPair`, the shared clock), so another lab only needs an item builder like the ones in `labs.ts`.
+
 ## Install
 
 Download the installer for your computer from the **[latest release](https://github.com/Acidgorgon/rbx-forge/releases/latest)**.

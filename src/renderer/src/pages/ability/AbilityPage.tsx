@@ -16,6 +16,7 @@ import { Inspector } from './Inspector'
 import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
 import '../vfx/vfx.css'
 import './ability.css'
+import { AbilityCompare, CompareButton } from '../compare/LabCompare'
 import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import { useRestateGate } from '../../components/useRestateGate'
@@ -205,6 +206,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<'critique' | 'export' | null>(null)
   const [exported, setExported] = useState<AbilityExportResult | null>(null)
+  const [comparing, setComparing] = useState(false)
   const pending = useRef<Ability | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
@@ -331,6 +333,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
           {busy === 'critique' ? <span className="spinner" aria-hidden /> : <Icon name="eye" size={11} />} Critique
         </button>
         <StudioCheckButton kind="ability" id={entry.id} before={flush} onShow={() => setTab('studio')} />
+        <CompareButton onClick={() => void flush().then(() => setComparing(true))} />
         <button className="btn small" onClick={() => void doExport()} disabled={!!busy || !status?.projectRoot} title={status?.projectRoot ? 'Write the client module and AbilityRunner into the game' : 'Open a project to export'}>
           <Icon name="code" size={11} /> Export
         </button>
@@ -346,6 +349,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
         </button>
       </div>
 
+      {comparing && <AbilityCompare entry={entry} onClose={() => setComparing(false)} />}
       <div className="seg vfx-tabs" role="tablist">
         {(['edit', 'critique', 'studio', 'export', 'info'] as const).map((k) => (
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>

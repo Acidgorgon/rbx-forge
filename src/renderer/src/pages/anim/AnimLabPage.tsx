@@ -23,6 +23,7 @@ import { isRefFile } from '../videoref/decode'
 import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 import { principleLabel } from '@shared/principles/catalog'
 import '../vfx/vfx.css'
+import { AnimCompare, CompareButton } from '../compare/LabCompare'
 import './anim.css'
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import { useRestateGate } from '../../components/useRestateGate'
@@ -420,6 +421,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
   const [clip, setClip] = useState<AnimClip>(entry.clip)
   const [notes, setNotes] = useState(entry.notes)
   const [busy, setBusy] = useState<string | null>(null)
+  const [comparing, setComparing] = useState(false)
   useEffect(() => {
     setClip(entry.clip)
     setNotes(entry.notes)
@@ -518,6 +520,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
           </button>
         )}
         <StudioCheckButton kind="anim" id={entry.id} onShow={() => setTab('studio')} />
+        <CompareButton onClick={() => setComparing(true)} count={entry.iterations?.length} />
         <button className="btn small" onClick={() => void exportIt()} disabled={!status?.projectRoot || !!busy} title="Write src/shared/Animations/<Name>/init.luau + Sequence.rbxmx and copy a command-bar line">
           {busy === 'Export' ? <span className="spinner" aria-hidden /> : <Icon name="studio" size={11} />} Export
         </button>
@@ -574,6 +577,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
       {tab === 'checks' && <Checks entry={entry} />}
       {tab === 'studio' && <StudioCheckPanel kind="anim" id={entry.id} />}
       {tab === 'iterations' && entry.refId && <PinnedCompare entry={entry} />}
+      {comparing && <AnimCompare entry={entry} onClose={() => setComparing(false)} onUse={(c, label) => void h.animUpdate(entry.id, { clip: c }).then(() => actions.toast({ text: `Using ${label}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'iterations' && <Iterations entry={entry} onRestore={(c, n) => void h.animUpdate(entry.id, { clip: c }).then(() => actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'iterations' && <LabDecisions lab="anim" entryId={entry.id} />}
       {tab === 'info' && (

@@ -21,6 +21,7 @@ import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '..
 import { principleLabel } from '@shared/principles/catalog'
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import './vfx.css'
+import { CompareButton, VfxCompare } from '../compare/LabCompare'
 import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
 
@@ -168,6 +169,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
   const [draft, setDraft] = useState<VfxEffect | undefined>(entry.effect)
   const [saving, setSaving] = useState(false)
   const [tags, setTags] = useState(entry.tags.join(', '))
+  const [comparing, setComparing] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const pendingRef = useRef<VfxEffect | null>(null)
 
@@ -283,6 +285,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
             </button>
           )}
           <StudioCheckButton kind="vfx" id={entry.id} before={flush} onShow={() => setTab('studio')} />
+          <CompareButton onClick={() => void flush().then(() => setComparing(true))} count={entry.iterations?.length} />
           <button className="btn small" onClick={() => void studio()} title="Write src/shared/VFX/<Name>, sync with Rojo, copy a command-bar line">
             <Icon name="studio" size={11} /> Test in Studio
           </button>
@@ -330,6 +333,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
         </button>
       </div>
 
+      {comparing && <VfxCompare entry={entry} onClose={() => setComparing(false)} onUse={(e, label) => (edit(e), actions.toast({ text: `Using ${label}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'params' && draft && <ParamEditor effect={draft} onChange={edit} />}
       {tab === 'script' && draft && <ScriptPanel entry={entry} effect={draft} onPreview={setDraft} />}
       {tab === 'studio' && draft && <StudioCheckPanel kind="vfx" id={entry.id} before={flush} />}

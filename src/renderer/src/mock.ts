@@ -46,6 +46,7 @@ import { chatExtrasMock } from './mockChatExtras'
 import { restateMock } from './mockRestate'
 import { qolMock } from './mockQol'
 import { chatModesMock } from './mockChatModes'
+import { entryTarget, isUnder, parentDir, protectedReason, renamedPath, renameProblem, siblingsOf, type PathChange } from '@shared/fileOps'
 import { BLINK_OUTPUTS, eventsBlink, generatedClient, generatedServer, mockBlinkModel } from './mockBlink'
 
 type Handler = (payload: never) => void
@@ -340,7 +341,7 @@ async function recheckBlink(): Promise<void> {
 
 // ---------------------------------------------------------------- project
 
-const project: ProjectInfo = { root: '/Users/dev/Games/GenTree', name: 'GenTree', placeIds: [123456789] }
+const project: ProjectInfo = { root: '/Users/dev/Games/GenTree', name: 'GenTree', placeIds: [123456789], mounts: ['src/shared', 'Packages', 'src/server', 'src/client'] }
 
 // Places: a match place and a menu place (multi-place projects).
 const mockPlaces: PlaceInfo[] = [
@@ -758,6 +759,14 @@ const api: HarnessApi = {
     if (path === 'events.blink') void recheckBlink()
     if (isNew) addMockFile(path)
   },
+  async renamePath(path, name, isDir) {
+    await delay(60)
+    return mockPathOp(path, isDir, String(name ?? ''))
+  },
+  async trashPath(path, isDir) {
+    await delay(60)
+    return mockPathOp(path, isDir, null)
+  },
   async getAppSettings() {
     return appSettings
   },
@@ -975,6 +984,56 @@ function addMockFile(path: string): void {
     emit('scripts:changed', scriptGroups.map((g) => ({ ...g, scripts: g.scripts.slice() })))
     log('dev', `[sourcemap] add ${path}`)
   }, 250)
+}
+
+// Explorer rename / delete against the mock tree: every known path under the entry goes (and, for a
+// rename, comes back at its new place through addMockFile).
+function mockKnownPaths(): string[] {
+  return [...new Set([...Object.keys(files), ...scriptGroups.flatMap((g) => g.scripts.map((x) => x.path))])]
+}
+
+function removeMockPaths(entry: string): string[] {
+  const gone = mockKnownPaths().filter((p) => isUnder(p, entry))
+  for (const g of scriptGroups) g.scripts = g.scripts.filter((x) => !isUnder(x.path, entry))
+  const prune = (nodes: TreeNode[]): TreeNode[] =>
+    nodes.flatMap((node) => {
+      if (node.filePath && isUnder(node.filePath, entry)) return []
+      const children = prune(node.children)
+      if (!node.filePath && node.children.length && !children.length && node.className === 'Folder') return []
+      return [{ ...node, children }]
+    })
+  tree.splice(0, tree.length, ...prune(tree))
+  return gone
+}
+
+function mockPathOp(path: string, isDir: boolean | undefined, name: string | null): PathChange {
+  const target = entryTarget(path, !!isDir)
+  const reason = protectedReason(target.path, project.mounts ?? [])
+  if (reason) throw new Error(reason)
+  const known = mockKnownPaths()
+  if (!known.some((p) => isUnder(p, target.path))) throw new Error(`${target.path} no longer exists.`)
+  let to: string | null = null
+  if (name !== null) {
+    const problem = renameProblem(target, name, siblingsOf(parentDir(target.path), known))
+    if (problem) throw new Error(problem)
+    to = renamedPath(target, name)
+  }
+  const contents = new Map(Object.entries(files))
+  const gone = removeMockPaths(target.path)
+  for (const p of gone) {
+    const text = contents.get(p)
+    delete files[p]
+    if (to === null) continue
+    const next = to + p.slice(target.path.length)
+    files[next] = text ?? `-- ${next}\n`
+    addMockFile(next)
+  }
+  setTimeout(() => {
+    emit('tree:changed', JSON.parse(JSON.stringify(tree)))
+    emit('scripts:changed', scriptGroups.map((g) => ({ ...g, scripts: g.scripts.slice() })))
+  }, 50)
+  log('harness', to ? `renamed ${target.path} -> ${to}` : `moved ${target.path} to the trash`, 'info')
+  return { from: target.path, to, isDir: target.isDir }
 }
 
 function patchService(id: ServiceId, patch: Partial<ServiceStatus>): void {

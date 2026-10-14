@@ -213,6 +213,19 @@ export function treeFromSourcemap(root: string, sourcemap: SourcemapNode): TreeN
   return top.className === 'DataModel' ? top.children : [top]
 }
 
+// Drops sourcemap nodes whose script file is gone (a stale sourcemap.json while ./dev is off, e.g.
+// right after an Explorer delete or rename), and folders that only held such nodes.
+export async function pruneMissing(root: string, nodes: TreeNode[]): Promise<TreeNode[]> {
+  const out: TreeNode[] = []
+  for (const node of nodes) {
+    if (node.filePath && !(await stat(join(root, node.filePath)).catch(() => null))) continue
+    const children = await pruneMissing(root, node.children)
+    if (!node.filePath && node.children.length > 0 && children.length === 0 && node.className === 'Folder') continue
+    out.push(children.length === node.children.length ? node : { ...node, children })
+  }
+  return out
+}
+
 function cleanProps(props: unknown): Record<string, string | number> | undefined {
   if (!props || typeof props !== 'object') return undefined
   const out: Record<string, string | number> = {}
@@ -520,20 +533,21 @@ export class Project {
     for (const place of places) {
       placeTrees.set(place.file, (await readJson<{ tree?: Record<string, unknown> }>(join(this.root, place.file)))?.tree)
     }
-    const info: ProjectInfo = {
-      ...(await loadProjectInfo(this.root).catch(() => this.info)),
-      places,
-      activePlace: activeFile
-    }
     const projectJson = { tree: placeTrees.get(activeFile) }
     // Watch every place's folders so edits to files only another place maps still refresh.
     this.watchDirs = [...new Set([...placeTrees.values()].flatMap((tree) => collectPaths(tree)))]
+    const info: ProjectInfo = {
+      ...(await loadProjectInfo(this.root).catch(() => this.info)),
+      places,
+      activePlace: activeFile,
+      mounts: [...new Set([...placeTrees.values()].flatMap((tree) => mappedPaths(tree)))]
+    }
     const sourcemap = await readJson<SourcemapNode>(join(this.root, sourcemapFor(activeFile)))
     let repoTree: TreeNode[]
     if (sourcemap && typeof sourcemap.name === 'string' && typeof sourcemap.className === 'string') {
       // Rojo's sourcemap leaves out branches with no scripts yet (a new project's empty
       // src/server), so the project file's own nodes fill those in.
-      repoTree = fillFromProject(treeFromSourcemap(this.root, sourcemap), await buildRepoTree(this.root, projectJson))
+      repoTree = fillFromProject(await pruneMissing(this.root, treeFromSourcemap(this.root, sourcemap)), await buildRepoTree(this.root, projectJson))
     } else {
       repoTree = await buildRepoTree(this.root, projectJson)
     }

@@ -32,6 +32,7 @@ import type {
   UsageSnapshot
 } from '@shared/types'
 import { basename, instanceNameOfFile } from './lib/roblox'
+import { isUnder, movedPath, type PathChange } from '@shared/fileOps'
 
 // ---------------------------------------------------------------- types
 
@@ -161,6 +162,7 @@ export interface State {
 
 export type DialogRequest =
   | { kind: 'renameFeature'; from?: string }
+  | { kind: 'renamePath'; path: string; isDir: boolean }
   | { kind: 'joinProject' }
   | { kind: 'newProject' }
   | { kind: 'blinkEvent' }
@@ -264,6 +266,8 @@ type Action =
   | { type: 'fileLoaded'; path: string; contents: string }
   | { type: 'fileEdit'; path: string; contents: string }
   | { type: 'fileSaved'; path: string; contents: string }
+  // An Explorer rename (to) or delete (to: null) of a file or folder: its tabs follow or close.
+  | { type: 'pathChanged'; from: string; to: string | null }
   | { type: 'toast'; toast: ToastSpec }
   | { type: 'dropToast'; id: number }
   | { type: 'board'; board: BoardView }
@@ -393,6 +397,23 @@ function reducer(state: State, a: Action): State {
     }
     case 'fileSaved':
       return { ...state, files: state.files.map((f) => (f.path === a.path ? { ...f, saved: a.contents } : f)) }
+    case 'pathChanged': {
+      const hit = (path?: string) => !!path && isUnder(path, a.from)
+      if (a.to === null) {
+        let next = state
+        for (const t of state.tabs) if ((t.kind === 'file' || t.kind === 'conflict') && hit(t.path)) next = reducer(next, { type: 'closeTab', id: t.id })
+        return { ...next, files: next.files.filter((f) => !hit(f.path)), recent: next.recent.filter((p) => !hit(p)) }
+      }
+      const move = (path: string) => movedPath(path, a.from, a.to!) ?? path
+      const tabs = state.tabs.map((t) => {
+        if ((t.kind !== 'file' && t.kind !== 'conflict') || !hit(t.path)) return t
+        const path = move(t.path!)
+        return t.kind === 'file' ? { ...t, id: `file:${path}`, path, title: tabTitle(path) } : { ...t, id: `conflict:${path}`, path, title: `${tabTitle(path)} ⇄ Studio` }
+      })
+      const active = state.tabs.findIndex((t) => t.id === state.activeTab)
+      const files = state.files.map((f) => (hit(f.path) ? { ...f, path: move(f.path) } : f))
+      return withActive({ ...state, tabs, files, recent: state.recent.map(move) }, active >= 0 ? tabs[active].id : state.activeTab)
+    }
     case 'toast': {
       const toasts = [...state.toasts, a.toast].slice(-3)
       return { ...state, toasts, notifications: [a.toast, ...state.notifications].slice(0, 50) }
@@ -442,6 +463,10 @@ export interface Actions {
   editFile(path: string, contents: string): void
   saveFile(path: string): Promise<void>
   reloadFile(path: string): Promise<void>
+  // Explorer rename / move to trash; open tabs follow the new path or close (unsaved edits included:
+  // the Explorer asks first).
+  renamePath(path: string, name: string, isDir?: boolean): Promise<PathChange>
+  trashPath(path: string, isDir?: boolean): Promise<PathChange>
   // Panels
   showSide(view: SideView): void
   toggleSide(): void
@@ -588,6 +613,16 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       async reloadFile(path) {
         if (stateRef.current.files.some((f) => f.path === path)) await loadFile(path)
+      },
+      async renamePath(path, name, isDir) {
+        const change = await h.renamePath(path, name, isDir)
+        dispatch({ type: 'pathChanged', from: change.from, to: change.to })
+        return change
+      },
+      async trashPath(path, isDir) {
+        const change = await h.trashPath(path, isDir)
+        dispatch({ type: 'pathChanged', from: change.from, to: null })
+        return change
       },
 
       showSide(view) {

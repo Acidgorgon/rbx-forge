@@ -1,8 +1,9 @@
 // Workbench basics: launch, project, explorer + editor, palette, terminal, scripts, source control.
 
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { git, INVENTORY_SERVICE } from '../lib/project.ts'
+import { write } from '../../fixture.ts'
 import { bodyText, check, CENTER, mod, showSide, SkipFlow, waitText } from '../lib/ui.ts'
 import type { Flow } from './types.ts'
 
@@ -141,6 +142,55 @@ export const coreFlows: Flow[] = [
       await showSide(page, 'Scripts')
       await waitText(page, /InventoryService/, { within: 'aside.side' })
       await waitText(page, /PlayerData/, { within: 'aside.side' })
+    }
+  },
+  {
+    name: 'explorer-rename-delete',
+    title: 'Explorer context menu renames a script (tab follows) and moves it to the trash (tab closes)',
+    timeoutMs: 45_000,
+    async run({ page, root }) {
+      await showSide(page, 'Explorer')
+      const side = page.locator('aside.side')
+      const filter = side.locator('input').first()
+      const menuItem = (name: RegExp) => page.locator('.menu [role="menuitem"]', { hasText: name }).first()
+      const waitDisk = async (path: string, want: boolean) => {
+        for (let i = 0; i < 50 && existsSync(join(root, path)) !== want; i++) await page.waitForTimeout(100)
+        check(existsSync(join(root, path)) === want, `${path} should ${want ? 'exist' : 'be gone'}`)
+      }
+      // Mount points ($path in default.project.json) offer neither rename nor delete.
+      await filter.fill('')
+      await side.locator('[role="treeitem"]', { hasText: /^\s*Server\s*$/ }).first().click({ button: 'right' })
+      await page.locator('.menu').first().waitFor({ state: 'visible', timeout: 5000 })
+      check((await menuItem(/^Delete/).count()) === 0, 'the src/server mount offers Delete')
+      await page.keyboard.press('Escape')
+
+      write(root, 'src/server/E2eScratch.server.luau', 'print("scratch")\n')
+      await filter.fill('E2eScratch')
+      const row = side.locator('[role="treeitem"]', { hasText: 'E2eScratch' }).first()
+      await row.waitFor({ state: 'visible', timeout: 15_000 })
+      await row.dblclick()
+      await page.locator('.tab', { hasText: 'E2eScratch' }).first().waitFor({ timeout: 5000 })
+
+      await row.click({ button: 'right' })
+      await menuItem(/^Rename…/).click()
+      const dialog = page.locator('.dialog[role="dialog"]')
+      await dialog.getByLabel('New name').fill('E2eRenamed')
+      await dialog.getByRole('button', { name: /Rename/ }).click()
+      await waitDisk('src/server/E2eRenamed.server.luau', true)
+      await waitDisk('src/server/E2eScratch.server.luau', false)
+      await page.locator('.tab', { hasText: 'E2eRenamed' }).first().waitFor({ timeout: 5000 })
+      check((await page.locator('.tab', { hasText: 'E2eScratch' }).count()) === 0, 'the old tab is still open after the rename')
+
+      await filter.fill('E2eRenamed')
+      const renamed = side.locator('[role="treeitem"]', { hasText: 'E2eRenamed' }).first()
+      await renamed.waitFor({ state: 'visible', timeout: 10_000 })
+      await renamed.click({ button: 'right' })
+      await menuItem(/^Delete/).click()
+      await dialog.getByRole('button', { name: /Move to/ }).click()
+      await waitDisk('src/server/E2eRenamed.server.luau', false)
+      await page.waitForFunction(() => ![...document.querySelectorAll('.tab')].some((t) => t.textContent?.includes('E2eRenamed')), undefined, { timeout: 5000 })
+      await page.waitForFunction(() => ![...document.querySelectorAll('aside.side [role="treeitem"]')].some((t) => t.textContent?.includes('E2eRenamed')), undefined, { timeout: 10_000 })
+      await filter.fill('')
     }
   },
   {

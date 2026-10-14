@@ -7,10 +7,11 @@ import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { ClassIcon, FileGlyph } from '../components/ClassIcon'
 import { useMenu, type MenuEntry } from '../components/Menu'
-import { featuresOf, initSuffix, realmOfFile, realmOfInstance, requireExpression, roots, scriptsFlat, findNode, instancePathOfFile } from '../lib/roblox'
+import { basename, featuresOf, initSuffix, realmOfFile, realmOfInstance, requireExpression, roots, scriptsFlat, findNode, instancePathOfFile } from '../lib/roblox'
 import { createHint, createItem, defaultTarget, dirForInstance, realmOfDir, type NewKind } from '../lib/templates'
 import { validateName } from '../shell/Overlays'
-import { errorText, keyHint } from '../lib/format'
+import { errorText, isMac, keyHint } from '../lib/format'
+import { entryTarget, isUnder, protectedReason } from '@shared/fileOps'
 import { sparks } from '../lib/sparks'
 
 type Mode = 'tree' | 'files' | 'features'
@@ -285,6 +286,57 @@ export function ExplorerView() {
     return null
   }
 
+  // ---- rename / delete
+  // The file or folder on disk a rename or delete acts on. None for Studio-only nodes, packages,
+  // Blink output, nodes with no file or folder of their own, and project-file mount points (renaming
+  // those would break the project file; main refuses them too).
+  const diskEntry = (r: Row): { path: string; isDir: boolean } | null => {
+    if (r.studio || r.wally || r.blinkOut) return null
+    const mounts = state.project?.mounts ?? []
+    const ip = r.instancePath ?? null
+    let entry: { path: string; isDir: boolean } | null = null
+    if (r.filePath) entry = { path: r.filePath, isDir: false }
+    else if (mode === 'files' && r.dir) entry = { path: r.dir, isDir: true }
+    else if (mode === 'tree' && ip) {
+      const dir = dirForInstance(state.tree, ip)
+      if (dir && basename(dir) === r.name) entry = { path: dir, isDir: true }
+    }
+    if (!entry) return null
+    const target = entryTarget(entry.path, entry.isDir).path
+    if (protectedReason(target, mounts)) return null
+    if (target.split('/').some((part) => /^(Server|Dev)?Packages$|^_Index$/.test(part))) return null
+    // The Game view holds only what a project file maps; the Files view also lists root files (events.blink).
+    if (mode === 'tree' && !mounts.some((m) => target.startsWith(m + '/'))) return null
+    return entry
+  }
+
+  const beginRename = (r: Row) => {
+    const entry = diskEntry(r)
+    if (entry) actions.openDialog({ kind: 'renamePath', path: entry.path, isDir: entry.isDir })
+  }
+
+  const confirmDelete = (r: Row) => {
+    const entry = diskEntry(r)
+    if (!entry) return
+    const target = entryTarget(entry.path, entry.isDir)
+    const unsaved = state.files.filter((f) => isUnder(f.path, target.path) && f.current !== f.saved).length
+    const bin = navigator.userAgent.includes('Windows') ? 'Recycle Bin' : 'Trash'
+    const what = target.isDir ? `the folder ${target.path} and everything in it` : target.path
+    actions.openDialog({
+      kind: 'confirm',
+      title: `Delete ${basename(target.path)}?`,
+      body: `Moves ${what} to the ${bin}; you can restore it from there.${unsaved ? ` ${unsaved === 1 ? 'An open file has' : `${unsaved} open files have`} unsaved changes that will be lost.` : ''}`,
+      confirm: `Move to ${bin}`,
+      danger: true,
+      run: () => {
+        actions
+          .trashPath(target.path, target.isDir)
+          .then(() => actions.toast({ text: `Deleted ${basename(target.path)}`, detail: `Moved to the ${bin}`, kind: 'ok', ms: 3500 }))
+          .catch((err) => actions.toast({ text: `Could not delete ${basename(target.path)}`, detail: errorText(err), kind: 'err' }))
+      }
+    })
+  }
+
   const rowMenu = (e: MouseEvent, r: Row) => {
     setSelected(r.key)
     setMenuTarget(r.key)
@@ -352,6 +404,11 @@ export function ExplorerView() {
       items.push({ label: 'Claim for my work', icon: <Icon name="lock" />, sub: 'tells teammates you are editing it', onSelect: () => void window.harness.claim(r.filePath!).then((claims) => actions.set({ claims })).catch((err) => actions.toast({ text: 'Could not claim', detail: errorText(err), kind: 'err' })) })
     }
     if (ip && mode === 'tree') items.push({ label: 'Reveal in game tree', icon: <Icon name="reveal" />, onSelect: () => actions.revealInstance(ip) })
+    if (diskEntry(r)) {
+      items.push('separator')
+      items.push({ label: 'Rename…', icon: <Icon name="pencil" />, hint: feature ? undefined : 'F2', onSelect: () => beginRename(r) })
+      items.push({ label: 'Delete', icon: <Icon name="trash" />, hint: isMac ? '⌘⌫' : 'Del', danger: true, onSelect: () => confirmDelete(r) })
+    }
     menu.openAt(e, items)
   }
 
@@ -396,8 +453,13 @@ export function ExplorerView() {
       e.preventDefault()
       activate(r, true)
     } else if (e.key === 'F2' && r) {
+      e.preventDefault()
       const f = featureOf(r.filePath, r.instancePath)
       if (f) actions.openDialog({ kind: 'renameFeature', from: f })
+      else beginRename(r)
+    } else if ((e.key === 'Delete' || (isMac && e.key === 'Backspace' && e.metaKey)) && r) {
+      e.preventDefault()
+      confirmDelete(r)
     } else if (mod && e.altKey && e.key.toLowerCase() === 'c' && r?.instancePath) {
       e.preventDefault()
       void actions.copy(robloxPaths(r.instancePath).dot)

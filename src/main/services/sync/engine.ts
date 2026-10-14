@@ -591,16 +591,29 @@ export class SyncEngine {
     // Directories some unit owns (folders, init-script dirs): their .gitkeep is not a deletion.
     const dirsClaimed = new Set<string>()
     for (const u of plan.units) if (u.kind === 'folder' || u.anchor !== u.file) dirsClaimed.add(u.anchor)
+    // One file mapped from several instances (the same directory mounted twice in a place): the copies
+    // are reconciled as one, or the last copy reconciled would overwrite an edit made to another.
+    const mounts = new Map<string, Unit[]>()
+    for (const u of plan.units) if (u.kind !== 'folder' && inScope(u.instancePath)) (mounts.get(u.file) ?? mounts.set(u.file, []).get(u.file)!).push(u)
     // Folders first so files have a parent; then files.
     for (const u of plan.units) {
       if (!inScope(u.instancePath)) continue
       try {
+        const copies = mounts.get(u.file)
+        if (u.kind !== 'folder' && copies && copies.length > 1) {
+          if (copies[0] !== u) continue
+          const pick = await this.pickMount(s, copies)
+          entries.push(await this.reconcileUnit(s, pick.unit, pick.conflict))
+          continue
+        }
         if (u.kind === 'folder') {
           if (!disk.dirs.has(u.file)) {
             await this.guard(map, u.file + '/x')
+            // Present under another case (case-insensitive disk): not a new folder.
+            const existed = await this.fs.lstat(this.abs(u.file)).then((i) => i.isDirectory(), () => false)
             await this.fs.mkdir(this.abs(u.file), { recursive: true })
             disk.dirs.add(u.file)
-            entries.push(this.entry(u.file, 'created', u.instancePath))
+            if (!existed) entries.push(this.entry(u.file, 'created', u.instancePath))
           }
           continue
         }
@@ -614,8 +627,22 @@ export class SyncEngine {
     const present = new Set(plan.present.map((r) => r.path))
     const refusedPaths = plan.refused.map((r) => r.path)
     const refusedParents = new Set(plan.refused.filter((r) => /^(unsafe name|duplicate)/.test(r.note)).map((r) => pkey(r.path.slice(0, -1))))
+    // On a case-insensitive disk (Windows, macOS) a file whose name differs from a claimed one only in
+    // case IS that file: trashing it would delete the script Studio still has.
+    const claimedLower = new Map<string, string>()
+    for (const f of claimed) claimedLower.set(f.toLowerCase(), f)
+    const caseFixed = new Set<string>()
     for (const file of [...disk.files].sort()) {
       if (claimed.has(file) || plan.keep.has(file) || s.protect.has(file)) continue
+      const twin = claimedLower.get(file.toLowerCase())
+      if (twin && (await this.sameFile(file, twin))) {
+        try {
+          entries.push(await this.fixCase(s, file, twin, caseFixed))
+        } catch (err) {
+          entries.push(this.entry(file, 'unmapped', fromDisk(map, twin) ?? [], { note: `refused: ${(err as Error).message}` }))
+        }
+        continue
+      }
       // A .gitkeep stands for its (empty) directory's Folder: kept while Studio has the folder.
       const keep = isGitkeep(file)
       if (keep && (dirsClaimed.has(dirOf(file)) || map.roots.some((r) => r.path === dirOf(file)))) continue
@@ -652,6 +679,46 @@ export class SyncEngine {
     return entries
   }
 
+  // True when two paths name the same file on disk (case-insensitive file systems).
+  private async sameFile(a: string, b: string): Promise<boolean> {
+    try {
+      const [x, y] = await Promise.all([this.fs.lstat(this.abs(a), { bigint: true }), this.fs.lstat(this.abs(b), { bigint: true })])
+      return x.ino === y.ino && x.dev === y.dev
+    } catch {
+      return false
+    }
+  }
+
+  // `file` and the claimed `twin` differ only in case and are one file. When this place knew the old
+  // name, Studio renamed the instance: the disk name follows (directory segments too), or Rojo would
+  // rename it back. Otherwise the disk was renamed (e.g. by git): left for Rojo.
+  private async fixCase(s: Session, file: string, twin: string, done: Set<string>): Promise<SyncEntry> {
+    const inst = fromDisk(s.map, twin) ?? []
+    if (!(await this.store.get(s.placeKey, file))) return this.entry(file, 'disk-ahead', inst, { note: `name differs from Studio only in case (${twin})` })
+    const a = file.split('/')
+    const b = twin.split('/')
+    for (let i = 0; i < b.length; i++) {
+      if (a[i] === b[i]) continue
+      const to = b.slice(0, i + 1).join('/')
+      if (done.has(to)) continue
+      done.add(to)
+      const src = await this.guard(s.map, [...b.slice(0, i), a[i]].join('/'))
+      const dst = await this.guard(s.map, to)
+      // Through a temp name outside the mapped roots: a case-only rename in one step is a no-op on some systems.
+      const temp = join(this.root, ...TRASH_DIR.split('/'), `.case-${this.stamp()}-${i}`)
+      await this.fs.mkdir(join(temp, '..'), { recursive: true })
+      await this.fs.rename(src, temp)
+      try {
+        await this.fs.rename(temp, dst)
+      } catch (err) {
+        await this.fs.rename(temp, src).catch(() => undefined)
+        throw err
+      }
+    }
+    await this.store.delete(s.placeKey, file)
+    return this.entry(twin, 'renamed', inst, { from: file, note: 'name case changed in Studio' })
+  }
+
   // A Studio folder's directory: present, and holding a .gitkeep exactly while it has nothing else.
   private async keepFolder(s: Session, u: Unit, stamp: string): Promise<SyncEntry | null> {
     const map = s.map
@@ -681,13 +748,34 @@ export class SyncEngine {
     return this.entry(keep, 'trashed', u.instancePath, { note: 'folder has children now: .gitkeep removed' })
   }
 
-  private async reconcileUnit(s: Session, u: Unit): Promise<SyncEntry> {
+  // The Studio copy that stands for a file several mapped instances share: the one edited since the
+  // base (or, without a base, the one that differs from the disk). Copies edited differently conflict.
+  private async pickMount(s: Session, copies: Unit[]): Promise<{ unit: Unit; conflict?: string }> {
+    const diskText = await this.read(copies[0].file)
+    const base = await this.store.get(s.placeKey, copies[0].file)
+    const unchanged = base ? base.hash : diskText === null ? null : hashText(canon(copies[0].kind, diskText))
+    const changed = new Map<string, Unit>()
+    for (const u of copies) {
+      const hash = hashText(canon(u.kind, u.render(diskText)))
+      if (hash !== unchanged && !changed.has(hash)) changed.set(hash, u)
+    }
+    const picked = [...changed.values()]
+    if (picked.length === 0) return { unit: copies[0] }
+    if (picked.length === 1) return { unit: picked[0] }
+    return { unit: picked[0], conflict: `mapped ${copies.length} times in Studio and the copies differ (${copies.map((c) => c.instancePath.join('.')).join(', ')})` }
+  }
+
+  private async reconcileUnit(s: Session, u: Unit, mountConflict?: string): Promise<SyncEntry> {
     const map = s.map
     s.conflicts.delete(u.file)
     const diskText = await this.read(u.file)
     const studioText = u.render(diskText)
     const cS = canon(u.kind, studioText)
     const base = await this.store.get(s.placeKey, u.file)
+    if (mountConflict) {
+      this.hold(s, u, studioText, cS, diskText ?? '', base?.text ?? null, base ? 'both-changed' : 'first-run', { diskDeleted: diskText === null })
+      return this.entry(u.file, 'conflict', u.instancePath, { note: mountConflict })
+    }
     if (diskText === null) {
       if (!base) {
         await this.writeFile(map, u.file, toFileText(studioText))

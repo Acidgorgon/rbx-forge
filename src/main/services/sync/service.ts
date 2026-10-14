@@ -28,6 +28,7 @@ import { PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
 import { isLinkedKey, linkKey, matchPlace, PlaceLinks } from './links.ts'
 import { BaseStore } from './store.ts'
+import { LIVE_FOLDER } from '../../../shared/vfx/live.ts'
 
 // ---- What the service needs from the engine worker's modules (engine.ts, mapping.ts) ----
 // Structural copies of the contract's Engine API, so this file builds and is tested before they land.
@@ -461,7 +462,8 @@ export class SyncService {
     const state = this.placeState(placeKey, map.projectFile, place)
     state.lastSeen = this.now()
     const roots = map.roots.filter((r) => !PACKAGES.test(r.path)).map((r) => r.instance)
-    const skip = map.roots.filter((r) => PACKAGES.test(r.path)).map((r) => r.instance)
+    // The VFX Lab's live Studio preview folder never syncs.
+    const skip = [...map.roots.filter((r) => PACKAGES.test(r.path)).map((r) => r.instance), ['Workspace', LIVE_FOLDER]]
     this.deps.log?.(`sync: Studio session for ${map.projectFile} (${placeKey}), ${roots.length} roots`)
     this.refresh()
     return { enabled: true, sessionToken: token, roots, skip, outline: outlineContainers(map), outlineMax: OUTLINE_MAX }
@@ -478,7 +480,7 @@ export class SyncService {
     const state = this.placeStates.get(session.placeKey)
     if (!state || !samePlace(state.place, body.place)) return { ok: false, error: 'this session belongs to another place', resend: true }
     state.lastSeen = this.now()
-    const nodes = Array.isArray(body.nodes) ? body.nodes : []
+    const nodes = (Array.isArray(body.nodes) ? body.nodes : []).filter((n) => !(Array.isArray(n?.path) && n.path[0] === 'Workspace' && n.path[1] === LIVE_FOLDER))
     const sig = JSON.stringify([nodes, !!body.truncated])
     if (state.outline?.sig === sig) return { ok: true }
     state.outline = { nodes, truncated: !!body.truncated, sig }

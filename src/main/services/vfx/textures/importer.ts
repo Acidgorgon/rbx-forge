@@ -43,7 +43,10 @@ export interface StudioHarvestDeps {
     port: number
     listening: boolean
     connected(): boolean
-    run(job: BridgeJob, handler: (ev: { type: string; message?: string }, at: number) => unknown, opts?: { acceptTimeoutMs?: number; timeoutMs?: number }): Promise<void>
+    run(job: BridgeJob, handler: (ev: { type: string; message?: string }, at: number) => unknown, opts?: { acceptTimeoutMs?: number; timeoutMs?: number; preemptible?: boolean }): Promise<void>
+    // Live in Studio (vfx/live.ts): the running job and cancelling it.
+    current?(): BridgeJob | null
+    cancel?(reason?: string): void
   }
 }
 

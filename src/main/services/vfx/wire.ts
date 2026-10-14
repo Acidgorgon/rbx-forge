@@ -20,6 +20,11 @@ import type { Rgba } from '../../../shared/vfx/tex/image.ts'
 import { normalizePolicy, TEXTURE_POLICY_SETTING, DEFAULT_TEXTURE_POLICY } from '../../../shared/vfx/tex/reuse.ts'
 import type { StudioHarvestDeps } from './textures/importer.ts'
 import { MeshService } from './meshes.ts'
+import { VfxImporter } from './importer.ts'
+import { LiveStudio } from './live.ts'
+import type { LiveSettings } from '../../../shared/vfx/live.ts'
+import type { VfxImportCommit } from '../../../shared/vfx/types.ts'
+import type { StudioPath } from '../../../shared/vfx/studioImport.ts'
 
 export interface VfxWireDeps {
   // Principle priorities (services/principles): weights for the critics, ratings feed them.
@@ -29,7 +34,7 @@ export interface VfxWireDeps {
   userDataDir: string
   root: () => string | null
   settings: { get<T>(key: string, fallback: T): T; set?(key: string, value: unknown): void }
-  emit: (event: 'vfx:changed' | 'vfx:progress' | 'vfx:textures' | 'vfx:meshes', payload: unknown) => void
+  emit: (event: 'vfx:changed' | 'vfx:progress' | 'vfx:textures' | 'vfx:meshes' | 'vfx:import' | 'vfx:live', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   memory?: MemoryLike
   vision?: (tier?: LabTier) => VisionFn | null
@@ -51,6 +56,7 @@ export interface VfxWiring {
   service: VfxService
   textures: TextureService
   meshes: MeshService
+  live: LiveStudio
   handlers: Record<string, (...args: any[]) => unknown>
   tools: () => { read: VfxTool[]; write: VfxTool[] }
 }
@@ -86,7 +92,11 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     emit: deps.emit,
     log: deps.log
   })
+  // Live in Studio / Loop: Studio replays the current effect (preemptible bridge job).
+  let isRefining: (id: string) => boolean = () => false
+  const live = new LiveStudio({ bridge: () => deps.studioTextures?.bridge, emit: deps.emit, log: deps.log, isRefining: (id) => isRefining(id) })
   const service = new VfxService({
+    onDraft: (entryId, iteration, effect, score) => live.draft(entryId, iteration, effect, score),
     principles: deps.principles,
     gate: deps.gate,
     userDir: join(deps.userDataDir, 'vfx'),
@@ -103,7 +113,20 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     rojo: deps.rojo,
     emit: deps.emit,
     log: deps.log,
-    textures
+    textures,
+    studioConnected: () => {
+      const b = deps.studioTextures?.bridge
+      return !!(b?.listening && b.connected())
+    }
+  })
+  isRefining = (id) => service.isRefining(id)
+  // Deleted entries wait in the library trash until the next start (Undo restores them).
+  void service.purgeTrash().catch(() => undefined)
+  const importer = new VfxImporter({
+    service,
+    bridge: () => deps.studioTextures?.bridge,
+    loadMeshes: (refs) => meshes.load(refs, { studio: true, cloud: true }),
+    emit: deps.emit
   })
   const scope = (s: unknown): VfxScope => (s === 'project' ? 'project' : 'user')
   const handlers: Record<string, (...args: any[]) => unknown> = {
@@ -111,9 +134,24 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     vfxList: () => service.list(),
     vfxGet: (id: string) => service.get(String(id ?? '')),
     vfxSearch: (q: string) => service.search(String(q ?? ''), { includeAvoid: true }),
-    vfxImport: (paths: unknown, s: unknown) => service.import(Array.isArray(paths) ? paths.map(String) : [], scope(s)),
+    vfxImport: (paths: unknown, s: unknown, opts?: { force?: boolean }) => service.import(Array.isArray(paths) ? paths.map(String) : [], scope(s), { force: !!opts?.force }),
+    vfxImportScan: (paths: unknown) => importer.scanFiles(Array.isArray(paths) ? paths.map(String).slice(0, 400) : []),
+    vfxStudioScan: (opts?: { packs?: StudioPath[] }) => importer.scanStudio({ packs: Array.isArray(opts?.packs) ? opts!.packs.slice(0, 50) : undefined }),
+    vfxImportCommit: (input: VfxImportCommit) => importer.commit(input),
+    vfxTrash: (ids: unknown) => service.trash(Array.isArray(ids) ? ids.map(String).slice(0, 2000) : []),
+    vfxRestore: (batch: unknown) => service.restore(String(batch ?? '')),
+    vfxClear: (s: unknown) => service.clear(scope(s)),
+    vfxDuplicates: () => service.duplicates(),
+    vfxRetag: () => service.retag(),
+    vfxLiveStart: (opts?: { pin?: string | null; settings?: Partial<LiveSettings>; current?: { key: string; effect: VfxEffect; label?: string } }) =>
+      live.start({ pin: opts?.pin ? String(opts.pin) : null, settings: opts?.settings, current: opts?.current?.effect ? { key: String(opts.current.key), effect: opts.current.effect, label: String(opts.current.label ?? opts.current.effect.name ?? '') } : undefined }),
+    // loop: Stop on a Loop (Live, when on, follows again); follow: the header toggle off; neither: all off.
+    vfxLiveStop: async (opts?: { loop?: boolean; follow?: boolean }) => (opts?.loop ? live.stopLoop() : opts?.follow ? live.unfollow() : live.stop()),
+    vfxLiveSet: async (current: { key: string; effect: VfxEffect; label?: string }) => (current?.effect ? live.setCurrent({ key: String(current.key), effect: current.effect, label: String(current.label ?? current.effect.name ?? '') }) : live.status()),
+    vfxLiveSettings: async (s: Partial<LiveSettings>) => live.setSettings(s ?? {}),
+    vfxLiveStatus: async () => live.status(),
     vfxChooseImport: async () => (deps.chooseImport ? deps.chooseImport() : []),
-    vfxUpdate: (id: string, patch: { name?: string; description?: string; tags?: string[]; notes?: string; effect?: VfxEffect }) => service.update(String(id ?? ''), patch ?? {}),
+    vfxUpdate: (id: string, patch: Parameters<VfxService['update']>[1]) => service.update(String(id ?? ''), patch ?? {}),
     vfxDelete: (id: string) => service.remove(String(id ?? '')),
     vfxRate: (id: string, r: unknown) => service.rate(String(id ?? ''), r === 'up' || r === 'down' ? r : null),
     vfxLearn: () => service.learn(),
@@ -166,5 +204,5 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     const t = textureTools(textures, { chatImage: deps.chatImage })
     return { read: [...v.read, ...t.read], write: [...v.write, ...t.write] }
   }
-  return { service, textures, meshes, handlers, tools: () => (tools ??= withTextures()) }
+  return { service, textures, meshes, live, handlers, tools: () => (tools ??= withTextures()) }
 }

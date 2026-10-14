@@ -4,7 +4,7 @@
 import type { HarnessEvents, VfxApi, VfxEffect, VfxEntry, VfxIteration, VfxRecipe } from '@shared/types'
 import { draftSpec } from '@shared/vfx/draft'
 import { effectFromSpec, applyChanges } from '@shared/vfx/spec'
-import { autoTags, describeEffect, effectColors, effectStats, perfWarnings } from '@shared/vfx/analyze'
+import { describeEffect, effectColors, effectStats, perfWarnings } from '@shared/vfx/analyze'
 import { extractRecipes } from '@shared/vfx/recipes'
 import { heuristicCritique } from '@shared/vfx/critique'
 import { compileTimeline } from '@shared/vfx/compile'
@@ -17,6 +17,10 @@ import { mockMeshGet, mockMeshLoad } from './mockMeshes'
 import { genRef } from '@shared/vfx/tex/textures'
 import { withVfxPrinciples } from '@shared/principles/attach'
 import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
+import { effectHash } from '@shared/vfx/fingerprint'
+import { autoTagGroups, autoTags, flatTags, groupsFromTags, tagGroupsOf } from '@shared/vfx/tags'
+import { normalizeLiveSettings, type LiveStatus } from '@shared/vfx/live'
+import type { VfxImportRow, VfxImportScan } from '@shared/types'
 
 // What a vision critic would add for the principles code cannot measure (shape, readability), so the
 // preview's scorecards show both kinds.
@@ -165,8 +169,45 @@ function mockRun(script: string, base: VfxEffect): VfxScriptResult {
 
 let recipes: VfxRecipe[] = extractRecipes(entries)
 
+// Browser preview of the bulk import: a pack shaped like a Studio VFX folder (Models plus a loose
+// Part, duplicate names), the trash, and the live loop state.
+const STUDIO_PACK = ['AuraImpact', 'Barrage', 'Slash', 'Slash', 'Slash', 'Impact', 'Impact', 'QuickDash', 'Trail', 'ActivateFX', 'Fire Burst', 'Ice Shatter', 'Lightning Arc', 'Wind Swirl']
+const trash = new Map<string, VfxEntry[]>()
+const scans = new Map<string, { rows: VfxImportRow[]; prompts: Map<string, string> }>()
+
 export function vfxMock(emit: Emit): VfxApi {
   const changed = () => emit('vfx:changed', { at: Date.now() })
+  let live: LiveStatus = { state: 'off', pinned: null, name: null, label: '', plays: 0, settings: normalizeLiveSettings(null) }
+  const liveEmit = (patch: Partial<LiveStatus>) => {
+    live = { ...live, ...patch }
+    emit('vfx:live', live)
+    return live
+  }
+  const scanOf = (names: string[], source: 'files' | 'studio'): VfxImportScan => {
+    const index = new Map(entries.filter((e) => e.effect).map((e) => [effectHash(e.effect!), e]))
+    const prompts = new Map<string, string>()
+    const first = new Map<string, string>()
+    const counts = new Map<string, number>()
+    const rows: VfxImportRow[] = names.map((n, i) => {
+      const c = (counts.get(n) ?? 0) + 1
+      counts.set(n, c)
+      const name = c > 1 ? `${n} (${c})` : n
+      // Two of the three "Slash" copies are the same effect (dedupe within the import).
+      const prompt = n === 'Slash' && c === 3 ? 'Slash' : c > 1 ? `${n} ${c}` : n
+      const effect = effectFromSpec(draftSpec(prompt.toLowerCase()))
+      const hash = effectHash(effect)
+      const st = effectStats(effect)
+      const key = `r${i}`
+      prompts.set(key, prompt)
+      const dup = index.get(hash)
+      const row: VfxImportRow = { key, name, origin: source === 'studio' ? `Workspace.VFX.${n}` : `vfx-pack.rbxm`, source: source === 'studio' ? 'studio' : 'file', stats: { emitters: st.emitters, beams: st.beams, trails: st.trails, lights: st.lights, meshes: st.meshes, scripts: st.scripts, parts: n === 'Trail' ? 1 : 2 }, notes: [], hash, duplicates: dup ? [{ scope: dup.scope, id: dup.id, name: dup.name }] : [], ...(first.has(hash) ? { sameAs: first.get(hash) } : {}) }
+      if (!first.has(hash)) first.set(hash, key)
+      return row
+    })
+    const scanId = `scan-${(seq++).toString(36)}`
+    scans.set(scanId, { rows, prompts })
+    return { scanId, source, rows, media: [], skipped: [], notes: [] }
+  }
   const find = (id: string) => {
     const e = entries.find((x) => x.id === id)
     if (!e) throw new Error(`No VFX entry ${id}`)
@@ -205,11 +246,108 @@ export function vfxMock(emit: Emit): VfxApi {
       changed()
       return { added, skipped: [] }
     },
+    async vfxImportScan(paths) {
+      await delay(300)
+      return scanOf(paths.map((p) => p.split(/[\\/]/).pop()!.replace(/\.\w+$/, '')), 'files')
+    },
+    async vfxStudioScan(opts) {
+      for (let i = 1; i <= 4; i++) {
+        emit('vfx:import', { phase: 'reading', done: i * 3, total: 12, label: 'reading the selection' })
+        await delay(150)
+      }
+      if (!opts?.packs?.length && !entries.some((e) => e.origin.startsWith('Workspace.'))) {
+        return { scanId: `scan-${(seq++).toString(36)}`, source: 'studio', rows: [], packs: [{ key: 'Workspace.VFX', path: [{ name: 'Workspace', index: 0 }, { name: 'VFX', index: 3 }], fullName: 'Workspace.VFX', className: 'Folder', effects: STUDIO_PACK.length, children: STUDIO_PACK.length }], media: [], skipped: [], notes: ['Nothing is selected in Studio: pick the VFX folders to import.'] }
+      }
+      return scanOf(STUDIO_PACK, 'studio')
+    },
+    async vfxImportCommit(input) {
+      const s = scans.get(input.scanId)
+      if (!s) throw new Error('This import review expired; scan again.')
+      const added: VfxEntry[] = []
+      for (const [i, r] of input.rows.entries()) {
+        const row = s.rows.find((x) => x.key === r.key)!
+        const e = add(entryFor(s.prompts.get(r.key)!.toLowerCase(), { scope: input.scope, origin: row.origin }))
+        e.name = r.name
+        const g = autoTagGroups(e.effect!, r.name).groups
+        e.tagGroups = g
+        e.tags = flatTags(g)
+        added.push(e)
+        emit('vfx:import', { scanId: input.scanId, phase: 'importing', done: i + 1, total: input.rows.length, label: r.name })
+        await delay(30)
+      }
+      scans.delete(input.scanId)
+      changed()
+      return { added, skipped: [] }
+    },
+    async vfxTrash(ids) {
+      const batch = `t${(seq++).toString(36)}`
+      const removed = entries.filter((e) => ids.includes(e.id))
+      for (const e of removed) entries.splice(entries.indexOf(e), 1)
+      trash.set(batch, removed)
+      changed()
+      return { batch, removed: removed.map((e) => e.id) }
+    },
+    async vfxRestore(batch) {
+      const back = trash.get(batch) ?? []
+      trash.delete(batch)
+      for (const e of back) entries.push(e)
+      changed()
+      return { restored: back.map((e) => e.id) }
+    },
+    async vfxClear(scope) {
+      return this.vfxTrash(entries.filter((e) => e.scope === scope).map((e) => e.id))
+    },
+    async vfxDuplicates() {
+      const by = new Map<string, VfxEntry[]>()
+      for (const e of entries) if (e.effect) by.set(`${e.scope}:${effectHash(e.effect)}`, [...(by.get(`${e.scope}:${effectHash(e.effect)}`) ?? []), e])
+      return [...by.entries()].filter(([, l]) => l.length > 1).map(([k, l]) => ({ hash: k.split(':')[1], scope: l[0].scope, entries: [...l].sort((a, b) => a.createdAt - b.createdAt) }))
+    },
+    async vfxRetag() {
+      let n = 0
+      for (const e of entries) {
+        if (!e.effect) continue
+        const user = e.userTagGroups ?? []
+        const cur = tagGroupsOf(e)
+        const auto = autoTagGroups(e.effect, e.name).groups
+        const g = { kind: user.includes('kind') ? cur.kind : auto.kind, element: user.includes('element') ? cur.element : auto.element, timing: user.includes('timing') ? cur.timing : auto.timing, custom: cur.custom }
+        e.tagGroups = g
+        e.tags = flatTags(g)
+        n++
+      }
+      changed()
+      return { changed: n, total: n }
+    },
+    async vfxLiveStart(opts) {
+      const settings = normalizeLiveSettings({ ...live.settings, ...(opts?.settings ?? {}) })
+      if (!opts?.pin && live.state !== 'off' && live.pinned) return liveEmit({ following: true, settings })
+      return liveEmit({ state: 'looping', pinned: opts?.pin ?? null, following: opts?.pin ? !!live.following : true, name: opts?.current?.effect.name ?? live.name, label: opts?.current?.label ?? live.label, settings })
+    },
+    async vfxLiveStop(opts) {
+      if (opts?.loop && live.pinned && live.following) return liveEmit({ pinned: null })
+      if (opts?.follow && live.pinned) return liveEmit({ following: false })
+      return liveEmit({ state: 'off', pinned: null, following: false, plays: 0 })
+    },
+    async vfxLiveSet(current) {
+      if (live.state === 'off') return live
+      if (live.pinned && live.pinned !== current.key.replace(/^draft:/, '')) return live.following ? liveEmit({ pinned: null, name: current.effect.name, label: current.label ?? current.effect.name }) : liveEmit({ state: 'off', pinned: null })
+      return liveEmit({ name: current.effect.name, label: current.label ?? current.effect.name, plays: live.plays + 1 })
+    },
+    async vfxLiveSettings(settings) {
+      return liveEmit({ settings: normalizeLiveSettings({ ...live.settings, ...settings }) })
+    },
+    async vfxLiveStatus() {
+      return live
+    },
     async vfxChooseImport() {
       return ['~/Downloads/vfx-pack/Ice_Shatter.rbxm']
     },
     async vfxUpdate(id, patch) {
       const e = find(id)
+      if (patch.tags || patch.tagGroups) {
+        const g = patch.tagGroups ? { ...tagGroupsOf(e), ...patch.tagGroups } : groupsFromTags(patch.tags!)
+        patch = { ...patch, tags: flatTags(g as ReturnType<typeof tagGroupsOf>), tagGroups: g }
+        e.userTagGroups = [...new Set([...(e.userTagGroups ?? []), ...(Object.keys(patch.tagGroups ?? g) as ('kind' | 'element' | 'timing' | 'custom')[])])]
+      }
       Object.assign(e, patch, { updatedAt: Date.now() })
       if (patch.effect) e.stats = effectStats(patch.effect)
       changed()

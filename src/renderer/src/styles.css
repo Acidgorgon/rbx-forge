@@ -316,6 +316,7 @@ input[type="checkbox"]:not(.switch) { accent-color: var(--fg-muted); }
 .sync-btn .behind { color: var(--ember-text); font-size: 11px; }
 .sync-btn .ahead { color: var(--fg-muted); font-size: 11px; }
 @media (max-width: 1240px) { .omni { width: min(260px, 22vw); } .omni kbd { display: none; } .tb-label { display: none; } }
+@media (max-width: 980px) { .titlebar .opt-branch, .btn-forge .serve-port { display: none; } .titlebar > .pill:not(.sync-btn) { flex: 0 1 auto; min-width: 0; overflow: hidden; } }
 @media (max-width: 1100px) { .pill .place-name { max-width: 60px; overflow: hidden; text-overflow: ellipsis; } .proj .branch, .proj .pdir, .proj .pctx { display: none; } .omni .omni-text { display: none; } .omni { width: 34px; justify-content: center; padding: 0; } }
 
 /* activity bar */

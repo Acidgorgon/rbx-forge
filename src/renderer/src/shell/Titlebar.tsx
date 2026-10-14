@@ -154,7 +154,7 @@ export function Titlebar() {
         >
           {serveState === 'starting' ? <span className="spinner" /> : serveState === 'crashed' ? <Icon name="restart" size={12} /> : serveState === 'running' ? <span className="led ok" /> : <Icon name="play" size={12} />}
           {serveState === 'running' ? 'Serving' : serveState === 'crashed' ? 'Crashed' : serveState === 'starting' ? 'Starting' : 'Serve'}
-          <span style={{ opacity: 0.7, fontSize: 11 }}>:{port}</span>
+          <span className="serve-port" style={{ opacity: 0.7, fontSize: 11 }}>:{port}</span>
         </button>
         <span className="tb-sep" />
         <button className={`tb-btn${l.sideOpen ? ' on' : ''}`} onClick={() => actions.toggleSide()} title={`Toggle side panel (${keyHint('mod+b')})`} aria-pressed={l.sideOpen}>

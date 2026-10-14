@@ -568,12 +568,15 @@ export class SyncService {
   async pendingStudioEdits(): Promise<string[]> {
     await this.loadWritten()
     if (!this.written.size) return []
-    const result = await this.deps.git(['-c', 'core.quotepath=false', 'status', '--porcelain', '-z', '--untracked-files=all'])
+    // Judge only the files known before git status ran: a file written while it ran is not in its
+    // output yet and must not be forgotten.
+    const known = [...this.written]
+    const result = await this.deps.git(['--no-optional-locks', '-c', 'core.quotepath=false', 'status', '--porcelain', '-z', '--untracked-files=all'])
     if (result.code !== 0) return []
     const dirty = parsePorcelainZ(result.stdout)
     const pending = new Set<string>()
     const still = new Set<string>()
-    for (const w of this.written) {
+    for (const w of known) {
       for (const d of dirty) {
         if (d === w || d.startsWith(w.endsWith('/') ? w : `${w}/`)) {
           pending.add(d)
@@ -582,8 +585,8 @@ export class SyncService {
       }
     }
     // Committed (by the user or by Forge) or reverted: forget it.
-    if (still.size !== this.written.size) {
-      this.written = still
+    if (still.size !== known.length) {
+      for (const w of known) if (!still.has(w)) this.written.delete(w)
       await this.saveWritten()
     }
     return [...pending].sort()

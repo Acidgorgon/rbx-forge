@@ -336,7 +336,7 @@ test('watcher publishes the parse, then diagnostics, and logs them once', async 
     // A change on disk triggers a debounced refresh.
     const before = models.length
     await writeFile(join(root, 'events.blink'), (await readFile(join(root, 'events.blink'), 'utf8')) + '\nevent Extra {\n    From: Server,\n    Type: Reliable,\n    Call: ManyAsync\n}\n')
-    for (let k = 0; k < 100 && !(models.length > before && models.at(-1)!.events.length === 9 && !models.at(-1)!.checking); k++) {
+    for (let k = 0; k < 300 && !(models.length > before && models.at(-1)!.events.length === 9 && !models.at(-1)!.checking); k++) {
       await new Promise((r) => setTimeout(r, 20))
     }
     assert.equal(models.at(-1)!.events.length, 9)

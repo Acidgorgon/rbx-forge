@@ -8,7 +8,7 @@ import { analyzeFrames } from '@shared/videoref/analyze'
 import { describeAnalysis, glowText, motionText } from '@shared/videoref/prompt'
 import { animNumericMatch, vfxNumericMatch } from '@shared/videoref/match'
 import type { RgbaFrame } from '@shared/videoref/types'
-import { contactSheet } from './pages/videoref/decode'
+import { contactSheet } from '../pages/videoref/decode'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))

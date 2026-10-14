@@ -80,7 +80,7 @@ tests: {
 }
 // + on('tests:progress', handler)
 ```
-`renderer/src/mock.ts` needs the same members (it implements `HarnessApi`).
+`renderer/src/mocks/index.ts` needs the same members (it implements `HarnessApi`).
 
 ### Settings
 

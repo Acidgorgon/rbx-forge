@@ -10,6 +10,7 @@ import { eulerDegOf, qangle, qnorm, round, type Quat } from './math.ts'
 import { measureClip, speedCurve } from './measure.ts'
 import { clipRig, samplePose } from './sample.ts'
 import { r15View } from './convert.ts'
+import { videoHintNote, videoHints } from '../videoref/prompt.ts'
 
 // Move types the Lab knows (tags), with the words that suggest them.
 export const MOVE_TAGS: Record<string, RegExp> = {
@@ -232,9 +233,21 @@ function buildRigProfiles(entries: AnimEntry[], rig: RigType): { profiles: AnimS
 
 // Profiles are kept per rig: R15 clips feed profiles / overall, R6 clips feed r6. Timing transfers
 // between rigs, poses do not (an R6 pose has no elbows or knees), so each rig learns from its own clips.
+// Video references (kind 'media') have no keys: they only add their measured timing to the
+// profiles of their tags (AnimStyleProfile.video and a note marked as from a video).
 export function buildStyle(entries: AnimEntry[], now = Date.now()): AnimStyle {
-  const r15 = buildRigProfiles(entries, 'R15')
-  const r6 = buildRigProfiles(entries, 'R6')
+  const clips = entries.filter((e) => e.kind !== 'media')
+  const videos = entries.filter((e) => e.kind === 'media' && e.video)
+  const withVideo = (set: { profiles: AnimStyleProfile[]; overall: AnimStyleProfile | null }) => {
+    if (!videos.length) return set
+    const add = (p: AnimStyleProfile | null): AnimStyleProfile | null => {
+      const h = p ? videoHints(p.tag, videos) : null
+      return p && h ? { ...p, video: { samples: h.samples, beats: h.beats }, notes: [...p.notes, videoHintNote(h, 'anim')] } : p
+    }
+    return { profiles: set.profiles.map((p) => add(p)!), overall: add(set.overall) }
+  }
+  const r15 = withVideo(buildRigProfiles(clips, 'R15'))
+  const r6 = withVideo(buildRigProfiles(clips, 'R6'))
   return { updatedAt: now, profiles: r15.profiles, overall: r15.overall, ...(r6.profiles.length || r6.overall ? { r6 } : {}) }
 }
 
@@ -292,7 +305,8 @@ export function profileSkill(p: AnimStyleProfile, examples: string[] = []): { na
 }
 
 // Library coverage: clips per tag, liked vs disliked, and the thin categories to feed next.
-export function coverage(entries: AnimEntry[]): { tags: { tag: string; clips: number; liked: number; disliked: number }[]; thin: string[] } {
+export function coverage(all: AnimEntry[]): { tags: { tag: string; clips: number; liked: number; disliked: number }[]; thin: string[] } {
+  const entries = all.filter((e) => e.kind !== 'media')
   const rows = new Map<string, { tag: string; clips: number; liked: number; disliked: number }>()
   for (const t of [...CORE_TAGS, ...Object.keys(MOVE_TAGS)]) rows.set(t, { tag: t, clips: 0, liked: 0, disliked: 0 })
   for (const e of entries) {

@@ -22,10 +22,18 @@ import type { BrainSyncApi, BrainSyncEvents } from './brainSyncTypes.ts'
 export type * from './brainSyncTypes.ts'
 import type { VfxApi, VfxEvents } from './vfxTypes.ts'
 export type * from './vfxTypes.ts'
+import type { VfxTextureApi, VfxTextureEvents } from './vfxTextureTypes.ts'
+export type * from './vfxTextureTypes.ts'
 import type { AnimApi, AnimEvents } from './animTypes.ts'
 export type * from './animTypes.ts'
 import type { AbilityApi, AbilityEvents } from './abilityTypes.ts'
 export type * from './abilityTypes.ts'
+import type { StudioApi, StudioEvents } from './studio/types.ts'
+export type * from './studio/types.ts'
+import type { RefApi, RefEvents } from './refTypes.ts'
+export type * from './refTypes.ts'
+import type { PrincipleApi, PrincipleEvents } from './principleTypes.ts'
+export type * from './principleTypes.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -447,7 +455,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, AnimEvents, AbilityEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -472,7 +480,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, AnimApi, AbilityApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

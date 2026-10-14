@@ -43,6 +43,9 @@ afterPack: build/afterPack.cjs
 extraResources:
   - from: resources/lune
     to: lune
+  # The Forge Bridge Studio plugin source (services/studio/wire.ts installs it into Studio's plugins folder).
+  - from: resources/studio
+    to: studio
   # The target's rokit binary (build/rokit-binaries.mjs downloads it; ${os} is mac|win|linux).
   # First launch runs `rokit self-install` from it (src/main/services/setup/toolchain.ts), and
   # build/afterPack.cjs fails the build if it is missing.

@@ -1,6 +1,7 @@
 // IPC handlers (AbilityApi) and agent tools for the Ability Composer, built from app pieces passed in
 // by main/index.ts. No electron imports: capture, dialogs and the model come in as functions.
 
+import type { PrincipleHooks } from '../../../shared/principles/types.ts'
 import { join } from 'node:path'
 import type { Ability, AbilityScope } from '../../../shared/ability/types.ts'
 import type { AnimClipRef } from '../../../shared/anim/types.ts'
@@ -8,6 +9,8 @@ import { AbilityService, type AbilityCaptureRequest, type LabTier, type MemoryLi
 import { abilityTools, type AbilityTool } from './tools.ts'
 
 export interface AbilityWireDeps {
+  // Principle priorities (services/principles): weights for the critics, ratings feed them.
+  principles?: PrincipleHooks
   userDataDir: string
   root: () => string | null
   emit: (event: 'ability:changed', payload: unknown) => void
@@ -30,6 +33,7 @@ export interface AbilityWiring {
 
 export function createAbilityWiring(deps: AbilityWireDeps): AbilityWiring {
   const service = new AbilityService({
+    principles: deps.principles,
     userDir: join(deps.userDataDir, 'abilities'),
     projectRoot: deps.root,
     vfx: deps.vfx,

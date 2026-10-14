@@ -1,7 +1,7 @@
 {
   "name": "rbx-forge",
   "productName": "RBX Forge",
-  "version": "0.4.1",
+  "version": "0.5.0",
   "private": true,
   "description": "Desktop dev harness for Roblox projects built on the GenTree template",
   "author": "Acidgorgon",

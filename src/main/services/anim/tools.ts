@@ -113,10 +113,10 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
       name: 'anim_compose',
       description:
         'Make an R15 or R6 animation (rig, default: the project rig) from a request (a heavy punch, a hand sign into a palm push, a dodge roll, a hit reaction, an idle...): drafts a Luau timeline script with the pose kit in the learned style of the user\'s library, records it into keyframes, runs the automatic checks (foot sliding, joint limits, interpenetration, readability, timing), saves it to the Animation Lab library and refines it in the background (render the key beats + critique). Pass script to use your own timeline script. Add a:marker(...) at the moments game code or VFX should sync to. Iterate with anim_set_script and anim_critique.',
-      inputSchema: { request: z.string().min(3).max(500), script: z.string().max(60000).optional(), refine: z.boolean().optional(), rig: rigArg },
-      handler: (args: { request: string; script?: string; refine?: boolean; rig?: RigType }) =>
+      inputSchema: { request: z.string().min(3).max(500), script: z.string().max(60000).optional(), refine: z.boolean().optional(), rig: rigArg, reference: z.string().max(120).optional().describe('id of a video reference (ref_list / ref_import): "make it like this"; its beats, holds, poses per beat and key frames guide the script and the critic scores the match') },
+      handler: (args: { request: string; script?: string; refine?: boolean; rig?: RigType; reference?: string }) =>
         guard(async () => {
-          const r = await service.compose(args.request, { script: args.script, refine: args.refine, rig: args.rig })
+          const r = await service.compose(args.request, { script: args.script, refine: args.refine, rig: args.rig, reference: args.reference })
           return animScriptReport(r, args.script) + (r.ok && r.refined ? '\nrefining in the background (watch the Animation Lab, or call anim_critique with refine to wait for it)' : '')
         })
     },

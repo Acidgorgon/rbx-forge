@@ -12,9 +12,16 @@ import { errorText } from '../../lib/format'
 import { VfxPreview } from './VfxPreview'
 import { ParamEditor } from './ParamEditor'
 import { ScriptPanel } from './ScriptPanel'
+import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
+import { TextureLab } from './TextureLab'
+import { RefCard, RefCompare, RefDetail } from '../videoref/RefViews'
+import { RefImport } from '../videoref/RefImport'
+import { isRefFile } from '../videoref/decode'
+import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
+import { principleLabel } from '@shared/principles/catalog'
 import './vfx.css'
 
-const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg/gif · mp4/webm'
+const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['sword slash', 'fire aura', 'lightning impact', 'heal burst', 'dash trail', 'energy beam']
 const SEQ_SUGGESTIONS = ['fireball that charges and explodes', 'charged lightning slash', 'ground slam shockwave', 'teleport blink', 'dragon breath sweep']
 const EXAMPLES = [
@@ -85,6 +92,7 @@ function Frame({ id, file, label }: { id: string; file: string; label?: string }
 
 function Iterations({ entry, onRestore }: { entry: VfxEntry; onRestore: (effect: VfxEffect, n: number) => void }) {
   const its = entry.iterations ?? []
+  const weights = usePrincipleWeights()
   if (!its.length) return <div className="empty">No iterations yet. Refine runs render → critique → adjust and keeps each step here.</div>
   const best = its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0])
   return (
@@ -115,6 +123,7 @@ function Iterations({ entry, onRestore }: { entry: VfxEntry; onRestore: (effect:
                   </div>
                 ))}
               </div>
+              <PrincipleScorecard principles={it.critique.principles} focus={it.critique.focus} score={it.critique.principleScore} weights={weights} />
               <p className="vfx-iter-sum">{it.critique.summary}</p>
               {it.critique.changes.length > 0 && (
                 <details className="vfx-changes">
@@ -125,7 +134,7 @@ function Iterations({ entry, onRestore }: { entry: VfxEntry; onRestore: (effect:
                         <span className="mono">
                           {c.node}.{c.prop}
                         </span>{' '}
-                        {c.why ?? ''}
+                        {c.principle && <span className="pr-chg mono">{principleLabel(c.principle)}</span>} {c.why ?? ''}
                       </li>
                     ))}
                   </ul>
@@ -152,7 +161,7 @@ function Media({ entry }: { entry: VfxEntry }) {
 function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progress?: VfxRefineProgress; recipes: VfxRecipe[]; onClose: () => void }) {
   const { actions } = useStore()
   const h = window.harness
-  const [tab, setTab] = useState<'params' | 'script' | 'iterations' | 'info'>(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info')
+  const [tab, setTab] = useState<'params' | 'script' | 'iterations' | 'studio' | 'info'>(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info')
   const [draft, setDraft] = useState<VfxEffect | undefined>(entry.effect)
   const [saving, setSaving] = useState(false)
   const [tags, setTags] = useState(entry.tags.join(', '))
@@ -270,6 +279,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
               <Icon name="restart" size={11} /> Refine
             </button>
           )}
+          <StudioCheckButton kind="vfx" id={entry.id} before={flush} onShow={() => setTab('studio')} />
           <button className="btn small" onClick={() => void studio()} title="Write src/shared/VFX/<Name>, sync with Rojo, copy a command-bar line">
             <Icon name="studio" size={11} /> Test in Studio
           </button>
@@ -307,6 +317,11 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
             iterations{entry.iterations?.length ? ` · ${entry.iterations.length}` : ''}
           </button>
         )}
+        {draft && (
+          <button role="tab" aria-selected={tab === 'studio'} className={tab === 'studio' ? 'on' : ''} onClick={() => setTab('studio')} title="Studio check: the effect played in Roblox Studio, next to the preview">
+            studio
+          </button>
+        )}
         <button role="tab" aria-selected={tab === 'info'} className={tab === 'info' ? 'on' : ''} onClick={() => setTab('info')}>
           info
         </button>
@@ -314,6 +329,8 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
 
       {tab === 'params' && draft && <ParamEditor effect={draft} onChange={edit} />}
       {tab === 'script' && draft && <ScriptPanel entry={entry} effect={draft} onPreview={setDraft} />}
+      {tab === 'studio' && draft && <StudioCheckPanel kind="vfx" id={entry.id} before={flush} />}
+      {tab === 'iterations' && draft && entry.refId && <PinnedCompare entry={entry} effect={draft} />}
       {tab === 'iterations' && draft && <Iterations entry={entry} onRestore={(e, n) => (edit(e), actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'info' && (
         <div className="vfx-info">
@@ -365,6 +382,13 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
   )
 }
 
+// The best iteration's rendered beats next to the pinned video reference's key frames.
+function PinnedCompare({ entry, effect }: { entry: VfxEntry; effect: VfxEffect }) {
+  const its = entry.iterations ?? []
+  const best = its.length ? its.reduce((a, b) => ((b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0]) : null
+  return <RefCompare lab="vfx" refId={entry.refId!} entryId={entry.id} frames={best?.frames ?? []} match={best?.critique?.match} matchNotes={best?.critique?.matchNotes} effect={best?.effect ?? effect} iteration={best?.n} />
+}
+
 export function VfxLabPage() {
   const { state, actions } = useStore()
   const h = window.harness
@@ -384,6 +408,11 @@ export function VfxLabPage() {
   const [busy, setBusy] = useState<string | null>(null)
   const [drag, setDrag] = useState(false)
   const [progress, setProgress] = useState<Record<string, VfxRefineProgress>>({})
+  // Library view: effects, or the custom texture library (TextureLab).
+  const [view, setView] = useState<'effects' | 'textures' | 'priorities'>('effects')
+  // Video reference import review (a dropped / picked clip), and the reference pinned to Make.
+  const [refImport, setRefImport] = useState<{ file: File | null } | null>(null)
+  const [pin, setPin] = useState<{ id: string; name: string } | null>(null)
 
   const load = useCallback(async () => {
     try {
@@ -443,7 +472,11 @@ export function VfxLabPage() {
   const onDrop = (e: React.DragEvent) => {
     e.preventDefault()
     setDrag(false)
-    const paths = [...e.dataTransfer.files].map((f) => window.forgeFiles?.pathFor(f) ?? '').filter(Boolean)
+    // Clips and GIFs open the video reference review; models and images import as before.
+    const files = [...e.dataTransfer.files]
+    const clip = files.find(isRefFile)
+    if (clip) setRefImport({ file: clip })
+    const paths = files.filter((f) => !isRefFile(f)).map((f) => window.forgeFiles?.pathFor(f) ?? '').filter(Boolean)
     void importPaths(paths)
   }
   const learn = async () => {
@@ -463,8 +496,8 @@ export function VfxLabPage() {
     if (!what || making) return
     setMaking(true)
     try {
-      if (mode === 'sequence') {
-        const r = await h.vfxCompose(what, { maxIterations: iters, threshold })
+      if (mode === 'sequence' || pin) {
+        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, ...(pin ? { reference: pin.id } : {}) })
         if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the timeline did not compile')
         await load()
         setSelected(r.entry.id)
@@ -513,6 +546,9 @@ export function VfxLabPage() {
             <button className="btn" onClick={async () => void importPaths(await h.vfxChooseImport())}>
               <Icon name="upload" size={12} /> Import
             </button>
+            <button className="btn" onClick={() => setRefImport({ file: null })} title="A clip or GIF to make something like it: trim, crop, analyse beats, palette, glow and motion">
+              <Icon name="image" size={12} /> Video ref
+            </button>
             <button className="btn" onClick={() => void learn()} disabled={!entries.length || !!busy} title="Turn the library into per-type recipes and save them as memory skills">
               <Icon name="memory" size={12} /> Learn
             </button>
@@ -542,6 +578,14 @@ export function VfxLabPage() {
             </span>
             <input className="input grow" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="purple sword slash with sparks" aria-label="Effect to make" spellCheck />
             <span className="vfx-make-lead mono">effect</span>
+            {pin && (
+              <span className="badge-o hot vfx-make-pin" title="Pinned video reference: Make composes a sequence like it">
+                like {pin.name}
+                <button type="button" className="btn small ghost" onClick={() => setPin(null)} aria-label="Unpin the reference">
+                  <Icon name="x" size={10} />
+                </button>
+              </span>
+            )}
             <div className="seg vfx-mode" role="group" aria-label="Kind of effect">
               <button type="button" className={mode === 'single' ? 'on' : ''} aria-pressed={mode === 'single'} onClick={() => setMode('single')} title="One burst of layers (emitters, beams, lights)">
                 single
@@ -588,55 +632,92 @@ export function VfxLabPage() {
           </div>
         </section>
 
-        <div className={`vfx-body${current ? ' has-detail' : ''}`}>
-          <div className="vfx-lib">
-            <div
-              className={`vfx-drop${drag ? ' drag' : ''}`}
-              onDragOver={(e) => (e.preventDefault(), setDrag(true))}
-              onDragLeave={() => setDrag(false)}
-              onDrop={onDrop}
-              role="button"
-              tabIndex={0}
-              onClick={async () => void importPaths(await h.vfxChooseImport())}
-              onKeyDown={async (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), void importPaths(await h.vfxChooseImport()))}
-            >
-              {busy ? (
-                <>
-                  <span className="spinner" aria-hidden /> {busy}
-                </>
-              ) : (
-                <>
-                  <Icon name="download" size={13} /> Drop references here <span className="faint mono">{IMPORT_HINT}</span>
-                </>
-              )}
-            </div>
-            <div className="row vfx-lib-head">
-              <input className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name, tag or description" aria-label="Search library" />
-              <span className="note">{shown.length} shown</span>
-            </div>
-            {allTags.length > 0 && (
-              <div className="vfx-chips" role="group" aria-label="Filter by tag">
-                {allTags.map(([t, n]) => (
-                  <button key={t} className={`badge-o${tag === t ? ' hot' : ''}`} aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}>
-                    {t} <span className="faint">{n}</span>
-                  </button>
-                ))}
-              </div>
-            )}
-            {!entries.length && status && (
-              <div className="empty">
-                <Icon name="sparkle" size={22} className="i" />
-                The library is empty. Drop .rbxm/.rbxmx effect models (or a folder of them) above, add reference gifs and videos, or make an effect.
-              </div>
-            )}
-            <div className="vfx-grid">
-              {shown.map((e) => (
-                <Card key={e.id} entry={e} selected={e.id === selected} progress={progress[e.id]} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
-              ))}
-            </div>
-          </div>
-          {current && <Detail key={current.id} entry={current} progress={progress[current.id]} recipes={recipes} onClose={() => setSelected(null)} />}
+        <div className="seg vfx-view" role="tablist" aria-label="Library">
+          <button role="tab" aria-selected={view === 'effects'} className={view === 'effects' ? 'on' : ''} onClick={() => setView('effects')}>
+            effects
+          </button>
+          <button role="tab" aria-selected={view === 'textures'} className={view === 'textures' ? 'on' : ''} onClick={() => setView('textures')} title="Custom particle and beam textures: procedural (free) or AI, upload to Roblox">
+            textures
+          </button>
+          <button role="tab" aria-selected={view === 'priorities'} className={view === 'priorities' ? 'on' : ''} onClick={() => setView('priorities')} title="Which VFX principles count most for you, learned from your ratings">
+            priorities
+          </button>
         </div>
+        {view === 'textures' && <TextureLab />}
+        {view === 'priorities' && <PrinciplePriorities domains={['vfx']} />}
+        {view === 'effects' && (
+          <div className={`vfx-body${current ? ' has-detail' : ''}`}>
+            <div className="vfx-lib">
+              <div
+                className={`vfx-drop${drag ? ' drag' : ''}`}
+                onDragOver={(e) => (e.preventDefault(), setDrag(true))}
+                onDragLeave={() => setDrag(false)}
+                onDrop={onDrop}
+                role="button"
+                tabIndex={0}
+                onClick={async () => void importPaths(await h.vfxChooseImport())}
+                onKeyDown={async (e) => (e.key === 'Enter' || e.key === ' ') && (e.preventDefault(), void importPaths(await h.vfxChooseImport()))}
+              >
+                {busy ? (
+                  <>
+                    <span className="spinner" aria-hidden /> {busy}
+                  </>
+                ) : (
+                  <>
+                    <Icon name="download" size={13} /> Drop references here <span className="faint mono">{IMPORT_HINT}</span>
+                  </>
+                )}
+              </div>
+              <div className="row vfx-lib-head">
+                <input className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name, tag or description" aria-label="Search library" />
+                <span className="note">{shown.length} shown</span>
+              </div>
+              {allTags.length > 0 && (
+                <div className="vfx-chips" role="group" aria-label="Filter by tag">
+                  {allTags.map(([t, n]) => (
+                    <button key={t} className={`badge-o${tag === t ? ' hot' : ''}`} aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}>
+                      {t} <span className="faint">{n}</span>
+                    </button>
+                  ))}
+                </div>
+              )}
+              {!entries.length && status && (
+                <div className="empty">
+                  <Icon name="sparkle" size={22} className="i" />
+                  The library is empty. Drop .rbxm/.rbxmx effect models (or a folder of them) above, add reference gifs and videos, or make an effect.
+                </div>
+              )}
+              <div className="vfx-grid">
+                {shown.map((e) =>
+                  e.video ? (
+                    <RefCard key={e.id} lab="vfx" entry={e} selected={e.id === selected} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
+                  ) : (
+                    <Card key={e.id} entry={e} selected={e.id === selected} progress={progress[e.id]} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
+                  )
+                )}
+              </div>
+            </div>
+            {current &&
+              (current.video ? (
+                <RefDetail key={current.id} lab="vfx" entry={current} onClose={() => setSelected(null)} onMade={(id) => void load().then(() => setSelected(id))} onPin={(r) => (setPin(r), setMode('sequence'))} />
+              ) : (
+                <Detail key={current.id} entry={current} progress={progress[current.id]} recipes={recipes} onClose={() => setSelected(null)} />
+              ))}
+          </div>
+        )}
+        {refImport && (
+          <RefImport
+            lab="vfx"
+            scope={scope}
+            file={refImport.file}
+            onClose={() => setRefImport(null)}
+            onSaved={(r) => {
+              setRefImport(null)
+              setView('effects')
+              void load().then(() => setSelected(r.id))
+            }}
+          />
+        )}
       </div>
     </div>
   )

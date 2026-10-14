@@ -49,7 +49,8 @@ export interface AnimApi {
   animStyle(): Promise<AnimStyle | null>
   animCoverage(): Promise<AnimCoverage>
   // rig: R15 or R6 (default: the project's rig).
-  animCompose(request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType }): Promise<AnimScriptResult>
+  // reference: a video reference id ("make it like this"; see RefApi).
+  animCompose(request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType; reference?: string }): Promise<AnimScriptResult>
   animRunScript(script: string, opts?: { id?: string; save?: boolean; prompt?: string; rig?: RigType }): Promise<AnimScriptResult>
   // The rig new clips use (project setting, .forge/anim/settings.json; app default without a project).
   animGetRig(): Promise<RigType>

@@ -28,10 +28,22 @@ async function boot(): Promise<void> {
     createRoot(document.getElementById('root')!).render(<AnimCapture />)
     return
   }
+  // Offscreen decoder for ref_import: decodes and analyses a video reference (no UI).
+  if (new URLSearchParams(location.search).has('ref-decode')) {
+    const { RefDecode } = await import('./pages/videoref/RefDecode')
+    createRoot(document.getElementById('root')!).render(<RefDecode />)
+    return
+  }
   // Offscreen capture window for the Ability Composer critic: only the ability preview.
   if (new URLSearchParams(location.search).has('ability-capture')) {
     const { AbilityCapture } = await import('./pages/ability/AbilityCapture')
     createRoot(document.getElementById('root')!).render(<AbilityCapture />)
+    return
+  }
+  // Hidden capture window for the Studio check: the live stream of the Roblox Studio window.
+  if (new URLSearchParams(location.search).has('studio-capture')) {
+    const { StudioCapture } = await import('./pages/studio/StudioCapture')
+    createRoot(document.getElementById('root')!).render(<StudioCapture />)
     return
   }
   const { App } = await import('./App')

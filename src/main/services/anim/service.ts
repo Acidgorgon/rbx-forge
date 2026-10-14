@@ -8,6 +8,7 @@
 // picks the references, and models (per Labs tier: cheap / default / critic) draft, tag and critique.
 // No electron imports: capture, models, memory and the Open Cloud key come in as functions.
 
+import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import type { AnimClipRef } from '../../../shared/anim/types.ts'
@@ -30,7 +31,14 @@ import { convertClip, RIG_CONVERT_WARNING } from '../../../shared/anim/convert.t
 import { uploadAnimationAsset } from '../art/robloxAssets.ts'
 import { animEntryId, AnimStore, PROJECT_ANIM_DIR } from './library.ts'
 import { luneAnimExtract, luneAnimTimeline } from './lune.ts'
+import { loadPinnedRef, type PinnedRef } from '../videoref/refs.ts'
+import { blendMatch, parseMatch, REF_MATCH_TEXT } from '../../../shared/videoref/prompt.ts'
+import { animNumericMatch } from '../../../shared/videoref/match.ts'
 import type { LuneRun } from '../vfx/lune.ts'
+import { animCriticPrinciples, principleIds, scoresForRating, withAnimPrinciples } from '../../../shared/principles/attach.ts'
+import { animPrincipleChecks } from '../../../shared/principles/animChecks.ts'
+import { principlePlan } from '../../../shared/principles/select.ts'
+import type { PrincipleHooks, PrincipleWeights } from '../../../shared/principles/types.ts'
 
 export interface ImagePayload {
   mime: string
@@ -70,6 +78,8 @@ export interface AnimServiceDeps {
   defaultRig?: { get(): RigType; set(rig: RigType): void }
   log?: (text: string, stream?: 'info' | 'stderr') => void
   now?: () => number
+  // Principle priorities: the user's learned weights (critique, compose plan) and the rating log.
+  principles?: PrincipleHooks
 }
 
 const ANIM_EXT = new Set(['.rbxm', '.rbxmx', '.bvh'])
@@ -113,6 +123,12 @@ const describeClip = (clip: AnimClip, s = measureClip(clip)) =>
   `${clip.looped ? 'Looped ' : ''}${clipRig(clip)} ${s.duration.toFixed(2)} s clip, ${Object.keys(clip.tracks).length} joints, ${s.keys} keys; anticipation ${s.anticipation.toFixed(2)} s, action ${s.action.toFixed(2)} s, recovery ${s.recovery.toFixed(2)} s${clip.markers.length ? `; markers ${clip.markers.map((m) => `${m.name} @ ${m.t.toFixed(2)}`).join(', ')}` : ''}.`
 
 const usable = (e: AnimEntry) => e.quality !== 'avoid' && e.rating !== 'down'
+// Video references (kind 'media') live in the library but have no keys.
+const isClip = (e: AnimEntry) => e.kind !== 'media'
+function needClip(e: AnimEntry): AnimEntry {
+  if (!isClip(e)) throw new AnimError(`"${e.name}" is a video reference (no keys); use "Make it like this" (anim_compose with reference) to animate from it`)
+  return e
+}
 
 export class AnimService {
   readonly user: AnimStore
@@ -243,6 +259,7 @@ export class AnimService {
   async convert(id: string, to: RigType, opts: { copy?: boolean } = {}): Promise<{ entry: AnimEntry; warning: string }> {
     const hit = await this.find(id)
     if (!hit) throw new AnimError(`no animation "${id}"`)
+    needClip(hit.entry)
     const target: RigType = to === 'R6' ? 'R6' : 'R15'
     const from = clipRig(hit.entry.clip)
     if (from === target) return { entry: hit.entry, warning: `already ${target}` }
@@ -368,7 +385,7 @@ export class AnimService {
   }
 
   async checks(id: string): Promise<AnimCheckReport> {
-    const e = await this.get(id)
+    const e = needClip(await this.get(id))
     return runChecks(e.clip, profileFor(await this.style(), e.tags, clipRig(e.clip)))
   }
 
@@ -376,7 +393,7 @@ export class AnimService {
 
   async listAnimClips(): Promise<AnimClipRef[]> {
     return (await this.list())
-      .filter((e) => e.quality !== 'avoid')
+      .filter((e) => e.quality !== 'avoid' && isClip(e))
       .map((e) => ({ id: e.id, name: e.name, duration: e.clip.duration, looped: e.clip.looped, markers: e.clip.markers.map((m) => ({ name: m.name, t: m.t })), scope: e.scope, rig: clipRig(e.clip) }))
   }
 
@@ -571,7 +588,7 @@ export class AnimService {
   }
 
   async coverage(): Promise<AnimCoverage> {
-    return coverage(await this.list())
+    return coverage((await this.list()).filter(isClip))
   }
 
   // Style profiles from the whole library (pure stats), saved to style.json and as memory skills.
@@ -626,6 +643,7 @@ export class AnimService {
     else if (e.quality === 'avoid' || (e.kind === 'generated' && e.quality === 'good')) delete e.quality
     if (!e.quality) delete e.quality
     const saved = await hit.store.save(e)
+    await this.recordPrinciples(saved, rating).catch((err) => this.deps.log?.(`anim: principle feedback: ${(err as Error).message}`, 'stderr'))
     await this.relearn().catch(() => undefined)
     if (this.deps.memory && rating) {
       const style = await this.style()
@@ -639,6 +657,22 @@ export class AnimService {
     }
     this.changed()
     return saved
+  }
+
+  // Ratings teach the principle weights: the clip's per-principle scores (its last critique, else the
+  // code checks) and the user's notes.
+  private async recordPrinciples(e: AnimEntry, rating: 'up' | 'down' | null): Promise<void> {
+    const p = this.deps.principles
+    if (!p || !isClip(e)) return
+    if (!rating) return void (await p.forget?.('anim', e.id))
+    const last = e.iterations?.[e.iterations.length - 1]?.critique
+    const ids = principleIds('anim', e.origin || e.description, { looped: e.clip.looped })
+    const scores = scoresForRating(last?.principles, () => animPrincipleChecks(e.clip, runChecks(e.clip)).filter((c) => ids.includes(c.id)))
+    await p.record({ lab: 'anim', entryId: e.id, name: e.name, rating, scores, ...(e.notes ? { notes: e.notes } : {}) })
+  }
+
+  private async principleWeights(): Promise<PrincipleWeights> {
+    return (await this.deps.principles?.weights().catch(() => ({}))) ?? {}
   }
 
   private async saveExampleSkill(e: AnimEntry): Promise<void> {
@@ -715,7 +749,7 @@ export class AnimService {
   }
 
   // Saves a clip as a generated entry (new, or replacing an entry's clip) and writes it into the project.
-  async saveClip(clip: AnimClip, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; scope?: AnimScope } = {}): Promise<AnimEntry> {
+  async saveClip(clip: AnimClip, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; scope?: AnimScope; refId?: string } = {}): Promise<AnimEntry> {
     const prev = opts.id ? await this.find(opts.id) : null
     const store = prev?.store ?? this.store(opts.scope ?? 'user')
     const now = this.now()
@@ -734,7 +768,8 @@ export class AnimService {
       origin: opts.prompt ?? prev?.entry.origin ?? clip.name,
       clip,
       thumbs: prev?.entry.thumbs ?? [],
-      stats
+      stats,
+      ...(opts.refId ? { refId: opts.refId } : {})
     }
     let saved = await store.save(entry)
     if (saved.written) saved = await this.writeProjectFiles(saved).catch(() => saved)
@@ -746,6 +781,7 @@ export class AnimService {
   async runScript(script: string, opts: { id?: string; save?: boolean; prompt?: string; rig?: RigType } = {}): Promise<AnimScriptResult> {
     const hit = opts.id ? await this.find(opts.id) : null
     if (opts.id && !hit) throw new AnimError(`no animation "${opts.id}"`)
+    if (hit) needClip(hit.entry)
     const rig = hit ? clipRig(hit.entry.clip) : await this.rigFor(opts.rig)
     const r = await this.recordScript(script, { name: hit?.entry.clip.name ?? animScriptName(script, opts.prompt ?? 'Animation'), rig })
     if (!r.ok || !opts.save || !r.clip) return r
@@ -757,7 +793,7 @@ export class AnimService {
   // Liked references with scripts for the request's tags (few-shot), never "avoid" clips.
   // Same-rig clips first (an R6 request learns from R6 references, then R15 ones).
   async references(tags: string[], text: string, exclude?: string, rig?: RigType): Promise<AnimEntry[]> {
-    const hits = (await this.search(text, { tags, limit: 10 })).filter((e) => e.id !== exclude)
+    const hits = (await this.search(text, { tags, limit: 10 })).filter((e) => e.id !== exclude && isClip(e))
     if (rig) hits.sort((a, b) => Number(clipRig(b.clip) === rig) - Number(clipRig(a.clip) === rig))
     return hits.slice(0, 3)
   }
@@ -773,8 +809,11 @@ export class AnimService {
   // notes, a matching example; one repair round), else the built-in draft for the request's
   // archetype in the learned timing. Saved as a new entry; refined in the background when frames
   // can be rendered (refine: false skips).
-  async compose(request: string, opts: AnimRefineOptions & { wait?: boolean; refine?: boolean; script?: string; scope?: AnimScope; rig?: RigType } = {}): Promise<AnimScriptResult & { refined?: Promise<unknown> }> {
-    const text = String(request ?? '').trim()
+  // reference: the id of a video reference in this library; its beats, holds, vision summary (poses
+  // per beat) and key frames go into the prompt, and the clip keeps it pinned (the critic scores the match).
+  async compose(request: string, opts: AnimRefineOptions & { wait?: boolean; refine?: boolean; script?: string; scope?: AnimScope; rig?: RigType; reference?: string } = {}): Promise<AnimScriptResult & { refined?: Promise<unknown> }> {
+    const pinned = opts.reference ? await this.pinnedRef(opts.reference) : null
+    const text = String(request ?? '').trim() || (pinned ? `a move like the reference video ${pinned.name}` : '')
     if (text.length < 3) throw new AnimError('Describe the move, e.g. "a heavy overhead punch with a long windup".')
     const rig = await this.rigFor(opts.rig)
     const tags = promptTags(text)
@@ -797,11 +836,13 @@ export class AnimService {
         profile ? profileText(profile) : 'No learned style for this move type yet: use strong anticipation, a fast action and a settling recovery.',
         ...refs.filter((e) => e !== scripted).map((e) => `Library reference "${e.name}" (${e.tags.join(', ')}): ${e.description.slice(0, 300)}`),
         scripted ? `The user liked this related clip ("${scripted.origin}"); reuse what fits:\n\`\`\`lua\n${scripted.clip.script!.slice(0, 4000)}\n\`\`\`` : `An example script (${ex.name}):\n\`\`\`lua\n${ex.script}\`\`\``,
-        avoid.length ? `The user marked these as bad; do not repeat them: ${avoid.join(' | ')}` : ''
+        avoid.length ? `The user marked these as bad; do not repeat them: ${avoid.join(' | ')}` : '',
+        pinned ? pinned.compose : '',
+        principlePlan('anim', text, { weights: await this.principleWeights() })
       ].filter(Boolean)
       try {
         const system = animComposeSystem(rig)
-        let raw = await writer(system, lines.join('\n\n'), [])
+        let raw = await writer(system, lines.join('\n\n'), pinned?.images ?? [])
         for (let attempt = 0; attempt < 2; attempt++) {
           const s = extractAnimScript(raw)
           if (!s) throw new Error('no script in the answer')
@@ -814,7 +855,7 @@ export class AnimService {
           }
           if (attempt === 1) throw new Error(r.error?.message ?? 'the script failed')
           const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
-          raw = await writer(system, `${lines.join('\n\n')}\n\nYour script:\n\`\`\`lua\n${s}\`\`\`\nfailed: ${r.error?.message}${where}\nFix it and answer with the whole corrected script.`, [])
+          raw = await writer(system, `${lines.join('\n\n')}\n\nYour script:\n\`\`\`lua\n${s}\`\`\`\nfailed: ${r.error?.message}${where}\nFix it and answer with the whole corrected script.`, pinned?.images ?? [])
         }
       } catch (e) {
         this.deps.log?.(`anim: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
@@ -827,7 +868,8 @@ export class AnimService {
       if (!result.ok && opts.script) return { ...result, source }
       if (!result.ok) throw new AnimError(`could not record the draft script: ${result.error?.message}`)
     }
-    const entry = await this.saveClip(result.clip!, { prompt: text, tags: [...new Set([...tags, ...autoTags(result.clip!)])], scope: opts.scope })
+    const refTags = pinned ? ((await this.find(pinned.id))?.entry.tags ?? []).filter((t) => t !== 'video') : []
+    const entry = await this.saveClip(result.clip!, { prompt: text, tags: [...new Set([...tags, ...refTags, ...autoTags(result.clip!)])], scope: opts.scope, ...(pinned ? { refId: pinned.id } : {}) })
     await this.ensureGuideSkill()
     const out: AnimScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source }
     if (opts.refine !== false && this.deps.capture) {
@@ -882,6 +924,20 @@ export class AnimService {
     return this.deps.capture({ clip, times, ...FRAME_SIZE, ...(reference ? { reference } : {}) })
   }
 
+  // A video reference in this library ("make it like this"): prompt block, critic block, key frames.
+  async pinnedRef(id: string): Promise<PinnedRef> {
+    const hit = await this.find(String(id ?? ''))
+    if (!hit) throw new AnimError(`no video reference "${id}" in the Animation Lab library`)
+    return loadPinnedRef(hit.entry, (f) => hit.store.readFile(hit.entry.id, f))
+  }
+
+  private withMatch(c: AnimCritique, clip: AnimClip, pinned: PinnedRef, raw?: string): AnimCritique {
+    const fromCritic = raw ? parseMatch(raw) : null
+    const numeric = animNumericMatch(clip, pinned.video)
+    const match = fromCritic?.match ?? numeric.match
+    return { ...c, overall: blendMatch(c.overall, match), match, matchNotes: fromCritic?.notes ?? numeric.notes }
+  }
+
   async critique(entry: AnimEntry, clip: AnimClip, frames: Buffer[], times: number[], iteration: number, previous: AnimCritique | null): Promise<AnimCritique> {
     const style = await this.style()
     const rig = clipRig(clip)
@@ -889,15 +945,26 @@ export class AnimService {
     const checks = runChecks(clip, profile)
     const refs = await this.references(entry.tags, entry.origin, entry.id, rig)
     const refNames = refs.map((r) => r.name)
+    const pinned = entry.refId ? await this.pinnedRef(entry.refId).catch(() => null) : null
     const critic = this.model('critic')
-    if (!critic || !frames.length) return heuristicAnimCritique(clip, checks, profile, refNames)
-    const prompt = animCritiquePrompt({ request: entry.origin, clip, frameTimes: times, checks, profile, references: refs.map((r) => ({ name: r.name, description: r.description })), iteration, previous })
+    const weights = await this.principleWeights()
+    const request = entry.origin || entry.description
+    const principled = (c: AnimCritique, raw?: string) => withAnimPrinciples(c, clip, { request, raw, weights, checks })
+    if (!critic || !frames.length) {
+      const c = principled(heuristicAnimCritique(clip, checks, profile, refNames))
+      return pinned ? this.withMatch(c, clip, pinned) : c
+    }
+    const prompt = `${animCritiquePrompt({ request: entry.origin, clip, frameTimes: times, checks, profile, references: refs.map((r) => ({ name: r.name, description: r.description })), iteration, previous })}\n\n${animCriticPrinciples(clip, request, { weights, focus: previous?.focus, checks })}`
+    // Pinned reference: its key frames follow the rendered frames (compared side by side).
+    const images = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...(pinned?.images ?? [])]
     try {
-      const raw = await critic(animCriticSystem(rig), prompt, frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })))
-      return parseAnimCritique(raw, checks, refNames)
+      const raw = await critic(pinned ? `${animCriticSystem(rig)}\n${REF_MATCH_TEXT}` : animCriticSystem(rig), prompt + studioFramesNote(frames) + (pinned ? `\n\n${pinned.critique}` : ''), images)
+      const c = principled(parseAnimCritique(raw, checks, refNames), raw)
+      return pinned ? this.withMatch(c, clip, pinned, raw) : c
     } catch (e) {
       this.deps.log?.(`anim: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')
-      return heuristicAnimCritique(clip, checks, profile, refNames)
+      const c = principled(heuristicAnimCritique(clip, checks, profile, refNames))
+      return pinned ? this.withMatch(c, clip, pinned) : c
     }
   }
 
@@ -919,6 +986,7 @@ export class AnimService {
   async refine(id: string, opts: AnimRefineOptions = {}): Promise<{ entry: AnimEntry; stop: string; score: number }> {
     const hit = await this.find(id)
     if (!hit) throw new AnimError(`no animation "${id}"`)
+    needClip(hit.entry)
     if (this.running.has(id)) throw new AnimError('already refining this clip')
     const token = { cancelled: false }
     this.running.set(id, token)
@@ -987,6 +1055,7 @@ export class AnimService {
   async writeProjectFiles(entry: AnimEntry): Promise<AnimEntry> {
     const root = this.deps.projectRoot()
     if (!root) throw new AnimError('Open the game project first: export writes into src/shared/Animations.')
+    needClip(entry)
     const hit = await this.find(entry.id)
     const store = hit?.store ?? this.user
     const name = animModuleName(entry.clip.name || entry.name)
@@ -1014,6 +1083,7 @@ export class AnimService {
   async upload(id: string): Promise<AnimUploadResult> {
     const hit = await this.find(id)
     if (!hit) throw new AnimError(`no animation "${id}"`)
+    needClip(hit.entry)
     const key = await this.deps.openCloud?.key()
     if (!key) throw new AnimError('No Open Cloud API key with asset:read + asset:write. Add one on the Art page (it is kept in the encrypted secret store).')
     const creator = this.deps.openCloud?.creator() ?? {}

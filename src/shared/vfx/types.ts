@@ -6,6 +6,9 @@
 //   vec2 [x, y], vec3 [x, y, z], color3 [r, g, b] (0..1), range [min, max],
 //   nseq NumKey[] (NumberSequence), cseq ColorKey[] (ColorSequence), ref (node id), cframe number[12]
 
+import type { VideoRef } from '../videoref/types.ts'
+import type { PrincipleScore } from '../principles/types.ts'
+
 export type Vec2 = [number, number]
 export type Vec3 = [number, number, number]
 export type Rgb = [number, number, number]
@@ -141,6 +144,11 @@ export interface VfxEntry {
   // Generated effects: where they were written in the project.
   written?: { module: string; model: string }
   iterations?: VfxIteration[]
+  // Video references (kind 'media'): the analysed clip (shared/videoref).
+  video?: VideoRef
+  notes?: string
+  // Generated effects: the video reference pinned with "make it like this" (critic compares to it).
+  refId?: string
 }
 
 // Result of running a timeline script (vfx_run_script, the Script tab, vfx_compose).
@@ -180,6 +188,14 @@ export interface VfxCritique {
   // Concrete parameter changes the critic proposes (applied by the loop).
   changes: VfxChange[]
   references: string[]
+  // With a pinned video reference: 0..10 match (blended into overall) and the biggest difference.
+  match?: number
+  matchNotes?: string
+  // Per-principle scores (critic + code checks), their weighted mean (blended into overall) and the
+  // principles the next round targets first (shared/principles).
+  principles?: PrincipleScore[]
+  principleScore?: number
+  focus?: string[]
 }
 
 // One parameter change: node by name (or id), property, new value.
@@ -189,6 +205,8 @@ export interface VfxChange {
   // Raw JSON in the spec shorthands (normalised when applied, see spec.ts normalizeValue).
   value: unknown
   why?: string
+  // The principle this change raises (shared/principles), when the critic named one.
+  principle?: string
 }
 
 // Parameter ranges and patterns learned from the library for one effect type (tag).
@@ -205,6 +223,8 @@ export interface VfxRecipe {
   colors: string[]
   avoid: string[]
   notes: string[]
+  // Timing (median seconds per beat) and palette from video references with this tag.
+  video?: { samples: number; beats: Record<string, number>; palette: string[] }
 }
 
 export interface VfxImportResult {

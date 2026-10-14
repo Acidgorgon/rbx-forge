@@ -12,6 +12,23 @@ import { findExample, VFX_EXAMPLES } from '@shared/vfx/examples'
 import { RECORDED } from '@shared/vfx/examples.recorded'
 import { timelineSummary } from '@shared/vfx/timeline'
 import type { VfxScriptResult } from '@shared/types'
+import { mockResolveTexture } from './mockVfxTextures'
+import { genRef } from '@shared/vfx/tex/textures'
+import { withVfxPrinciples } from '@shared/principles/attach'
+import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
+
+// What a vision critic would add for the principles code cannot measure (shape, readability), so the
+// preview's scorecards show both kinds.
+function previewCriticRaw(i: number): string {
+  const s = (x: number) => Math.min(9.4, Math.round((x + (i - 1) * 0.7) * 10) / 10)
+  return JSON.stringify({
+    principles: [
+      { id: 'fx-shape', score: s(5.8), note: 'the crescent reads on the release frame but the core is a round blob', fix: 'swap the core texture for a slash crescent (forgetex://gen/slash)' },
+      { id: 'fx-readability', score: s(6.4), note: 'the arc is readable at 30 studs; the sparks vanish past 20', fix: 'raise the sparks Size to 0.25 and LightEmission to 1' },
+      { id: 'fx-contrast', score: s(6), note: 'the core and the glow are the same purple', fix: 'start the core Color at #ffffff' }
+    ]
+  })
+}
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -67,6 +84,7 @@ function iterations(e: VfxEntry, n: number): VfxIteration[] {
     const bump = Math.min(9.2, critique.overall + (i - 1) * 0.9)
     critique.overall = Math.round(bump * 10) / 10
     for (const k of Object.keys(critique.scores) as (keyof typeof critique.scores)[]) critique.scores[k] = Math.min(10, critique.scores[k] + (i - 1) * 0.8)
+    Object.assign(critique, withVfxPrinciples(critique, effect, { request: e.origin.replace(/^Make: /, '') || e.description, raw: previewCriticRaw(i), weights: mockPrincipleWeights() }))
     const frames = [0, 1, 2, 3].map((f) => {
       const file = `frames/${i}-${f}.png`
       files.set(`${e.id}/${file}`, glow(effectColors(effect), i * 4 + f, `#${i} t${f}`))
@@ -108,6 +126,25 @@ function exampleEntry(key: string): VfxEntry {
 }
 add(exampleEntry('ground-slam'))
 add(exampleEntry('hollow-purple'))
+
+// Custom textures (mockVfxTextures): the ground slam with library / procedural textures.
+{
+  const e = exampleEntry('ground-slam')
+  const walk = (ns: NonNullable<VfxEntry['effect']>['roots']) => {
+    for (const n of ns) {
+      if (n.className === 'ParticleEmitter') {
+        if (/^Ring2|shock|wave/i.test(n.name)) Object.assign(n.props, { Texture: 'forgetex://shockwave-expand-d4', FlipbookLayout: 'Grid4x4', FlipbookMode: 'OneShot' })
+        else if (/debris/i.test(n.name)) n.props.Texture = 'forgetex://ground-crack-c3'
+        else if (/dust|smoke/i.test(n.name)) n.props.Texture = genRef('smoke', {}, { tint: 'grey', seed: 3 })
+        else if (/spark|ember/i.test(n.name)) n.props.Texture = genRef('spark')
+        else n.props.Texture = 'forgetex://soft-core-glow-a1'
+      }
+      walk(n.children)
+    }
+  }
+  walk(e.effect!.roots)
+  add({ ...e, id: 'ground-slam-tex', name: 'GroundSlamTextured', description: 'Ground slam with custom textures: a ring flipbook, procedural smoke and sparks.', tags: ['impact', 'shockwave', 'sequence', 'textures'], stats: effectStats(e.effect!), origin: 'textures demo' })
+}
 
 // The browser preview cannot run Luau: a script that matches a built-in example (ignoring
 // whitespace) compiles from its recording; an unknown fx method is reported like Lune would.
@@ -185,6 +222,7 @@ export function vfxMock(emit: Emit): VfxApi {
     },
     async vfxRate(id, rating) {
       const e = find(id)
+      recordPrincipleRating('vfx', e.id, e.name, rating, e.iterations?.[e.iterations.length - 1]?.critique?.principles, e.notes)
       e.rating = rating ?? undefined
       if (e.kind === 'generated') e.quality = rating === 'up' ? 'good' : rating === 'down' ? 'avoid' : undefined
       changed()
@@ -229,8 +267,8 @@ export function vfxMock(emit: Emit): VfxApi {
       e.thumbs = ['thumbs/0.png']
       return e
     },
-    async vfxResolveTexture() {
-      return null
+    async vfxResolveTexture(ref) {
+      return mockResolveTexture(String(ref ?? ''))
     },
     async vfxRunScript(script, opts) {
       await delay(250)

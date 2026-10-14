@@ -29,8 +29,12 @@ import { updatesMock } from './mockUpdates'
 import { brainSyncMock } from './mockBrainSync'
 import { uiPreviewMock, uiPreviewMockSources } from './mockUiPreview'
 import { vfxMock } from './mockVfx'
+import { vfxTexturesMock } from './mockVfxTextures'
 import { animMock } from './mockAnim'
+import { refMock } from './mockRef'
 import { abilityMock } from './mockAbility'
+import { studioMock } from './mockStudio'
+import { principlesMock } from './mockPrinciples'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -868,10 +872,15 @@ const api: HarnessApi = {
   // UI Preview (mockUiPreview.ts): Lune recordings of the fixture stories.
   ...uiPreviewMock(emit, (text) => log('harness', text, 'info')),
   // VFX Lab (mockVfx.ts): a small effect library built with the shared VFX code.
-  ...vfxMock(emit),
+  ...vfxTexturesMock(emit),
   // Animation Lab (mockAnim.ts): built-in examples and imported-looking clips from the shared code.
-  ...animMock(emit),
+  // Video references (mockRef.ts) layer over both lab mocks.
+  ...refMock(emit, vfxMock(emit), animMock(emit)),
   ...abilityMock(emit),
+  // Studio check (mockStudio.ts): fake Forge Bridge + SVG Studio frames; ?studio=ready|offline|noplugin|outdated|nocapture.
+  ...studioMock(emit),
+  // Principle priorities (mockPrinciples.ts): weights learned from a seeded rating log.
+  ...principlesMock(emit),
 
   on(event, handler) {
     let set = listeners.get(event)

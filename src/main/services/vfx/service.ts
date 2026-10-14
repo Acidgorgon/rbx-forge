@@ -23,8 +23,17 @@ import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeSkill } from '../../../shared/vfx/recipes.ts'
 import { compactEffect, effectFromSpec, safeName, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
 import type { VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
+import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { entryId, PROJECT_VFX_DIR, safeFileName, VfxLibraryError, VfxStore } from './library.ts'
+import { PROCEDURAL_GUIDE, isTexRef, type ExportPlan } from '../../../shared/vfx/tex/textures.ts'
+import { loadPinnedRef, type PinnedRef } from '../videoref/refs.ts'
+import { blendMatch, parseMatch, REF_MATCH_TEXT } from '../../../shared/videoref/prompt.ts'
+import { vfxNumericMatch } from '../../../shared/videoref/match.ts'
 import { luneExtract, luneTimeline, type LuneRun } from './lune.ts'
+import { principleIds, scoresForRating, vfxCriticPrinciples, withVfxPrinciples } from '../../../shared/principles/attach.ts'
+import { principlePlan } from '../../../shared/principles/select.ts'
+import { vfxPrincipleChecks } from '../../../shared/principles/vfxChecks.ts'
+import type { PrincipleHooks, PrincipleWeights } from '../../../shared/principles/types.ts'
 
 export interface ImagePayload {
   mime: string
@@ -61,6 +70,18 @@ export interface VfxServiceDeps {
   emit?: (event: 'vfx:changed' | 'vfx:progress', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   now?: () => number
+  // Custom textures (textures/service.ts): forgetex:// previews, gen-ref materialisation on save,
+  // the rbxassetid swap when effects are written to the project, and the list for prompts.
+  textures?: VfxTextureHooks
+  // Principle priorities: the user's learned weights (critique, compose plan) and the rating log.
+  principles?: PrincipleHooks
+}
+
+export interface VfxTextureHooks {
+  resolve(ref: string): Promise<string | null>
+  prepareEffect(effect: VfxEffect, scope?: VfxScope): Promise<VfxEffect>
+  exportEffect(effect: VfxEffect): Promise<ExportPlan>
+  promptList(limit?: number): Promise<string[]>
 }
 
 const MODEL_EXT = new Set(['.rbxm', '.rbxmx'])
@@ -80,7 +101,8 @@ export function frameTimes(duration: number, n: number): number[] {
 const DRAFT_SYSTEM = `You write Roblox VFX as a JSON spec for the RBX Forge VFX Lab. Answer with JSON only, no prose.
 Spec: {"name","description","tags":[...],"duration":seconds,"motion":"static|swing|orbit|dash|rise","anchor":[x,y,z] (studs from the dummy's feet; it faces -Z),
 "layers":[{"name","class":"ParticleEmitter|Beam|Trail|PointLight|SpotLight|Highlight","props":{Roblox property: value},"emit":[{"at":s,"count":n}],"enable":[[from,to]],"shape":{"size":[x,y,z]},"width":studs (Trail),"from":[x,y,z],"to":[x,y,z] (Beam)}]}
-Values: numbers; ranges [min,max]; vectors [x,y,z]; NumberSequence [[t,v],[t,v,envelope]]; ColorSequence ["#hex",...] or [[t,"#hex"],...]; enums by item name ("Top", "VelocityParallel", "Grid4x4", "OneShot"); Texture "rbxassetid://<id>".
+Values: numbers; ranges [min,max]; vectors [x,y,z]; NumberSequence [[t,v],[t,v,envelope]]; ColorSequence ["#hex",...] or [[t,"#hex"],...]; enums by item name ("Top", "VelocityParallel", "Grid4x4", "OneShot"); Texture "rbxassetid://<id>" or "forgetex://...".
+${PROCEDURAL_GUIDE}
 Good Roblox VFX are layered (bright additive core, soft glow, fast sparks with VelocityParallel + Squash, low-LightEmission smoke, a ring), sizes swell fast then decay, transparency fades to 1, bursts are emitters with emit cues, and stay under ~400 live particles.`
 
 // System prompt for vfx_compose: the model writes a whole multi-stage effect as a timeline script.
@@ -90,11 +112,14 @@ ${'$'}{API}
 
 ${'$'}{GUIDE}
 
+${'$'}{TEXTURES}
+
 A complete example (a charge-and-slash):
 \`\`\`lua
 ${'$'}{EXAMPLE}\`\`\``
   .replace('${API}', kitReference())
   .replace('${GUIDE}', CHOREOGRAPHY_GUIDE)
+  .replace('${TEXTURES}', `${PROCEDURAL_GUIDE} When none of the built-in textures fits a layer (a ring that should be a ring, smoke that should be a puff, a crack, a slash crescent), pass texture = "forgetex://gen/<type>" in the spawn options; prefer the user's liked library textures when they fit.`)
   .replace('${EXAMPLE}', CHARGE_SLASH)
 
 const EMPTY_BASE = (name: string): VfxEffect => ({ name, roots: [], cues: [], duration: 2 })
@@ -208,16 +233,17 @@ export class VfxService {
     return scored.slice(0, opts.limit ?? 50).map((x) => x.e)
   }
 
-  async update(id: string, patch: { name?: string; description?: string; tags?: string[]; effect?: VfxEffect }): Promise<VfxEntry> {
+  async update(id: string, patch: { name?: string; description?: string; tags?: string[]; notes?: string; effect?: VfxEffect }): Promise<VfxEntry> {
     const hit = await this.find(id)
     if (!hit) throw new VfxError(`no VFX entry "${id}"`)
     const e: VfxEntry = { ...hit.entry, updatedAt: this.now() }
     if (typeof patch.name === 'string' && patch.name.trim()) e.name = patch.name.trim().slice(0, 80)
     if (typeof patch.description === 'string') e.description = patch.description.slice(0, 2000)
     if (Array.isArray(patch.tags)) e.tags = [...new Set(patch.tags.map((t) => String(t).toLowerCase().trim()).filter(Boolean))].slice(0, 16)
+    if (typeof patch.notes === 'string') e.notes = patch.notes.slice(0, 2000)
     if (patch.effect) {
-      e.effect = patch.effect
-      e.stats = effectStats(patch.effect)
+      e.effect = await this.prepareTextures(patch.effect, hit.store.scope)
+      e.stats = effectStats(e.effect)
     }
     const saved = await hit.store.save(e)
     // Live edits of a generated effect write back to its Luau module and .rbxmx.
@@ -446,12 +472,29 @@ export class VfxService {
     if (e.kind === 'generated') e.quality = rating === 'up' ? 'good' : rating === 'down' ? 'avoid' : undefined
     if (!e.quality) delete e.quality
     const saved = await hit.store.save(e)
+    await this.recordPrinciples(saved, rating).catch((err) => this.deps.log?.(`vfx: principle feedback: ${(err as Error).message}`, 'stderr'))
     if (rating === 'up' && this.deps.memory && saved.effect?.script) await this.saveSequenceSkill(saved).catch((err) => this.deps.log?.(`vfx: sequence skill: ${(err as Error).message}`, 'stderr'))
     if (rating === 'down' && this.deps.memory) await this.saveAvoidNotes(saved).catch((err) => this.deps.log?.(`vfx: avoid note: ${(err as Error).message}`, 'stderr'))
     // Liked or disliked results change the recipes for their tags.
     if (rating && this.deps.memory && saved.effect) await this.relearn(saved.tags).catch(() => undefined)
     this.changed()
     return saved
+  }
+
+  // Ratings teach the principle weights: the rated effect's per-principle scores (its last critique,
+  // else the code checks) and the user's notes.
+  private async recordPrinciples(e: VfxEntry, rating: 'up' | 'down' | null): Promise<void> {
+    const p = this.deps.principles
+    if (!p || !e.effect) return
+    if (!rating) return void (await p.forget?.('vfx', e.id))
+    const last = e.iterations?.[e.iterations.length - 1]?.critique
+    const ids = principleIds('vfx', e.origin || e.description)
+    const scores = scoresForRating(last?.principles, () => vfxPrincipleChecks(e.effect!).filter((c) => ids.includes(c.id)))
+    await p.record({ lab: 'vfx', entryId: e.id, name: e.name, rating, scores, ...(e.notes ? { notes: e.notes } : {}) })
+  }
+
+  private async principleWeights(): Promise<PrincipleWeights> {
+    return (await this.deps.principles?.weights().catch(() => ({}))) ?? {}
   }
 
   // A liked scripted effect becomes a skill: the request, its beats and the script, so the assistant
@@ -516,11 +559,12 @@ export class VfxService {
   }
 
   // Saves an effect as a generated entry (new, or replacing `id`) and writes it into the project.
-  async saveEffect(effect: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[] } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
-    const spec = { name: effect.name, description: opts.description, tags: opts.tags }
+  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+    const spec = { name: raw.name, description: opts.description, tags: opts.tags }
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new VfxError(`no VFX entry "${opts.id}"`)
     const store = prev?.store ?? this.project() ?? this.user
+    const effect = await this.prepareTextures(raw, store.scope)
     const now = this.now()
     const tags = [...new Set([...(spec.tags ?? []).map((t) => String(t).toLowerCase()), ...autoTags(effect, opts.prompt ?? '')])].slice(0, 10)
     const entry: VfxEntry = {
@@ -534,7 +578,8 @@ export class VfxService {
       updatedAt: now,
       origin: opts.prompt ?? prev?.entry.origin ?? effect.name,
       effect,
-      stats: effectStats(effect)
+      stats: effectStats(effect),
+      ...(opts.refId ? { refId: opts.refId } : {})
     } as VfxEntry
     let saved = await store.save(entry)
     if (this.deps.projectRoot()) saved = await this.writeProjectFiles(saved)
@@ -556,15 +601,33 @@ export class VfxService {
     const abs = resolve(root, dir)
     if (!abs.startsWith(resolve(root) + sep)) throw new VfxError('effect path escapes the project')
     await mkdir(abs, { recursive: true })
-    await writeFile(join(abs, 'init.luau'), luauModule(entry.effect, { description: entry.description }), 'utf8')
-    await writeFile(join(abs, 'Effect.rbxmx'), writeRbxmx(entry.effect.roots), 'utf8')
+    // Custom textures: forgetex:// -> rbxassetid:// (uploaded) or a built-in fallback (not yet).
+    const fx = await this.exportTextures(entry.effect)
+    await writeFile(join(abs, 'init.luau'), luauModule(fx, { description: entry.description }), 'utf8')
+    await writeFile(join(abs, 'Effect.rbxmx'), writeRbxmx(fx.roots), 'utf8')
     const timelineFile = join(abs, 'Timeline.luau')
-    if (entry.effect.script) await writeFile(timelineFile, timelineModule(entry.effect.script), 'utf8')
+    if (fx.script) await writeFile(timelineFile, timelineModule(fx.script), 'utf8')
     else if (await exists(timelineFile)) await writeFile(timelineFile, '-- No timeline script (the effect plays its compiled cues).\nreturn nil\n', 'utf8')
-    if (needsRuntime(entry.effect)) await this.writeRuntime(root)
+    if (needsRuntime(fx)) await this.writeRuntime(root)
     const written = { module: `${dir}/init.luau`, model: `${dir}/Effect.rbxmx` }
     if (entry.written?.module === written.module) return entry
     return store.save({ ...entry, written })
+  }
+
+  private async prepareTextures(effect: VfxEffect, scope?: VfxScope): Promise<VfxEffect> {
+    if (!this.deps.textures) return effect
+    return this.deps.textures.prepareEffect(effect, scope).catch((e) => {
+      this.deps.log?.(`vfx: textures: ${(e as Error).message}`, 'stderr')
+      return effect
+    })
+  }
+
+  // The effect with custom texture references swapped for what Roblox can load.
+  async exportTextures(effect: VfxEffect): Promise<VfxEffect> {
+    if (!this.deps.textures) return effect
+    const plan = await this.deps.textures.exportEffect(effect)
+    for (const f of plan.fallbacks) this.deps.log?.(`vfx: ${f.ref} ${f.reason}; wrote ${f.to} instead (upload it in the VFX Lab textures tab)`, 'info')
+    return plan.effect
   }
 
   // src/shared/VFX/ForgeFX.luau, the runtime scripted effects require. Rewritten when it is ours (starts
@@ -630,21 +693,48 @@ export class VfxService {
     return out
   }
 
+  // A video reference in this library ("make it like this"): prompt block, critic block, key frames.
+  async pinnedRef(id: string): Promise<PinnedRef> {
+    const hit = await this.find(String(id ?? ''))
+    if (!hit) throw new VfxError(`no video reference "${id}" in the VFX library`)
+    return loadPinnedRef(hit.entry, (f) => hit.store.readFile(hit.entry.id, f))
+  }
+
+  // With a pinned reference, the critic's (or the numbers-only) match is blended into the score.
+  private withMatch(c: VfxCritique, effect: VfxEffect, pinned: PinnedRef, raw?: string): VfxCritique {
+    const fromCritic = raw ? parseMatch(raw) : null
+    const numeric = vfxNumericMatch(effect, pinned.video)
+    const match = fromCritic?.match ?? numeric.match
+    return { ...c, overall: blendMatch(c.overall, match), match, matchNotes: fromCritic?.notes ?? numeric.notes }
+  }
+
   async critique(entry: VfxEntry, effect: VfxEffect, frames: Buffer[], times: number[], iteration: number, previous: VfxCritique | null): Promise<VfxCritique> {
     const tags = entry.tags
     const refs = await this.references(tags, entry.origin, entry.id)
     const recipe = await this.recipeFor(tags)
     const refNames = refs.map((r) => r.name)
+    const pinned = entry.refId ? await this.pinnedRef(entry.refId).catch(() => null) : null
     const vision = this.deps.vision?.('critic')
-    if (!vision) return heuristicCritique(effect, recipe, refNames)
-    const prompt = critiquePrompt({ prompt: entry.origin, effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })
-    const images: ImagePayload[] = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...(await this.referenceImages(refs, tags))]
+    const weights = await this.principleWeights()
+    const request = entry.origin || entry.description
+    const principled = (c: VfxCritique, raw?: string) => withVfxPrinciples(c, effect, { request, raw, weights })
+    if (!vision) {
+      const c = principled(heuristicCritique(effect, recipe, refNames))
+      return pinned ? this.withMatch(c, effect, pinned) : c
+    }
+    const prompt = `${critiquePrompt({ prompt: entry.origin, effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })}\n\n${vfxCriticPrinciples(effect, request, { weights, focus: previous?.focus })}`
+    // Pinned reference: its key frames follow the rendered frames (compared side by side).
+    const extra = pinned ? pinned.images : await this.referenceImages(refs, tags)
+    const images: ImagePayload[] = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...extra]
+    const note = pinned ? `\n\n${pinned.critique}` : images.length > frames.length ? `\nThe last ${images.length - frames.length} image(s) are reference effects from the library.` : ''
     try {
-      const raw = await vision(CRITIC_SYSTEM, prompt + (images.length > frames.length ? `\nThe last ${images.length - frames.length} image(s) are reference effects from the library.` : ''), images)
-      return parseCritique(raw, effect, refNames)
+      const raw = await vision(pinned ? `${CRITIC_SYSTEM}\n${REF_MATCH_TEXT}` : CRITIC_SYSTEM, prompt + studioFramesNote(frames) + note, images)
+      const c = principled(parseCritique(raw, effect, refNames), raw)
+      return pinned ? this.withMatch(c, effect, pinned, raw) : c
     } catch (e) {
       this.deps.log?.(`vfx: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')
-      return heuristicCritique(effect, recipe, refNames)
+      const c = principled(heuristicCritique(effect, recipe, refNames))
+      return pinned ? this.withMatch(c, effect, pinned) : c
     }
   }
 
@@ -710,10 +800,11 @@ export class VfxService {
       // Keep the best iteration as the effect.
       const current = (await hit.store.read(id)) ?? hit.entry
       const bestFrames = result.best.frames
+      const bestEffect = await this.prepareTextures(result.best.effect, hit.store.scope)
       let entry = await hit.store.save({
         ...current,
-        effect: result.best.effect,
-        stats: effectStats(result.best.effect),
+        effect: bestEffect,
+        stats: effectStats(bestEffect),
         thumbs: [bestFrames[Math.min(bestFrames.length - 1, 1)] ?? bestFrames[0], ...current.thumbs.filter((t) => !t.startsWith('frames/'))].filter(Boolean).slice(0, 6),
         updatedAt: this.now()
       })
@@ -744,6 +835,7 @@ export class VfxService {
       recipe ? `Learned recipe "${recipe.tag}": ${JSON.stringify({ layers: recipe.layers, ranges: recipe.ranges, notes: recipe.notes, avoid: recipe.avoid }).slice(0, 4000)}` : 'No learned recipe for this type yet.',
       ...refs.map((r) => `Reference "${r.name}": ${JSON.stringify(compactEffect(r.effect!)).slice(0, 2500)}`),
       `Library textures by role (use these ids; never invent asset ids): ${JSON.stringify(libraryTextures(entries))}`,
+      ...(await this.textureLines()),
       `A starting draft you may improve: ${JSON.stringify(fallback)}`
     ]
     try {
@@ -809,8 +901,11 @@ export class VfxService {
   // One step from a request to a scripted multi-stage effect: the model writes the timeline script
   // with the kit (one repair round on errors), else the built-in draft for the request's archetype.
   // Saved as a new entry; refined in the background when frames can be rendered (refine: false skips).
-  async compose(request: string, opts: VfxRefineOptions & { wait?: boolean; refine?: boolean; script?: string } = {}): Promise<VfxScriptResult & { refined?: Promise<unknown> }> {
-    const text = String(request ?? '').trim()
+  // reference: the id of a video reference in this library; its beats, palette, vision summary and key
+  // frames go into the prompt, and the result keeps it pinned (the critic scores the match).
+  async compose(request: string, opts: VfxRefineOptions & { wait?: boolean; refine?: boolean; script?: string; reference?: string } = {}): Promise<VfxScriptResult & { refined?: Promise<unknown> }> {
+    const pinned = opts.reference ? await this.pinnedRef(opts.reference) : null
+    const text = String(request ?? '').trim() || (pinned ? `an effect like the reference video ${pinned.name}` : '')
     if (text.length < 3) throw new VfxError('Describe the effect, e.g. "a fireball that charges, flies forward and explodes".')
     let source: VfxScriptResult['source'] = 'draft'
     let result: VfxScriptResult | null = null
@@ -823,10 +918,13 @@ export class VfxService {
       const lines = [
         `Make: ${text}`,
         ...liked.map((e) => `The user liked this related sequence ("${e.origin}"); reuse what fits:\n\`\`\`lua\n${e.effect!.script!.slice(0, 4000)}\n\`\`\``),
-        ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : [])
-      ]
+        ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : []),
+        ...(await this.textureLines()),
+        ...(pinned ? [pinned.compose] : []),
+        principlePlan('vfx', text, { weights: await this.principleWeights() })
+      ].filter(Boolean)
       try {
-        let raw = await vision(COMPOSE_SYSTEM, lines.join('\n\n'), [])
+        let raw = await vision(COMPOSE_SYSTEM, lines.join('\n\n'), pinned?.images ?? [])
         for (let attempt = 0; attempt < 2; attempt++) {
           const s = extractScript(raw)
           if (!s) throw new Error('no script in the answer')
@@ -839,7 +937,7 @@ export class VfxService {
           }
           if (attempt === 1) throw new Error(r.error?.message ?? 'the script failed')
           const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
-          raw = await vision(COMPOSE_SYSTEM, `${lines.join('\n\n')}\n\nYour script:\n\`\`\`lua\n${s}\`\`\`\nfailed: ${r.error?.message}${where}\nFix it and answer with the whole corrected script.`, [])
+          raw = await vision(COMPOSE_SYSTEM, `${lines.join('\n\n')}\n\nYour script:\n\`\`\`lua\n${s}\`\`\`\nfailed: ${r.error?.message}${where}\nFix it and answer with the whole corrected script.`, pinned?.images ?? [])
         }
       } catch (e) {
         this.deps.log?.(`vfx: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
@@ -855,8 +953,9 @@ export class VfxService {
         throw new VfxError(`could not record the draft timeline: ${result.error?.message}`)
       }
     }
-    const tags = [...new Set([...promptTags(text), 'sequence'])]
-    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})` })
+    const refTags = pinned ? ((await this.find(pinned.id))?.entry.tags ?? []).filter((t) => t !== 'video') : []
+    const tags = [...new Set([...promptTags(text), ...refTags, 'sequence'])]
+    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})`, ...(pinned ? { refId: pinned.id } : {}) })
     await this.ensureChoreographySkill()
     const out: VfxScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source }
     if (opts.refine !== false && this.deps.capture) {
@@ -899,11 +998,18 @@ export class VfxService {
 
   // ------------------------------------------------------------ textures
 
+  private async textureLines(): Promise<string[]> {
+    const list = (await this.deps.textures?.promptList(10).catch(() => [])) ?? []
+    return list.length ? [`Custom textures in the user's library (forgetex:// refs; liked ones first):\n${list.join('\n')}`] : []
+  }
+
   // rbxassetid:// -> PNG data URL via the public thumbnails API (no auth); a local file path (Art
   // page images, project-relative or absolute) -> its bytes. null = use a placeholder.
   resolveTexture(ref: string): Promise<string | null> {
     const key = String(ref ?? '').trim()
     if (!key) return Promise.resolve(null)
+    // Custom textures: always read fresh (the library file can change); gen refs cache themselves.
+    if (isTexRef(key)) return this.deps.textures ? this.deps.textures.resolve(key).catch(() => null) : Promise.resolve(null)
     let p = this.textureCache.get(key)
     if (!p) {
       p = this.loadTexture(key).catch(() => null)

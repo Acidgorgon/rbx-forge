@@ -9,6 +9,7 @@
 
 import type { AnimMarker } from '../anim/types.ts'
 import type { EasingStyle, Rgb, Vec3 } from '../vfx/types.ts'
+import type { PrincipleScore } from '../principles/types.ts'
 
 export type { AnimMarker }
 
@@ -191,6 +192,8 @@ export interface AbilityChange {
   field: string
   value: unknown
   why?: string
+  // The principle the change raises (shared/principles), when the critic named one.
+  principle?: string
 }
 
 export interface AbilityCritique {
@@ -206,6 +209,11 @@ export interface AbilityCritique {
   frames: string[]
   overall: number
   summary: string
+  // Per-principle scores (critic + code checks), their weighted mean (blended into overall) and the
+  // principles to fix first (shared/principles).
+  principles?: PrincipleScore[]
+  principleScore?: number
+  focus?: string[]
 }
 
 export interface AbilityEntry {

@@ -92,6 +92,46 @@ Forge's agents keep memories about you (user) and about the game (project, store
 
 Generate UI art, icons, key art and thumbnails with OpenAI's image models (`gpt-image-2.5-flare` by default). You get style presets, sizes, quality, 1 to 4 variants, transparent backgrounds and reference images to edit or riff on. Every generation shows its cost up front, and a daily budget (default $5) stops overspending. Concepts are saved under `art/` in the project. **Roblox import** uploads an image as an Image or Decal asset through the Open Cloud Assets API and returns its asset id. **Ask the agent** hands the image to the assistant, and the assistant can generate art with the same tools.
 
+### Studio check for the labs
+
+![VFX Lab Studio tab: Studio frames next to the preview at each beat](docs/screenshots/90-studio-check-vfx-dark.png)
+
+The VFX Lab, Animation Lab and Ability Composer can play the current item in your own Roblox Studio and capture it at the key beats. **Studio check** (next to Refine or Critique) and the **Studio** tab show each Studio frame next to the preview frame for the same beat, plus how far each stage drifted in Studio. With **critique in Studio when connected** on, refine loops and the ability critique judge the Studio frames, and use the preview when Studio is not connected. The captures are saved with the library entry under `studio/`. The assistant has a `studio_check(kind, id)` tool, which needs Studio.
+
+- **Setup.** Click **Install plugin** to copy the Forge Bridge plugin into Studio's plugins folder (`%LOCALAPPDATA%\Roblox\Plugins` on Windows, `~/Documents/Roblox/Plugins` on macOS), then restart Studio. When Studio asks, allow HTTP requests to `127.0.0.1` and script injection; you can change both later under Plugin Management. Rojo is not needed, because each job carries its own modules.
+- **During a check.** The plugin builds a temporary stage far from your place (a dummy rig, a floor, a backdrop and a fixed camera), plays the item and removes the stage afterwards. Keep the Studio window visible and not minimised, because Forge records that window. On macOS, allow Screen Recording for Forge.
+- **Status.** The tab tells you when the plugin is missing or outdated, when Studio is not connected, when no Studio window can be recorded, and when a job times out.
+
+### VFX textures
+
+![VFX Lab textures: procedural generator and texture library](docs/screenshots/110-vfx-textures-library-dark.png)
+
+The VFX Lab's **textures** tab makes particle, beam and trail textures. **Procedural** shapes are free and deterministic: glow, ring, spark, smoke, crack, star and slash, each with sliders and a seed. **AI** textures use the Art workflow with the same key, models, pricing and daily budget, plus per-type prompts. AI output is cleaned up: the alpha is fixed, the shape is centred, a radial falloff stops hard edges, and the image is resized to a power-of-two square. Textures are white, or greyscale for smoke, so `Color` tints them. One texture works for every palette.
+
+- **Flipbooks**: 2×2, 4×4 and 8×8 sheets up to 1024 px, with spacing between frames and a size that is an exact multiple of the grid. Picking one sets `FlipbookLayout` and `FlipbookMode`, and the preview simulates the frames (Loop, OneShot, PingPong, Random; framerate capped at 30). [ParticleEmitter](https://create.roblox.com/docs/reference/engine/classes/ParticleEmitter), [ParticleFlipbookLayout](https://create.roblox.com/docs/reference/engine/enums/ParticleFlipbookLayout), [particle emitters guide](https://create.roblox.com/docs/effects/particle-emitters).
+- **Library**: each texture is stored at user scope (`<userData>/vfx/textures`, included in .forgepack and sync) or project scope (`.forge/vfx/textures`). You can rate, tag and search it. The Texture field in the params editor has a picker.
+- **References**: an effect points at `forgetex://<id>` and the preview uses the local file right away. When the project is written, each reference becomes `rbxassetid://` if the texture has been uploaded. If it has not, a built-in texture stands in, and the log says so.
+- **Upload**: textures go up as an **Image** asset (PNG) through Open Cloud. An Image id works directly in `Texture`. A Decal id points at a wrapper that Studio has to convert to its image id. See the [Assets API](https://create.roblox.com/docs/cloud/guides/usage-assets) and [asset ids](https://create.roblox.com/docs/projects/assets). **Check** reads the moderation state (`Reviewing`, `Approved`, `Rejected`).
+- **Agents**: `vfx_texture_generate` and `vfx_texture_list` are available, and compose and draft know the free `forgetex://gen/...` shapes. The critic can suggest a better texture. Thumbs up or down are saved to memory, so liked styles come back in later prompts.
+
+### Video references: "make it like this"
+
+![VFX Lab: a reference clip's key frames next to the rendered result with a match score](docs/screenshots/104-vfx-make-like-this-compare-dark.png)
+
+Drop an mp4, webm, mov or GIF on the VFX Lab or Animation Lab (or click **Video ref**), trim it to the part that matters, drag to crop, and press **Analyse**. Forge decodes small frames in the app itself (no ffmpeg) and measures the beats from motion energy (anticipation, release, impact, dissipate), flashes, the palette of each beat, glow, and the size and direction of motion. The Animation Lab also gets a holds vs fast-motion lane. The reference is saved in the library with a contact sheet and key frames, and the vision model (critic tier) describes it in the background. Poses come from that description; Forge does no pose estimation. **Make it like this**, or pinning a reference to Make, passes its beats, palette, description and key frames to compose. The critic then scores how well the render matches the reference, and the iterations tab shows the two side by side. A rated reference feeds learned styles only through its timing and palette. The assistant can use `ref_import` (from a path), `ref_get` and `ref_list`.
+
+### Animation and VFX principles
+
+![VFX Lab iterations: per-principle scorecard with the focus the next round fixes first](docs/screenshots/120-vfx-principle-scorecard-dark.png)
+
+The VFX Lab, Animation Lab and Ability Composer score their work against named principles (`src/shared/principles`). The animation set covers the 12 principles adapted for Roblox rigs plus responsiveness, readability, weight and impact, and loopability. The VFX set covers shape, timing, value and contrast, hue shifting, layering, readability, anticipation, break-up, dissipation, cohesion with the animation, and the performance budget. Each principle has a one-line rule, a note on how it applies in Roblox, good and bad examples, and a flag saying whether code can measure it.
+
+- **Plan.** Compose asks the writer for a short plan covering the few principles that matter for the request type (attack, idle, burst, aura and so on). The plan stays under about 170 tokens.
+- **Score.** The critic gives each relevant principle a score from 0 to 10, with a note and a fix. Code measures the principles it can: arcs, slow in and out, overshoot and settle, anticipation against the action, timing variety, and loop seams for animation; value contrast from the simulation, layer roles, dissipation, shape break-up, timing, and the `analyze.ts` performance budget for VFX. When both the critic and code score a principle, the two are averaged. The weighted principle score makes up half of the overall score.
+- **Refine.** The lowest-scoring principles, weighted by your priorities, become the focus. The next critique sees the focus first, and changes tagged with a focus principle are applied first. Each iteration shows a compact scorecard. A row marked `›` is in the focus. `c`, `m` and `c+m` show whether the critic, the code or both scored that row. Click a row to see the note and the fix.
+- **Your priorities.** Thumbs up and down, and the notes you write, teach a weight for each principle. A thumbs down on a result whose weak point was arcs raises the arcs weight. A thumbs up despite weak readability lowers that weight. Notes that name a principle ("floaty", "pops off") push it up. Weights range from ×0.4 to ×2.5. They are stored under `<userData>/principles`, included in .forgepack files and device sync, and summarised in memory. The **priorities** tab of each lab shows them and has a Reset button.
+- **References.** Video references list which principles they show and how, using the vision model's notes where it gave them and measured beats, flashes, palette and motion otherwise. Compose and the critic receive that list.
+
 ### Lune tests and test agents
 
 ![Tests panel with Lune specs, Run all and Watch, and test agent scenarios](docs/screenshots/26-tests-dark.png)

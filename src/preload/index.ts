@@ -60,6 +60,7 @@ const methods = [
   'vfxStatus', 'vfxList', 'vfxGet', 'vfxSearch', 'vfxImport', 'vfxChooseImport', 'vfxUpdate', 'vfxDelete', 'vfxRate',
   'vfxLearn', 'vfxRecipes', 'vfxMake', 'vfxRefine', 'vfxCancel', 'vfxCreate', 'vfxFile', 'vfxSaveThumb', 'vfxResolveTexture', 'vfxTestInStudio',
   'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample',
+  'vfxTexStatus', 'vfxTexList', 'vfxTexGenerate', 'vfxTexPreview', 'vfxTexUpdate', 'vfxTexRate', 'vfxTexDelete', 'vfxTexUpload', 'vfxTexCheck', 'vfxTexFile',
   // Animation Lab (services/anim) + Labs model tiers
   'animStatus', 'animList', 'animGet', 'animImport', 'animPreviewImport', 'animChooseImport', 'animUpdate', 'animDelete', 'animRate',
   'animLearn', 'animStyle', 'animCoverage', 'animCompose', 'animRunScript', 'animGetRig', 'animSetRig', 'animConvert', 'animRefine', 'animCancel', 'animChecks', 'animExamples',
@@ -67,6 +68,12 @@ const methods = [
   // Ability Composer (moves: animation + VFX + shake / screen / hit-stop / movement)
   'abilityStatus', 'abilityList', 'abilityGet', 'abilitySave', 'abilityDelete', 'abilityRate', 'abilityCompose', 'abilityCritique',
   'abilityExport', 'abilityExamples', 'abilityAddExample', 'abilityFile', 'abilitySaveThumb', 'abilityChooseSounds', 'abilitySoundUrl',
+  // Studio check (Forge Bridge plugin: play in Roblox Studio, capture the key beats)
+  'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile',
+  // Video references (VFX Lab + Animation Lab: "make it like this")
+  'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
+  // Principle priorities (learned from Labs ratings)
+  'principlesView', 'principlesReset',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

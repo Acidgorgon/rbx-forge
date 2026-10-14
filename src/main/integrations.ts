@@ -90,6 +90,8 @@ export interface Integrations {
   secrets: release.SecretStore
   // Open Cloud asset uploads outside the Art page (Animation Lab): the key and creator set there.
   openCloud: { key(): Promise<string | null>; creator(): { userId?: number; groupId?: number } }
+  // OpenAI image generation outside the Art page (VFX Lab textures): the key, model and budget set there.
+  images: { openAiKey(): Promise<string | null>; settings(): { model: string; quality: string; dailyCapUsd: number }; spentToday(): Promise<number> }
 }
 
 const SECRET_KINDS: ReleaseSecretKind[] = ['openCloudApiKey', 'discordWebhook']
@@ -464,6 +466,14 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
         const s = art.service.settings()
         return { ...(s.creatorUserId ? { userId: s.creatorUserId } : {}), ...(s.creatorGroupId ? { groupId: s.creatorGroupId } : {}) }
       }
+    },
+    images: {
+      openAiKey: () => (credentials ??= new Credentials(deps.ctx)).getKey('openai'),
+      settings: () => {
+        const s = art.service.settings()
+        return { model: s.model, quality: s.quality, dailyCapUsd: s.dailyCapUsd }
+      },
+      spentToday: () => art.service.spentToday()
     },
     notifyTestFailure: (event) => {
       const r = deps.root()

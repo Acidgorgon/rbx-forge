@@ -4,6 +4,8 @@
 
 import type { AnimMarker } from './types.ts'
 import type { R6Joint } from './r6.ts'
+import type { VideoRef } from '../videoref/types.ts'
+import type { PrincipleScore } from '../principles/types.ts'
 
 export type { R6Joint }
 
@@ -84,7 +86,8 @@ export interface AnimClip {
 }
 
 export type AnimScope = 'user' | 'project'
-export type AnimEntryKind = 'imported' | 'generated'
+// media: a video reference (no keys; its clip is an empty placeholder with the measured beats).
+export type AnimEntryKind = 'imported' | 'generated' | 'media'
 
 export interface AnimEntry {
   id: string
@@ -111,6 +114,10 @@ export interface AnimEntry {
   iterations?: AnimIteration[]
   // Reference clip the preview ghosts against.
   reference?: string
+  // Video references (kind 'media'): the analysed clip (shared/videoref).
+  video?: VideoRef
+  // Generated clips: the video reference pinned with "make it like this" (critic compares to it).
+  refId?: string
 }
 
 // Timing and shape numbers of one clip (style.ts measureClip).
@@ -160,6 +167,8 @@ export interface AnimStyleProfile {
   poses: LearnedPose[]
   notes: string[]
   avoid: string[]
+  // Timing (median seconds per beat) from video references with this tag; never poses.
+  video?: { samples: number; beats: Record<string, number> }
 }
 
 export interface AnimStyle {
@@ -199,11 +208,12 @@ export const ANIM_RUBRIC_KEYS = ['silhouette', 'timing', 'weight', 'arcs', 'appe
 export type AnimRubricKey = (typeof ANIM_RUBRIC_KEYS)[number]
 
 // A change the critic (or an automatic check) proposes, applied on top of the script's clip.
+// principle: the principle the change raises (shared/principles), when the critic named one.
 export type AnimChange =
-  | { kind: 'offset'; joint: R15Joint; at: number; rot: [number, number, number]; why?: string }
-  | { kind: 'retime'; from: number; to: number; scale: number; why?: string }
-  | { kind: 'ease'; at: number; joint?: R15Joint; style: PoseEasingStyle; dir?: PoseEasingDirection; why?: string }
-  | { kind: 'fix'; check: 'limits' | 'sliding' | 'penetration'; why?: string }
+  | { kind: 'offset'; joint: R15Joint; at: number; rot: [number, number, number]; why?: string; principle?: string }
+  | { kind: 'retime'; from: number; to: number; scale: number; why?: string; principle?: string }
+  | { kind: 'ease'; at: number; joint?: R15Joint; style: PoseEasingStyle; dir?: PoseEasingDirection; why?: string; principle?: string }
+  | { kind: 'fix'; check: 'limits' | 'sliding' | 'penetration'; why?: string; principle?: string }
 
 export interface AnimCritique {
   scores: Record<AnimRubricKey, number>
@@ -212,6 +222,14 @@ export interface AnimCritique {
   changes: AnimChange[]
   checks?: AnimCheckReport
   references: string[]
+  // With a pinned video reference: 0..10 match (blended into overall) and the biggest difference.
+  match?: number
+  matchNotes?: string
+  // Per-principle scores (critic + code checks), their weighted mean (blended into overall) and the
+  // principles the next round targets first (shared/principles).
+  principles?: PrincipleScore[]
+  principleScore?: number
+  focus?: string[]
 }
 
 export interface AnimIteration {

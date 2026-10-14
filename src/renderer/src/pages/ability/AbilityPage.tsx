@@ -13,8 +13,10 @@ import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { AbilityPreview } from './AbilityPreview'
 import { Inspector } from './Inspector'
+import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
 import '../vfx/vfx.css'
 import './ability.css'
+import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 
 const SUGGESTIONS = ['charged palm blast that knocks me back', 'dash punch', 'ground slam shockwave', 'rising uppercut with sparks', 'quick sword slash']
 const EXAMPLES = [{ key: 'hollow-purple', label: 'Hollow Purple' }]
@@ -78,6 +80,7 @@ function CritiquePanel({ entry, ability, busy, onCritique, ctx }: { entry: Abili
   const checks = useMemo(() => timingChecks(ability, ctx), [ability, ctx])
   const c = entry.critique
   const failing = checks.filter((x) => !x.ok)
+  const weights = usePrincipleWeights()
   return (
     <div className="ab-crit">
       <div className="ab-crit-bar">
@@ -117,6 +120,11 @@ function CritiquePanel({ entry, ability, busy, onCritique, ctx }: { entry: Abili
             ))}
           </div>
           <p className="vfx-iter-sum">{c.vision.summary}</p>
+        </div>
+      )}
+      {c?.principles && (
+        <div className="ab-principles">
+          <PrincipleScorecard principles={c.principles} focus={c.focus} score={c.principleScore} weights={weights} />
         </div>
       )}
       {c && c.frames.length > 0 && (
@@ -190,7 +198,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
   const h = window.harness
   const [draft, setDraft] = useState<Ability>(entry.ability)
   const [selected, setSelected] = useState<string | null>(null)
-  const [tab, setTab] = useState<'edit' | 'critique' | 'export' | 'info'>('edit')
+  const [tab, setTab] = useState<'edit' | 'critique' | 'studio' | 'export' | 'info'>('edit')
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<'critique' | 'export' | null>(null)
   const [exported, setExported] = useState<AbilityExportResult | null>(null)
@@ -319,6 +327,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
         <button className="btn small primary" onClick={() => void critique(false)} disabled={!!busy}>
           {busy === 'critique' ? <span className="spinner" aria-hidden /> : <Icon name="eye" size={11} />} Critique
         </button>
+        <StudioCheckButton kind="ability" id={entry.id} before={flush} onShow={() => setTab('studio')} />
         <button className="btn small" onClick={() => void doExport()} disabled={!!busy || !status?.projectRoot} title={status?.projectRoot ? 'Write the client module and AbilityRunner into the game' : 'Open a project to export'}>
           <Icon name="code" size={11} /> Export
         </button>
@@ -335,7 +344,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
       </div>
 
       <div className="seg vfx-tabs" role="tablist">
-        {(['edit', 'critique', 'export', 'info'] as const).map((k) => (
+        {(['edit', 'critique', 'studio', 'export', 'info'] as const).map((k) => (
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
             {k}
             {k === 'critique' && entry.critique ? ` · ${entry.critique.overall.toFixed(1)}` : ''}
@@ -345,6 +354,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
 
       {tab === 'edit' && <Inspector ability={draft} selected={selected} t={0} vfxEntries={vfxEntries} onChange={edit} onSelect={setSelected} />}
       {tab === 'critique' && <CritiquePanel entry={entry} ability={draft} busy={busy === 'critique'} onCritique={(apply) => void critique(apply)} ctx={ctx} />}
+      {tab === 'studio' && <StudioCheckPanel kind="ability" id={entry.id} before={flush} />}
       {tab === 'export' && <ExportPanel entry={entry} status={status} onExport={() => void doExport()} result={exported} busy={busy === 'export'} />}
       {tab === 'info' && (
         <div className="vfx-info">
@@ -387,6 +397,7 @@ export function AbilityPage() {
   const [query, setQuery] = useState('')
   const [prompt, setPrompt] = useState('')
   const [making, setMaking] = useState(false)
+  const [view, setView] = useState<'moves' | 'priorities'>('moves')
 
   const load = useCallback(async () => {
     try {
@@ -521,7 +532,16 @@ export function AbilityPage() {
           </div>
         </section>
 
-        <div className={`vfx-body${current ? ' has-detail' : ''}`}>
+        <div className="seg vfx-view" role="tablist" aria-label="Library">
+          <button role="tab" aria-selected={view === 'moves'} className={view === 'moves' ? 'on' : ''} onClick={() => setView('moves')}>
+            moves
+          </button>
+          <button role="tab" aria-selected={view === 'priorities'} className={view === 'priorities' ? 'on' : ''} onClick={() => setView('priorities')} title="Which animation and VFX principles count most for you, learned from your ratings">
+            priorities
+          </button>
+        </div>
+        {view === 'priorities' && <PrinciplePriorities domains={['anim', 'vfx']} />}
+        <div className={`vfx-body${current ? ' has-detail' : ''}`} hidden={view !== 'moves'}>
           <div className="vfx-lib">
             <div className="row vfx-lib-head">
               <input className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search moves" aria-label="Search moves" />

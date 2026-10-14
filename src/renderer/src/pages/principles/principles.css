@@ -1,0 +1,62 @@
+/* Principle scorecard (critique / iterations) and "Your priorities" (pages/principles). Terminal
+   style: monospace rows, thin bars, no boxes inside boxes (the card sits in its parent's border). */
+
+.pr-card { display: flex; flex-direction: column; gap: 1px; padding-top: 6px; border-top: 1px dashed var(--line); min-width: 0; }
+.pr-head { display: flex; align-items: baseline; gap: 8px; font-size: 10px; color: var(--fg-faint); text-transform: lowercase; letter-spacing: .04em; margin-bottom: 2px; flex-wrap: wrap; }
+.pr-head b { font-weight: 400; color: var(--fg-2); font-size: 11px; }
+.pr-focus { color: var(--fg-faint); min-width: 0; }
+.pr-focus span { color: var(--warn); }
+.pr-row { min-width: 0; }
+.pr-row > summary { list-style: none; display: grid; grid-template-columns: 10px minmax(0, 92px) minmax(24px, 1fr) 24px 26px 30px; align-items: center; gap: 5px; font-size: 10px; color: var(--fg-muted); cursor: pointer; padding: 1px 0; border-radius: var(--r-xs); }
+.pr-row > summary::-webkit-details-marker { display: none; }
+.pr-row > summary:hover { background: var(--bg-hover); }
+.pr-row > summary:focus-visible { outline: none; box-shadow: var(--focus-ring); }
+.pr-row.focus > summary { color: var(--fg); }
+.pr-sig { color: var(--warn); }
+.pr-name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.pr-bar { height: 4px; border-radius: 2px; background: var(--bg-active); overflow: hidden; }
+.pr-bar i { display: block; height: 100%; background: var(--ok); }
+.pr-bar i.mid { background: var(--warn); opacity: .8; }
+.pr-bar i.low { background: var(--err); }
+.pr-row b { font-weight: 400; text-align: right; color: var(--fg-2); }
+.pr-src { font-size: 9px; text-align: center; color: var(--fg-faint); border-radius: var(--r-xs); padding: 0 2px; }
+.pr-src.code { color: var(--info); }
+.pr-src.both { color: var(--lav); }
+.pr-w { font-size: 9.5px; color: var(--ember-text); text-align: right; }
+.pr-body { padding: 2px 0 6px 15px; font-size: 11px; line-height: 1.5; color: var(--fg-2); user-select: text; }
+.pr-body p { margin: 0 0 2px; }
+.pr-fix { color: var(--fg); }
+.pr-fix .mono { color: var(--ok); font-size: 10px; margin-right: 4px; }
+
+.pr-prio { display: flex; flex-direction: column; gap: 10px; max-width: 760px; }
+.pr-prio-head { display: flex; align-items: flex-start; gap: 12px; }
+.pr-prio-head > div { flex: 1; min-width: 0; }
+.pr-prio-head h3 { margin: 0 0 4px; font-size: 12px; font-weight: 500; color: var(--fg); }
+.pr-prio-head .note { margin: 0; max-width: 62ch; }
+.pr-prio-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pr-prio-list li { display: grid; grid-template-columns: minmax(0, 150px) minmax(60px, 1fr) 46px 76px; gap: 10px; align-items: center; font-size: 11px; color: var(--fg-muted); padding: 2px 4px; border-radius: var(--r-xs); }
+.pr-prio-list li:hover { background: var(--bg-hover); }
+.pr-prio-list li.up { color: var(--fg); }
+.pr-prio-list li b { font-weight: 400; text-align: right; color: var(--fg-2); }
+.pr-prio-list li.up b { color: var(--ember-text); }
+.pr-wbar { position: relative; height: 4px; border-radius: 2px; background: var(--bg-active); }
+.pr-wbar .pr-mid { position: absolute; left: 50%; top: -2px; bottom: -2px; width: 1px; background: var(--line-strong); }
+.pr-wbar i { position: absolute; top: 0; bottom: 0; border-radius: 2px; background: var(--ember); }
+.pr-prio-list li.down .pr-wbar i { background: var(--fg-faint); }
+.pr-ev { font-size: 10px; text-align: right; white-space: nowrap; }
+.pr-recent summary { cursor: pointer; font-size: 10.5px; color: var(--fg-muted); }
+.pr-recent ul { list-style: none; margin: 6px 0 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 10.5px; color: var(--fg-2); }
+.pr-recent .ok { color: var(--ok); }
+.pr-recent .err { color: var(--err); }
+
+@media (max-width: 720px) {
+  .pr-prio-list li { grid-template-columns: minmax(0, 1fr) minmax(40px, 80px) 46px; }
+  .pr-ev { display: none; }
+  .pr-prio-head { flex-direction: column; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .pr-row > summary, .pr-prio-list li { transition: none; }
+}
+.pr-chg { font-size: 9.5px; color: var(--warn); border: 1px solid var(--warn-line); border-radius: var(--r-xs); padding: 0 3px; }
+.vfx-body[hidden] { display: none !important; }
+.ab-principles { max-width: 520px; }

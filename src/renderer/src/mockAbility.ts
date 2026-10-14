@@ -9,6 +9,8 @@ import { abilityModule } from '@shared/ability/luau'
 import { normalizeAbility, slug } from '@shared/ability/model'
 import { placeholderClips } from '@shared/ability/placeholder'
 import { vfxMock } from './mockVfx'
+import { withAbilityPrinciples } from '@shared/principles/attach'
+import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -89,7 +91,8 @@ export function abilityMock(emit: Emit): AbilityApi {
     })
     const vision = { scores: { anticipation: 8, impact: 8.5, sync: 9, readability: 7.5, followThrough: 7 }, overall: 8, summary: 'The fire reads clearly on the release; the recover could hold the pose a beat longer.', changes: [] }
     const t = timingScore(checks)
-    hp.critique = { at: t0 + 600_000, timingScore: t, checks, vision, beats, frames, overall: Math.round(((t + vision.overall) / 2) * 10) / 10, summary: summarize(checks, vision) }
+    const raw = JSON.stringify({ principles: [{ id: 'anticipation', score: 8.5, note: 'the two orbs gather for 0.9 s while the hands spread: clearly telegraphed', fix: 'keep it' }, { id: 'follow-through', score: 6.2, note: 'the recover pose snaps back the moment the purple ball leaves', fix: 'hold the push pose 0.15 s, then ease the arms down' }, { id: 'fx-cohesion', score: 9, note: 'the merge flash lands on the release frame between the hands' }] })
+    hp.critique = withAbilityPrinciples({ at: t0 + 600_000, timingScore: t, checks, vision, beats, frames, overall: Math.round(((t + vision.overall) / 2) * 10) / 10, summary: summarize(checks, vision) }, hp.ability, ctx, { request: 'hollow purple', raw, weights: mockPrincipleWeights() })
     hp.thumbs = [frames[Math.min(3, frames.length - 1)]]
     hp.rating = 'up'
     hp.quality = 'good'
@@ -124,6 +127,7 @@ export function abilityMock(emit: Emit): AbilityApi {
     },
     async abilityRate(id, rating) {
       const e = find(id)
+      recordPrincipleRating('ability', e.id, e.name, rating, e.critique?.principles)
       e.rating = rating ?? undefined
       e.quality = rating === 'up' ? 'good' : rating === 'down' ? 'avoid' : undefined
       changed()
@@ -142,7 +146,7 @@ export function abilityMock(emit: Emit): AbilityApi {
       const ctx = await context(e.ability)
       const checks = timingChecks(e.ability, ctx)
       const t = timingScore(checks)
-      const critique: AbilityCritique = { at: Date.now(), timingScore: t, checks, beats: keyBeats(e.ability), frames: [], overall: t, summary: summarize(checks) }
+      const critique: AbilityCritique = withAbilityPrinciples({ at: Date.now(), timingScore: t, checks, beats: keyBeats(e.ability), frames: [], overall: t, summary: summarize(checks) }, e.ability, ctx, { request: e.origin.replace(/^Make: /, ''), weights: mockPrincipleWeights() })
       const applied = opts?.apply ? checks.filter((c) => !c.ok && c.fix).map((c) => `${c.fix!.event}: ${c.rule}`) : []
       const next = put(opts?.apply ? applyTimingFixes(e.ability, checks) : e.ability, { id })
       next.critique = critique

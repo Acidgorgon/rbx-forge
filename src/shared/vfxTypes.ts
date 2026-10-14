@@ -18,7 +18,7 @@ export interface VfxApi {
   // Native picker (files and folders); [] when cancelled.
   vfxChooseImport(): Promise<string[]>
   // Parameter edits write back to the effect's Luau module and .rbxmx when it was written.
-  vfxUpdate(id: string, patch: { name?: string; description?: string; tags?: string[]; effect?: VfxEffect }): Promise<VfxEntry>
+  vfxUpdate(id: string, patch: { name?: string; description?: string; tags?: string[]; notes?: string; effect?: VfxEffect }): Promise<VfxEntry>
   vfxDelete(id: string): Promise<boolean>
   vfxRate(id: string, rating: 'up' | 'down' | null): Promise<VfxEntry>
   // Library -> recipes -> memory skills (vfx-recipe-<tag>).
@@ -37,7 +37,8 @@ export interface VfxApi {
   // Timeline scripts (Luau, recorded by Lune): run one (save: store it on the entry, or as a new
   // entry without id), compose a scripted multi-stage effect from a request, built-in examples.
   vfxRunScript(script: string, opts?: { id?: string; save?: boolean; prompt?: string }): Promise<VfxScriptResult>
-  vfxCompose(request: string, opts?: VfxRefineOptions & { refine?: boolean }): Promise<VfxScriptResult>
+  // reference: a video reference id ("make it like this"; see RefApi).
+  vfxCompose(request: string, opts?: VfxRefineOptions & { refine?: boolean; reference?: string }): Promise<VfxScriptResult>
   vfxExamples(): Promise<{ key: string; name: string; description: string; tags: string[] }[]>
   vfxAddExample(key: string): Promise<VfxEntry>
   vfxTestInStudio(id: string): Promise<{ module: string; rojo: 'running' | 'started' | 'unavailable'; command: string; instancePath: string }>

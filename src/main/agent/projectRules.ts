@@ -11,11 +11,14 @@ import type { HarnessContext } from '../context.ts'
 export const RULES_CAP = 2000
 export const PROJECT_CONFIG_FILE = '.forge/project.json'
 export const AGENTS_FILE = 'AGENTS.md'
+// Notes written by the chat's /init (agent/commands/notes.ts).
+export const FORGE_NOTES_FILE = '.forge/AGENTS.md'
 
 export interface RulesSources {
   aiRules?: string
   conventions?: string
   agentsMd?: string
+  forgeNotes?: string
 }
 
 function clean(text: string | undefined): string {
@@ -32,6 +35,8 @@ export function buildRulesBlock(src: RulesSources, cap = RULES_CAP): string {
   if (rules) parts.push({ title: 'Team rules (.forge/project.json aiRules)', body: rules, file: PROJECT_CONFIG_FILE })
   if (conventions) parts.push({ title: 'Team conventions (.forge/project.json)', body: conventions, file: PROJECT_CONFIG_FILE })
   if (agents) parts.push({ title: 'AGENTS.md (project root)', body: agents, file: AGENTS_FILE })
+  const notes = clean(src.forgeNotes)
+  if (notes) parts.push({ title: 'Project notes (.forge/AGENTS.md, from /init)', body: notes, file: FORGE_NOTES_FILE })
   if (!parts.length) return ''
 
   const header = '\n\n# Project instructions\nFollow these rules for this game; they override the general working rules above when they conflict.'
@@ -72,6 +77,11 @@ export async function readRulesSources(ctx: Pick<HarnessContext, 'readFile' | 'p
     out.agentsMd = await ctx.readFile(AGENTS_FILE)
   } catch {
     // no AGENTS.md
+  }
+  try {
+    out.forgeNotes = await ctx.readFile(FORGE_NOTES_FILE)
+  } catch {
+    // no /init notes
   }
   return out
 }

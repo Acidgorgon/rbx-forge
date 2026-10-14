@@ -505,6 +505,7 @@ test('cross-check: a multi-file host edit is reviewed by another provider; block
   })
   chats.setGroupSettings({ crossCheck: true })
   const chat = chats.create({ provider: 'openai', model: 'gpt-6-astra' })
+  chats.setMode(chat.id, 'auto') // edits land without approval cards, as the cross-check expects
   await chats.send(chat.id, 'change a and b')
   await until(() => chats.messages(chat.id)!.some((m) => m.review?.state === 'addressed'), 4000)
   await idle(chats, chat.id)

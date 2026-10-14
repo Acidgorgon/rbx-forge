@@ -42,6 +42,8 @@ export type * from './sync/types.ts'
 import type { GatingApi, GatingEvents } from './gating/types.ts'
 export type * from './gating/types.ts'
 import type { RestateApi, RestateCard } from './restateTypes.ts'
+import type { ChatModesApi } from './chatModesApi.ts'
+import type { ChatMode, DiffCardData, PlanCardData } from './chatModes.ts'
 export type * from './restateTypes.ts'
 import type { ThumbsApi, ThumbsEvents } from './thumbs/types.ts'
 export type * from './thumbs/types.ts'
@@ -226,6 +228,12 @@ export interface ChatMessage {
   settingsLink?: ProviderId
   // Attached (user) or produced (assistant/tool) images, as store references.
   images?: ChatImage[]
+  // Chat modes (shared/chatModes.ts): the mode the turn ran in; an edit waiting for Accept / Reject;
+  // a Plan-mode plan card; the slash command whose output this is (never sent to a model).
+  mode?: ChatMode
+  diff?: DiffCardData
+  planMode?: PlanCardData
+  command?: string
 }
 
 // A model taking part in a group chat. label is for display ("GPT-6.1 Sol"), alias is the
@@ -311,6 +319,8 @@ export interface ChatSession {
   orchestrate?: OrchestrateMode
   // Orchestrator runs started from this chat, oldest first (see getOrchestration).
   orchestrations?: string[]
+  // Chat mode (Ask / Plan / Edit with approval / Auto-accept); unset = 'edit'.
+  chatMode?: ChatMode
 }
 
 export type TestAgentState = 'queued' | 'running' | 'passed' | 'failed' | 'error' | 'cancelled'
@@ -510,7 +520,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

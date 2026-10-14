@@ -75,6 +75,8 @@ const methods = [
   'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
   // Restate first (chat cards, Labs briefs)
   'getRestateSettings', 'setRestateSettings', 'restateBrief', 'restateConfirm', 'confirmChatRestate',
+  // Chat modes + slash commands
+  'setChatMode', 'sendChatMode', 'reviewChatEdit', 'planCardAction', 'listChatCommands', 'runChatCommand', 'listChatCheckpoints', 'rewindChat',
   // Principle priorities (learned from Labs ratings)
   'principlesView', 'principlesReset',
   // Forge Sync (Studio -> disk, gates rojo serve)

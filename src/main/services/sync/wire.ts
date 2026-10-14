@@ -21,7 +21,8 @@ export interface SyncWireDeps {
     setSyncSummary(state: ServiceState, detail: string): void
   }
   pluginsDir: () => string | null
-  studio?: () => { placeId?: number; connected: boolean } | null
+  studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
+  plugin?: () => Promise<{ installed: boolean; version?: number } | null>
   // The engine worker's SyncEngine and mapping.ts (loadPlaces / placeFor). Absent: Forge Sync stays
   // off for the plugin and every place serves normally.
   engine?: (root: string) => SyncEngineLike
@@ -71,6 +72,8 @@ export function syncSummary(status: SyncStatus): { state: ServiceState; detail: 
     const n = blocked.reduce((sum, p) => sum + p.conflicts, 0)
     return { state: 'running', detail: `Forge Sync: ${n} conflict${n === 1 ? '' : 's'} held` }
   }
+  // Studio edits are not reaching disk (no plugin, place refused, mapped folders missing ...): not green.
+  if (status.notice?.level === 'warn') return { state: 'starting', detail: status.notice.text }
   return { state: 'running', detail: live.length ? `Forge Sync: ${live.length} Studio session${live.length === 1 ? '' : 's'}` : 'Forge Sync: waiting for Studio' }
 }
 
@@ -145,6 +148,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
         git: (args) => git(root, args),
         pluginsDir: deps.pluginsDir,
         studio: deps.studio,
+        plugin: deps.plugin,
         onGate: (file, gate, detail) => deps.supervisor.setGate(file, gate, detail),
         emit,
         log: deps.log,

@@ -37,8 +37,19 @@ export const syncFlows: Flow[] = [
     needs: ['bridgePort'],
     timeoutMs: 60_000,
     async run({ page, root, note }) {
+      // The script is open in an editor tab: the Studio edit must show up there too.
+      await showSide(page, 'Explorer')
+      const filter = page.locator('aside.side input').first()
+      await filter.fill('InventoryService')
+      const row = page.locator('aside.side [role="treeitem"]', { hasText: 'InventoryService' }).first()
+      await row.waitFor({ state: 'visible', timeout: 5000 })
+      await row.dblclick()
+      await page.locator(`${CENTER} .monaco-editor`).first().waitFor({ state: 'visible', timeout: 15_000 })
+      await filter.fill('')
       await showSide(page, 'Source control & Sync')
       await page.locator('aside.side .vsec.fs').waitFor({ state: 'visible', timeout: 10_000 })
+      // No Forge Bridge plugin has connected: the section says Studio edits are not syncing.
+      await waitText(page, /Not syncing/, { within: 'aside.side .vsec.fs' })
       const ping = await json(`${BASE}/ping`)
       check(typeof ping.now === 'number', `bridge ping: ${JSON.stringify(ping)}`)
       const cfg = await json(`${BASE}/sync/config?placeId=${PLACE_ID}&gameId=9&place=E2E%20Place`)
@@ -68,6 +79,11 @@ export const syncFlows: Flow[] = [
         disk = readFileSync(join(root, INVENTORY_SERVICE), 'utf8')
       }
       check(disk === text, 'the Studio edit did not reach disk')
+      await page
+        .waitForFunction(() => /edited in Studio \(forge e2e\)/.test(document.querySelector('.editor-area .monaco-editor .view-lines')?.textContent?.replace(/\u00a0/g, ' ') ?? ''), undefined, { timeout: 10_000 })
+        .catch(() => {
+          throw new Error('the open editor tab did not reload the Studio edit from disk')
+        })
       await waitText(page, /Recent from Studio/, { within: 'aside.side' })
       const commit = page.locator('aside.side .fs-commit button', { hasText: /Commit teammate edits \(1\)/ })
       await commit.waitFor({ state: 'visible', timeout: 10_000 })

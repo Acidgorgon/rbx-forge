@@ -43,7 +43,7 @@ function ServiceSegment({ s, port }: { s: ServiceStatus; port?: number }) {
     { label: s.state === 'running' ? 'Restart' : 'Start', icon: <Icon name="restart" />, onSelect: () => void (s.state === 'running' ? h.restartService(s.id) : h.startService(s.id)) },
     { label: 'Stop', icon: <Icon name="stop" />, disabled: s.state === 'stopped' || s.state === 'missing', onSelect: () => void h.stopService(s.id) }
   ]
-  const detail = s.state === 'crashed' ? 'Crashed' : s.state === 'starting' ? (s.id === 'studioSync' ? 'connecting…' : 'starting…') : s.state === 'missing' ? 'not found' : s.state === 'stopped' ? 'stopped' : s.id === 'rojo' && port ? `:${port}` : ''
+  const detail = s.state === 'crashed' ? 'Crashed' : s.state === 'starting' ? (s.id === 'studioSync' ? (/not sync/i.test(s.detail ?? '') ? 'not syncing' : 'connecting…') : 'starting…') : s.state === 'missing' ? 'not found' : s.state === 'stopped' ? 'stopped' : s.id === 'rojo' && port ? `:${port}` : ''
   return (
     <>
       <span

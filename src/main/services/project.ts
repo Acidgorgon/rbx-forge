@@ -545,6 +545,9 @@ export class Project {
   private liveStudio: ((placeFile: string) => LiveStudioTree | null) | null = null
   private closed = false
   private onChange: ((change: ProjectChange) => void) | null = null
+  // Repo-relative files the watchers reported since the last debounce (open editors reload them).
+  private onFiles: ((files: string[]) => void) | null = null
+  private changedFiles = new Set<string>()
 
   private constructor(root: string, info: ProjectInfo) {
     this.root = root
@@ -662,8 +665,11 @@ export class Project {
   }
 
   // Watches the Rojo folders, the project files and .studio-sync/tree.json. Debounced 300ms.
-  watch(onChange: (change: ProjectChange) => void): void {
+  // onFiles gets every changed file the watchers named (content edits too, e.g. Forge Sync writing a
+  // script from Studio), so open editor tabs can reload.
+  watch(onChange: (change: ProjectChange) => void, onFiles?: (files: string[]) => void): void {
     this.onChange = onChange
+    if (onFiles) this.onFiles = onFiles
     const schedule = () => this.schedule()
     const add = (path: string, recursive: boolean, filter?: (file: string) => boolean) => {
       try {
@@ -674,6 +680,7 @@ export class Project {
           } else if (name && name.split('/').some((part) => IGNORED_DIRS.has(part))) {
             return
           }
+          if (name) this.changedFiles.add(toPosix(relative(this.root, join(path, name))))
           schedule()
         })
         watcher.on('error', () => watcher.close())
@@ -761,11 +768,16 @@ export class Project {
     if (this.debounce) clearTimeout(this.debounce)
     this.debounce = setTimeout(() => {
       this.debounce = null
+      const files = [...this.changedFiles]
+      this.changedFiles.clear()
       this.refresh()
         .then((change) => {
           if (!this.closed && (change.info || change.tree || change.scripts || change.places)) this.onChange?.(change)
         })
         .catch(() => undefined)
+        .finally(() => {
+          if (!this.closed && files.length) this.onFiles?.(files)
+        })
     }, 300)
   }
 

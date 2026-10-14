@@ -530,6 +530,8 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'log:line': LogLine
   'project:changed': ProjectInfo | null
   'tree:changed': TreeNode[]
+  // Repo-relative files changed on disk (watcher), so clean open editor tabs reload them.
+  'files:changed': string[]
   'scripts:changed': ScriptGroup[]
   'git:status': GitStatus
   'studio:conflicts': StudioConflict[]

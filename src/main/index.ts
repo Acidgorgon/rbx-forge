@@ -328,7 +328,10 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   // must not run against the previous project's last-seen state while sync and services start.
   await qol.service.onProjectOpen(full).catch(() => undefined)
 
-  opened.watch((change) => projectChanged(opened, change))
+  opened.watch(
+    (change) => projectChanged(opened, change),
+    (files) => emit('files:changed', files)
+  )
 
   // Forge Sync guard: a pull / branch switch first commits (or warns about) uncommitted Studio edits.
   git = forgeSync.guardGit(
@@ -487,7 +490,11 @@ const forgeSync = createSync({
   pluginsDir: () => pluginsDir({ platform: process.platform, env: process.env, home: homedir() }),
   studio: () => {
     const info = studio.bridge.studio()
-    return info ? { placeId: info.placeId, connected: studio.bridge.connected() } : null
+    return info ? { placeId: info.placeId, place: info.place, pluginVersion: info.pluginVersion, connected: studio.bridge.connected() } : null
+  },
+  plugin: async () => {
+    const s = await studio.service.status()
+    return s.plugin.dir ? { installed: s.plugin.installed, ...(s.plugin.version !== undefined ? { version: s.plugin.version } : {}) } : null
   },
   engine: (root) => new SyncEngine({ root }),
   mapping: { loadPlaces, placeFor },
@@ -495,6 +502,16 @@ const forgeSync = createSync({
   onStudioTree: () => project?.studioChanged()
 })
 studio.bridge.setSyncHandler(forgeSync.handler)
+// The Sync view / status bar say why Studio edits are not syncing (no plugin connected ...): re-check
+// when the bridge's view of Studio changes (connected is time based, so there is no event to hook).
+let studioKey = ''
+setInterval(() => {
+  const info = studio.bridge.studio()
+  const key = `${studio.bridge.connected()}|${info?.placeId ?? ''}|${info?.place ?? ''}|${info?.pluginVersion ?? ''}`
+  if (key === studioKey) return
+  studioKey = key
+  forgeSync.service()?.refresh()
+}, 3000).unref()
 // Lab gating (services/gating): code gates before big-model calls in the labs (skip the critic,
 // early stop, retry routes), learned decision models, shadow mode, and cost per kept result.
 const gating = createGatingWiring({

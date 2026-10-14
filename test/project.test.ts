@@ -202,6 +202,29 @@ test('emits tree and script changes when a feature is added', async () => {
   project.close()
 })
 
+test('reports content-only file edits (open editors reload them)', async () => {
+  const root = makeProject()
+  roots.push(root)
+  write(root, 'src/shared/Edited.luau', 'return 1\n')
+  const project = await open(root)
+  const seen = new Set<string>()
+  const got = new Promise<boolean>((resolve) =>
+    project.watch(
+      () => undefined,
+      (files) => {
+        for (const f of files) seen.add(f)
+        if (seen.has('src/shared/Edited.luau')) resolve(true)
+      }
+    )
+  )
+  await new Promise((r) => setTimeout(r, 50))
+  // Same file list, same tree: only the content changes (e.g. Forge Sync writing a script from Studio).
+  write(root, 'src/shared/Edited.luau', 'return 2\n')
+  const timeout = new Promise<boolean>((resolve) => setTimeout(() => resolve(false), 4000).unref())
+  assert.equal(await Promise.race([got, timeout]), true, [...seen].join(', '))
+  project.close()
+})
+
 test('refuses paths that leave the project root', async () => {
   const root = makeProject()
   roots.push(root)

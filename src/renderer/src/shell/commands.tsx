@@ -180,6 +180,9 @@ export function buildCommands(state: State, actions: Actions): Command[] {
 export function keySpec(e: KeyboardEvent): string {
   const mac = /Mac|iPhone|iPad/.test(navigator.platform)
   const parts: string[] = []
+  // AltGr on Windows / Linux layouts reports Ctrl+Alt: AltGr+Q types "@" (German), AltGr+R "®"
+  // (US international). Those are characters, never shortcuts like alt+mod+r.
+  if (!mac && e.getModifierState?.('AltGraph')) return e.key.toLowerCase()
   if (e.ctrlKey && (!mac || !e.metaKey)) parts.push(mac ? 'ctrl' : 'mod')
   if (mac && e.metaKey) parts.push('mod')
   if (e.altKey) parts.push('alt')

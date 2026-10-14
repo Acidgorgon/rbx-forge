@@ -438,6 +438,7 @@ Forge updates itself from this repository's [GitHub Releases](https://github.com
 - **Windows.** Updates install silently into the same folder. This works with the unsigned installer: electron-updater only checks the installer's signature when the build was signed with a certificate. Windows SmartScreen judges files by reputation and may still warn about the first, manually downloaded installer.
 - **macOS.** macOS only lets an app replace itself when it is signed with an Apple Developer ID (Squirrel.Mac checks the update against the running app's signature, and an ad-hoc signature only matches that exact build). The current builds are ad-hoc signed, so Forge shows **Update 0.2.1 available, download** and opens the release page. A build signed with a Developer ID switches to installing updates by itself, with no code change.
 - **Linux.** No Linux build is published, so updates are off.
+- **Quick updates.** Fixes that only change Forge's own code arrive without an installer, signed and verified; see [Quick updates](#quick-updates).
 
 ### Releasing
 
@@ -454,6 +455,45 @@ The app reads releases without a token, and a private repository answers those r
 3. Add a `RELEASES_TOKEN` secret to the source repository: a fine-grained token with **Contents: read and write** on the releases repository. The release job uploads there when the feed repository differs from the one running the workflow.
 
 Apps already installed keep reading the repository they were built with, so make the switch while the old repository is still public, release once, then make it private.
+
+### Quick updates
+
+Most fixes only touch Forge's own code, so they do not need a new installer. A **quick update** is that code alone (`out/main`, `out/preload`, `out/renderer`, about 11 MB) published by `.github/workflows/quick.yml`: it reaches installed apps a few minutes after the run, on Windows and on ad-hoc signed Macs alike. Forge checks for one shortly after launch, with every update check (every 4 hours and **Check now**), downloads and verifies it in the background, and shows **Quick update 0.6.0-quick.12 ready, restart** in the status bar. It applies at the next start. **Settings > Updates > Quick updates** turns them off (the next start then runs the installer's own code), and the same page says which code is running.
+
+**Publishing.** Push the fix to `main`, then:
+
+```bash
+gh workflow run quick.yml -R Acidgorgon/rbx-forge --ref main                  # every user with Quick updates on
+gh workflow run quick.yml -R Acidgorgon/rbx-forge --ref main -f channel=beta  # only Beta channel users
+```
+
+The run typechecks, runs `npm test`, builds, zips `out/`, signs a manifest and uploads both to the rolling **`quick`** release (a prerelease that is never "latest"; its tag sits on the first commit so it stays at the bottom of the release list and never confuses the full updater). Each upload replaces `quick-stable.json` or `quick-beta.json`; old zips are pruned. The version is `package.json`'s version plus `-quick.<run number>`, for example `0.6.0-quick.12`. Quick versions sort after the release they build on and before the next one (`0.6.0 < 0.6.0-quick.12 < 0.6.1-beta.3 < 0.6.1`), so a newer full installer always wins, and Forge then deletes the old quick code. Stable users only take stable quick builds; Beta users take both.
+
+**One-time setup: the signing key.** The downloaded code runs with all of Forge's permissions, so every bundle is signed and the app refuses anything that does not verify. Until this is done the workflow fails with an explanation and publishes nothing.
+
+1. Create the key pair (Node 22, anywhere outside the repository). This writes the private key to `quick-signing-key.txt` and prints only the public key:
+
+   ```bash
+   node -e "const k=require('crypto').generateKeyPairSync('ed25519');require('fs').writeFileSync('quick-signing-key.txt',k.privateKey.export({type:'pkcs8',format:'der'}).toString('base64'),{mode:0o600});console.log(k.publicKey.export({type:'spki',format:'der'}).toString('base64'))"
+   ```
+
+2. Add the private key as a repository secret named `QUICK_UPDATE_SIGNING_KEY`: **Settings > Secrets and variables > Actions > New repository secret** and paste the file's contents, or run `gh secret set QUICK_UPDATE_SIGNING_KEY -R Acidgorgon/rbx-forge < quick-signing-key.txt`. Then keep the file somewhere safe offline (a password manager) and delete it from disk. Never commit it or paste it anywhere else.
+3. Put the printed public key into `src/main/services/quick/publicKey.ts` (`QUICK_UPDATE_PUBLIC_KEY = '...'`), commit, and ship one **full release**. Apps check bundles with the key built into their installer, so quick updates start for each user once they have that release. The workflow refuses to publish when the secret does not match this key.
+
+A new key works the same way: change both, then ship a full release (apps on the old key ignore new quick bundles until they install it).
+
+**How the app checks a bundle.** Downloads are anonymous and only over https from `github.com` and GitHub's release asset hosts (`objects.githubusercontent.com`, `release-assets.githubusercontent.com`). Before anything is unpacked, the manifest's Ed25519 signature must verify with the built-in public key, the zip must match the signed size and sha256, every entry must be a safe path under `main/`, `preload/` or `renderer/` that the manifest lists, and every file must match its signed sha256. The bundle is also only taken when it is newer than the code running now and was built for exactly this install: the same Electron version and the same version of every package in `node_modules` (otherwise Settings says a full update is needed). It is unpacked into `<userData>/code/<version>/` through a temp folder and a rename; the install folder and app bundle are never touched.
+
+**At every launch** a small bootstrap that stays in the installer (`src/main/bootstrap.ts`) picks the newest version in `<userData>/code` that still verifies (signature and every file's sha256 again), fits this install and is not marked bad; otherwise it runs the installer's own code. It sets a "booting" marker that is cleared once the window shows the app. A version that throws while loading, shows no window, or leaves the marker set (crash, hang, blank window) is marked bad in `<userData>/code/state.json`, and Forge runs the installer's code from then on. Start Forge with `--forge-bundled-code` to run the installer's code once without changing anything.
+
+**When a full release is still needed** (Actions > Build, see Releasing above):
+
+- Electron or any production package changes (`package-lock.json`: the Agent SDK, MCP SDK, node-pty, electron-updater, zod and their dependencies). The quick workflow still publishes, but apps report "needs a full update" and keep their code.
+- Files outside `out/`: `resources/` (Lune runtime, the Forge Bridge Studio plugin, rokit), `build/` (icons, `afterPack.cjs`, entitlements), `electron-builder.yml`.
+- Changes to the bootstrap itself (`src/main/bootstrap.ts` and what it imports from `src/main/services/quick/`), and a new signing key.
+- A new `version` in `package.json`, and anything that should reach people who turned Quick updates off.
+
+To try it without GitHub, `test/e2e-app/quick.ts` serves signed bundles from a local server to the built app (only an unpackaged build honours its `FORGE_QUICK_*` test variables) and checks the download, the hot start, and the fallbacks for tampered and broken bundles.
 
 ## Build it yourself
 

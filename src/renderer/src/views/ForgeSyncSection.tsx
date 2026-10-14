@@ -110,6 +110,27 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
           </button>
         </div>
       )}
+      {status.notice && (
+        <div className={`callout ${status.notice.level === 'warn' ? 'warn' : 'info'} fs-callout`} role="status">
+          <div>{status.notice.text}</div>
+          {status.notice.action === 'install-plugin' && (
+            <button
+              className="mini-btn hot"
+              style={{ alignSelf: 'flex-start' }}
+              disabled={busy === 'plugin'}
+              onClick={() =>
+                void act('plugin', async () => {
+                  await window.harness.studioInstallPlugin()
+                  actions.toast({ text: 'Forge Bridge plugin installed', detail: 'Restart Roblox Studio to load it.', kind: 'ok' })
+                  return window.harness.syncStatus()
+                })
+              }
+            >
+              {busy === 'plugin' ? 'Installing…' : 'Install plugin'}
+            </button>
+          )}
+        </div>
+      )}
       {status.warning && <div className="callout warn fs-callout">{status.warning}</div>}
       {!!status.unsyncedRefs?.length && (
         <div className="fs-refs">
@@ -147,6 +168,11 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
             {p.leftInStudio && (
               <div className="fs-sub note ellipsis" title={`${p.leftInStudio.note}\n\nRojo only manages what a $path maps; Studio-only instances outside it, or under $ignoreUnknownInstances, are place content and are never written to the repo on their own.`}>
                 {p.leftInStudio.note}
+              </div>
+            )}
+            {!!p.missingRoots?.length && (
+              <div className="fs-sub note" style={{ color: 'var(--warn)' }} title="Nothing under these is synced until they exist in Studio (connect Rojo in Studio to build them).">
+                not in Studio yet: {p.missingRoots.join(', ')}
               </div>
             )}
 

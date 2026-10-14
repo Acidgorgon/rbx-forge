@@ -33,6 +33,7 @@ import type {
 } from '@shared/types'
 import { basename, instanceNameOfFile } from './lib/roblox'
 import { isUnder, movedPath, type PathChange } from '@shared/fileOps'
+import { diskReloadAction, openPathsIn } from './lib/diskReload'
 
 // ---------------------------------------------------------------- types
 
@@ -266,6 +267,8 @@ type Action =
   | { type: 'fileLoaded'; path: string; contents: string }
   | { type: 'fileEdit'; path: string; contents: string }
   | { type: 'fileSaved'; path: string; contents: string }
+  // The file changed on disk while its tab was clean: applies only if the tab is still clean at `saved`.
+  | { type: 'fileReloaded'; path: string; contents: string; saved: string }
   // An Explorer rename (to) or delete (to: null) of a file or folder: its tabs follow or close.
   | { type: 'pathChanged'; from: string; to: string | null }
   | { type: 'toast'; toast: ToastSpec }
@@ -395,6 +398,8 @@ function reducer(state: State, a: Action): State {
       const tabs = state.tabs.some((t) => t.kind === 'file' && t.path === a.path && t.preview) ? state.tabs.map((t) => (t.kind === 'file' && t.path === a.path ? { ...t, preview: false } : t)) : state.tabs
       return { ...state, tabs, files: state.files.map((f) => (f.path === a.path ? { ...f, current: a.contents } : f)) }
     }
+    case 'fileReloaded':
+      return { ...state, files: state.files.map((f) => (f.path === a.path && !f.loading && f.saved === a.saved && f.current === a.saved ? { ...f, saved: a.contents, current: a.contents } : f)) }
     case 'fileSaved':
       return { ...state, files: state.files.map((f) => (f.path === a.path ? { ...f, saved: a.contents } : f)) }
     case 'pathChanged': {
@@ -871,7 +876,29 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       const [tree, scripts, places, active] = await Promise.all([h.getTree(), h.getScripts(), h.listPlaces().catch(() => []), h.getActivePlace().catch(() => null)])
       set({ tree, scripts, places, activePlace: active?.file ?? null })
     }
+    // Another writer changed open files on disk (Forge Sync pulling a Studio edit, the agent, git):
+    // clean tabs show the new text; tabs with unsaved edits keep them and say so once per disk version.
+    const warnedDisk = new Map<string, string>()
+    const refreshOpen = async (changed: string[]) => {
+      for (const path of openPathsIn(stateRef.current.files, changed)) {
+        let disk: string
+        try {
+          disk = await h.readFile(path)
+        } catch {
+          continue
+        }
+        const buf = stateRef.current.files.find((f) => f.path === path)
+        const what = diskReloadAction(buf, disk)
+        if (what === 'reload') dispatch({ type: 'fileReloaded', path, contents: disk, saved: buf!.saved })
+        else if (what === 'keep-edits' && warnedDisk.get(path) !== disk) {
+          warnedDisk.set(path, disk)
+          actions.toast({ text: `${basename(path)} changed on disk`, detail: 'Your unsaved edits are kept; saving overwrites the disk version.', kind: 'info' })
+        }
+      }
+    }
     const offs = [
+      h.on('files:changed', (files) => void refreshOpen(files)),
+      h.on('sync:entry', (entries) => void refreshOpen(entries.flatMap((e) => (e.from ? [e.file, e.from] : [e.file])))),
       h.on('services:status', (services) => set({ services })),
       h.on('log:line', (line) => dispatch({ type: 'log', line })),
       h.on('project:changed', (project) => {

@@ -34,6 +34,8 @@ import { normalizeRestatement, type RestateLab } from '../../shared/restate/type
 import { gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type ToolFs } from './tools.ts'
 import { chatModeHandlers, memoryNote } from './modesIpc.ts'
 import type { GatingCostRow } from './commands/index.ts'
+import { watchAnthropicAuth } from '../accounts/authHealth.ts'
+import { registerAccountsIpc } from '../accounts/ipc.ts'
 
 export interface AgentLayer {
   chats: ChatManager
@@ -90,6 +92,9 @@ export function createAgentLayer(
   opts: { queryFn?: QueryFn; credentials?: Credentials; fetchFn?: FetchFn; toolFs?: ToolFs; meterSaveDelayMs?: number; memory?: MemoryHooks; userCommandsDir?: string; gating?: () => Promise<GatingCostRow[] | null> } = {}
 ): AgentLayer {
   const credentials = opts.credentials ?? new Credentials(ctx)
+  // Every Agent SDK query reports authentication failures and successes (Settings > Accounts shows
+  // "Sign-in expired" until a request or a test succeeds).
+  opts = { ...opts, queryFn: watchAnthropicAuth(opts.queryFn ?? sdkQuery, credentials.health) }
   const providers = new Providers(ctx, credentials, opts.fetchFn)
   // Base prompt + project rules + memory index (agent/memory/prompt.ts): the memory block comes last,
   // after the stable prefix, so prompt caching keeps working for chat, the group host, test agents
@@ -410,6 +415,8 @@ export function registerAgentIpc(
     providers.forgetReachability()
     ctx.emit('providers:changed', await providers.list())
   }
+  // Settings > Accounts (sign in with Claude, Codex slot, key tests).
+  const accounts = registerAccountsIpc(ctx, ipcMain, { credentials, providers, providersChanged })
 
   const handlers: Record<string, (...args: any[]) => unknown> = {
     listChats: () => chats.list(),
@@ -563,6 +570,7 @@ export function registerAgentIpc(
       layer.oneShot('Summarize these incoming git changes for a teammate on a Roblox (Luau, Rojo) game: what changed, by whom, which features are touched and anything that may conflict with local work. Terse bullet points, at most 200 words.', prompt),
     dispose() {
       for (const name of Object.keys(handlers)) ipcMain.removeHandler(INVOKE_PREFIX + name)
+      accounts.dispose()
       layer.dispose()
     }
   }

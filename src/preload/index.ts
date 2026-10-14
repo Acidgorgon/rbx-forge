@@ -12,6 +12,9 @@ const methods = [
   'setChatEffort', 'getDefaultEffort', 'setDefaultEffort', 'addChatImage', 'getChatImage',
   'listProviders', 'setProviderKey', 'setProviderConfig', 'listModels', 'setChatModel',
   'getDefaultModel', 'setDefaultModel', 'getAnthropicUseClaudeLogin', 'setAnthropicUseClaudeLogin',
+  // Settings > Accounts (sign-in per provider)
+  'accountsList', 'accountsSignIn', 'accountsCancelSignIn', 'accountsSubmitCode', 'accountsSignOut', 'accountsUseExistingLogin',
+  'accountsTest', 'accountsCancelTest',
   'getAgents', 'runAgents', 'cancelAgent',
   'lspStart',
   'getBlink',

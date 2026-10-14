@@ -3,6 +3,7 @@
 
 import type { PathChange } from './fileOps.ts'
 import type { IntegrationApi, IntegrationEvents, OrchestrateMode, UsageSummary } from './integrationTypes.ts'
+import type { AccountsApi, AccountsEvents } from './accountTypes.ts'
 import type { TerminalApi, TerminalEvents } from './terminalTypes.ts'
 import type { ArtApi, ArtEvents } from './artTypes.ts'
 import type { UiPreviewApi, UiPreviewEvents } from './uiPreviewTypes.ts'
@@ -512,7 +513,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -537,7 +538,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi, AccountsApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

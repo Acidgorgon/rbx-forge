@@ -89,6 +89,7 @@ const SETTINGS_KEY = 'thumbs.settings'
 const UNIVERSE_KEY = 'thumbs.universe'
 const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const MAX_BASES = 6
+const DOWNLOAD_TIMEOUT_MS = 30_000
 const QUALITIES = ['low', 'medium', 'high', 'xhigh', 'max', 'auto']
 export const AGENT_MAX_VARIATIONS = 4
 
@@ -254,7 +255,10 @@ export class ThumbService {
     }
     if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new ThumbError('only http(s) links')
     const fetch = this.deps.fetch ?? (globalThis.fetch as unknown as ArtFetch)
-    const res = await fetch(u.toString(), { method: 'GET', headers: { accept: 'image/png,image/jpeg;q=0.9,image/*;q=0.5' } })
+    // A link that never answers must not leave "Adding references" spinning for minutes.
+    const res = await fetch(u.toString(), { method: 'GET', headers: { accept: 'image/png,image/jpeg;q=0.9,image/*;q=0.5' }, signal: AbortSignal.timeout(DOWNLOAD_TIMEOUT_MS) }).catch((e: Error) => {
+      throw new ThumbError(e?.name === 'TimeoutError' || e?.name === 'AbortError' ? `the link did not answer within ${DOWNLOAD_TIMEOUT_MS / 1000} s` : `could not fetch the link: ${e?.message}`)
+    })
     if (!res.ok) throw new ThumbError(`the link answered ${res.status}`)
     const len = Number(res.headers.get('content-length') ?? 0)
     if (len > MAX_IMAGE_BYTES) throw new ThumbError('image over 20 MB')
@@ -559,24 +563,36 @@ export class ThumbService {
     this.deps.chargeImage?.(est.totalUsd)
     const per = round(est.totalUsd / res.images.length)
     const thumbs: Thumb[] = []
+    const failed: string[] = []
     for (const [i, bytes] of res.images.entries()) {
-      thumbs.push(
-        await this.saveVariation(store, bytes, {
-          k: i + 1,
-          batchId,
-          name: `${brief.slice(0, 40)} ${i + 1}`,
-          brief,
-          ...(input.restatement ? { restatement: input.restatement } : {}),
-          ...(profile ? { profileId: profile.id } : {}),
-          baseIds: baseHits.map((b) => b.item.id),
-          round: 0,
-          prompt,
-          model: q.model,
-          genSize: q.genSize,
-          quality: q.quality,
-          costUsd: per
-        })
-      )
+      // One unreadable image must not throw away the rest of a paid batch.
+      try {
+        thumbs.push(
+          await this.saveVariation(store, bytes, {
+            k: i + 1,
+            batchId,
+            name: `${brief.slice(0, 40)} ${i + 1}`,
+            brief,
+            ...(input.restatement ? { restatement: input.restatement } : {}),
+            ...(profile ? { profileId: profile.id } : {}),
+            baseIds: baseHits.map((b) => b.item.id),
+            round: 0,
+            prompt,
+            model: q.model,
+            genSize: q.genSize,
+            quality: q.quality,
+            costUsd: per
+          })
+        )
+      } catch (e) {
+        failed.push(`#${i + 1}: ${(e as Error).message}`)
+        this.deps.log?.(`thumbs: variation ${i + 1} of ${batchId}: ${(e as Error).message}`, 'stderr')
+      }
+    }
+    if (!thumbs.length) {
+      const msg = `OpenAI answered, but no image could be read (${failed.join('; ').slice(0, 300)})`
+      this.progress(batchId, 'failed', msg, { done: true, error: true })
+      throw new ThumbError(msg)
     }
     this.changed()
     let out = thumbs

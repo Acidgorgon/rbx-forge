@@ -636,3 +636,30 @@ test('experience upload: multipart body and URL', () => {
   assert.match(text, /\r\n\r\nPNGDATA\r\n/)
   assert.equal(experienceThumbUrl(1, 'pt-br'), 'https://apis.roblox.com/legacy-game-internationalization/v1/game-thumbnails/games/1/language-codes/pt-br/image')
 })
+
+test('service: an unreadable image in a paid batch is skipped, not fatal; a link that times out is skipped with a reason', async () => {
+  const dir = await tmp('bad')
+  const root = await tmp('proj')
+  let images: string[] = []
+  const base = makeService(dir, root, { vision: false })
+  const events: { event: string; payload: any }[] = []
+  const fetch: ArtFetch = async (url, init) => {
+    if (url.endsWith('/images/generations')) return { status: 200, ok: true, headers: { get: () => null }, text: async () => JSON.stringify({ data: images.map((b) => ({ b64_json: b })) }) }
+    if (url.startsWith('https://slow.example/')) {
+      assert.ok(init?.signal, 'downloads carry a timeout signal')
+      throw new DOMException('The operation was aborted due to timeout', 'TimeoutError')
+    }
+    return base.http.fetch(url, init)
+  }
+  const svc = new ThumbService({ userDir: join(dir, 'user'), projectRoot: () => root, settings: settingsStore(), openAiKey: async () => 'sk-test', imageSettings: () => ({ model: 'x', quality: 'high', dailyCapUsd: 50 }), fetch, sleep: async () => undefined, emit: (event, payload) => events.push({ event, payload }) })
+  images = [Buffer.from('not a png at all').toString('base64'), encodePng(poster(384, 256)).toString('base64')]
+  const r = await svc.generate({ brief: 'shark chase', n: 2, critique: false })
+  assert.equal(r.thumbs.length, 1)
+  assert.equal(r.thumbs[0].id, `${r.id}-2`)
+  images = [Buffer.from('garbage').toString('base64')]
+  await assert.rejects(svc.generate({ brief: 'shark chase', n: 1, critique: false }), /no image could be read/)
+  assert.ok(events.some((e) => e.event === 'thumbs:progress' && e.payload.stage === 'failed' && e.payload.done), 'the progress line ends')
+  const refs = await svc.addRefs({ urls: ['https://slow.example/a.png'] })
+  assert.equal(refs.added.length, 0)
+  assert.match(refs.skipped[0].reason, /did not answer within 30 s/)
+})

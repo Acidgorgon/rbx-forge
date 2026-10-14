@@ -56,7 +56,9 @@ interface Stores {
   runs: LabRun[]
   examples: Record<DecisionType, Example[]>
   models: Partial<Record<DecisionType, DecisionModelFile>>
-  trainedLabels: Partial<Record<DecisionType, number>>
+  // Labels added since the last training, per type (a count, not "labelled now - labelled then":
+  // past MAX_EXAMPLES the labelled total stops growing and retraining would never trigger).
+  newLabels: Partial<Record<DecisionType, number>>
 }
 
 export class GatingService implements LabGate {
@@ -99,17 +101,15 @@ export class GatingService implements LabGate {
       const runs = await this.readJson<LabRun[]>('costs.json', [])
       const examples = {} as Record<DecisionType, Example[]>
       const models: Stores['models'] = {}
-      const trainedLabels: Stores['trainedLabels'] = {}
+      const newLabels: Stores['newLabels'] = {}
       for (const t of DECISION_TYPES) {
         const ex = await this.readJson<Example[]>(`examples-${t}.json`, [])
         examples[t] = Array.isArray(ex) ? ex.filter((e) => e && typeof e.id === 'string' && e.features && typeof e.features === 'object') : []
         const m = parseModelFile(await this.readJson<unknown>(`model-${t}.json`, null))
-        if (m && m.type === t) {
-          models[t] = m
-          trainedLabels[t] = m.n
-        }
+        if (m && m.type === t) models[t] = m
+        newLabels[t] = Math.max(0, examples[t].filter((e) => e.label !== undefined).length - (models[t]?.n ?? 0))
       }
-      this.stores = { decisions: Array.isArray(decisions) ? decisions : [], runs: Array.isArray(runs) ? runs : [], examples, models, trainedLabels }
+      this.stores = { decisions: Array.isArray(decisions) ? decisions : [], runs: Array.isArray(runs) ? runs : [], examples, models, newLabels }
       return this.stores
     })()
     return this.loading
@@ -179,14 +179,14 @@ export class GatingService implements LabGate {
     if (i < 0 || list[i].label !== undefined) return
     list[i] = { ...list[i], label }
     void this.save([`examples-${type}.json`])
-    const labelled = list.filter((e) => e.label !== undefined).length
-    if (labelled - (s.trainedLabels[type] ?? 0) >= RETRAIN_EVERY) await this.train(type)
+    s.newLabels[type] = (s.newLabels[type] ?? 0) + 1
+    if ((s.newLabels[type] ?? 0) >= RETRAIN_EVERY) await this.train(type)
   }
 
   private async train(type: DecisionType): Promise<void> {
     const s = await this.load()
     const m = trainDecisionModel(type, CLASSES, s.examples[type], this.now())
-    s.trainedLabels[type] = s.examples[type].filter((e) => e.label !== undefined).length
+    s.newLabels[type] = 0
     if (!m) return
     s.models[type] = m
     void this.save([`model-${type}.json`])

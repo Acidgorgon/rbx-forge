@@ -10,6 +10,9 @@ import { requestPack } from '../pages/memory/MemoryPack'
 import { requestBugReport, requestDigest } from '../qol/QolRoot'
 import { openNotificationSettings } from '../qol/QolSettings'
 import { openDoctor, openUsageSettings } from '../pages/qolc/events'
+import { monaco } from '../monaco'
+import { formatDocumentIn } from '../editorAssist/format'
+import { editorAssistStatus, setEditorAssist } from '../editorAssist/state'
 
 export interface Command {
   id: string
@@ -172,6 +175,14 @@ export function buildCommands(state: State, actions: Actions): Command[] {
 
   // File
   if (active) add('File', 'file.save', 'Save', () => void actions.saveFile(active), { keys: 'mod+s', icon: <Icon name="download" /> })
+  if (active && /\.(luau|lua)$/i.test(active)) {
+    add('File', 'file.format', 'Format Document', () => formatDocumentIn(monaco, active), { icon: <Icon name="check" />, detail: `StyLua · ${/Mac|iPhone|iPad/.test(navigator.platform) ? '⇧⌥F' : 'Shift+Alt+F'}` })
+  }
+  const assist = editorAssistStatus()
+  if (assist?.completions.ready) {
+    const on = assist.effective.aiCompletions
+    add('File', 'ai.completions', on ? 'Turn off AI completions' : 'Turn on AI completions', () => void setEditorAssist({ aiCompletions: !on }), { icon: <Icon name="bolt" />, detail: assist.completions.detail })
+  }
   add('File', 'tab.close', 'Close tab', () => actions.closeTab(state.activeTab), { keys: 'mod+w', icon: <Icon name="x" /> })
   return cmds
 }

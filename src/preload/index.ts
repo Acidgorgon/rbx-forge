@@ -105,7 +105,9 @@ const methods = [
   // Forge Doctor, spending cap, Add to game (qol-c)
   'doctorRun', 'doctorLast', 'doctorFix',
   'spendState', 'spendSetSettings', 'spendRaiseToday', 'spendClearOverride',
-  'addToGameOptions', 'addToGamePreview', 'addToGameApply'
+  'addToGameOptions', 'addToGamePreview', 'addToGameApply',
+  // Editor assist (StyLua format, autosave settings, AI inline completions)
+  'editorAssistStatus', 'editorAssistSetSettings', 'formatLuau', 'inlineComplete', 'inlineCompleteCancel'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]
 
 // Compile-time check: every HarnessApi method is exposed (tsc names any that is missing).

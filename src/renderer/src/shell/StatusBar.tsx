@@ -10,6 +10,7 @@ import { ago, fmtTokens, fmtUsd } from '../lib/format'
 import { useProblems } from './problems'
 import { UpdatePill } from '../updates/UpdatePill'
 import { SpendPill } from '../pages/qolc/Spend'
+import { AiCompletionsPill } from '../editorAssist/AiPill'
 
 export function ledOf(s: ServiceStatus | undefined): 'ok' | 'warn' | 'err' | 'idle' {
   if (!s) return 'idle'
@@ -137,6 +138,7 @@ export function StatusBar() {
         <span className={`led ${lspLed}`} />
         luau-lsp
       </span>
+      <AiCompletionsPill />
       <SpendPill />
       <span className="sb" onClick={() => actions.toggleRight()} title={`Assistant this thread: ${fmtTokens(tokens)} tokens · ${fmtUsd(cost)}\nToday: ${fmtUsd(state.usage.day?.totals.costUsd ?? 0)}`}>
         <Icon name="hammer" size={12} />

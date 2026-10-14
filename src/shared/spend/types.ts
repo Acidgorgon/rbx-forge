@@ -3,9 +3,9 @@
 // book lives in userData/spend.json and never leaves the machine. Windows use LOCAL time (a day
 // starts at local midnight, a month on the 1st).
 
-export type SpendSource = 'chat' | 'group' | 'labs' | 'agents' | 'orchestrator' | 'images' | 'other'
+export type SpendSource = 'chat' | 'group' | 'labs' | 'agents' | 'orchestrator' | 'images' | 'completions' | 'other'
 
-export const SPEND_SOURCES: SpendSource[] = ['chat', 'group', 'labs', 'agents', 'orchestrator', 'images', 'other']
+export const SPEND_SOURCES: SpendSource[] = ['chat', 'group', 'labs', 'agents', 'orchestrator', 'images', 'completions', 'other']
 
 export const SPEND_SOURCE_LABEL: Record<SpendSource, string> = {
   chat: 'Chat',
@@ -14,6 +14,7 @@ export const SPEND_SOURCE_LABEL: Record<SpendSource, string> = {
   agents: 'Test agents',
   orchestrator: 'Team runs',
   images: 'Images',
+  completions: 'Editor completions',
   other: 'Other'
 }
 

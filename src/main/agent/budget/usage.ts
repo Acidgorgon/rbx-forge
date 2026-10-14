@@ -31,6 +31,8 @@ export interface UsageRecord extends Usage {
   agentId?: string
   // 'provider' = reported by the API/SDK, 'estimate' = from the price table, 'unknown' = no price.
   costSource: 'provider' | 'estimate' | 'unknown'
+  // Spending-cap source when neither chatId nor agentId says it (e.g. 'completions').
+  source?: string
 }
 
 export interface UsageTotals {

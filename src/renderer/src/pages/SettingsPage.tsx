@@ -19,6 +19,7 @@ import { DoctorBanner } from './qolc/Doctor'
 import { SpendSettingsSection } from './qolc/Spend'
 import { FigmaTokenSettings } from './FigmaTokenSettings'
 import { AccountsSection } from '../accounts/AccountsSection'
+import { EditorSettingsSection } from '../editorAssist/EditorSettings'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -35,6 +36,7 @@ const ENV_NAME: Partial<Record<ProviderId, string>> = { anthropic: 'ANTHROPIC_AP
 const SECTIONS = [
   ['accounts', 'Accounts'],
   ['appearance', 'Appearance'],
+  ['editor', 'Editor'],
   ['model', 'Default model'],
   ['chat', 'Chat'],
   ['providers', 'Providers'],
@@ -304,6 +306,8 @@ export function SettingsPage() {
             <Seg<MotionMode> value={appearance.motion} options={[['full', 'Full'], ['reduced', 'Reduced'], ['off', 'Off']]} onChange={setMotionMode} />
           </Row>
         </section>
+
+        <EditorSettingsSection />
 
         <section className="set-sec" id="set-model">
           <h2>Default model</h2>

@@ -22,8 +22,8 @@
 //   rename, document symbols (outline, Ctrl+Shift+O), document highlights, code actions
 //   (quick fixes, organise/add requires, extract/inline refactors with codeAction/resolve),
 //   document links (require paths), folding ranges, Color3 colour decorators, inlay hints
-//   (variable/parameter types, return types, parameter names), semantic tokens, formatting,
-//   and diagnostics as model markers.
+//   (variable/parameter types, return types, parameter names), semantic tokens, and diagnostics
+//   as model markers. Formatting is StyLua's (editorAssist/format.ts), not luau-lsp's.
 // Not mapped: call hierarchy and workspace symbols (no standalone Monaco API), on-type
 // formatting (luau-lsp's only use is format.convertQuotes, off by default).
 //
@@ -764,46 +764,9 @@ class LuauLspClient {
       )
     }
 
-    const formatOptions = (options: Monaco.languages.FormattingOptions) => ({
-      tabSize: options.tabSize,
-      insertSpaces: options.insertSpaces,
-      trimTrailingWhitespace: true,
-      insertFinalNewline: true
-    })
-    const toEdits = (edits: any[] | null) =>
-      (edits ?? []).map((edit) => ({ range: toMonacoRange(edit.range), text: edit.newText }))
-    if (caps.documentFormattingProvider) {
-      this.providers.push(
-        languages.registerDocumentFormattingEditProvider('luau', {
-          provideDocumentFormattingEdits: async (model, options, token) => {
-            const doc = this.docFor(model)
-            if (!doc) return null
-            const edits = await this.request<any[]>(
-              'textDocument/formatting',
-              { textDocument: { uri: doc.uri }, options: formatOptions(options) },
-              token
-            )
-            return toEdits(edits)
-          }
-        })
-      )
-    }
-    if (caps.documentRangeFormattingProvider) {
-      this.providers.push(
-        languages.registerDocumentRangeFormattingEditProvider('luau', {
-          provideDocumentRangeFormattingEdits: async (model, range, options, token) => {
-            const doc = this.docFor(model)
-            if (!doc) return null
-            const edits = await this.request<any[]>(
-              'textDocument/rangeFormatting',
-              { textDocument: { uri: doc.uri }, range: toLspRange(range), options: formatOptions(options) },
-              token
-            )
-            return toEdits(edits)
-          }
-        })
-      )
-    }
+    // No document / range formatting from luau-lsp: its formatter only converts quotes
+    // (format.convertQuotes, off). Luau files are formatted by StyLua (editorAssist/format.ts), and two
+    // formatters would make Monaco ask which one to use.
 
     const location = (loc: any): Monaco.languages.Location | null => {
       if (!loc) return null

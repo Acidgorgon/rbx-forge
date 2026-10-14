@@ -40,6 +40,7 @@ import { principlesMock } from './mockPrinciples'
 import { gatingMock } from './mockGating'
 import { thumbsMock } from './mockThumbs'
 import { addToGameMock, doctorMock, spendMock } from './mockQolc'
+import { editorAssistMock } from './mockEditorAssist'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -939,6 +940,7 @@ const api: HarnessApi = {
   // Forge Doctor, spending cap, Add to game (mockQolc.ts): ?doctor=ok|issues, ?spend=ok|warn|stop.
   ...doctorMock(emit),
   ...spendMock(emit),
+  ...editorAssistMock(emit),
   ...addToGameMock(),
 
   on(event, handler) {

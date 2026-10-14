@@ -38,6 +38,7 @@ import { forgeSyncMock } from './mockForgeSync'
 import { principlesMock } from './mockPrinciples'
 import { gatingMock } from './mockGating'
 import { thumbsMock } from './mockThumbs'
+import { addToGameMock, doctorMock, spendMock } from './mockQolc'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -924,6 +925,10 @@ const api: HarnessApi = {
   ...thumbsMock(emit),
   // Quality of life (mockQol.ts): bug report, settings, session file, away digest; ?digest=none.
   ...qolMock(emit, () => logs.slice(), () => project),
+  // Forge Doctor, spending cap, Add to game (mockQolc.ts): ?doctor=ok|issues, ?spend=ok|warn|stop.
+  ...doctorMock(emit),
+  ...spendMock(emit),
+  ...addToGameMock(),
 
   on(event, handler) {
     let set = listeners.get(event)

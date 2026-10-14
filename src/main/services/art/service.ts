@@ -23,6 +23,7 @@ import { forbidsComments, parseRegistry, registryName, REGISTRY_PATH, upsertRegi
 import { uploadImageAsset } from './robloxAssets.ts'
 import { STYLE_PRESETS, fullPrompt, slugify, stylePreset } from './styles.ts'
 import { applyGitPolicy, CONCEPTS_DIR, dayOf, insideRoot, listConcepts, nextIndex, readItem, restoreConcept, trashConcept, UI_DIR, writeConcept, writeSidecar } from './store.ts'
+import { assertSpend, chargeSpend } from '../spend/gate.ts'
 
 export const ART_MODELS: ArtModel[] = ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2', 'gpt-image-1.5', 'gpt-image-1-mini']
 export const DEFAULT_SETTINGS: ArtSettings = { model: 'gpt-image-2.5-flare', quality: 'high', gitPolicy: 'track-small', dailyCapUsd: 5, assetType: 'Image' }
@@ -200,6 +201,8 @@ export class ArtService {
     if (est.dailyCapUsd > 0 && est.spentTodayUsd + est.totalUsd > est.dailyCapUsd) {
       throw new Error(`This would pass today's art budget (${formatUsd(est.spentTodayUsd)} spent + ${formatUsd(est.totalUsd)} > ${formatUsd(est.dailyCapUsd)}). Raise it on the Art page.`)
     }
+    // App-wide spending cap (Settings > Usage).
+    assertSpend('images')
     const refs = await Promise.all(q.refs.map((r) => this.readReference(root, r)))
     const mask = input.maskPath ? await this.readReference(root, input.maskPath) : null
     const full = fullPrompt(prompt, q.style, q.transparent)
@@ -215,6 +218,7 @@ export class ArtService {
       this.deps.onProgress?.({ id: job, stage: 'failed', detail: (error as Error).message })
       throw error
     }
+    chargeSpend({ provider: 'openai', source: 'images', costUsd: est.totalUsd })
     const date = dayOf(this.now())
     const slug = slugify(input.slug || prompt)
     const dir = join(root, ...CONCEPTS_DIR.split('/'), date)

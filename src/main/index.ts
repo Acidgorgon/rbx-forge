@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell, systemPreferences } from 'electron'
 import { existsSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import {
@@ -68,6 +68,10 @@ import { defaultChatImage } from './services/art/wire.ts'
 import { createThumbsWiring } from './services/thumbs/wire.ts'
 import { thumbsElectronDeps } from './services/thumbs/electron.ts'
 import { createQol } from './services/qol/wire.ts'
+import { createSpendWiring } from './services/spend/wire.ts'
+import { createDoctorWiring } from './services/doctor/wire.ts'
+import { doctorMarkdown } from '../shared/doctor/format.ts'
+import { createAddToGameWiring } from './services/addToGame/wire.ts'
 
 // Name and data folder. The data folder stays "rbx-forge" (what development builds have always
 // used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
@@ -622,6 +626,56 @@ const qol = createQol({
   testsLast: async () => (await integrations.handlers.testsLast()) as never
 })
 qolObserve = (event, payload) => qol.service.observe(event, payload)
+// qol-c: spending cap (userData/spend.json; every AI call is charged and checked), Forge Doctor
+// (Help menu, palette, Settings) and "Add to game" (VFX / Animation / Ability labs, adapters for more).
+const spend = createSpendWiring({
+  userDataDir: app.getPath('userData'),
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text) => logs.push({ service: 'harness', stream: 'info', text: `[spend] ${text}` })
+})
+const doctor = createDoctorWiring({
+  platform: process.platform,
+  appVersion: app.getVersion(),
+  isPackaged: app.isPackaged,
+  userDataDir: app.getPath('userData'),
+  homeDir: homedir(),
+  env: process.env,
+  projectRoot: () => project?.info.root ?? null,
+  places: () => project?.listPlaces() ?? [],
+  serveAllPlaces: () => appSettings().serveAllPlaces,
+  activePlace: () => project?.getActivePlace()?.file ?? null,
+  services: () => supervisor.statuses(),
+  toolchainStatus: () => setup.handlers.toolchainStatus() as never,
+  toolchainRepair: () => Promise.resolve(setup.handlers.toolchainSetup({ mode: 'repair' })),
+  installProjectTools: (root) => setup.onProjectOpen(root),
+  studioStatus: () => studio.service.status(),
+  installPlugin: () => studio.service.installPlugin(),
+  pluginsDir: () => pluginsDir({ platform: process.platform, env: process.env, home: homedir() }),
+  syncStatus: () => forgeSync.handlers.syncStatus() as never,
+  disableLegacyPlugins: () => Promise.resolve(forgeSync.handlers.syncDisableLegacyPlugin()),
+  providers: () => agentIpc.providers(),
+  defaultProvider: () => agentIpc.defaultProvider(),
+  openCloudKey: () => integrations.openCloud.key(),
+  openAiKey: () => integrations.images.openAiKey(),
+  updateState: () => updater.handlers.updateGetState() as never,
+  updateCheck: () => Promise.resolve(updater.handlers.updateCheck()),
+  startRojo: () => supervisor.start('rojo'),
+  screenRecording: () => (process.platform === 'darwin' ? (systemPreferences.getMediaAccessStatus('screen') as 'granted') : null),
+  openExternal: (url) => void shell.openExternal(url),
+  emit: (report) => emit('doctor:report', report)
+})
+const addToGame = createAddToGameWiring({
+  root: () => project?.info.root ?? null,
+  settings,
+  log: (text) => logs.push({ service: 'harness', stream: 'info', text: `[add to game] ${text}` }),
+  vfx: vfx.service,
+  textures: vfx.textures,
+  anim: anim.service,
+  ability: ability.service
+})
+const qolcHandlers = { ...doctor.handlers, ...spend.handlers, ...addToGame.handlers }
+// Bug reports carry a Forge Doctor section (home folder shown as ~).
+qol.service.setBugReportExtra(async () => doctorMarkdown(await doctor.service.run(), { home: homedir() }))
 
 const handlers: Record<string, (...args: any[]) => unknown> = {
   openProject: (root?: string) => openProject(root),
@@ -687,7 +741,7 @@ for (const [name, handler] of Object.entries(handlers)) {
 }
 // Long lab / build calls notify when they finish (services/qol).
 const timed = (name: string, handler: (...args: any[]) => unknown) => qol.service.timed(name, handler)
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...gating.wrap('vfx', vfx.handlers), ...gating.wrap('anim', anim.handlers), ...studio.handlers, ...refs.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...gating.wrap('vfx', vfx.handlers), ...gating.wrap('anim', anim.handlers), ...studio.handlers, ...refs.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers, ...qolcHandlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
@@ -787,6 +841,7 @@ app.on('before-quit', (event) => {
   memory.dispose()
   brainSync.dispose()
   updater.dispose()
+  void spend.dispose()
   vfx.service.dispose()
   anim.service.dispose()
   void studio.dispose()

@@ -5,6 +5,7 @@
 import type { UsageSnapshot, UsageSummary } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import { BudgetGuard, readLimits, BUDGET_SETTING, DEFAULT_LIMITS, type BudgetCheck, type BudgetLimits } from './budget/budget.ts'
+import { spendBlock } from '../services/spend/gate.ts'
 import { addUsage, dayKey, UsageLedger, type Usage, type UsageTotals } from './budget/usage.ts'
 
 export function toSummary(t: UsageTotals | Usage): UsageSummary {
@@ -67,11 +68,11 @@ export class Meter {
   }
 
   checkChat(chatId: string): BudgetCheck {
-    return this.guard.check({ chatId }, this.live.get(chatId))
+    return withSpendCap(this.guard.check({ chatId }, this.live.get(chatId)))
   }
 
   checkAgent(agentId: string): BudgetCheck {
-    return this.guard.check({ agentId }, this.live.get(agentId))
+    return withSpendCap(this.guard.check({ agentId }, this.live.get(agentId)))
   }
 
   snapshot(scope: UsageSnapshot['scope'], id?: string, extra: Partial<UsageSnapshot> = {}): UsageSnapshot {
@@ -100,4 +101,10 @@ export class Meter {
   flush(): void {
     this.ledger.flush()
   }
+}
+
+// The app-wide spending cap (Settings > Usage) stops chats and agents like a hard budget cap.
+function withSpendCap(check: BudgetCheck): BudgetCheck {
+  const block = spendBlock()
+  return block ? { ...check, level: 'stop', fraction: Math.max(1, check.fraction), reason: block } : check
 }

@@ -607,56 +607,93 @@ export class AbilityService {
     if (!root) throw new AbilityServiceError('Open the game project first: the export writes Luau modules into it.')
     const entry = await this.get(id)
     const dir = (await this.exportDir())!
+    const tree = await this.projectTree(root)
+    // VFX the move uses: written into the project first when they are not there yet.
+    const vfxFolders: Record<string, string> = {}
+    let vfxPath: string[] | null = null
+    for (const ev of entry.ability.events) {
+      if (ev.kind !== 'vfx' || ev.muted) continue
+      let fx = this.deps.vfx ? await this.deps.vfx.get(ev.effect).catch(() => null) : null
+      if (!fx) continue
+      if (!fx.written && this.deps.vfx) fx = await this.deps.vfx.writeProjectFiles(fx)
+      if (!fx.written) continue
+      const folder = fx.written.module.replace(/\/init\.luau$/, '')
+      vfxFolders[ev.id] = folder
+      vfxPath ??= instancePathFor(tree, `${folder.split('/').slice(0, -1).join('/')}/x.luau`)?.slice(0, -1) ?? null
+    }
+    const moduleFile = `${dir}/${entry.ability.name}.luau`
+    const inst = instancePathFor(tree, moduleFile)
+    const plan = await this.exportFiles(id, dir, { vfxFolders, vfxPath, moduleInstance: inst })
+    if (!inst) plan.warnings.push(`${dir} is not mapped in default.project.json (Rojo will not sync it)`)
+    const absDir = resolve(root, dir)
+    if (!absDir.startsWith(resolve(root) + sep)) throw new AbilityServiceError('export path escapes the project')
+    await mkdir(absDir, { recursive: true })
+    for (const f of plan.files) {
+      const cur = await readFile(join(root, f.path), 'utf8').catch(() => null)
+      if (cur !== null && f.owned && !f.owned(cur)) {
+        plan.warnings.push(`${f.path} was replaced by hand; left as is`)
+        continue
+      }
+      if (cur !== f.content) await writeFile(join(root, f.path), f.content, 'utf8')
+    }
+    await this.markWritten(id, dir)
+    this.changed()
+    return {
+      files: plan.files.map((f) => f.path),
+      module: plan.module,
+      runner: plan.runner,
+      source: plan.source,
+      requirePath: plan.requirePath,
+      command: plan.requirePath ? `require(${plan.requirePath}).play(game.Players.LocalPlayer.Character)` : null,
+      warnings: plan.warnings
+    }
+  }
+
+  // Records where a move lives in the project.
+  async markWritten(id: string, dir: string): Promise<void> {
+    const saved = await this.find(id)
+    if (saved) await saved.store.save({ ...saved.entry, written: { module: `${dir}/${saved.entry.ability.name}.luau`, runner: `${dir}/${RUNNER_MODULE}.luau` } })
+  }
+
+  // The files a move writes when its module lives in `dir` (repo-relative): the move module and the
+  // shared AbilityRunner next to it. vfxFolders: event id -> the folder (dir) of the VFX effect it
+  // plays; vfxPath: the instance path of the VFX folder (AbilityRunner.VfxPath); moduleInstance:
+  // the module's instance path (for the require line). One exporter for export and "Add to game".
+  async exportFiles(id: string, dir: string, o: { vfxFolders: Record<string, string>; vfxPath: string[] | null; moduleInstance?: string[] | null }): Promise<{ files: { path: string; content: string; role: string; owned?: (current: string) => boolean }[]; warnings: string[]; source: string; module: string; runner: string; requirePath: string | null }> {
+    const entry = await this.get(id)
     const warnings: string[] = []
     let ability = entry.ability
     const { ctx } = await this.context(ability)
     for (const issue of validateAbility(ability, ctx)) if (issue.level === 'error') throw new AbilityError(`fix before export: ${issue.message}`)
-    const tree = await this.projectTree(root)
-    let vfxPath: string[] | null = null
     const renamed: Record<string, Record<string, unknown>> = {}
     for (const ev of ability.events) {
       if (ev.kind !== 'vfx' || ev.muted) continue
-      let fx = this.deps.vfx ? await this.deps.vfx.get(ev.effect).catch(() => null) : null
-      if (!fx) {
-        warnings.push(`${ev.id}: VFX entry "${ev.effect}" is not in the VFX library; the module expects src/shared/VFX/${ev.effectName}`)
+      const folder = o.vfxFolders[ev.id]
+      if (!folder) {
+        warnings.push(`${ev.id}: VFX entry "${ev.effect}" is not in the game yet; the module expects a VFX folder named ${ev.effectName}`)
         continue
       }
-      if (!fx.written && this.deps.vfx) fx = await this.deps.vfx.writeProjectFiles(fx)
-      const folder = fx.written ? fx.written.module.replace(/\/init\.luau$/, '') : `src/shared/VFX/${ev.effectName}`
       const name = folder.split('/').pop()!
       if (name !== ev.effectName) renamed[ev.id] = { id: ev.id, effectName: name }
-      vfxPath ??= instancePathFor(tree, `${folder.split('/').slice(0, -1).join('/')}/x.luau`)?.slice(0, -1) ?? null
     }
     if (Object.keys(renamed).length) ability = applyPatch(ability, { events: Object.values(renamed) })
-    if (ability.events.some((e) => e.kind === 'vfx') && !vfxPath) warnings.push('src/shared/VFX is not mapped in default.project.json; AbilityRunner.VfxPath assumes ReplicatedStorage.Shared.VFX (map the folder or edit VfxPath)')
+    if (ability.events.some((e) => e.kind === 'vfx') && !o.vfxPath) warnings.push('The VFX folder is not mapped by the project file; AbilityRunner.VfxPath assumes ReplicatedStorage.Shared.VFX (map the folder or edit VfxPath)')
     if (ability.animation && !ability.animation.assetId) warnings.push(isPlaceholder(ability.animation.clip) ? `the animation is a placeholder pose track: publish a real clip and set its asset id` : `animation "${ability.animation.name}" has no asset id yet: publish it to Roblox and set the id`)
     const { source, skipped } = abilityModule(ability, ctx)
     warnings.push(...skipped.map((s) => `skipped ${s}`))
-    const absDir = resolve(root, dir)
-    if (!absDir.startsWith(resolve(root) + sep)) throw new AbilityServiceError('export path escapes the project')
-    await mkdir(absDir, { recursive: true })
-    const moduleFile = `${dir}/${ability.name}.luau`
-    const runnerFile = `${dir}/${RUNNER_MODULE}.luau`
-    await writeFile(join(root, moduleFile), source, 'utf8')
-    const runnerSrc = runnerModule(vfxPath ?? ['ReplicatedStorage', 'Shared', 'VFX'])
-    const cur = await readFile(join(root, runnerFile), 'utf8').catch(() => null)
-    if (cur === null || isOwnRunner(cur)) {
-      if (cur !== runnerSrc) await writeFile(join(root, runnerFile), runnerSrc, 'utf8')
-    } else warnings.push(`${runnerFile} was replaced by hand; left as is`)
-    const inst = instancePathFor(tree, moduleFile)
-    const requirePath = inst ? `game.${requireExpression(inst)}` : null
-    if (!requirePath) warnings.push(`${dir} is not mapped in default.project.json (Rojo will not sync it)`)
-    const saved = await this.find(id)
-    if (saved) await saved.store.save({ ...saved.entry, written: { module: moduleFile, runner: runnerFile } })
-    this.changed()
+    const module = `${dir}/${ability.name}.luau`
+    const runner = `${dir}/${RUNNER_MODULE}.luau`
+    const requirePath = o.moduleInstance ? `game.${requireExpression(o.moduleInstance)}` : null
     return {
-      files: [moduleFile, runnerFile],
-      module: moduleFile,
-      runner: runnerFile,
+      files: [
+        { path: module, content: source, role: 'ability module' },
+        { path: runner, content: runnerModule(o.vfxPath ?? ['ReplicatedStorage', 'Shared', 'VFX']), role: 'AbilityRunner', owned: isOwnRunner }
+      ],
+      warnings,
       source,
-      requirePath,
-      command: requirePath ? `require(${requirePath}).play(game.Players.LocalPlayer.Character)` : null,
-      warnings
+      module,
+      runner,
+      requirePath
     }
   }
 }

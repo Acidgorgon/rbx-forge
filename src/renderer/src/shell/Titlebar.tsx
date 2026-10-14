@@ -8,6 +8,7 @@ import { isMac, keyHint, errorText } from '../lib/format'
 import { sparks } from '../lib/sparks'
 import { setThemeMode, useAppearance } from '../theme'
 import { requestBugReport } from '../qol/QolRoot'
+import { helpMenuItems } from './helpMenu'
 
 function parentDir(root: string): string {
   const parts = root.split(/[\\/]/).filter(Boolean)
@@ -167,6 +168,9 @@ export function Titlebar() {
         </button>
         <button className="tb-btn" onClick={requestBugReport} title="Report a bug (screenshot + logs, saved on this computer)" aria-label="Report a bug">
           <Icon name="bug" />
+        </button>
+        <button className="tb-btn" onClick={(e) => menu.openUnder(e.currentTarget, helpMenuItems(actions), { minWidth: 280 })} title="Help: Forge Doctor, report a bug" aria-label="Help">
+          <Icon name="info" />
         </button>
         <button
           className="tb-btn"

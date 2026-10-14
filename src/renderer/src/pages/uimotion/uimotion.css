@@ -141,3 +141,9 @@
   .um-tl-svg { cursor: default; }
 }
 :root[data-motion='reduced'] .um-chip-demo, :root[data-motion='off'] .um-chip-demo { transition: none; }
+
+/* Narrow: the brief gets its own line (like the Thumbnail Lab) instead of a few characters. */
+@container (max-width: 520px) {
+  .uimotion .vfx-make-row .input { flex: 1 1 100%; order: 1; }
+  .uimotion .vfx-make-row .btn.primary { order: 2; margin-left: auto; }
+}

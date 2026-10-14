@@ -83,7 +83,8 @@ export const qolFlows: Flow[] = [
     title: 'Thumbnail Lab renders',
     async run({ page, shot }) {
       await openPage(page, 'Thumbnail Lab')
-      await waitText(page, /Thumbnail/, { within: CENTER })
+      // The page's own heading (the tab label alone also says "Thumbnail").
+      await page.locator(`${CENTER} h1`, { hasText: 'Thumbnail Lab' }).first().waitFor({ state: 'visible', timeout: 10_000 })
       await shot('page')
     }
   },
@@ -92,7 +93,7 @@ export const qolFlows: Flow[] = [
     title: 'UI Motion Lab renders',
     async run({ page, shot }) {
       await openPage(page, 'UI Motion Lab')
-      await waitText(page, /Motion/, { within: CENTER })
+      await page.locator(`${CENTER} h1`, { hasText: 'UI Motion Lab' }).first().waitFor({ state: 'visible', timeout: 10_000 })
       await shot('page')
     }
   },

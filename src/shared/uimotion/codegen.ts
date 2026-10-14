@@ -79,14 +79,18 @@ export interface ComponentSource {
   report: MappingReport
 }
 
+// Figma names and file names can hold line breaks (text layers are named after their text): one
+// inside a "--" comment would turn the rest of the line into code.
+const oneLine = (s: string) => String(s ?? '').replace(/[\r\n\u2028\u2029]+/g, ' ')
+
 export function componentModule(root: UiInst, src: ComponentSource): string {
   const images = new Map<string, string>()
   for (const req of src.report.images) images.set(req.file, req.file.split('/').pop()!.replace(/\.png$/, ''))
   const lines = [
     '--!strict',
-    `-- ${root.name}: imported from Figma by RBX Forge (${src.from}).`,
-    `-- Mapping: ${src.report.summary}.`,
-    ...src.report.notes.filter((x) => x.level !== 'info').slice(0, 12).map((x) => `--   ${x.level === 'dropped' ? 'dropped' : 'approx'} ${x.what} (${x.node}): ${x.detail}`),
+    oneLine(`-- ${root.name}: imported from Figma by RBX Forge (${src.from}).`),
+    oneLine(`-- Mapping: ${src.report.summary}.`),
+    ...src.report.notes.filter((x) => x.level !== 'info').slice(0, 12).map((x) => oneLine(`--   ${x.level === 'dropped' ? 'dropped' : 'approx'} ${x.what} (${x.node}): ${x.detail}`)),
     '-- Returns a function that builds a fresh copy: local ui = Component(parent?).',
     '-- Re-importing overwrites this file; keep hand edits in the code that uses it.',
     ''
@@ -145,7 +149,7 @@ export function requireBetween(fromInst: string[] | null, toInst: string[] | nul
     const b = fallbackFiles.to.replace(/\.luau?$/, '').split('/')
     let c = 0
     while (c < a.length && c < b.length - 1 && a[c] === b[c]) c++
-    return ['script.Parent', ...Array(a.length - c).fill('Parent'), ...b.slice(c)].join('.')
+    return [...Array(a.length - c).fill('Parent'), ...b.slice(c)].reduce((acc, p) => (/^[A-Za-z_]\w*$/.test(p) ? `${acc}.${p}` : `${acc}[${JSON.stringify(p)}]`), 'script.Parent')
   }
   throw new Error('cannot resolve the require path')
 }

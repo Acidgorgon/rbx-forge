@@ -227,7 +227,8 @@ function Effects.attach(root: GuiObject, spec: any?, options: { reduced: boolean
 			ty = { x = 0, v = 0 },
 			glow = { x = if fx.glow and fx.glow.trigger == "idle" then 1 else 0, v = 0 },
 			enterY = { x = 0, v = 0 },
-			shineNext = 0.6,
+			-- Hover / click shines wait for their event (engine.ts: only idle shines start on a timer).
+			shineNext = if fx.shine and fx.shine.trigger == "idle" then 0.6 else math.huge,
 			basePosition = target.Position,
 			baseSize = target.Size,
 			baseRotation = target.Rotation,

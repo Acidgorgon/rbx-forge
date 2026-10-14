@@ -667,3 +667,24 @@ test('VFX Lab refine with gates: unchanged frames skip the critic when on, still
   assert.ok(shadow.shots >= 3, `shadow ran ${shadow.shots} critiques`)
   assert.ok(shadow.view.decisions.some((d) => d.outcome === 'would skip critic' && !d.acted))
 })
+
+test('service decision models keep retraining once the example log is full (MAX_EXAMPLES)', async () => {
+  const { writeFile, mkdir } = await import('node:fs/promises')
+  const { MAX_EXAMPLES, RETRAIN_EVERY } = await import('../src/main/services/gating/service.ts')
+  const dir = await tmp()
+  await mkdir(dir, { recursive: true })
+  const full: Example[] = Array.from({ length: MAX_EXAMPLES }, (_, i) => ({ id: `x-old-${i}`, at: i, features: { repairs: i % 2, sameAsLast: (i >> 1) % 2 }, heuristic: 1, label: i % 2 }))
+  const model = trainDecisionModel('retry', ['no', 'yes'], full, 5)!
+  await writeFile(join(dir, 'examples-retry.json'), JSON.stringify(full))
+  await writeFile(join(dir, 'model-retry.json'), JSON.stringify(model))
+  const { svc } = service(dir, { gates: 'on' }, { t: 1_000_000 })
+  for (let k = 0; k < RETRAIN_EVERY; k++) {
+    const r = await svc.retry({ lab: 'vfx', entryId: `e${k}`, message: 'parse error: unexpected token', repairs: 0, kind: 'parse' })
+    assert.ok(r.ticket)
+    svc.retryResult(r.ticket, k % 2 === 0)
+    await new Promise((res) => setTimeout(res, 5))
+  }
+  await svc.flush()
+  const st = (await svc.view()).models.find((m) => m.type === 'retry')!
+  assert.ok(st.trainedAt! > 5, `retrained (trainedAt ${st.trainedAt})`)
+})

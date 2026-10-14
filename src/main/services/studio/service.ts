@@ -15,6 +15,9 @@ import { STUDIO_PREFER_SETTING, type StudioCheckKind, type StudioCheckOptions, t
 import { markStudioFrames } from '../../../shared/studio/frames.ts'
 import { BridgeError, type StudioBridge } from './bridge.ts'
 
+// First Forge Bridge plugin version that runs 'snapshot' jobs (Thumbnail Lab).
+export const SNAPSHOT_PLUGIN_VERSION = 4
+
 export interface CapturedFrame {
   ts: number
   png: Buffer
@@ -314,7 +317,11 @@ export class StudioService {
       const b = this.deps.bridge
       const place = b.studio()?.place
       const settle = this.deps.settleMs ?? 80
-      if (b.listening && b.connected()) {
+      // Plugins before version 4 do not know snapshot jobs: they would build a stage and move the
+      // camera, so the grab would show the stage instead of the user's view.
+      const snapshots = (b.studio()?.pluginVersion ?? 0) >= SNAPSHOT_PLUGIN_VERSION
+      if (b.listening && b.connected() && !snapshots) this.deps.log?.('studio: the Forge Bridge plugin is too old for viewport snapshots; grabbing the window (reinstall the plugin and restart Studio)', 'stderr')
+      if (b.listening && b.connected() && snapshots) {
         const session = await this.deps.capturer.open({ place }).catch((e) => {
           throw new StudioCheckError('no-capture', `Could not record the Studio window: ${(e as Error).message}`)
         })

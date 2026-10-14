@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { after, test } from 'node:test'
 import type { GateState, StudioNode, SyncEntry } from '../src/shared/sync/types.ts'
 import { placeKeyFor, SyncEngine, SyncResendError, type SyncFs } from '../src/main/services/sync/engine.ts'
-import type { PlaceMap } from '../src/main/services/sync/mapping.ts'
+import { fromDisk, type PlaceMap } from '../src/main/services/sync/mapping.ts'
 import { readModel } from '../src/main/services/sync/modelJson.ts'
 import { BaseStore, ensureSyncIgnored, hashText, migrateLegacy } from '../src/main/services/sync/store.ts'
 import { edit, find, get, listFiles, makeFsfProject, MATCH_PLACE, MENU_PLACE, put, studioFromDisk } from './syncFixture.ts'
@@ -512,4 +512,68 @@ test('every file Forge writes stays inside mapped roots or .forge/sync', async (
   assert.deepEqual(touched.filter((f) => !allowed(f)), [])
   // And the project's own files outside src were not rewritten.
   assert.equal(JSON.parse(get(ctx.root, 'tools/studio-sync.json')).port, 34873)
+})
+
+test('empty Studio folders get a .gitkeep; it goes once the folder has children and comes back when it is empty', async () => {
+  const ctx = await setup()
+  await agreed(ctx)
+  const dir = 'src/skills/Server/Moves/NewMove'
+  const keep = `${dir}/.gitkeep`
+  const folder = { id: 'nm', path: [...MOVES, 'NewMove'], className: 'Folder' }
+  // .gitkeep is not an instance.
+  assert.equal(fromDisk(ctx.match, keep), null)
+
+  const added = await ctx.engine.applyChanges(MK, [{ kind: 'added', node: folder }])
+  assert.ok(added.some((e) => e.action === 'created' && e.file === dir))
+  assert.ok(added.some((e) => e.action === 'created' && e.file === keep))
+  assert.equal(get(ctx.root, keep), '')
+  // A full snapshot of the same Studio is a no-op (the .gitkeep is neither trashed nor rewritten).
+  const nodes = [...studio(ctx).filter((n) => n.path.join('/') !== folder.path.join('/')), folder]
+  const again = await snapshot(ctx.engine, MK, MATCH, nodes)
+  assert.deepEqual(again.filter((e) => !['same', 'unmapped'].includes(e.action)), [])
+  assert.ok(existsSync(join(ctx.root, keep)))
+
+  // A real child: the .gitkeep goes to the trash.
+  const script = { id: 'nm1', path: [...folder.path, 'Config'], className: 'ModuleScript', source: 'return {}' }
+  const child = await ctx.engine.applyChanges(MK, [{ kind: 'added', node: script }])
+  assert.deepEqual(actions(child, 'created'), [`${dir}/Config.luau`])
+  assert.deepEqual(actions(child, 'trashed'), [keep])
+  assert.deepEqual(readdirSync(join(ctx.root, dir)), ['Config.luau'])
+
+  // The last child deleted in Studio: script trashed, directory kept with a fresh .gitkeep.
+  const removed = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: script.id, path: script.path }])
+  assert.deepEqual(actions(removed, 'trashed'), [`${dir}/Config.luau`])
+  assert.deepEqual(readdirSync(join(ctx.root, dir)), ['.gitkeep'])
+
+  // The last child moved out to another folder: same.
+  await ctx.engine.applyChanges(MK, [{ kind: 'added', node: script }])
+  const moved = await ctx.engine.applyChanges(MK, [{ kind: 'moved', id: script.id, from: script.path, node: { ...script, path: [...MOVES, 'Dash', 'Extra'] } }])
+  assert.ok(moved.some((e) => e.action === 'renamed' && e.file === 'src/skills/Server/Moves/Dash/Extra.luau'))
+  assert.deepEqual(readdirSync(join(ctx.root, dir)), ['.gitkeep'])
+  assert.ok(!existsSync(join(ctx.root, 'src/skills/Server/Moves/Dash/.gitkeep')))
+
+  // Renaming the empty folder carries the .gitkeep (and its base) along.
+  const renamed = await ctx.engine.applyChanges(MK, [{ kind: 'renamed', id: folder.id, from: folder.path, node: { ...folder, path: [...MOVES, 'Later'] } }])
+  assert.ok(renamed.some((e) => e.action === 'renamed' && e.file === 'src/skills/Server/Moves/Later'))
+  assert.deepEqual(readdirSync(join(ctx.root, 'src/skills/Server/Moves/Later')), ['.gitkeep'])
+  assert.ok(!existsSync(join(ctx.root, dir)))
+
+  // The empty folder deleted in Studio: .gitkeep trashed and the directory pruned.
+  const gone = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: folder.id, path: [...MOVES, 'Later'] }])
+  assert.deepEqual(actions(gone, 'trashed'), ['src/skills/Server/Moves/Later/.gitkeep'])
+  assert.ok(!existsSync(join(ctx.root, 'src/skills/Server/Moves/Later')))
+  assert.equal(ctx.engine.gate(MK), 'clear')
+})
+
+test('an empty folder pulled from git (a .gitkeep without a base) is disk-ahead, not a Studio delete', async () => {
+  const ctx = await setup()
+  await agreed(ctx)
+  put(ctx.root, 'src/skills/Server/Moves/FromGit/.gitkeep', '')
+  const entries = await snapshot(ctx.engine, MK, MATCH, studio(ctx).filter((n) => n.path[n.path.length - 1] !== 'FromGit'))
+  assert.deepEqual(actions(entries, 'disk-ahead'), ['src/skills/Server/Moves/FromGit/.gitkeep'])
+  assert.deepEqual(actions(entries, 'trashed'), [])
+  assert.ok(existsSync(join(ctx.root, 'src/skills/Server/Moves/FromGit/.gitkeep')))
+  // Once Studio has it (Rojo created the Folder), it is a plain empty folder: nothing to do.
+  const synced = await snapshot(ctx.engine, MK, MATCH, studio(ctx))
+  assert.deepEqual(synced.filter((e) => !['same', 'unmapped'].includes(e.action)), [])
 })

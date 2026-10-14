@@ -138,6 +138,7 @@ export class UpdateController {
     const next: UpdateSettings = { ...this.readSettings() }
     if (typeof patch.autoCheck === 'boolean') next.autoCheck = patch.autoCheck
     if (patch.channel === 'stable' || patch.channel === 'beta') next.channel = patch.channel
+    if (typeof patch.quick === 'boolean') next.quick = patch.quick
     const channelChanged = next.channel !== this.state.channel
     this.deps.settings.set(SETTINGS_KEY, next)
     this.deps.updater.allowPrerelease = next.channel === 'beta'
@@ -173,7 +174,7 @@ export class UpdateController {
   private readSettings(): UpdateSettings {
     const raw = this.deps.settings.get<Partial<UpdateSettings>>(SETTINGS_KEY, {}) ?? {}
     const channel: UpdateChannel = raw.channel === 'beta' ? 'beta' : 'stable'
-    return { autoCheck: raw.autoCheck !== false, channel }
+    return { autoCheck: raw.autoCheck !== false, channel, quick: raw.quick !== false }
   }
 
   private schedule(): void {

@@ -97,7 +97,7 @@ const methods = [
   'qolGetSettings', 'qolSetSettings', 'qolBugReportStart', 'qolBugReport', 'qolBugReportPreview', 'qolRevealPath', 'qolReportError',
   'qolLoadSession', 'qolSaveSession', 'qolDigest', 'qolSeen', 'qolTestNotify',
   // Self-update (electron-updater)
-  'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease',
+  'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease', 'updateQuickRestart',
   // Forge Doctor, spending cap, Add to game (qol-c)
   'doctorRun', 'doctorLast', 'doctorFix',
   'spendState', 'spendSetSettings', 'spendRaiseToday', 'spendClearOverride',

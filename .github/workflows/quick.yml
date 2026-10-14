@@ -1,0 +1,136 @@
+# Quick update: publishes the app code (electron-vite's out/: main, preload, renderer) without
+# building installers, so fixes reach installed Forge apps a few minutes after a run. See README
+# "Quick updates". Run it with:  gh workflow run quick.yml -R Acidgorgon/rbx-forge --ref main
+#
+# What it publishes, on ONE rolling GitHub release with the tag "quick" (prerelease, never "latest"):
+#   forge-code-<version>.zip   out/main, out/preload, out/renderer (no source maps)
+#   quick-<channel>.json       signed manifest: version (<package.json version>-quick.<run number>),
+#                              channel, commit, build time, Electron version, the exact version of
+#                              every production package (package-lock.json), the zip's sha256 and the
+#                              sha256 of every file in it. Ed25519 signature over the manifest.
+# The app checks quick-stable.json (Beta channel: also quick-beta.json), verifies the signature with
+# the public key built into it, and only takes a newer bundle built for its exact Electron and
+# package versions; anything else needs a full release (build.yml).
+#
+# The "quick" tag points at the repository's first commit: GitHub dates a release by its tag's
+# commit, so this release stays at the bottom of the release list and the atom feed, where
+# electron-updater (full updates, Beta channel) never mistakes it for the newest release.
+#
+# Signing: the QUICK_UPDATE_SIGNING_KEY secret holds the Ed25519 private key; it must match the
+# public key in src/main/services/quick/publicKey.ts. Without it (or with a mismatch) the run fails
+# before building and publishes nothing; bundles are never published unsigned.
+name: Quick update
+
+on:
+  workflow_dispatch:
+    inputs:
+      channel:
+        description: 'stable: every user with Quick updates on; beta: only users on the Beta channel'
+        type: choice
+        options: [stable, beta]
+        default: stable
+
+permissions:
+  contents: read
+
+# Its own group (not build.yml's): one quick publish at a time, never cancelled half-way.
+concurrency:
+  group: quick-update
+  cancel-in-progress: false
+
+jobs:
+  quick:
+    name: Quick update (${{ inputs.channel }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: write
+    env:
+      CHANNEL: ${{ inputs.channel }}
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0 # the first commit, for the "quick" tag
+          filter: blob:none
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+          cache: npm
+      # Fails fast, with an explanation, when the secret is missing or does not match the app's key.
+      - name: Check the signing key
+        env:
+          QUICK_UPDATE_SIGNING_KEY: ${{ secrets.QUICK_UPDATE_SIGNING_KEY }}
+        run: node --experimental-strip-types build/quick-bundle.ts check-key
+      - name: Version
+        id: v
+        shell: bash
+        run: |
+          base=$(node -p "require('./package.json').version")
+          case "$base" in
+            *-*) echo "::error::package.json has a prerelease version ($base); quick versions are <x.y.z>-quick.<run>"; exit 1 ;;
+          esac
+          echo "version=$base-quick.$GITHUB_RUN_NUMBER" >> "$GITHUB_OUTPUT"
+          echo "Quick update $base-quick.$GITHUB_RUN_NUMBER ($CHANNEL) from $GITHUB_SHA" >> "$GITHUB_STEP_SUMMARY"
+      # No Electron binary needed: tests run in Node and electron-vite only bundles.
+      - run: npm ci
+        env:
+          ELECTRON_SKIP_BINARY_DOWNLOAD: '1'
+      - run: npm run typecheck
+      - name: Test
+        shell: bash
+        # Failing tests also go into one annotation, readable from the run page and the API.
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt || {
+            msg=$(grep -E -A14 '^not ok|^ +not ok' test-output.txt | head -300 | sed -e 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Failing tests::$msg"
+            exit 1
+          }
+      - run: npm run build
+      - name: Bundle and sign
+        env:
+          QUICK_UPDATE_SIGNING_KEY: ${{ secrets.QUICK_UPDATE_SIGNING_KEY }}
+        run: node --experimental-strip-types build/quick-bundle.ts bundle --version "${{ steps.v.outputs.version }}" --channel "$CHANNEL" --commit "$GITHUB_SHA" --out quick
+      - name: Publish to the "quick" release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          VERSION: ${{ steps.v.outputs.version }}
+        run: |
+          set -euo pipefail
+          repo="$GITHUB_REPOSITORY"
+          if ! gh release view quick --repo "$repo" >/dev/null 2>&1; then
+            root=$(git rev-list --max-parents=0 HEAD | tail -n 1)
+            gh release create quick --repo "$repo" --target "$root" --prerelease --latest=false \
+              --title "Quick updates" --notes "Rolling quick update bundles for RBX Forge (README \"Quick updates\"). Not an installer."
+          fi
+          # The zip first: a manifest must never point at a bundle that is not there yet.
+          gh release upload quick --repo "$repo" --clobber "quick/forge-code-$VERSION.zip"
+          gh release upload quick --repo "$repo" --clobber "quick/quick-$CHANNEL.json"
+          gh release edit quick --repo "$repo" --prerelease --latest=false \
+            --notes "Rolling quick update bundles for RBX Forge (README \"Quick updates\"). Not an installer. Latest $CHANNEL: $VERSION from $GITHUB_SHA ($(date -u +%Y-%m-%dT%H:%MZ))."
+          # Prune old zips: keep the ones the current manifests name, plus the two newest others
+          # (an app may have read the previous manifest a moment ago).
+          mkdir -p current
+          gh release download quick --repo "$repo" --pattern 'quick-*.json' --dir current --clobber || true
+          gh release view quick --repo "$repo" --json assets > assets.json
+          node -e '
+            const fs = require("fs")
+            const keep = new Set()
+            for (const f of fs.readdirSync("current")) {
+              try { keep.add(JSON.parse(JSON.parse(fs.readFileSync("current/" + f, "utf8")).manifest).zip.name) } catch {}
+            }
+            const zips = JSON.parse(fs.readFileSync("assets.json", "utf8")).assets
+              .filter((a) => /^forge-code-.*\.zip$/.test(a.name))
+              .sort((a, b) => String(b.createdAt).localeCompare(String(a.createdAt)))
+            let spare = 2
+            for (const a of zips) {
+              if (keep.has(a.name)) continue
+              if (spare-- > 0) continue
+              console.log(a.name)
+            }
+          ' > prune.txt
+          while read -r name; do
+            [ -n "$name" ] && gh release delete-asset quick "$name" --repo "$repo" -y && echo "pruned $name"
+          done < prune.txt
+          echo "Published $VERSION to https://github.com/$repo/releases/tag/quick" >> "$GITHUB_STEP_SUMMARY"

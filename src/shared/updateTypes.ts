@@ -49,11 +49,44 @@ export interface UpdateState {
   percent?: number
   error?: UpdateError
   lastCheck?: number
+  // Quick updates (main/services/quick): new app code without a new installer.
+  quick?: QuickUpdateState
 }
 
 export interface UpdateSettings {
   autoCheck: boolean
   channel: UpdateChannel
+  // Quick updates on (default). Off: no quick downloads, and the next launch runs the installed code.
+  quick: boolean
+}
+
+// Which code this launch runs: the installed app's own ("bundled") or a quick update from
+// userData/code/<version>.
+export interface RunningCode {
+  source: 'bundled' | 'quick'
+  // The code's version: the app version, or <version>-quick.<n>.
+  version: string
+  // The installed app's version (what full updates compare against).
+  appVersion: string
+}
+
+// unavailable: this build cannot use quick updates (note says why). none: nothing newer.
+// ready: downloaded and verified, applies on restart. needsFull: a newer quick build exists but needs
+// a newer installed app (different Electron or packages; message lists them).
+export type QuickPhase = 'unavailable' | 'off' | 'idle' | 'checking' | 'none' | 'downloading' | 'ready' | 'needsFull' | 'error'
+
+export interface QuickUpdateState {
+  phase: QuickPhase
+  enabled: boolean
+  running: RunningCode
+  // The quick version that is ready (or downloading, or needs a full update).
+  version?: string
+  // Commit and build time of that version.
+  commit?: string
+  createdAt?: string
+  note?: string
+  message?: string
+  lastCheck?: number
 }
 
 export interface UpdateApi {
@@ -65,6 +98,9 @@ export interface UpdateApi {
   updateInstall(): Promise<void>
   // Opens the offered (or latest) release page in the browser.
   updateOpenRelease(): Promise<void>
+  // Restarts Forge into the downloaded quick update (quick phase ready). The renderer asks first,
+  // like updateInstall.
+  updateQuickRestart(): Promise<void>
 }
 
 export interface UpdateEvents {

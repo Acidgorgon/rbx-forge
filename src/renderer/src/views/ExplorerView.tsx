@@ -1,5 +1,7 @@
 // Explorer (SPEC §7.3, §8.1, §8.2): the Roblox game tree, the repo files and the feature trios,
 // with the context menu, inline create flow from GenTree templates, reveal and keyboard navigation.
+// The Game and Files views multi-select (Ctrl/Cmd-click, Shift-click, Ctrl/Cmd+A, Shift+Arrow; the
+// model is shared/explorerSelection.ts): delete, open and copy act on the whole selection.
 import { useEffect, useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent, type MouseEvent } from 'react'
 import type { ScriptEntry, TreeNode } from '@shared/types'
 import { robloxPaths } from '@shared/robloxPath'
@@ -12,9 +14,10 @@ import { createHint, createItem, defaultTarget, dirForInstance, instanceForDir, 
 import { validateName } from '../shell/Overlays'
 import { errorText, isMac, keyHint } from '../lib/format'
 import { entryTarget, isUnder, protectedReason } from '@shared/fileOps'
+import { clearKeys, clickSelect, EMPTY_SELECTION, moveFocus, planDelete, pruneSelection, selectAll, single, uniqueKey, unselectedInside, type DeleteCandidate, type DeletePlan, type Selection } from '@shared/explorerSelection'
 import { sparks } from '../lib/sparks'
 import { shouldConfirmDelete } from '../lib/deleteConfirm'
-import { deleteFeature, deleteInStudio, trashName } from './deleteFlows'
+import { deleteFeature, deleteInStudio, deleteManyFromDisk, deleteManyInStudio, studioDeletable, trashName } from './deleteFlows'
 
 type Mode = 'tree' | 'files' | 'features'
 
@@ -35,7 +38,13 @@ interface Row {
   blinkOut: boolean
   suffix?: string | null
   meta?: string
+  // Shown only because something under it matches the filter (Game view): left out of Ctrl/Cmd+A and
+  // Shift ranges.
+  context?: boolean
 }
+
+// Why a selected project-file mount point is left out of a batch delete.
+const MOUNT_REASON = 'mapped in the project file'
 
 const DEFAULT_OPEN = ['ReplicatedStorage', 'ReplicatedStorage/Shared', 'ReplicatedStorage/Shared/Features', 'ServerScriptService', 'ServerScriptService/Server', 'StarterPlayer', 'StarterPlayer/StarterPlayerScripts', 'src', 'src/shared', 'src/server', 'src/client']
 const OPEN_KEY = 'forge.explorer.open'
@@ -52,6 +61,22 @@ function loadOpen(): Set<string> {
 
 function matches(node: TreeNode, q: string): boolean {
   return node.name.toLowerCase().includes(q) || node.children.some((c) => matches(c, q))
+}
+
+// A DOM id for a row key (rows are role="treeitem" and the tree points aria-activedescendant at the
+// focus row). Keys hold any character, so hash them (FNV-1a); clashes get the row index appended.
+function rowIds(keys: readonly string[]): Map<string, string> {
+  const ids = new Map<string, string>()
+  const used = new Set<string>()
+  keys.forEach((key, i) => {
+    let h = 0x811c9dc5
+    for (let j = 0; j < key.length; j++) h = Math.imul(h ^ key.charCodeAt(j), 0x01000193)
+    let id = `ex-${(h >>> 0).toString(36)}`
+    if (used.has(id)) id += `-${i}`
+    used.add(id)
+    ids.set(key, id)
+  })
+  return ids
 }
 
 function Name({ text, q }: { text: string; q: string }) {
@@ -113,7 +138,11 @@ export function ExplorerView() {
   }
   const [filter, setFilter] = useState('')
   const [open, setOpen] = useState<Set<string>>(loadOpen)
-  const [selected, setSelected] = useState<string | null>(null)
+  // Multi-select: `sel.keys` are what commands act on; `sel.focus` is the keyboard cursor (outlined
+  // when it is not the one selected row).
+  const [sel, setSel] = useState<Selection>(EMPTY_SELECTION)
+  const selected = sel.focus
+  const setSelected = (key: string | null) => setSel(single(key))
   const [menuTarget, setMenuTarget] = useState<string | null>(null)
   const [creating, setCreating] = useState<Creating | null>(null)
   const [flashKey, setFlashKey] = useState<string | null>(null)
@@ -147,11 +176,13 @@ export function ExplorerView() {
   const rows = useMemo<Row[]>(() => {
     const out: Row[] = []
     if (mode === 'tree') {
-      const walk = (nodes: TreeNode[], depth: number, parent: string[], parentStudio: boolean, parentWally: boolean) => {
+      // Keys are the instance path joined with "/", made unique among same-named siblings (#2...).
+      const used = new Set<string>()
+      const walk = (nodes: TreeNode[], depth: number, parent: string[], parentKey: string | null, parentStudio: boolean, parentWally: boolean) => {
         for (const node of nodes) {
           if (q && !matches(node, q)) continue
           const instancePath = [...parent, node.name]
-          const key = instancePath.join('/')
+          const key = uniqueKey(used, parentKey === null ? node.name : `${parentKey}/${node.name}`)
           const studio = node.origin === 'studio'
           const wally = parentWally || ((node.name === 'Packages' || node.name === 'ServerPackages' || node.name === 'DevPackages') && depth <= 1)
           out.push({
@@ -166,12 +197,13 @@ export function ExplorerView() {
             studioTop: studio && !parentStudio,
             wally: wally && !parentWally,
             blinkOut: !!node.filePath && blinkOutputs.has(node.filePath),
-            suffix: initSuffix(node.filePath)
+            suffix: initSuffix(node.filePath),
+            context: !!q && !node.name.toLowerCase().includes(q)
           })
-          if (node.children.length && (q || open.has(key))) walk(node.children, depth + 1, instancePath, studio, wally)
+          if (node.children.length && (q || open.has(key))) walk(node.children, depth + 1, instancePath, key, studio, wally)
         }
       }
-      walk(roots(state.tree), 0, [], false, false)
+      walk(roots(state.tree), 0, [], null, false, false)
     } else if (mode === 'files') {
       const paths = [...scripts.map((s) => s.path), ...(state.blink?.files?.map((m) => m.file) ?? [state.blink?.file]).filter((x): x is string => !!x)]
       const tree = fileTree([...new Set(paths)])
@@ -189,6 +221,34 @@ export function ExplorerView() {
   }, [mode, state.tree, scripts, open, q, blinkOutputs, state.blink])
 
   const features = useMemo(() => featuresOf(scripts).filter((f) => !q || f.name.toLowerCase().includes(q)), [scripts, q])
+
+  // ---- selection
+  const visibleKeys = useMemo(() => rows.map((r) => r.key), [rows])
+  const contextKeys = useMemo(() => new Set(rows.filter((r) => r.context).map((r) => r.key)), [rows])
+  const ids = useMemo(() => rowIds(visibleKeys), [visibleKeys])
+  const selSet = useMemo(() => new Set(sel.keys), [sel.keys])
+  const selectedRows = useMemo(() => rows.filter((r) => selSet.has(r.key)), [rows, selSet])
+  const focusRow = sel.focus === null ? undefined : rows.find((r) => r.key === sel.focus)
+  // The one selected row (what F2, Enter, Space and the single-row copies act on), or none.
+  const one = selectedRows.length === 1 ? selectedRows[0] : undefined
+  // A filter, collapse, delete or mode switch keeps only the selected rows still visible.
+  useEffect(() => setSel((s) => pruneSelection(s, visibleKeys)), [visibleKeys])
+  // Another project: its rows can share keys with this one's (same template), so start over.
+  const projectRoot = state.project?.root ?? null
+  const lastRoot = useRef(projectRoot)
+  useEffect(() => {
+    if (lastRoot.current === projectRoot) return
+    lastRoot.current = projectRoot
+    setSel(EMPTY_SELECTION)
+  }, [projectRoot])
+  // Every file the Explorer knows of: a batch delete names the ones inside a folder that were not selected.
+  const knownFiles = useMemo(() => {
+    const out = new Set<string>(scripts.map((s) => s.path))
+    for (const m of state.blink?.files ?? (state.blink ? [state.blink] : [])) if (m.file) out.add(m.file)
+    const walk = (nodes: TreeNode[]) => nodes.forEach((n) => (n.filePath && out.add(n.filePath), walk(n.children)))
+    walk(state.tree)
+    return [...out]
+  }, [scripts, state.blink, state.tree])
 
   // ---- reveal
   useEffect(() => {
@@ -209,7 +269,7 @@ export function ExplorerView() {
 
   // ---- create
   const beginCreate = (kind: NewKind, targetPath?: string[] | null) => {
-    let ip = targetPath ?? (selected && mode === 'tree' ? selected.split('/') : null)
+    let ip = targetPath ?? (mode === 'tree' ? (one ?? focusRow)?.instancePath ?? null : null)
     if (kind === 'Feature') ip = ['ReplicatedStorage', 'Shared', 'Features']
     // A script file can't hold new children unless it is an init folder; use its parent.
     if (ip && kind !== 'Feature') {
@@ -370,10 +430,121 @@ export function ExplorerView() {
     else confirmDelete(r)
   }
 
+  // ---- multi-select actions
+  // Why a selected row is left out of a batch delete (Wally packages, Blink output, mounts...).
+  const skipReason = (r: Row): string => {
+    const at = r.filePath ?? r.dir ?? r.instancePath?.join('/') ?? ''
+    if (r.wally || /(^|\/)((Server|Dev)?Packages|_Index)(\/|$)/.test(at)) return 'Wally package, read-only'
+    if (r.blinkOut) return 'generated by Blink'
+    const p = r.filePath ?? r.dir ?? (mode === 'tree' && r.instancePath ? dirForInstance(state.tree, r.instancePath) : null)
+    if (p && protectedReason(entryTarget(p, !r.filePath).path, state.project?.mounts ?? [])) return MOUNT_REASON
+    return 'no file or folder of its own'
+  }
+
+  const candidate = (r: Row): DeleteCandidate => {
+    const instancePath = mode === 'tree' ? r.instancePath : undefined
+    if (r.studio && r.instancePath && mode === 'tree') return { key: r.key, name: r.name, kind: 'studio', instancePath: r.instancePath, className: r.className }
+    const entry = diskEntry(r)
+    if (!entry) {
+      const reason = skipReason(r)
+      // Where it is on disk, for telling whether a selected folder holds it: its own file or folder,
+      // or (a project-file mount) the folder it maps.
+      const path = r.filePath ?? r.dir ?? (reason === MOUNT_REASON && instancePath ? dirForInstance(state.tree, instancePath) ?? undefined : undefined)
+      return { key: r.key, name: r.name, kind: 'skip', reason, path, instancePath }
+    }
+    const t = entryTarget(entry.path, entry.isDir)
+    return { key: r.key, name: r.name, kind: 'disk', path: t.path, isDir: t.isDir, file: r.filePath, instancePath }
+  }
+
+  // The selection's delete plan, and per folder in it how many files it holds that were not selected
+  // (hidden by the filter or a collapse): those always get the confirmation.
+  const selectionPlan = (): { plan: DeletePlan; hidden: { path: string; count: number }[] } => {
+    const candidates = selectedRows.map(candidate)
+    const plan = planDelete(candidates)
+    return { plan, hidden: unselectedInside(plan, candidates, knownFiles) }
+  }
+
+  // Del with several rows selected: the files and folders to the trash (one confirm); a selection of
+  // only Studio-only instances goes through Delete in Studio instead.
+  const deleteSelection = () => {
+    const { plan, hidden } = selectionPlan()
+    if (!plan.disk.length && plan.studio.length) void deleteManyInStudio(state, actions, plan)
+    else deleteManyFromDisk(state, actions, plan, hidden)
+  }
+
+  const openMany = async (paths: string[]) => {
+    for (const p of paths) await actions.openFile(p)
+  }
+
+  const copyLines = (lines: string[], label: string) => void actions.copy(lines.join('\n'), label)
+
+  const multiMenu = (e: MouseEvent, r: Row) => {
+    setMenuTarget(r.key)
+    const at = { clientX: e.clientX, clientY: e.clientY }
+    e.preventDefault()
+    const picked = selectedRows
+    const { plan, hidden } = selectionPlan()
+    const files = picked.filter((x) => x.filePath && !x.studio).map((x) => x.filePath!)
+    const scriptsOnly = files.every((f) => /\.luau?$/.test(f))
+    const diskPaths = picked.map((x) => x.filePath ?? x.dir).filter((x): x is string => !!x)
+    const robloxDots = picked.filter((x) => x.instancePath).map((x) => robloxPaths(x.instancePath!).dot)
+    const items: MenuEntry[] = [{ header: `${picked.length} selected` }]
+    if (files.length) {
+      items.push({ label: `Open ${files.length} ${scriptsOnly ? 'script' : 'file'}${files.length === 1 ? '' : 's'}`, icon: <Icon name="file" />, hint: '↵', onSelect: () => void openMany(files) })
+    }
+    if (mode === 'tree' && robloxDots.length) {
+      const reqs = picked.filter((x) => x.instancePath && !x.studio).map((x) => requireExpression(x.instancePath!))
+      items.push({
+        label: 'Copy paths',
+        icon: <Icon name="copy" />,
+        hint: keyHint('alt+mod+c'),
+        submenu: [
+          { header: 'Copy as, one per line' },
+          { label: `Roblox paths (${robloxDots.length})`, accel: 'd', onSelect: () => copyLines(robloxDots, `${robloxDots.length} Roblox paths`) },
+          { label: `require(…) (${reqs.length})`, accel: 'r', disabled: !reqs.length, reason: 'Studio-only instances have no require path', onSelect: () => copyLines(reqs, `${reqs.length} requires`) },
+          { label: `File paths (${diskPaths.length})`, accel: 'p', disabled: !diskPaths.length, reason: 'None of these is a file in the repo', onSelect: () => copyLines(diskPaths, `${diskPaths.length} file paths`) }
+        ]
+      })
+    } else if (diskPaths.length) {
+      items.push({ label: 'Copy paths', icon: <Icon name="copy" />, sub: `${diskPaths.length} repo paths, one per line`, onSelect: () => copyLines(diskPaths, `${diskPaths.length} file paths`) })
+    }
+    if (files.length || robloxDots.length) {
+      const refs = files.length ? files : robloxDots
+      items.push({ label: 'Ask Assistant about these', icon: <Icon name="at" />, onSelect: () => actions.ask(`${refs.map((x) => `\`${x}\``).join(' ')} `) })
+    }
+    items.push('separator')
+    items.push({ label: 'Rename…', icon: <Icon name="pencil" />, disabled: true, reason: 'Rename works on one item at a time' })
+    const reasons = [...new Set(plan.skipped.map((x) => x.reason))]
+    const skips = plan.skipped.length ? `leaves out ${plan.skipped.length}${reasons.length === 1 ? ` (${reasons[0]})` : ' that cannot be deleted'}` : undefined
+    if (plan.disk.length || !plan.studio.length) {
+      items.push(
+        plan.disk.length
+          ? { label: `Delete ${plan.disk.length} item${plan.disk.length === 1 ? '' : 's'}`, icon: <Icon name="trash" />, hint: isMac ? '⌘⌫' : 'Del', danger: true, sub: skips, onSelect: () => deleteManyFromDisk(state, actions, plan, hidden) }
+          : { label: 'Delete', icon: <Icon name="trash" />, disabled: true, reason: plan.skipped[0] ? `Nothing here can be deleted (${plan.skipped[0].reason})` : 'Nothing here can be deleted' }
+      )
+    }
+    if (!plan.studio.length) {
+      menu.openAt(at, items)
+      return
+    }
+    // Studio-only rows: the same check as the single "Delete in Studio", then one batch.
+    void studioDeletable(plan).then(({ ok, refused }) => {
+      const del: MenuEntry = ok.length
+        ? { label: `Delete ${ok.length} in Studio`, icon: <Icon name="trash" />, hint: plan.disk.length ? undefined : isMac ? '⌘⌫' : 'Del', danger: true, sub: refused.length ? `${refused.length} refused: ${refused[0].reason}` : undefined, onSelect: () => void deleteManyInStudio(state, actions, plan) }
+        : { label: `Delete ${plan.studio.length} in Studio`, icon: <Icon name="trash" />, disabled: true, reason: refused[0]?.reason }
+      menu.openAt(at, [...items, del])
+    })
+  }
+
   const featureInfo = (name: string) => featuresOf(scripts).find((x) => x.name === name)
 
   const rowMenu = (e: MouseEvent, r: Row) => {
-    setSelected(r.key)
+    // Right-click inside a multi-selection acts on all of it. Outside one, the menu acts on that row
+    // alone and the multi-selection stays (only the focus moves there); with one row or none selected,
+    // the right-clicked row becomes the selection.
+    if (selSet.has(r.key) && sel.keys.length > 1) return multiMenu(e, r)
+    if (sel.keys.length > 1) setSel((s) => ({ ...s, focus: r.key }))
+    else setSelected(r.key)
     setMenuTarget(r.key)
     const items: MenuEntry[] = []
     const ip = r.instancePath ?? (r.filePath ? instancePathOfFile(state.tree, r.filePath) : null)
@@ -502,19 +673,40 @@ export function ExplorerView() {
     else if (r.hasChildren) toggle(mode === 'files' ? r.dir! : r.key)
   }
 
+  // Plain click: select and open (as before). Ctrl/Cmd-click toggles, Shift-click selects a range;
+  // neither opens anything.
+  const onRowClick = (e: MouseEvent, r: Row) => {
+    const toggle = isMac ? e.metaKey : e.ctrlKey
+    if (toggle || e.shiftKey) {
+      setSel((s) => clickSelect(s, visibleKeys, r.key, { toggle, range: e.shiftKey }, contextKeys))
+      return
+    }
+    activate(r, true)
+  }
+
   const onKey = (e: RKeyboardEvent) => {
-    if ((e.target as HTMLElement).tagName === 'INPUT') return
+    // An open context menu handles (and prevents) its own arrows / Enter first.
+    if ((e.target as HTMLElement).tagName === 'INPUT' || e.defaultPrevented) return
+    // The arrows move from, expand and collapse the focus row (the outlined cursor). Everything else
+    // acts on the selected rows only: with nothing selected, Enter, F2, Delete and copy do nothing,
+    // even when the cursor sits on a row that was just Ctrl/Cmd-clicked off.
     const i = rows.findIndex((r) => r.key === selected)
     const r = rows[i]
     const openKey = (x: Row) => (mode === 'files' ? x.dir! : x.key)
     const mod = e.metaKey || e.ctrlKey
+    const targets = selectedRows
+    const many = targets.length > 1
     if (e.key === 'ArrowDown' || e.key === 'ArrowUp') {
       e.preventDefault()
-      const next = rows[Math.max(0, Math.min(rows.length - 1, i + (e.key === 'ArrowDown' ? 1 : -1)))]
-      if (next) {
-        setSelected(next.key)
-        listRef.current?.querySelector(`[data-key="${CSS.escape(next.key)}"]`)?.scrollIntoView({ block: 'nearest' })
-      }
+      const next = moveFocus(sel, visibleKeys, e.key === 'ArrowDown' ? 1 : -1, e.shiftKey, contextKeys)
+      setSel(next)
+      if (next.focus) listRef.current?.querySelector(`[data-key="${CSS.escape(next.focus)}"]`)?.scrollIntoView({ block: 'nearest' })
+    } else if (mod && !e.shiftKey && !e.altKey && e.key.toLowerCase() === 'a' && rows.length) {
+      e.preventDefault()
+      setSel((s) => selectAll(s, visibleKeys, contextKeys))
+    } else if (e.key === 'Escape' && sel.keys.length) {
+      e.preventDefault()
+      setSel(clearKeys)
     } else if (e.key === 'ArrowRight' && r?.hasChildren) {
       e.preventDefault()
       toggle(openKey(r), true)
@@ -525,26 +717,38 @@ export function ExplorerView() {
         const parent = rows.slice(0, i).reverse().find((x) => x.depth < r.depth)
         if (parent) setSelected(parent.key)
       }
-    } else if (e.key === 'Enter' && r) {
+    } else if (e.key === 'Enter' && many) {
       e.preventDefault()
-      activate(r, false)
-    } else if (e.key === ' ' && r) {
+      void openMany(targets.filter((x) => x.filePath && !x.studio).map((x) => x.filePath!))
+    } else if (e.key === 'Enter' && one) {
       e.preventDefault()
-      activate(r, true)
-    } else if (e.key === 'F2' && r) {
+      activate(one, false)
+    } else if (e.key === ' ' && one) {
       e.preventDefault()
-      const f = featureOf(r.filePath, r.instancePath)
+      activate(one, true)
+    } else if (e.key === 'F2' && one) {
+      e.preventDefault()
+      const f = featureOf(one.filePath, one.instancePath)
       if (f) actions.openDialog({ kind: 'renameFeature', from: f })
-      else beginRename(r)
-    } else if ((e.key === 'Delete' || (isMac && e.key === 'Backspace' && e.metaKey)) && r) {
+      else beginRename(one)
+    } else if ((e.key === 'Delete' || (isMac && e.key === 'Backspace' && e.metaKey)) && targets.length) {
       e.preventDefault()
-      deleteRow(r)
-    } else if (mod && e.altKey && e.key.toLowerCase() === 'c' && r?.instancePath) {
+      if (many) deleteSelection()
+      else deleteRow(targets[0])
+    } else if (mod && e.altKey && e.key.toLowerCase() === 'c' && many) {
       e.preventDefault()
-      void actions.copy(robloxPaths(r.instancePath).dot)
-    } else if (mod && e.shiftKey && e.key.toLowerCase() === 'c' && r?.instancePath) {
+      const dots = targets.filter((x) => x.instancePath).map((x) => robloxPaths(x.instancePath!).dot)
+      if (dots.length) copyLines(dots, `${dots.length} Roblox paths`)
+    } else if (mod && e.altKey && e.key.toLowerCase() === 'c' && one?.instancePath) {
       e.preventDefault()
-      void actions.copy(requireExpression(r.instancePath), 'require')
+      void actions.copy(robloxPaths(one.instancePath).dot)
+    } else if (mod && e.shiftKey && e.key.toLowerCase() === 'c' && many) {
+      e.preventDefault()
+      const reqs = targets.filter((x) => x.instancePath && !x.studio).map((x) => requireExpression(x.instancePath!))
+      if (reqs.length) copyLines(reqs, `${reqs.length} requires`)
+    } else if (mod && e.shiftKey && e.key.toLowerCase() === 'c' && one?.instancePath) {
+      e.preventDefault()
+      void actions.copy(requireExpression(one.instancePath), 'require')
     } else if (e.altKey && e.key.toLowerCase() === 'f') {
       e.preventDefault()
       filterRef.current?.focus()
@@ -552,7 +756,7 @@ export function ExplorerView() {
   }
 
   const headMenu = (el: HTMLElement) => {
-    const ip = selected && mode === 'tree' ? selected.split('/') : null
+    const ip = mode === 'tree' ? (one ?? focusRow)?.instancePath ?? null : null
     const target = ip ? (findNode(state.tree, ip)?.filePath && !initSuffix(findNode(state.tree, ip)?.filePath) ? ip.slice(0, -1) : ip) : defaultTarget(state.tree, 'ModuleScript')
     menu.openUnder(el, newSubmenu(target, target ? dirForInstance(state.tree, target) : null))
   }
@@ -605,12 +809,13 @@ export function ExplorerView() {
       <div key={r.key}>
         <div
           data-key={r.key}
+          id={ids.get(r.key)}
           role="treeitem"
-          aria-selected={selected === r.key}
+          aria-selected={selSet.has(r.key)}
           aria-expanded={r.hasChildren ? isOpen : undefined}
-          className={`trow${selected === r.key ? ' sel' : ''}${active ? ' active' : ''}${r.studio || r.wally ? ' dim' : ''}${menuTarget === r.key ? ' ctx' : ''}${flashKey === r.key ? ' flash' : ''}`}
+          className={`trow${selSet.has(r.key) ? ' sel' : ''}${r.key === selected && !(sel.keys.length === 1 && sel.keys[0] === r.key) ? ' focus' : ''}${active ? ' active' : ''}${r.studio || r.wally ? ' dim' : ''}${menuTarget === r.key ? ' ctx' : ''}${flashKey === r.key ? ' flash' : ''}`}
           style={{ paddingLeft: 8 + r.depth * 12 }}
-          onClick={() => activate(r, true)}
+          onClick={(e) => onRowClick(e, r)}
           onDoubleClick={() => r.filePath && void actions.openFile(r.filePath)}
           onContextMenu={(e) => rowMenu(e, r)}
           title={r.instancePath ? `${robloxPaths(r.instancePath).dot}\n${r.className}${r.filePath ? `\n${r.filePath}` : ''}${r.studio ? '\nStudio only (not in the repo)' : ''}` : r.filePath ?? r.dir}
@@ -658,6 +863,14 @@ export function ExplorerView() {
     <>
       <div className="panel-head">
         <span className="panel-title">Explorer</span>
+        {sel.keys.length > 1 && mode !== 'features' && (
+          <span className="sel-chip" role="status" title={`${sel.keys.length} selected · Esc clears`}>
+            {sel.keys.length} selected
+            <button className="sel-chip-x" onClick={() => setSel(clearKeys)} aria-label="Clear selection" title="Clear selection (Esc)">
+              <Icon name="x" size={10} />
+            </button>
+          </span>
+        )}
         <button className="icon-btn" title="New…" onClick={(e) => headMenu(e.currentTarget)}>
           <Icon name="plus" size={14} />
         </button>
@@ -682,7 +895,7 @@ export function ExplorerView() {
         <button className={mode === 'files' ? 'on' : ''} onClick={() => setMode('files')}>Files</button>
         <button className={mode === 'features' ? 'on' : ''} onClick={() => setMode('features')}>Features</button>
       </div>
-      <div className="panel-body tree" role="tree" tabIndex={0} ref={listRef} onKeyDown={onKey}>
+      <div className="panel-body tree" role="tree" aria-multiselectable={mode !== 'features'} aria-activedescendant={mode !== 'features' && focusRow ? ids.get(focusRow.key) : undefined} tabIndex={0} ref={listRef} onKeyDown={onKey}>
         {mode === 'tree' && state.tree.length > 0 && (
           <div className="tree-section">
             game · rojo{rojo?.state === 'running' ? '' : ` (${rojo?.state ?? 'off'})`} · {studioCount ? `${studioCount} studio-only` : 'repo'}

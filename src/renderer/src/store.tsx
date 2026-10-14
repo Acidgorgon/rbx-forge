@@ -32,7 +32,7 @@ import type {
   UsageSnapshot
 } from '@shared/types'
 import { basename, instanceNameOfFile } from './lib/roblox'
-import { isUnder, movedPath, type PathChange } from '@shared/fileOps'
+import { isUnder, movedPath, type PathChange, type TrashBatchResult } from '@shared/fileOps'
 import { diskReloadAction, openPathsIn } from './lib/diskReload'
 import type { SaveReason } from '@shared/editorAssist/policy'
 import { runBeforeSave } from './editorAssist/saveHooks'
@@ -528,6 +528,8 @@ export interface Actions {
   // the Explorer asks first).
   renamePath(path: string, name: string, isDir?: boolean): Promise<PathChange>
   trashPath(path: string, isDir?: boolean): Promise<PathChange>
+  // Explorer multi-select delete: one batch in main; each entry that went closes its tabs.
+  trashPaths(entries: { path: string; isDir?: boolean }[]): Promise<TrashBatchResult>
   // Panels
   showSide(view: SideView): void
   toggleSide(): void
@@ -699,6 +701,11 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const change = await h.trashPath(path, isDir)
         dispatch({ type: 'pathChanged', from: change.from, to: null })
         return change
+      },
+      async trashPaths(entries) {
+        const result = await h.trashPaths(entries)
+        for (const change of result.changes) dispatch({ type: 'pathChanged', from: change.from, to: null })
+        return result
       },
 
       showSide(view) {

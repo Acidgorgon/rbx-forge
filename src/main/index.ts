@@ -21,7 +21,7 @@ import { DEFAULT_SYNC, emptyStatus, GitSync } from './services/gitSync.ts'
 import { LogBuffer } from './services/logs.ts'
 import { LspBridge } from './services/lspBridge.ts'
 import { Project, type ProjectChange } from './services/project.ts'
-import { renameEntry, trashEntry } from './services/fileOps.ts'
+import { renameEntry, trashEntries, trashEntry } from './services/fileOps.ts'
 import { Settings } from './services/settings.ts'
 import { StudioConflicts } from './services/studioConflicts.ts'
 import { Supervisor } from './services/supervisor.ts'
@@ -772,6 +772,15 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     const change = await rojoPause.aroundPath(entryFull(opened.root, path, isDir), () => trashEntry(opened.root, opened.info.mounts ?? [], path, (full) => shell.trashItem(full), !!isDir), 'folder delete')
     projectChanged(opened, await opened.refresh())
     return change
+  },
+  // Explorer multi-select delete: one Rojo pause around the whole batch (only when a folder is in it)
+  // and one tree refresh, instead of one of each per item.
+  trashPaths: async (entries: unknown) => {
+    const opened = requireProject()
+    const list = (Array.isArray(entries) ? entries : []).filter((e): e is { path: string; isDir?: boolean } => !!e && typeof e === 'object' && typeof (e as { path?: unknown }).path === 'string').map((e) => ({ path: e.path, isDir: !!e.isDir }))
+    const result = await rojoPause.aroundPaths(list.map((e) => entryFull(opened.root, e.path, e.isDir)), () => trashEntries(opened.root, opened.info.mounts ?? [], list, (full) => shell.trashItem(full)), 'folder delete')
+    if (result.changes.length) projectChanged(opened, await opened.refresh())
+    return result
   },
 
   getServices: () => supervisor.statuses(),

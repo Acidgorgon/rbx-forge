@@ -3,7 +3,8 @@
 // here: the caller passes the trash function (shell.trashItem in main/index.ts).
 import { lstat, readdir } from 'node:fs/promises'
 import { basename, dirname, relative, sep } from 'node:path'
-import { entryTarget, protectedReason, renamedPath, renameProblem, type PathChange } from '../../shared/fileOps.ts'
+import { entryTarget, protectedReason, renamedPath, renameProblem, type PathChange, type TrashBatchResult } from '../../shared/fileOps.ts'
+import { collapseEntries } from '../../shared/explorerSelection.ts'
 import { resolveInside } from './project.ts'
 import { renameRetry } from './fs/renameRetry.ts'
 
@@ -45,4 +46,26 @@ export async function trashEntry(root: string, mounts: string[], path: string, t
   const { target, full } = await existing(root, mounts, path, isDir)
   await trash(full)
   return { from: target.path, to: null, isDir: target.isDir }
+}
+
+// Explorer multi-select delete: each entry to the trash, one at a time, in order. An entry inside
+// another listed folder goes with that folder (not tried on its own); one that fails is reported and
+// the rest still go.
+export async function trashEntries(root: string, mounts: string[], entries: { path: string; isDir?: boolean }[], trash: (full: string) => Promise<void>): Promise<TrashBatchResult> {
+  const result: TrashBatchResult = { changes: [], failed: [] }
+  const targets = entries.map((e) => entryTarget(String(e?.path ?? ''), !!e?.isDir))
+  // A refused entry (a mount, the project file) never covers the entries inside it.
+  const allowed = targets.filter((t) => {
+    const reason = protectedReason(t.path, mounts)
+    if (reason) result.failed.push({ path: t.path, error: reason })
+    return !reason
+  })
+  for (const e of collapseEntries(allowed)) {
+    try {
+      result.changes.push(await trashEntry(root, mounts, e.path, trash, e.isDir))
+    } catch (error) {
+      result.failed.push({ path: e.path, error: error instanceof Error ? error.message : String(error) })
+    }
+  }
+  return result
 }

@@ -100,7 +100,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
   const handlers: Record<string, (...args: any[]) => unknown> = {
     syncStatus: async () => (current ? current.status() : emptyStatus()),
     syncResolve: (placeKey: string, file: string, take: 'studio' | 'disk' | 'merged', text?: string) => need().resolve(String(placeKey), String(file), take, text),
-    syncResolveAll: (placeKey: string, take: 'studio' | 'disk') => need().resolveAll(String(placeKey), take),
+    syncResolveAll: (placeKey: string, take: 'studio' | 'disk', reason?: string) =>
+      need().resolveAll(String(placeKey), take, reason === 'first-run' || reason === 'both-changed' || reason === 'deleted-vs-edited' ? reason : undefined),
     syncServeAnyway: (placeKey: string) => need().serveAnyway(String(placeKey)),
     syncCommitStudioEdits: (message?: string): Promise<SyncCommitResult> => need().commitStudioEdits(message),
     syncDisableLegacyPlugin: () => need().disableLegacyPlugin(),

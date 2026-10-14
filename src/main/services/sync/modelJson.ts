@@ -31,16 +31,41 @@ function sortKeys(value: unknown): unknown {
   return value
 }
 
-// One spelling per value so Studio's and disk's forms compare equal: explicit primitives unwrapped.
+// Most Roblox property components are float32 (Color3, Vector3, CFrame, Size, Volume ...): Rojo
+// stores 0.2, Studio reads it back as 0.20000000298023224. A number that is exactly a float32 is
+// written as the shortest decimal with the same float32, so the two compare equal (and pulled files
+// keep 0.2). Doubles that are not float32 values (NumberValue 0.1, big integers) are untouched.
+export function shortFloat(n: number): number {
+  if (!Number.isFinite(n) || Number.isInteger(n) || Math.fround(n) !== n) return n
+  for (let p = 1; p <= 9; p++) {
+    const v = Number(n.toPrecision(p))
+    if (Math.fround(v) === n) return v
+  }
+  return n
+}
+
+function shortFloats(value: unknown): unknown {
+  if (typeof value === 'number') return shortFloat(value)
+  if (Array.isArray(value)) return value.map(shortFloats)
+  if (value && typeof value === 'object') {
+    const out: Record<string, unknown> = {}
+    for (const [k, v] of Object.entries(value)) out[k] = shortFloats(v)
+    return out
+  }
+  return value
+}
+
+// One spelling per value so Studio's and disk's forms compare equal: explicit primitives unwrapped,
+// float32 noise removed.
 export function canonicalValue(value: SyncValue): SyncValue {
   if (value && typeof value === 'object' && !Array.isArray(value)) {
     const keys = Object.keys(value)
     if (keys.length === 1 && PRIMITIVE_TYPES.has(keys[0])) {
       const inner = (value as Record<string, unknown>)[keys[0]]
-      if (typeof inner === 'string' || typeof inner === 'number' || typeof inner === 'boolean') return inner
+      if (typeof inner === 'string' || typeof inner === 'number' || typeof inner === 'boolean') return shortFloats(inner) as SyncValue
     }
   }
-  return sortKeys(value) as SyncValue
+  return shortFloats(sortKeys(value)) as SyncValue
 }
 
 function canonicalMap(map: Record<string, SyncValue> | undefined): Record<string, SyncValue> {
@@ -192,7 +217,7 @@ export function writeMeta(existing: string | null, update: { className?: string 
 // Comparison form of a JSON (meta) file: keys sorted. Null when it does not parse.
 export function canonicalJson(text: string): string | null {
   try {
-    return JSON.stringify(sortKeys(JSON.parse(text.replace(/^﻿/, ''))), null, 2) + '\n'
+    return JSON.stringify(shortFloats(sortKeys(JSON.parse(text.replace(/^﻿/, '')))), null, 2) + '\n'
   } catch {
     return null
   }

@@ -34,7 +34,7 @@ export interface SyncEngineLike {
   applyChanges(placeKey: string, changes: StudioChange[]): Promise<SyncEntry[]>
   conflicts(): SyncConflictInfo[]
   resolve(placeKey: string, file: string, take: 'studio' | 'disk' | 'merged', text?: string): Promise<void>
-  resolveAll(placeKey: string, take: 'studio' | 'disk'): unknown
+  resolveAll(placeKey: string, take: 'studio' | 'disk', reason?: SyncConflictInfo['reason']): unknown
   gate(placeKey: string): GateState
   // Studio went away mid-snapshot: gate back to 'idle'.
   endSession?(placeKey: string): unknown
@@ -114,6 +114,8 @@ export interface SyncServiceDeps {
   emit: (event: 'sync:status' | 'sync:entry', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   now?: () => number
+  // Tests: how long a snapshot may stall before the hold is released (default SNAPSHOT_STALE_MS).
+  staleMs?: number
 }
 
 const RECENT_MAX = 200
@@ -263,6 +265,10 @@ export class SyncService {
     if (!this.active()) return off(this.settings().engine === 'forge' ? 'Forge Sync is not available in this build' : `Studio sync is set to "${this.settings().engine}"`)
     if (!this.maps.length) await this.reload()
     const placeId = Number(q.placeId) || 0
+    // Like Rojo's servePlaceIds: once the project lists its places, another published place (a test
+    // copy, an unrelated game) is not this project. Without this it fell back to default.project.json,
+    // wrote its Studio-only instances into the repo and held that place's rojo serve on its conflicts.
+    if (placeId && this.maps.some((m) => m.placeIds.length) && !this.maps.some((m) => m.placeIds.includes(placeId))) return off(`Place ${placeId} is not in any *.project.json servePlaceIds`)
     const map = this.deps.mapping!.placeFor(this.maps, placeId)
     if (!map) return off('No *.project.json maps this place')
     const place: SyncPlace = { placeId, ...(q.gameId ? { gameId: Number(q.gameId) } : {}), ...(q.place ? { name: String(q.place) } : {}) }
@@ -336,14 +342,17 @@ export class SyncService {
     const timer = setTimeout(() => {
       this.snapshotTimers.delete(placeKey)
       const session = this.sessions.get(token)
-      if (!session || session.ready) return
-      this.sessions.delete(token)
+      if (session?.ready) return
+      // A new config for the place (Studio reopened) drops the old token; until the new session sends
+      // its first chunk nothing else would release the gate, so a missing token still releases it.
+      if ([...this.sessions.values()].some((x) => x.placeKey === placeKey && x.ready)) return
+      if (session) this.sessions.delete(token)
       this.deps.log?.(`sync: Studio stopped sending the snapshot for ${placeKey}; rojo may serve again`, 'stderr')
       void this.serial(async () => {
         await this.deps.engine?.endSession?.(placeKey)
         this.refresh()
       })
-    }, SNAPSHOT_STALE_MS)
+    }, this.deps.staleMs ?? SNAPSHOT_STALE_MS)
     ;(timer as { unref?: () => void }).unref?.()
     this.snapshotTimers.set(placeKey, timer)
   }
@@ -379,10 +388,10 @@ export class SyncService {
     return this.status()
   }
 
-  async resolveAll(placeKey: string, take: 'studio' | 'disk'): Promise<SyncStatus> {
+  async resolveAll(placeKey: string, take: 'studio' | 'disk', reason?: SyncConflictInfo['reason']): Promise<SyncStatus> {
     const engine = this.requireEngine()
-    const files = engine.conflicts().filter((c) => c.placeKey === placeKey).map((c) => c.file)
-    await this.serial(async () => engine.resolveAll(placeKey, take))
+    const files = engine.conflicts().filter((c) => c.placeKey === placeKey && (!reason || c.reason === reason)).map((c) => c.file)
+    await this.serial(async () => engine.resolveAll(placeKey, take, reason))
     if (take === 'studio') await this.markWritten(files)
     this.refresh()
     return this.status()
@@ -402,9 +411,18 @@ export class SyncService {
     const files = await this.pendingStudioEdits()
     if (!files.length) return { committed: [], error: 'No uncommitted Studio edits' }
     const text = message?.trim() || commitMessage(files)
-    const added = await this.deps.git(['add', '-A', '--', ...files])
+    // Paths are literal (a Roblox name like "Sword [Gold]" is not a glob). Many paths go through a
+    // file: Windows refuses command lines over ~32K characters (a first sync can touch hundreds).
+    let spec = ['--', ...files]
+    if (files.reduce((n, f) => n + f.length + 3, 0) > 8000) {
+      const list = join(this.root, '.forge', 'sync', 'commit-paths.txt')
+      await mkdir(dirname(list), { recursive: true })
+      await writeFile(list, files.join('\0'))
+      spec = [`--pathspec-from-file=${list}`, '--pathspec-file-nul']
+    }
+    const added = await this.deps.git(['--literal-pathspecs', 'add', '-A', ...spec])
     if (added.code !== 0) return { committed: [], error: firstLine(added.stderr) || 'git add failed' }
-    const committed = await this.deps.git(['commit', '-m', text, '--only', '--', ...files])
+    const committed = await this.deps.git(['--literal-pathspecs', 'commit', '-m', text, '--only', ...spec])
     if (committed.code !== 0) return { committed: [], error: firstLine(committed.stderr || committed.stdout) || 'git commit failed' }
     for (const f of files) this.written.delete(f)
     await this.saveWritten()

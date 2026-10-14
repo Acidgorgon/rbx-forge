@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import * as nodeFs from 'node:fs/promises'
 import { existsSync, mkdtempSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { basename, dirname, join, sep } from 'node:path'
 import { after, test } from 'node:test'
 import type { GateState, StudioNode, SyncEntry } from '../src/shared/sync/types.ts'
 import { placeKeyFor, SyncEngine, SyncResendError, type SyncFs } from '../src/main/services/sync/engine.ts'
@@ -576,4 +576,134 @@ test('an empty folder pulled from git (a .gitkeep without a base) is disk-ahead,
   // Once Studio has it (Rojo created the Folder), it is a plain empty folder: nothing to do.
   const synced = await snapshot(ctx.engine, MK, MATCH, studio(ctx))
   assert.deepEqual(synced.filter((e) => !['same', 'unmapped'].includes(e.action)), [])
+})
+
+// ---- one file, several mounts / case-insensitive disks ----
+
+test('a directory mounted twice in one place: an edit to one copy is pulled, not reverted by the stale copy', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-twice-'))
+  roots.push(root)
+  put(root, 'default.project.json', JSON.stringify({ name: 'X', servePlaceIds: [5], tree: { $className: 'DataModel', ReplicatedStorage: { Skills: { $path: 'src/skills' } }, ServerScriptService: { Skills: { $path: 'src/skills' } } } }))
+  put(root, 'src/skills/A.luau', 'return 1\n')
+  const engine = new SyncEngine({ root })
+  const nodes = (a: string, b: string): StudioNode[] => [
+    { id: '1', path: [RS, 'Skills'], className: 'Folder' },
+    { id: '2', path: [RS, 'Skills', 'A'], className: 'ModuleScript', source: a },
+    { id: '3', path: [SSS, 'Skills'], className: 'Folder' },
+    { id: '4', path: [SSS, 'Skills', 'A'], className: 'ModuleScript', source: b }
+  ]
+  const place = { placeId: 5, name: 'X' }
+  assert.deepEqual(actions(await snapshot(engine, '5', place, nodes('return 1', 'return 1')), 'same'), ['src/skills/A.luau'])
+  // A teammate edits the Server copy; the Shared copy still has the old text.
+  assert.deepEqual(actions(await snapshot(engine, '5', place, nodes('return 1', 'return 2')), 'pulled'), ['src/skills/A.luau'])
+  assert.equal(get(root, 'src/skills/A.luau'), 'return 2\n')
+  // Rojo pushed it to both; then the Shared copy is edited.
+  assert.deepEqual(actions(await snapshot(engine, '5', place, nodes('return 3', 'return 2')), 'pulled'), ['src/skills/A.luau'])
+  assert.equal(get(root, 'src/skills/A.luau'), 'return 3\n')
+  // Both copies edited differently: held, nothing written.
+  const both = await snapshot(engine, '5', place, nodes('return 4', 'return 5'))
+  assert.deepEqual(actions(both, 'conflict'), ['src/skills/A.luau'])
+  assert.equal(get(root, 'src/skills/A.luau'), 'return 3\n')
+  assert.equal(engine.gate('5'), 'blocked')
+})
+
+// A case-insensitive view of a real directory (like NTFS / APFS): a path resolves to the existing entry
+// whatever its case; a rename keeps the new spelling.
+function caseInsensitiveFs(): SyncFs {
+  const real = (p: string): string => {
+    const parts = p.split(sep)
+    let cur = parts[0] || sep
+    for (let i = 1; i < parts.length; i++) {
+      let names: string[] = []
+      try {
+        names = readdirSync(cur)
+      } catch {
+        // missing
+      }
+      const hit = names.find((n) => n === parts[i]) ?? names.find((n) => n.toLowerCase() === parts[i].toLowerCase())
+      cur = join(cur, hit ?? parts[i])
+    }
+    return cur
+  }
+  const f = nodeFs as unknown as Record<string, (...args: unknown[]) => unknown>
+  const wrap = (name: string) => (p: string, ...rest: unknown[]) => f[name](real(p), ...rest)
+  const out: Record<string, unknown> = {}
+  for (const name of ['readFile', 'writeFile', 'mkdir', 'readdir', 'stat', 'lstat', 'rm', 'rmdir', 'realpath']) out[name] = wrap(name)
+  out.rename = (a: string, b: string) => nodeFs.rename(real(a), join(real(dirname(b)), basename(b)))
+  return out as unknown as SyncFs
+}
+
+test('case-only renames in Studio on a case-insensitive disk rename the files instead of trashing them', async () => {
+  const ctx = await setup({ fs: caseInsensitiveFs() })
+  const nodes = studio(ctx)
+  await snapshot(ctx.engine, MK, MATCH, nodes)
+  // Renamed while Forge was not watching (a teammate in Team Create): only the next snapshot shows it.
+  const renamed = nodes.map((n) => {
+    const p = [...n.path]
+    if (startsWithPath(p, [...SKILLS, 'Dash'])) p[SKILLS.length] = 'dash'
+    if (startsWithPath(p, [...MOVES, 'Dash'])) p[MOVES.length] = 'DASH'
+    return { ...n, path: p }
+  })
+  const entries = await snapshot(ctx.engine, MK, MATCH, renamed)
+  assert.deepEqual(actions(entries, 'trashed'), [])
+  assert.deepEqual(actions(entries, 'created'), [])
+  assert.deepEqual(actions(entries, 'renamed'), ['src/skills/Definitions/dash.luau', 'src/skills/Server/Moves/DASH/Animations.model.json', 'src/skills/Server/Moves/DASH/Config.luau', 'src/skills/Server/Moves/DASH/Server.luau'])
+  assert.deepEqual(readdirSync(join(ctx.root, 'src/skills/Definitions')).sort(), ['Guard.luau', 'dash.luau'])
+  assert.deepEqual(readdirSync(join(ctx.root, 'src/skills/Server/Moves')), ['DASH'])
+  assert.deepEqual(readdirSync(join(ctx.root, 'src/skills/Server/Moves/DASH')).sort(), ['Animations.model.json', 'Config.luau', 'Server.luau'])
+  // Settled: the next snapshot changes nothing.
+  const again = await snapshot(ctx.engine, MK, MATCH, renamed)
+  assert.deepEqual(again.filter((e) => e.action !== 'same' && e.action !== 'unmapped'), [])
+})
+
+test('a case-only difference this place never synced (renamed on disk) is left for Rojo', async () => {
+  const ctx = await setup({ fs: caseInsensitiveFs() })
+  const nodes = studio(ctx).map((n) => (startsWithPath(n.path, [...SKILLS, 'Dash']) ? { ...n, path: [...SKILLS, 'DASH'] } : n))
+  const entries = await snapshot(ctx.engine, MK, MATCH, nodes)
+  assert.deepEqual(actions(entries, 'trashed'), [])
+  assert.ok(entries.some((e) => e.file === 'src/skills/Definitions/Dash.luau' && e.action === 'disk-ahead'))
+  assert.ok(existsSync(join(ctx.root, 'src/skills/Definitions/Dash.luau')))
+})
+
+function startsWithPath(path: string[], prefix: string[]): boolean {
+  return prefix.length <= path.length && prefix.every((p, i) => path[i] === p)
+}
+
+test('the first-run bulk choice only decides first-run conflicts, not files both sides edited', async () => {
+  const ctx = await setup()
+  await agreed(ctx)
+  const config = 'src/skills/Server/Moves/Dash/Config.luau'
+  put(ctx.root, config, 'return { damage = 99 }\n')
+  // A file with no base yet (new on both sides, different): first-run.
+  put(ctx.root, 'src/skills/Definitions/Kick.luau', 'return "disk kick"\n')
+  const nodes = [...edit(studio(ctx), [...MOVES, 'Dash', 'Config'], { source: 'return { damage = 1 }' })]
+  const kick = nodes.find((n) => n.path.join('/') === [...SKILLS, 'Kick'].join('/'))!
+  const withKick = nodes.map((n) => (n === kick ? { ...n, source: 'return "studio kick"' } : n))
+  await snapshot(ctx.engine, MK, MATCH, withKick)
+  assert.deepEqual(ctx.engine.conflicts(MK).map((c) => [c.file, c.reason]).sort(), [['src/skills/Definitions/Kick.luau', 'first-run'], [config, 'both-changed']])
+  assert.equal(await ctx.engine.resolveAll(MK, 'studio', 'first-run'), 1)
+  assert.equal(get(ctx.root, 'src/skills/Definitions/Kick.luau'), 'return "studio kick"\n')
+  assert.equal(get(ctx.root, config), 'return { damage = 99 }\n')
+  assert.deepEqual(ctx.engine.conflicts(MK).map((c) => c.file), [config])
+  assert.equal(ctx.engine.gate(MK), 'blocked')
+})
+
+test('a failed first load (index.json locked) is retried by the next snapshot instead of sticking', async () => {
+  let fail = true
+  const fs: SyncFs = {
+    ...nodeFs,
+    rename: (async (a: string, b: string) => {
+      if (fail && String(b).endsWith('index.json')) throw new Error('EPERM: operation not permitted')
+      return nodeFs.rename(a, b)
+    }) as SyncFs['rename']
+  }
+  const root = makeFsfProject()
+  roots.push(root)
+  const engine = new SyncEngine({ root, fs })
+  const maps = await engine.places().catch(() => null)
+  assert.equal(maps, null)
+  fail = false
+  const match = (await engine.places()).find((m) => m.projectFile === 'default.project.json')!
+  await snapshot(engine, MK, MATCH, studioFromDisk(root, match))
+  assert.equal(engine.gate(MK), 'clear')
 })

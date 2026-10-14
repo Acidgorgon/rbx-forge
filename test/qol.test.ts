@@ -642,3 +642,22 @@ test('service: the automatic open digest is answered once per project open (a re
   f.clock.now += 10
   assert.ok(await f.service.digest({ reason: 'open' }))
 })
+
+test('service: test notification reports a system without notifications; a failing notifier never rejects', async () => {
+  const none = fake({ showNotification: () => false })
+  assert.throws(() => none.service.testNotify(), /does not support desktop notifications/)
+  const logged: string[] = []
+  const broken = fake({ showNotification: () => { throw new Error('toast failed') }, log: (t) => void logged.push(t), router: { longTaskMs: 0 } })
+  broken.service.setSettings({ notify: { mode: 'always' } })
+  const rejections: unknown[] = []
+  const onRejection = (r: unknown) => void rejections.push(r)
+  process.on('unhandledRejection', onRejection)
+  try {
+    await broken.service.timed('vfxRefine', async () => 'ok')()
+    await new Promise((r) => setTimeout(r, 10))
+  } finally {
+    process.off('unhandledRejection', onRejection)
+  }
+  assert.deepEqual(rejections, [])
+  assert.ok(logged.some((l) => l.includes('toast failed')), logged.join('\n'))
+})

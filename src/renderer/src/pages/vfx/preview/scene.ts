@@ -2,7 +2,7 @@
 // shared/vfx/simulate.ts the way Roblox draws ParticleEmitters, Beams and Trails, closely enough to
 // judge an effect. It approximates Roblox; it does not match it exactly (no engine lighting model,
 // no bloom or post-processing, placeholder textures when an asset cannot be fetched, MeshParts drawn
-// as boxes). Timeline tweens (shared/vfx/timeline.ts) move parts and attachments and drive emitter,
+// as proxies until their mesh files are loaded (preview/meshes.ts)). Timeline tweens (shared/vfx/timeline.ts) move parts and attachments and drive emitter,
 // beam, light and part properties every frame; Neon parts glow and ForceField parts are rim-lit.
 // The drawables live in fxLayer.ts (shared with the Ability Composer preview).
 
@@ -11,10 +11,12 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { prop } from '@shared/vfx/schema'
 import type { SimFrame } from '@shared/vfx/simulate'
 import type { Rgb, VfxEffect } from '@shared/vfx/types'
-import { FxLayer, type LayerStats } from './fxLayer'
+import { FxLayer, type LayerStats, type MeshInfo } from './fxLayer'
 import { placeholderTexture, type PlaceholderKind } from './textures'
+import { DUMMY_GREY, LinearOutput, setSrgb, srgbColor, Stage, type Background } from './stage'
 
-export type Background = 'dark' | 'grey'
+export type { Background }
+export { BACKGROUNDS } from './stage'
 // Camera presets: the default three-quarter view, a side view for things that travel forward, and a
 // wide view that fits long sequences.
 export type View = 'front' | 'side' | 'wide'
@@ -27,7 +29,6 @@ const VIEWS: Record<View, { pos: [number, number, number]; target: [number, numb
 
 export type TextureResolver = (ref: string) => Promise<string | null>
 
-export const BG: Record<Background, number> = { dark: 0x0b0d10, grey: 0x585d64 }
 
 export type SceneStats = LayerStats
 
@@ -49,6 +50,8 @@ export class TextureCache {
           const tex = await new THREE.TextureLoader().loadAsync(url).catch(() => null)
           if (tex) {
             tex.wrapS = tex.wrapT = THREE.RepeatWrapping
+            // Roblox textures are sRGB: decoded to linear by the GPU (see stage.ts).
+            tex.colorSpace = THREE.SRGBColorSpace
             return tex
           }
         }
@@ -66,6 +69,18 @@ export class TextureCache {
     return Promise.all([...this.textures.values()]).then((ts) => ts.some((t) => t.userData.placeholder))
   }
 
+  // Uploaded textures (rbxassetid / numeric ids) asked for, and how many fell back to a placeholder.
+  async uploadedStats(): Promise<{ total: number; missing: string[] }> {
+    const refs = new Map<string, boolean>()
+    for (const [key, p] of this.textures) {
+      const ref = key.split('|')[0]
+      if (!/^(?:rbxassetid:\/\/)?\d+$/i.test(ref) && !/roblox\.com\/asset/i.test(ref)) continue
+      const t = await p.catch(() => null)
+      refs.set(ref, (refs.get(ref) ?? false) || !t || !!t.userData.placeholder)
+    }
+    return { total: refs.size, missing: [...refs].filter(([, miss]) => miss).map(([r]) => r) }
+  }
+
   dispose(): void {
     for (const p of this.textures.values()) void p.then((t) => t.dispose())
     this.textures.clear()
@@ -75,7 +90,7 @@ export class TextureCache {
 // R15-proportioned dummy (about 5.2 studs tall, feet at y=0, facing -Z) for scale.
 function buildDummy(): { group: THREE.Group; body: THREE.Mesh[] } {
   const group = new THREE.Group()
-  const mat = new THREE.MeshStandardMaterial({ color: 0x9aa1ab, roughness: 0.85, metalness: 0 })
+  const mat = new THREE.MeshStandardMaterial({ color: srgbColor(DUMMY_GREY.dark), roughness: 0.85, metalness: 0 })
   const body: THREE.Mesh[] = []
   const box = (w: number, h: number, d: number, x: number, y: number, z = 0) => {
     const m = new THREE.Mesh(new THREE.BoxGeometry(w, h, d), mat)
@@ -108,6 +123,8 @@ export class VfxScene {
   private textures: TextureCache
   private layer: FxLayer
   private disposed = false
+  private stage: Stage
+  private output: LinearOutput
 
   constructor(canvas: HTMLCanvasElement, opts: { resolver?: TextureResolver; interactive?: boolean; background?: Background } = {}) {
     THREE.ColorManagement.enabled = false
@@ -124,8 +141,8 @@ export class VfxScene {
       this.controls.enableDamping = false
       this.controls.update()
     } else this.camera.lookAt(0, 3.2, -1)
-    this.setBackground(opts.background ?? 'dark')
-    addStage(this.scene)
+    this.output = new LinearOutput(this.renderer)
+    this.stage = new Stage(this.scene, opts.background ?? 'dark')
     this.scene.add(this.dummy.group)
     this.layer = new FxLayer(this.camera, this.textures.get)
     this.scene.add(this.layer.group)
@@ -145,7 +162,8 @@ export class VfxScene {
   }
 
   setBackground(bg: Background): void {
-    this.scene.background = new THREE.Color(BG[bg] ?? BG.dark)
+    this.stage.set(bg)
+    this.applyHighlight()
   }
 
   resize(width: number, height: number): void {
@@ -179,7 +197,7 @@ export class VfxScene {
     for (const m of this.dummy.body) {
       const mat = m.material as THREE.MeshStandardMaterial
       mat.emissive.setRGB(0, 0, 0)
-      mat.color.setHex(0x9aa1ab)
+      mat.color.copy(srgbColor(DUMMY_GREY[this.stage?.preset ?? 'dark']))
     }
     if (!h) return
     const fill = prop<Rgb>(h, 'FillColor')
@@ -187,10 +205,10 @@ export class VfxScene {
     const out = prop<Rgb>(h, 'OutlineColor')
     const outA = 1 - prop<number>(h, 'OutlineTransparency')
     const base = this.dummy.body[0].material as THREE.MeshStandardMaterial
-    base.color.setRGB(0.6 * (1 - fillA) + fill[0] * fillA, 0.63 * (1 - fillA) + fill[1] * fillA, 0.67 * (1 - fillA) + fill[2] * fillA)
-    base.emissive.setRGB(fill[0] * fillA * 0.6, fill[1] * fillA * 0.6, fill[2] * fillA * 0.6)
+    setSrgb(base.color, 0.6 * (1 - fillA) + fill[0] * fillA, 0.63 * (1 - fillA) + fill[1] * fillA, 0.67 * (1 - fillA) + fill[2] * fillA)
+    setSrgb(base.emissive, fill[0] * fillA * 0.6, fill[1] * fillA * 0.6, fill[2] * fillA * 0.6)
     if (outA <= 0.01) return
-    const outlineMat = new THREE.MeshBasicMaterial({ color: new THREE.Color(out[0], out[1], out[2]), side: THREE.BackSide, transparent: outA < 1, opacity: outA })
+    const outlineMat = new THREE.MeshBasicMaterial({ color: srgbColor(out[0], out[1], out[2]), side: THREE.BackSide, transparent: outA < 1, opacity: outA })
     for (const m of this.dummy.body) {
       const o = new THREE.Mesh(m.geometry, outlineMat)
       o.position.copy(m.position)
@@ -207,7 +225,7 @@ export class VfxScene {
 
   render(): void {
     if (this.disposed) return
-    this.renderer.render(this.scene, this.camera)
+    this.output.render(this.scene, this.camera)
   }
 
   // Current frame as a PNG data URL (thumbnails).
@@ -220,27 +238,22 @@ export class VfxScene {
     return this.textures.usesPlaceholders()
   }
 
+  textureStats(): Promise<{ total: number; missing: string[] }> {
+    return this.textures.uploadedStats()
+  }
+
+  // Meshes the effect uses and which of them draw with real geometry.
+  get meshInfo(): MeshInfo {
+    return this.layer.meshInfo
+  }
+
   dispose(): void {
     this.disposed = true
     this.layer.clear()
     this.controls?.dispose()
     this.textures.dispose()
+    this.stage.dispose()
+    this.output.dispose()
     this.renderer.dispose()
   }
-}
-
-// Lights, grid and floor shared by the VFX Lab and Ability Composer previews.
-export function addStage(scene: THREE.Scene): void {
-  scene.add(new THREE.HemisphereLight(0xdfe6ef, 0x30343a, 1.1))
-  const sun = new THREE.DirectionalLight(0xffffff, 1.3)
-  sun.position.set(-6, 12, -8)
-  scene.add(sun)
-  const grid = new THREE.GridHelper(64, 64, 0x3a4048, 0x23272d)
-  ;(grid.material as THREE.Material).transparent = true
-  ;(grid.material as THREE.Material).opacity = 0.9
-  scene.add(grid)
-  const floor = new THREE.Mesh(new THREE.PlaneGeometry(64, 64), new THREE.MeshStandardMaterial({ color: 0x15181c, roughness: 1 }))
-  floor.rotation.x = -Math.PI / 2
-  floor.position.y = -0.01
-  scene.add(floor)
 }

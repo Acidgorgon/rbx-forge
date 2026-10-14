@@ -141,7 +141,8 @@ export function parseEvent(raw: unknown): BridgeEvent | null {
     }
     case 'error':
     case 'log':
-      return { type: r.type, message: String(r.message ?? '').slice(0, 2000) }
+      // 'log' carries data from read-only jobs (texture harvest, mesh read): up to 64 KB.
+      return { type: r.type, message: String(r.message ?? '').slice(0, r.type === 'log' ? 65_536 : 2000) }
     default:
       return null
   }

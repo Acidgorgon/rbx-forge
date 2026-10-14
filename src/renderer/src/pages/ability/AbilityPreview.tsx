@@ -8,7 +8,7 @@ import type { Ability, TimeRef } from '@shared/ability/types'
 import type { VfxEffect } from '@shared/types'
 import { Icon } from '../../components/Icons'
 import { prefersReducedMotion } from '../vfx/motion'
-import type { Background } from '../vfx/preview/scene'
+import { BACKGROUNDS, type Background } from '../vfx/preview/scene'
 import { AbilityScene, type AbilityView } from './preview/abilityScene'
 import { applyScreen, type ScreenEls } from './preview/screenFx'
 import { AbilityTimeline } from './AbilityTimeline'
@@ -199,7 +199,7 @@ export function AbilityPreview({
           ))}
         </div>
         <div className="seg" role="group" aria-label="Background">
-          {(['dark', 'grey'] as Background[]).map((b) => (
+          {BACKGROUNDS.map((b) => (
             <button key={b} className={bg === b ? 'on' : ''} onClick={() => setBg(b)} aria-pressed={bg === b}>
               {b}
             </button>

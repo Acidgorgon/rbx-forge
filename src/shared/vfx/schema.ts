@@ -31,6 +31,7 @@ export const ENUMS: Record<string, Record<string, number>> = {
   ParticleFlipbookMode: { Loop: 0, OneShot: 1, PingPong: 2, Random: 3 },
   TextureMode: { Stretch: 0, Wrap: 1, Static: 2 },
   HighlightDepthMode: { AlwaysOnTop: 0, Occluded: 1 },
+  AlphaMode: { Overlay: 0, Transparency: 1, TintMask: 2 },
   MeshType: { Head: 0, Torso: 1, Wedge: 2, Sphere: 3, Cylinder: 4, FileMesh: 5, Brick: 6, Prism: 7, Pyramid: 8, ParallelRamp: 9, RightAngleRamp: 10, CornerWedge: 11 },
   PartType: { Ball: 0, Block: 1, Cylinder: 2, Wedge: 3, CornerWedge: 4 },
   // Enum.Material (the few the Lab draws: Neon glows, ForceField is a rim-lit shell).
@@ -199,6 +200,26 @@ export const SCHEMA: Record<string, Record<string, PropSpec>> = {
     Offset: { kind: 'vec3', default: [0, 0, 0] },
     VertexColor: { kind: 'vec3', default: [1, 1, 1] }
   },
+  // Images on a part's faces (drawn by the preview on the face of the parent part).
+  Decal: {
+    Texture: { kind: 'content', default: '', main: true },
+    Face: { kind: 'enum:NormalId', default: 'Front' },
+    Color3: { kind: 'color3', default: [1, 1, 1] },
+    Transparency: { kind: 'number', default: 0, min: 0, max: 1, step: 0.05, main: true }
+  },
+  Texture: {
+    Texture: { kind: 'content', default: '', main: true },
+    Face: { kind: 'enum:NormalId', default: 'Front' },
+    Color3: { kind: 'color3', default: [1, 1, 1] },
+    Transparency: { kind: 'number', default: 0, min: 0, max: 1, step: 0.05, main: true },
+    StudsPerTileU: { kind: 'number', default: 2, min: 0.01, max: 100, step: 0.1 },
+    StudsPerTileV: { kind: 'number', default: 2, min: 0.01, max: 100, step: 0.1 }
+  },
+  // A MeshPart's PBR look: ColorMap replaces TextureID in the preview.
+  SurfaceAppearance: {
+    ColorMap: { kind: 'content', default: '' },
+    AlphaMode: { kind: 'enum:AlphaMode', default: 'Overlay' }
+  },
   Model: {},
   Folder: {},
   Script: { Enabled: { kind: 'bool', default: true } },
@@ -208,6 +229,8 @@ export const SCHEMA: Record<string, Record<string, PropSpec>> = {
 
 // Classes the importer keeps (everything else is dropped unless it holds one of these).
 export const VFX_CLASSES = new Set(['ParticleEmitter', 'Beam', 'Trail', 'Attachment', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight', 'MeshPart', 'SpecialMesh'])
+// Kept on import when their parent part is kept (drawn on / with the part).
+export const PART_DECOR_CLASSES = new Set(['SpecialMesh', 'BlockMesh', 'CylinderMesh', 'Decal', 'Texture', 'SurfaceAppearance', 'Highlight'])
 export const CONTAINER_CLASSES = new Set(['Model', 'Folder', 'Part', 'MeshPart', 'Attachment', 'Bone', 'Configuration', 'WedgePart', 'UnionOperation'])
 // Visible geometry the preview draws (kept on import even without effects inside).
 export const PART_CLASSES = new Set(['Part', 'MeshPart', 'WedgePart', 'UnionOperation'])

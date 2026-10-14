@@ -103,7 +103,7 @@ const nums = (s: string) =>
 // ------------------------------------------------------------------ read
 
 // Property names Studio / Lune write in a different case or form than the API name.
-const ALIASES: Record<string, string> = { size: 'Size', Color3uint8: 'Color', TextureContent: 'Texture', MeshContent: 'MeshId', TextureId: 'TextureId', shape: 'Shape', formFactorRaw: '' }
+const ALIASES: Record<string, string> = { size: 'Size', Color3uint8: 'Color', TextureContent: 'Texture', MeshContent: 'MeshId', ColorMapContent: 'ColorMap', TextureId: 'TextureId', shape: 'Shape', formFactorRaw: '' }
 
 function readValue(el: XmlEl, className: string, propName: string): PropValue | undefined {
   const comp = (k: string) => num(child(el, k)?.text)

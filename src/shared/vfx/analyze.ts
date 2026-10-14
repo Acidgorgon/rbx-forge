@@ -1,22 +1,27 @@
 // Turns an imported instance tree into a VfxEffect (VFX nodes only, cues from scripts), and measures
 // it: stats, tags, layer roles, curve shapes and the performance guard.
 
-import { CONTAINER_CLASSES, PART_CLASSES, prop, SCRIPT_CLASSES, VFX_CLASSES } from './schema.ts'
+import { CONTAINER_CLASSES, PART_CLASSES, PART_DECOR_CLASSES, prop, SCRIPT_CLASSES, VFX_CLASSES } from './schema.ts'
+import { revealedByCues, tweenCuesFromScripts } from './scriptTweens.ts'
 import { curveShape, evalColorSequence, hex, sequenceMax, type CurveShape } from './sequence.ts'
 import { emitterBudget, flipbookFrames, MAX_RATE, prepareEffect, simulate } from './simulate.ts'
 import type { ColorSequence, NumberRange, NumberSequence, Rgb, VfxCue, VfxEffect, VfxNode, VfxStats } from './types.ts'
 
 // Keeps VFX instances, their containers, scripts and visible parts (drawn in the preview); drops
-// everything else (terrain, UI, sounds...).
-export function pruneToVfx(nodes: VfxNode[]): VfxNode[] {
-  const keep = (n: VfxNode): VfxNode | null => {
-    const kids = n.children.map(keep).filter((x): x is VfxNode => !!x)
-    const visiblePart = PART_CLASSES.has(n.className) && (n.props.Transparency === undefined || Number(n.props.Transparency) < 1)
-    const own = VFX_CLASSES.has(n.className) || SCRIPT_CLASSES.has(n.className) || visiblePart
+// everything else (terrain, UI, sounds...). A part counts as visible when it is not fully
+// transparent as authored, or when a script makes it visible during the play (`revealed`: ids a
+// tween / set brings below Transparency 1, see scriptTweens.ts). A visible part keeps its
+// SpecialMesh / Decal / Texture / SurfaceAppearance children.
+export function pruneToVfx(nodes: VfxNode[], revealed: Set<string> = new Set()): VfxNode[] {
+  const keep = (n: VfxNode, parentVisible: boolean): VfxNode | null => {
+    const visiblePart = PART_CLASSES.has(n.className) && (n.props.Transparency === undefined || Number(n.props.Transparency) < 1 || revealed.has(n.id))
+    const kids = n.children.map((c) => keep(c, visiblePart)).filter((x): x is VfxNode => !!x)
+    const decor = parentVisible && PART_DECOR_CLASSES.has(n.className)
+    const own = VFX_CLASSES.has(n.className) || SCRIPT_CLASSES.has(n.className) || visiblePart || decor
     if (own || (CONTAINER_CLASSES.has(n.className) && kids.some((k) => !SCRIPT_CLASSES.has(k.className) || k.children.length))) return { ...n, children: kids }
     return null
   }
-  return nodes.map(keep).filter((x): x is VfxNode => !!x)
+  return nodes.map((n) => keep(n, false)).filter((x): x is VfxNode => !!x)
 }
 
 export function walk(nodes: VfxNode[], fn: (n: VfxNode, parent: VfxNode | null) => void, parent: VfxNode | null = null): void {
@@ -102,6 +107,8 @@ export function effectDuration(nodes: VfxNode[], cues: VfxCue[]): number {
     }
     if (n.className === 'Trail') end = Math.max(end, Math.min(6, prop<number>(n, 'Lifetime')))
   }
+  // Tweens and sets read from scripts (part growth / fades) end where they end.
+  for (const c of cues) if (c.action === 'tween' || c.action === 'set') end = Math.max(end, c.at + (c.duration ?? 0) + 0.2)
   return Math.max(1, Math.min(10, round(end || 2)))
 }
 
@@ -193,26 +200,38 @@ export function importNotes(raw: VfxNode[], effect: VfxEffect, attrs: Map<string
   const all = allNodes(raw)
   const scripts = all.filter((n) => SCRIPT_CLASSES.has(n.className))
   if (attrs.size) notes.push(`${attrs.size} emitter${attrs.size === 1 ? '' : 's'} timed by EmitCount / EmitDelay / EmitDuration attributes.`)
-  const logic = scripts.filter((s) => s.source && /TweenService|RunService|while\s|repeat\s|require\s*\(|Heartbeat|RenderStepped|:Connect\s*\(|math\.random|CFrame\s*=|Position\s*=/.test(s.source))
-  if (logic.length) notes.push(`Script logic the preview cannot run (${logic.slice(0, 3).map((s) => s.name).join(', ')}${logic.length > 3 ? ' ...' : ''}): only Emit / Enabled / wait lines were read; tweens, loops and movement are not played.`)
-  else if (scripts.length && !effect.cues.length) notes.push('Scripts were found but no Emit / Enabled lines in them; emitters use their own settings.')
-  const meshes = all.filter((n) => n.className === 'MeshPart' || n.className === 'UnionOperation' || (n.className === 'SpecialMesh' && n.props.MeshType === 'FileMesh'))
-  if (meshes.length) notes.push(`${meshes.length} mesh${meshes.length === 1 ? '' : 'es'} drawn as tinted proxies (mesh files are not downloaded).`)
+  const tweens = effect.cues.filter((c) => c.action === 'tween' || c.action === 'set').length
+  if (tweens) notes.push(`${tweens} tween${tweens === 1 ? '' : 's'} / set${tweens === 1 ? '' : 's'} read from scripts (TweenService:Create with literal goals, property sets) play in the preview.`)
+  const logic = scripts.filter((s) => s.source && /RunService|while\s|repeat\s|require\s*\(|Heartbeat|RenderStepped|math\.random|:Connect\s*\(|GetAttribute/.test(s.source))
+  if (logic.length) notes.push(`Script logic the preview cannot run (${logic.slice(0, 3).map((s) => s.name).join(', ')}${logic.length > 3 ? ' ...' : ''}): event handlers, attribute reads, loops, random values and per-frame movement are not played.`)
+  else if (scripts.length && !effect.cues.length) notes.push('Scripts were found but no Emit / Enabled / tween lines in them; emitters use their own settings.')
+  const meshes = allNodes(effect.roots).filter((n) => n.className === 'MeshPart' || (n.className === 'SpecialMesh' && n.props.MeshType === 'FileMesh'))
+  if (meshes.length) notes.push(`${meshes.length} mesh${meshes.length === 1 ? '' : 'es'}: the preview loads the mesh files from Roblox Studio or Open Cloud ("Load meshes"); until then they draw as proxies.`)
+  const unions = allNodes(effect.roots).filter((n) => n.className === 'UnionOperation')
+  if (unions.length) notes.push(`${unions.length} union${unions.length === 1 ? '' : 's'} drawn as proxy shapes (union geometry is not readable outside Studio).`)
   const skipped = new Set<string>()
-  for (const n of all) if (['Sound', 'Decal', 'Texture', 'SurfaceGui', 'BillboardGui', 'Humanoid', 'Fire', 'Smoke', 'Sparkles', 'Explosion'].includes(n.className)) skipped.add(n.className)
+  for (const n of all) if (['Sound', 'SurfaceGui', 'BillboardGui', 'Humanoid', 'Fire', 'Smoke', 'Sparkles', 'Explosion'].includes(n.className)) skipped.add(n.className)
   if (skipped.size) notes.push(`Not shown: ${[...skipped].join(', ')}.`)
   const flip = all.filter((n) => n.className === 'ParticleEmitter' && typeof n.props.Texture === 'string' && /^rbxassetid:|^http/.test(String(n.props.Texture)))
   if (flip.length) notes.push('Uploaded textures load from Roblox when online; offline they show as a placeholder.')
   return notes
 }
 
+// Bumped when the importer keeps more of a model than before (2: script-revealed parts, meshes,
+// decals and script tweens), so older library entries offer "Re-import".
+export const IMPORT_VERSION = 2
+
 export function effectFromNodes(name: string, nodes: VfxNode[]): VfxEffect {
-  const roots = pruneToVfx(nodes)
+  // Part tweens / sets from scripts first (on the full tree, so script.Parent paths resolve): they
+  // decide which fully transparent parts become visible during the play.
+  const tweens = tweenCuesFromScripts(nodes)
+  const roots = pruneToVfx(nodes, revealedByCues(tweens))
+  const kept = new Set(allNodes(roots).map((n) => n.id))
   const attrs = emitAttributes(roots)
   // Attribute-driven nodes: the attributes are the timeline (script reads would be the generic
   // emit loop guessing 16 for every emitter).
   const scripted = cuesFromScripts(roots).filter((c) => !attrs.has(c.target))
-  const cues = defaultCues(roots, [...cuesFromAttributes(roots, attrs), ...scripted])
+  const cues = defaultCues(roots, [...cuesFromAttributes(roots, attrs), ...scripted, ...tweens.filter((c) => kept.has(c.target))])
   const hasTrail = allNodes(roots).some((n) => n.className === 'Trail')
   return { name, roots, cues, duration: effectDuration(roots, cues), motion: hasTrail ? 'swing' : 'static' }
 }
@@ -278,16 +297,41 @@ export function effectStats(effect: VfxEffect): VfxStats {
 
 // ------------------------------------------------------------------ layer roles
 
-export type LayerRole = 'core' | 'glow' | 'sparks' | 'smoke' | 'ring' | 'debris' | 'trail' | 'beam' | 'light' | 'mesh' | 'other'
+export type LayerRole = 'core' | 'glow' | 'sparks' | 'smoke' | 'ring' | 'debris' | 'trail' | 'beam' | 'light' | 'mesh' | 'slash' | 'crack' | 'flash' | 'other'
 
+// Words in layer names that say what a layer is (only when they match: purchased effects name
+// layers "1SP" or "1", so the properties below decide most of the time).
 const ROLE_WORDS: [LayerRole, RegExp][] = [
+  ['slash', /slash|blade|streak|swipe|crescent|swing/i],
+  ['crack', /crack|fissure|fractur/i],
+  ['flash', /flash|\bpop\b/i],
   ['sparks', /spark|ember|spec|glitter|star|flare/i],
   ['smoke', /smoke|dust|fog|mist|steam|cloud/i],
   ['glow', /glow|bloom|light|halo|aura/i],
-  ['ring', /ring|shock|wave|circle|crescent/i],
+  ['ring', /ring|shock|wave|circle/i],
   ['debris', /debris|rock|chunk|shard|bits/i],
   ['core', /core|main|base|fire|flame|center|centre|burst|blast/i]
 ]
+
+// Texture library kinds -> layer roles (for ids the library knows).
+const KIND_ROLE: Record<string, LayerRole> = { spark: 'sparks', star: 'sparks', smoke: 'smoke', ring: 'ring', shockwave: 'ring', crack: 'crack', slash: 'slash', debris: 'debris', glow: 'glow', wisp: 'glow', flare: 'flash' }
+
+export const ROLE_LABEL: Record<LayerRole, string> = {
+  core: 'core',
+  glow: 'glow',
+  sparks: 'ember sparks',
+  smoke: 'smoke',
+  ring: 'shockwave ring',
+  debris: 'debris',
+  trail: 'trail',
+  beam: 'beam',
+  light: 'light',
+  mesh: 'mesh',
+  slash: 'blade / slash streak',
+  crack: 'crack lines',
+  flash: 'core flash',
+  other: 'other'
+}
 
 export function luminance(c: Rgb): number {
   return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
@@ -299,27 +343,76 @@ function saturation(c: Rgb): number {
   return mx <= 0 ? 0 : (mx - mn) / mx
 }
 
-// What job an emitter does in a layered effect (name first, then its numbers).
-export function emitterRole(n: VfxNode): LayerRole {
-  for (const [role, re] of ROLE_WORDS) if (re.test(n.name)) return role
+export type TextureKindOf = (texture: string) => string | null | undefined
+
+// What job an emitter does in a layered effect, and what decided it: a name that says so, the
+// texture's kind (library textures), else its numbers (orientation, squash, speed, lifetime, size,
+// colour, blending).
+export function inferEmitterRole(n: VfxNode, kindOf?: TextureKindOf): { role: LayerRole; by: 'name' | 'texture' | 'properties' } {
+  for (const [role, re] of ROLE_WORDS) if (re.test(n.name)) return { role, by: 'name' }
+  const tex = typeof n.props.Texture === 'string' ? n.props.Texture : ''
+  const kind = tex && kindOf ? kindOf(tex) : null
+  if (kind && KIND_ROLE[kind]) return { role: KIND_ROLE[kind], by: 'texture' }
   const size = sequenceMax(prop<NumberSequence>(n, 'Size'))
   const speed = Math.max(...(prop<NumberRange>(n, 'Speed') ?? [0, 0]).map(Math.abs))
   const life = (prop<NumberRange>(n, 'Lifetime') ?? [1, 1])[1]
   const le = prop<number>(n, 'LightEmission')
   const mid = evalColorSequence(prop<ColorSequence>(n, 'Color'), 0.5)
-  if (prop<string>(n, 'Orientation') === 'VelocityParallel' || (size <= 0.6 && speed >= 8)) return 'sparks'
-  if (le < 0.3 && saturation(mid) < 0.35 && life >= 1) return 'smoke'
-  if (speed <= 2 && size >= 2 && le >= 0.5) return 'glow'
-  return 'core'
+  const orient = prop<string>(n, 'Orientation')
+  const squash = Math.max(0, ...(prop<NumberSequence>(n, 'Squash') ?? []).map((k) => Math.abs(k.v)))
+  const by = 'properties' as const
+  // Elongated, (nearly) still particles drawn along their emission direction: sharp blade shapes.
+  if ((orient === 'VelocityParallel' || squash >= 1) && speed <= 1.5 && size >= 0.8) return { role: 'slash', by }
+  // Dark, still, non-glowing streaks: cracks.
+  if (luminance(mid) < 0.12 && le < 0.5 && speed <= 1.5) return { role: 'crack', by }
+  if (orient === 'VelocityParallel' || (size <= 0.6 && speed >= 8)) return { role: 'sparks', by }
+  if (orient === 'VelocityPerpendicular' && curveShape(prop<NumberSequence>(n, 'Size')) !== 'shrink') return { role: 'ring', by }
+  if (life <= 0.25 && size >= 2 && le >= 0.5) return { role: 'flash', by }
+  if (le < 0.3 && saturation(mid) < 0.35 && life >= 1) return { role: 'smoke', by }
+  if (speed <= 2 && size >= 2 && le >= 0.5) return { role: 'glow', by }
+  return { role: 'core', by }
 }
 
-export function nodeRole(n: VfxNode): LayerRole {
-  if (n.className === 'ParticleEmitter') return emitterRole(n)
+export function emitterRole(n: VfxNode, kindOf?: TextureKindOf): LayerRole {
+  return inferEmitterRole(n, kindOf).role
+}
+
+export function nodeRole(n: VfxNode, kindOf?: TextureKindOf): LayerRole {
+  if (n.className === 'ParticleEmitter') return emitterRole(n, kindOf)
   if (n.className === 'Trail') return 'trail'
-  if (n.className === 'Beam') return 'beam'
+  if (n.className === 'Beam') {
+    // A beam named like a slash, or a curved wide one with a slash texture, is the blade.
+    const tex = typeof n.props.Texture === 'string' && kindOf ? kindOf(n.props.Texture) : null
+    if (tex === 'slash' || /slash|blade|swipe|crescent/i.test(n.name)) return 'slash'
+    return 'beam'
+  }
   if (/Light$/.test(n.className) || n.className === 'Highlight') return 'light'
   if (n.className === 'MeshPart' || n.className === 'SpecialMesh') return 'mesh'
   return 'other'
+}
+
+export interface LayerRoleRow {
+  id: string
+  name: string
+  className: string
+  role: LayerRole
+  label: string
+  by: 'name' | 'texture' | 'properties' | 'class'
+}
+
+// Every layer with the role the Lab gives it (shown in the detail panel: "1SP -> ember sparks").
+export function layerRoles(effect: VfxEffect, kindOf?: TextureKindOf): LayerRoleRow[] {
+  const out: LayerRoleRow[] = []
+  for (const n of allNodes(effect.roots)) {
+    if (n.className === 'ParticleEmitter') {
+      const r = inferEmitterRole(n, kindOf)
+      out.push({ id: n.id, name: n.name, className: n.className, role: r.role, label: ROLE_LABEL[r.role], by: r.by })
+    } else if (['Beam', 'Trail', 'MeshPart', 'SpecialMesh', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight'].includes(n.className)) {
+      const role = nodeRole(n, kindOf)
+      out.push({ id: n.id, name: n.name, className: n.className, role, label: ROLE_LABEL[role], by: 'class' })
+    }
+  }
+  return out
 }
 
 // ------------------------------------------------------------------ tags
@@ -397,6 +490,10 @@ export function autoTags(effect: VfxEffect, extra = ''): string[] {
   for (const [tag, re] of Object.entries(TAG_WORDS)) if (re.test(text)) tags.add(tag)
   const nodes = allNodes(effect.roots)
   const colors = effectColors(effect)
+  // What the layers do (from their properties when the names say nothing).
+  const roles = new Set(nodes.filter((n) => n.className === 'ParticleEmitter' || n.className === 'Beam').map((n) => nodeRole(n)))
+  if (roles.has('slash')) tags.add('slash')
+  if (roles.has('ring')) tags.add('shockwave')
   if (nodes.some((n) => n.className === 'Trail')) tags.add('trail')
   if (nodes.some((n) => n.className === 'Beam')) tags.add('beam')
   const emitters = nodes.filter((n) => n.className === 'ParticleEmitter')
@@ -415,7 +512,7 @@ export function describeEffect(effect: VfxEffect): string {
   const stats = effectStats(effect)
   const roles = allNodes(effect.roots)
     .filter((n) => n.className === 'ParticleEmitter')
-    .map((n) => `${n.name} (${emitterRole(n)})`)
+    .map((n) => `${n.name} (${ROLE_LABEL[emitterRole(n)]})`)
   const bits = [
     `${stats.emitters} emitter${stats.emitters === 1 ? '' : 's'}${roles.length ? `: ${roles.slice(0, 6).join(', ')}` : ''}`,
     stats.beams ? `${stats.beams} beam(s)` : '',
@@ -468,6 +565,22 @@ export function perfWarnings(effect: VfxEffect): PerfWarning[] {
   if (stats.emitters > PERF.emittersWarn && !isSequence(effect)) out.push({ level: 'info', message: `${stats.emitters} emitters; most good effects use 3 to 6 layers.` })
   if (isSequence(effect) && stats.emitters > 40) out.push({ level: 'info', message: `${stats.emitters} emitters across the sequence; reuse rigs (tween them) instead of spawning new ones per beat.` })
   return out
+}
+
+// Same message on several layers (e.g. "FlipbookFramerate above 30..." on 12 emitters) -> one line
+// with the count and the layer names.
+export function dedupeWarnings(list: PerfWarning[]): PerfWarning[] {
+  const by = new Map<string, { w: PerfWarning; nodes: string[] }>()
+  for (const w of list) {
+    const k = `${w.level}|${w.message}`
+    const e = by.get(k)
+    if (e) {
+      if (w.node && !e.nodes.includes(w.node)) e.nodes.push(w.node)
+    } else by.set(k, { w, nodes: w.node ? [w.node] : [] })
+  }
+  return [...by.values()].map(({ w, nodes }) =>
+    nodes.length > 1 ? { level: w.level, node: nodes.join(', '), message: `${w.message} (${nodes.length} layers: ${nodes.slice(0, 4).join(', ')}${nodes.length > 4 ? ', ...' : ''})` } : w
+  )
 }
 
 // 0..10 performance score from the stats (used in the rubric next to the critic's judgement).

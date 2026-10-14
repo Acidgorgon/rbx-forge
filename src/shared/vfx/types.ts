@@ -154,6 +154,9 @@ export interface VfxEntry {
   // Imported models: what the preview could not reproduce (scripts with logic it could not read,
   // meshes drawn as proxies, ...).
   importNotes?: string[]
+  // Imported models: the importer version that built `effect` (IMPORT_VERSION in services/vfx);
+  // older entries can be rebuilt from their stored model file (vfxReimport).
+  importVersion?: number
   // Generated effects: the video reference pinned with "make it like this" (critic compares to it).
   refId?: string
   // "Restate first": the reading of the brief the user confirmed (compose prompt + critic judge against it).

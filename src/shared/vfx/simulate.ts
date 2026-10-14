@@ -54,7 +54,9 @@ export interface Particle {
   w: number
   h: number
   rot: number
+  // Colour x brightness (sRGB values scaled by `bright`; the renderer linearises color / bright).
   color: Rgb
+  bright: number
   alpha: number
   age: number
   life: number
@@ -114,10 +116,58 @@ export interface PreparedMesh {
   at: (t: number) => CFrameArr
   size: Vec3
   // Size, transparency and colour at time t (tweens, SizeScale, Fade).
-  look: (t: number) => { size: Vec3; transparency: number; color: Rgb }
-  // What to draw: the Part shape, or a proxy for meshes (mesh files are not downloaded).
+  look: (t: number) => MeshLook
+  // What to draw: the Part shape, or a proxy until the mesh file is loaded (see `file`).
   shape: MeshShape
   material: string
+  // A MeshPart's MeshId, or a FileMesh SpecialMesh's: the preview swaps the proxy for the real
+  // mesh when its geometry is available (shared/vfx/mesh). 'part': fitted to look(t).size;
+  // 'special': mesh units times look(t).scale, moved by offset(t).
+  file?: MeshFile
+  // Decals / Textures on the part's faces.
+  decals: PartDecal[]
+  // A Highlight parented to (or adorning) this part.
+  highlight?: VfxNode
+}
+
+export interface MeshLook {
+  size: Vec3
+  transparency: number
+  color: Rgb
+  // FileMesh SpecialMesh: Scale (mesh units -> studs) at time t.
+  scale?: Vec3
+}
+
+export interface MeshFile {
+  meshId: string
+  textureId: string
+  mode: 'part' | 'special'
+  // SpecialMesh: Offset (part space) and VertexColor (texture tint) at time t.
+  offset: (t: number) => Vec3
+  vertexColor: (t: number) => Rgb
+}
+
+export interface PartDecal {
+  id: string
+  face: string
+  texture: string
+  color: Rgb
+  transparency: (t: number) => number
+  // Texture: studs per tile (Decal: stretched over the face).
+  tile?: [number, number]
+}
+
+// The mesh file a part draws (MeshPart MeshId, or a FileMesh SpecialMesh child), if any.
+export function meshFileOf(n: VfxNode): { meshId: string; textureId: string; mode: 'part' | 'special'; special?: VfxNode } | null {
+  if (n.className === 'MeshPart') {
+    const meshId = String(n.props.MeshId ?? '')
+    if (!meshId) return null
+    const sa = n.children.find((c) => c.className === 'SurfaceAppearance' && typeof c.props.ColorMap === 'string' && c.props.ColorMap)
+    return { meshId, textureId: String(sa?.props.ColorMap ?? n.props.TextureID ?? ''), mode: 'part' }
+  }
+  const sm = n.children.find((c) => c.className === 'SpecialMesh')
+  if (sm && String(sm.props.MeshType ?? 'Head') === 'FileMesh' && String(sm.props.MeshId ?? '')) return { meshId: String(sm.props.MeshId), textureId: String(sm.props.TextureId ?? ''), mode: 'special', special: sm }
+  return null
 }
 
 export type MeshShape = 'box' | 'ball' | 'cylinder' | 'wedge' | 'ellipsoid'
@@ -256,6 +306,9 @@ export function prepareEffect(effect: VfxEffect, seed = 1): PreparedEffect {
   }
   for (const r of effect.roots) walk(r, root, null, false)
 
+  // Highlights adorning a part of the effect (Adornee) light that part, not the dummy.
+  const highlightsFor = new Map<string, VfxNode>()
+  for (const { node: n } of pending) if (n.className === 'Highlight' && typeof n.props.Adornee === 'string' && n.props.Adornee) highlightsFor.set(n.props.Adornee, n)
   for (const { node: n, at, parentPart, parentIsAttachment } of pending) {
     const windows = enableWindows(n, effect.cues, effect.duration)
     if (n.className === 'ParticleEmitter') {
@@ -271,25 +324,69 @@ export function prepareEffect(effect: VfxEffect, seed = 1): PreparedEffect {
     } else if (LIGHT_CLASSES.has(n.className)) {
       out.lights.push({ id: n.id, name: n.name, node: n, at, windows, timeline: tl })
     } else if (n.className === 'Highlight') {
-      out.highlights.push(n)
+      // On the dummy only when it is not on (or adorning) a part of the effect.
+      const onPart = (parentPart && !parentIsAttachment && pending.find((p) => p.node.children.includes(n))?.node === parentPart) || (typeof n.props.Adornee === 'string' && byId.has(n.props.Adornee))
+      if (!onPart) out.highlights.push(n)
     } else if (PART_CLASSES.has(n.className) && (prop<number>(n, 'Transparency') < 1 || tl.has(n.id, 'Transparency'))) {
       const ms = meshShape(n)
+      const mf = meshFileOf(n)
       const raw = prop<number[]>(n, 'Size') as Vec3
+      const sm = n.children.find((c) => c.className === 'SpecialMesh' || c.className === 'BlockMesh' || c.className === 'CylinderMesh')
+      // Primitive SpecialMesh: Scale multiplies the part Size (tweenable on the SpecialMesh).
+      const smScaled = !!sm && sm.className === 'SpecialMesh' && !mf && tl.has(sm.id, 'Scale')
       const size: Vec3 = [raw[0] * ms.scale[0], raw[1] * ms.scale[1], raw[2] * ms.scale[2]]
       const color = prop<Rgb>(n, 'Color')
       const tr = prop<number>(n, 'Transparency')
-      const animated = tl.animated(n.id)
-      const fixed = { size, transparency: tr, color }
+      const special = mf?.special
+      const smScale = (t: number): Vec3 => (special ? (tl.value<number[]>(special.id, 'Scale', prop<number[]>(special, 'Scale'), t) as Vec3) : [1, 1, 1])
+      const animated = tl.animated(n.id) || (!!sm && tl.animated(sm.id))
+      const baseSize = (t: number): Vec3 => {
+        const s = tl.value<number[]>(n.id, 'Size', raw, t)
+        const k = smScaled ? tl.value<number[]>(sm!.id, 'Scale', prop<number[]>(sm!, 'Scale'), t) : ms.scale
+        return [s[0] * k[0], s[1] * k[1], s[2] * k[2]]
+      }
+      // FileMesh SpecialMesh: the mesh keeps its own size, times Scale (`scale`; the part Size
+      // only matters for the proxy drawn until the mesh loads).
+      const fixed: MeshLook = { size: baseSize(0), transparency: tr, color, ...(special ? { scale: smScale(0) } : {}) }
       const look = animated
-        ? (t: number) => {
+        ? (t: number): MeshLook => {
             const k = tl.sizeScale(n.id, t)
-            const s = tl.value<number[]>(n.id, 'Size', size, t)
+            const s = baseSize(t)
             const f = tl.fade(n.id, t)
             const base = tl.value<number>(n.id, 'Transparency', tr, t)
-            return { size: [s[0] * k, s[1] * k, s[2] * k] as Vec3, transparency: 1 - (1 - Math.max(0, Math.min(1, base))) * (1 - f), color: tl.value<Rgb>(n.id, 'Color', color, t) }
+            const sc = special ? smScale(t) : null
+            return {
+              size: [s[0] * k, s[1] * k, s[2] * k] as Vec3,
+              transparency: 1 - (1 - Math.max(0, Math.min(1, base))) * (1 - f),
+              color: tl.value<Rgb>(n.id, 'Color', color, t),
+              ...(sc ? { scale: [sc[0] * k, sc[1] * k, sc[2] * k] as Vec3 } : {})
+            }
           }
         : () => fixed
-      out.meshes.push({ id: n.id, name: n.name, node: n, at, size, look, shape: ms.shape, material: String(n.props.Material ?? 'Plastic') })
+      const file: MeshFile | undefined = mf
+        ? {
+            meshId: mf.meshId,
+            textureId: mf.textureId,
+            mode: mf.mode,
+            offset: (t) => (special ? (tl.value<number[]>(special.id, 'Offset', prop<number[]>(special, 'Offset'), t) as Vec3) : [0, 0, 0]),
+            vertexColor: (t) => (special ? (tl.value<number[]>(special.id, 'VertexColor', prop<number[]>(special, 'VertexColor'), t) as Rgb) : [1, 1, 1])
+          }
+        : undefined
+      const decals: PartDecal[] = n.children
+        .filter((c) => (c.className === 'Decal' || c.className === 'Texture') && typeof c.props.Texture === 'string' && c.props.Texture)
+        .map((c) => {
+          const dt = prop<number>(c, 'Transparency')
+          return {
+            id: c.id,
+            face: String(c.props.Face ?? 'Front'),
+            texture: String(c.props.Texture),
+            color: prop<Rgb>(c, 'Color3'),
+            transparency: (t: number) => tl.value<number>(c.id, 'Transparency', dt, t),
+            ...(c.className === 'Texture' ? { tile: [prop<number>(c, 'StudsPerTileU') || 2, prop<number>(c, 'StudsPerTileV') || 2] as [number, number] } : {})
+          }
+        })
+      const highlight = n.children.find((c) => c.className === 'Highlight') ?? highlightsFor.get(n.id)
+      out.meshes.push({ id: n.id, name: n.name, node: n, at, size, look, shape: ms.shape, material: String(n.props.Material ?? 'Plastic'), file, decals, ...(highlight ? { highlight } : {}) })
     }
   }
   return out
@@ -552,6 +649,13 @@ function particleAt(em: PreparedEmitter, p: ReturnType<typeof emitterParams>, ke
     position = add(point(frameAt, spawn.local), displacement(v0, p.accel, p.drag, age))
     vel = velocityAt(v0, p.accel, p.drag, age)
   }
+  // Velocity-aligned particles with (almost) no motion (Speed 0.01 "sculptures", or drag that
+  // has stopped them) still point along their emission direction, as in Roblox.
+  if (Math.hypot(vel[0], vel[1], vel[2]) < 1e-3) {
+    const d = rotate(frameAt, dirLocal)
+    const m = Math.hypot(d[0], d[1], d[2]) || 1
+    vel = [(d[0] / m) * 1e-2, (d[1] / m) * 1e-2, (d[2] / m) * 1e-2]
+  }
   const tn = age / life
   const size = Math.max(0, evalNumberSequence(p.size, tn, sizeOff)) * look.sizeScale
   const sq = evalNumberSequence(p.squash, tn, squashOff)
@@ -570,6 +674,7 @@ function particleAt(em: PreparedEmitter, p: ReturnType<typeof emitterParams>, ke
     h: size * Math.pow(2, sq),
     rot: rot0 + rotSpeed * age,
     color: [c[0] * b, c[1] * b, c[2] * b],
+    bright: b,
     alpha: 1 - transparency,
     age,
     life,
@@ -632,6 +737,8 @@ export function simulateEmitter(em: PreparedEmitter, t: number, seed = 1): Parti
 export interface BeamFrame {
   id: string
   lightEmission: number
+  // Brightness the colours are scaled by (see Particle.bright).
+  bright: number
   points: Vec3[]
   // Width direction per point (used when FaceCamera is false).
   sides: Vec3[]
@@ -669,10 +776,11 @@ export function simulateBeam(b: PreparedLink, t: number): BeamFrame | null {
   const transp = prop<NumberSequence>(n, 'Transparency')
   const z0 = rotate(A0, [0, 0, 1])
   const z1 = rotate(A1, [0, 0, 1])
-  const frame: BeamFrame = { id: b.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), points: [], sides: [], widths: [], colors: [], alphas: [], us: [] }
+  // Brightness scales the light when LightInfluence < 1 (Beam.Brightness), like particles.
+  const bright = lerp(v('Brightness'), 1, Math.max(0, Math.min(1, prop<number>(n, 'LightInfluence') || 0)))
+  const frame: BeamFrame = { id: b.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), bright, points: [], sides: [], widths: [], colors: [], alphas: [], us: [] }
   let length = 0
   let prev: Vec3 | null = null
-  const bright = v('Brightness')
   for (let i = 0; i <= segs; i++) {
     const s = i / segs
     const m = 1 - s
@@ -697,6 +805,7 @@ export function simulateBeam(b: PreparedLink, t: number): BeamFrame | null {
 export interface TrailFrame {
   id: string
   lightEmission: number
+  bright: number
   // Pairs of edge points (attachment 0 side, attachment 1 side), newest first.
   left: Vec3[]
   right: Vec3[]
@@ -721,8 +830,8 @@ export function simulateTrail(tr: PreparedLink, t: number): TrailFrame | null {
   const tint = tl ? tl.tint(n.id, t) : null
   const maxLen = v('MaxLength') || 0
   const minLen = Math.max(0, v('MinLength'))
-  const bright = v('Brightness')
-  const frame: TrailFrame = { id: tr.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), left: [], right: [], colors: [], alphas: [], us: [] }
+  const bright = lerp(v('Brightness'), 1, Math.max(0, Math.min(1, prop<number>(n, 'LightInfluence') || 0)))
+  const frame: TrailFrame = { id: tr.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), bright, left: [], right: [], colors: [], alphas: [], us: [] }
   let length = 0
   let last: Vec3 | null = null
   // Segments are recorded at a fixed 60 Hz grid so scrubbing gives the same trail.

@@ -36,6 +36,38 @@ async function send(page: Page, text: string): Promise<void> {
 
 export const aiFlows: Flow[] = [
   {
+    name: 'accounts',
+    title: 'Settings > Accounts: five cards, Claude sign-in first, Codex slot, API key path; chat links here',
+    timeoutMs: 45_000,
+    async run({ page, note, shot }) {
+      await openPage(page, 'Settings')
+      await page.locator('nav.set-nav button', { hasText: 'Accounts' }).click()
+      for (const id of ['claude', 'openai', 'gemini', 'openrouter', 'ollama']) {
+        await page.locator(`#acct-${id}`).waitFor({ state: 'visible', timeout: 10_000 })
+      }
+      const claude = page.locator('#acct-claude')
+      // The sandbox has no Claude login and no keys: Claude is not set up, sign-in is the main button.
+      await claude.locator('.acct-headline', { hasText: /Not set up/ }).waitFor({ timeout: 15_000 })
+      const signIn = claude.getByRole('button', { name: /^Sign in with Claude$/ })
+      const unavailable = await claude.locator('.acct-actions', { hasText: /needs Claude Code/ }).count()
+      check((await signIn.count()) === 1 || unavailable === 1, 'no "Sign in with Claude" button (nor a "needs Claude Code" note) on the Claude card')
+      // The API key is the secondary path.
+      await claude.getByRole('button', { name: /Use an API key instead/ }).click()
+      await claude.getByLabel(/Claude API key/).waitFor({ state: 'visible', timeout: 5000 })
+      check((await claude.getByRole('link', { name: /Get a key/ }).getAttribute('href'))?.startsWith('https://'), 'no "Get a key" link on the Claude key field')
+      // OpenAI: the Codex slot and the key field.
+      const openai = page.locator('#acct-openai')
+      await openai.getByRole('button', { name: /Sign in with ChatGPT \(Codex\)/ }).waitFor({ timeout: 5000 })
+      await openai.getByLabel(/OpenAI API key/).waitFor({ timeout: 5000 })
+      await shot('accounts')
+      note(`claude: ${(await claude.locator('.acct-headline').innerText()).trim()}; openai: ${(await openai.locator('.acct-headline').innerText()).trim()}`)
+      // The chat's no-provider prompt links to the Claude card.
+      await newChat(page)
+      await page.locator(ASSISTANT).getByRole('button', { name: /^Sign in with Claude$/ }).click()
+      await page.locator('#acct-claude').waitFor({ state: 'visible', timeout: 5000 })
+    }
+  },
+  {
     name: 'chat-no-key',
     title: 'Chat with no provider: clear "set up a provider" state, sending does not crash',
     timeoutMs: 45_000,

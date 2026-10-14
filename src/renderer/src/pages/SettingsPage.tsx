@@ -1,4 +1,5 @@
-// Settings tab: appearance, default model, AI providers (keys, base URLs, the Claude login opt-in),
+// Settings tab: accounts (sign in with Claude, API keys; accounts/AccountsSection.tsx), appearance,
+// default model, AI providers (Ollama and custom base URLs),
 // budgets and usage history, auto-routing, places (serveAllPlaces) and collaborator sync.
 import { useEffect, useState, type ReactNode } from 'react'
 import type { BudgetLimits, ProviderId, ProviderInfo, SyncSettings, UsageSummary } from '@shared/types'
@@ -17,6 +18,7 @@ import { QolSettings } from '../qol/QolSettings'
 import { DoctorBanner } from './qolc/Doctor'
 import { SpendSettingsSection } from './qolc/Spend'
 import { FigmaTokenSettings } from './FigmaTokenSettings'
+import { AccountsSection } from '../accounts/AccountsSection'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -30,6 +32,7 @@ const KEY_PLACEHOLDER: Partial<Record<ProviderId, string>> = { anthropic: 'sk-an
 const ENV_NAME: Partial<Record<ProviderId, string>> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', openrouter: 'OPENROUTER_API_KEY', gemini: 'GEMINI_API_KEY' }
 
 const SECTIONS = [
+  ['accounts', 'Accounts'],
   ['appearance', 'Appearance'],
   ['model', 'Default model'],
   ['chat', 'Chat'],
@@ -139,38 +142,6 @@ function BaseUrlField({ p }: { p: ProviderInfo }) {
   )
 }
 
-// Off by default. Personal-use only: runs on the user's Claude Code login when no API key is set.
-function ClaudeLoginToggle() {
-  const { actions } = useStore()
-  const [on, setOn] = useState<boolean | null>(null)
-  useEffect(() => {
-    void window.harness.getAnthropicUseClaudeLogin().then(setOn).catch(() => setOn(false))
-  }, [])
-  return (
-    <label className="pv-toggle">
-      <div className="grow">
-        <div className="set-title">Use my Claude Code login (personal use only)</div>
-        <div className="note">
-          When no API key is set, run on the Claude Code login on this machine (or CLAUDE_CODE_OAUTH_TOKEN). This draws from your Claude Pro/Max plan
-          limits and is meant for your own use. An API key is Anthropic's documented way to authenticate apps built on the Agent SDK.
-        </div>
-      </div>
-      <input
-        type="checkbox"
-        className="switch"
-        checked={!!on}
-        disabled={on === null}
-        onChange={async (e) => {
-          const next = e.target.checked
-          setOn(next)
-          await window.harness.setAnthropicUseClaudeLogin(next)
-          await actions.refreshProviders()
-        }}
-      />
-    </label>
-  )
-}
-
 function ProviderCard({ p }: { p: ProviderInfo }) {
   const status = p.ready ? 'ready' : p.id === 'ollama' ? 'not running' : 'not set up'
   return (
@@ -186,7 +157,6 @@ function ProviderCard({ p }: { p: ProviderInfo }) {
       {p.detail && !/^No (API key|base URL)$/.test(p.detail) && <div className="note pv-detail">{p.detail}</div>}
       {(p.id === 'custom' || p.id === 'ollama') && <BaseUrlField p={p} />}
       {p.id !== 'ollama' && <KeyField p={p} />}
-      {p.id === 'anthropic' && <ClaudeLoginToggle />}
     </div>
   )
 }
@@ -271,7 +241,8 @@ export function SettingsPage() {
   const focus = state.settingsFocus
   useEffect(() => {
     if (!focus || !providers) return
-    const el = document.getElementById(`pv-${focus}`)
+    // Accounts cards first (anthropic -> Claude); Custom only lives under Providers.
+    const el = document.getElementById(`acct-${focus === 'anthropic' ? 'claude' : focus}`) ?? document.getElementById(`pv-${focus}`)
     el?.scrollIntoView({ block: 'center' })
     el?.classList.add('flash')
     el?.querySelector<HTMLInputElement>('input:not([type=checkbox])')?.focus()
@@ -308,6 +279,15 @@ export function SettingsPage() {
             <button key={id} className="chip" onClick={() => jump(id)}>{label}</button>
           ))}
         </nav>
+
+        <section className="set-sec" id="set-accounts">
+          <h2>Accounts</h2>
+          <p className="note">
+            Sign in or add a key for each AI provider you want to use. Keys are encrypted with the OS keychain (Electron safeStorage) and never leave the
+            main process.
+          </p>
+          <AccountsSection />
+        </section>
 
         <section className="set-sec" id="set-appearance">
           <h2>Appearance</h2>
@@ -349,10 +329,10 @@ export function SettingsPage() {
         <section className="set-sec" id="set-providers">
           <h2>Providers</h2>
           <p className="note">
-            Keys are encrypted with the OS keychain (Electron safeStorage) and never leave the main process. Studio MCP tools are only available on Anthropic;
-            other providers get the project tools.
+            Server URLs for local and self-hosted models; sign-ins and API keys for the hosted providers are under Accounts above. Studio MCP tools are only
+            available on Claude; other providers get the project tools.
           </p>
-          <div className="pv-list">{providers?.map((p) => <ProviderCard key={p.id} p={p} />)}</div>
+          <div className="pv-list">{providers?.filter((p) => p.id === 'ollama' || p.id === 'custom').map((p) => <ProviderCard key={p.id} p={p} />)}</div>
         </section>
 
         <section className="set-sec" id="set-usage">

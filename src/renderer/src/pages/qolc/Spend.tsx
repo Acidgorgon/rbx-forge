@@ -4,6 +4,7 @@
 import { useEffect, useState } from 'react'
 import type { SpendSettings, SpendState } from '@shared/types'
 import { SPEND_SOURCE_LABEL } from '@shared/spend/types'
+import { parseUsd } from '@shared/spend/cap'
 import { useStore, type Actions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { useMenu } from '../../components/Menu'
@@ -53,8 +54,7 @@ function CapField({ label, value, onSave }: { label: string; value: number | nul
   const [text, setText] = useState(value === null ? '' : String(value))
   useEffect(() => setText(value === null ? '' : String(value)), [value])
   const commit = () => {
-    const t = text.trim()
-    const n = t === '' ? null : Number(t)
+    const n = parseUsd(text)
     if (n !== null && (!Number.isFinite(n) || n <= 0)) return setText(value === null ? '' : String(value))
     if (n !== value) onSave(n)
   }

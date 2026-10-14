@@ -7,7 +7,7 @@ import { test } from 'node:test'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { alertText, emptyBook, evaluateSpend, localDay, localMonth, monthSpent, newAlerts, normalizeBook, normalizeSettings, raiseStep, raiseToday, recordSpend, refusal, spendState } from '../src/shared/spend/cap.ts'
+import { alertText, emptyBook, evaluateSpend, localDay, localMonth, monthSpent, newAlerts, normalizeBook, normalizeSettings, parseUsd, raiseStep, raiseToday, recordSpend, refusal, spendState } from '../src/shared/spend/cap.ts'
 import { isSpendCapMessage, type SpendSettings } from '../src/shared/spend/types.ts'
 import { fileStore, SpendCapError, SpendService } from '../src/main/services/spend/service.ts'
 import { assertSpend, chargeSpend, setSpendCap, sourceOfRecord, spendBlock } from '../src/main/services/spend/gate.ts'
@@ -223,4 +223,18 @@ test('agent hooks: ledger record sources and orchestrator charges', async () => 
   } finally {
     await w.dispose()
   }
+})
+
+test('cap field: dollar sign, decimal comma and thousands separators are read', () => {
+  assert.equal(parseUsd(''), null)
+  assert.equal(parseUsd('  '), null)
+  assert.equal(parseUsd('25'), 25)
+  assert.equal(parseUsd('$25'), 25)
+  assert.equal(parseUsd('12,50'), 12.5)
+  assert.equal(parseUsd('0.75'), 0.75)
+  assert.equal(parseUsd('.5'), 0.5)
+  assert.equal(parseUsd('1,000'), 1000)
+  assert.equal(parseUsd('1 000'), 1000)
+  assert.ok(Number.isNaN(parseUsd('ten') as number))
+  assert.ok(Number.isNaN(parseUsd('-5') as number))
 })

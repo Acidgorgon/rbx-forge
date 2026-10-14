@@ -158,6 +158,8 @@ export interface VfxEntry {
   // Video references (kind 'media'): the analysed clip (shared/videoref).
   video?: VideoRef
   notes?: string
+  // Generated effects the model did not draft: "Drafted without a model because: <error>".
+  modelNote?: string
   // Imported models: what the preview could not reproduce (scripts with logic it could not read,
   // meshes drawn as proxies, ...).
   importNotes?: string[]
@@ -184,6 +186,8 @@ export interface VfxScriptResult {
   entry?: VfxEntry
   // vfx_compose: who wrote the script.
   source?: 'model' | 'draft' | 'example'
+  // vfx_compose with source 'draft': why the model's script was not used (the actual error).
+  modelError?: string
 }
 
 // One round of the render, critique and refine loop.

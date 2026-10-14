@@ -62,6 +62,7 @@ import { uiMotionElectronDeps } from './services/uimotion/electron.ts'
 import { createPrincipleWiring } from './services/principles/wire.ts'
 import { createGatingWiring } from './services/gating/wire.ts'
 import type { LabTier } from '../shared/labModels.ts'
+import type { LabId } from '../shared/gating/types.ts'
 import { createStudioWiring } from './services/studio/wire.ts'
 import { SyncEngine } from './services/sync/engine.ts'
 import { loadPlaces, placeFor } from './services/sync/mapping.ts'
@@ -536,8 +537,14 @@ const gating = createGatingWiring({
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[gating] ${text}` })
 })
 // The labs' model calls, with each call's tokens + cost charged to the current lab run.
-const labModel = (tier: LabTier) => (system: string, prompt: string, images: Parameters<typeof agentIpc.vision>[2]) =>
-  agentIpc.vision(system, prompt, images, { tier, onUsage: (u) => void gating.service.charge(tier, u) })
+// A failed call is reported to the renderer ('labs:modelError': a toast with the actual error), so a
+// lab that falls back to its built-in draft or numbers-only check never does so silently.
+const labModel = (lab: LabId | undefined, tier: LabTier, charge = true) => (system: string, prompt: string, images: Parameters<typeof agentIpc.vision>[2]) =>
+  agentIpc.vision(system, prompt, images, { tier, ...(charge ? { onUsage: (u) => void gating.service.charge(tier, u) } : {}) }).catch((e: unknown) => {
+    const message = (e as Error)?.message || String(e)
+    emit('labs:modelError', { ...(lab ? { lab } : {}), tier, message, at: Date.now() })
+    throw e
+  })
 
 // Principle priorities (services/principles): per-principle weights learned from Labs ratings; the
 // VFX Lab, Animation Lab and Ability Composer critics weigh their principle scores by them.
@@ -560,7 +567,7 @@ const vfx = createVfxWiring({
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[vfx] ${text}` }),
   memory,
-  vision: (tier) => labModel(tier ?? 'default'),
+  vision: (tier) => labModel('vfx', tier ?? 'default'),
   gate: gating.service,
   rojo: {
     running: () => supervisor.statuses().some((s) => s.id === 'rojo' && (s.state === 'running' || s.state === 'starting')),
@@ -588,7 +595,7 @@ const anim = createAnimWiring({
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[anim] ${text}` }),
   memory,
-  model: (tier) => labModel(tier),
+  model: (tier) => labModel('anim', tier),
   gate: gating.service,
   openCloud: integrations.openCloud,
   ...animElectron,
@@ -603,7 +610,7 @@ registerPackSection({ id: 'anim', label: 'Animation library', dir: () => anim.se
 const refs = createRefWiring({
   vfx: vfx.service,
   anim: anim.service,
-  model: (tier) => (system, prompt, images) => agentIpc.vision(system, prompt, images, { tier }),
+  model: (tier) => labModel(undefined, tier, false),
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[ref] ${text}` }),
   chatImage: defaultChatImage,
@@ -619,7 +626,7 @@ const ability = createAbilityWiring({
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[ability] ${text}` }),
   memory,
-  model: (tier) => labModel(tier),
+  model: (tier) => labModel('ability', tier),
   gate: gating.service,
   vfx: { get: (id) => vfx.service.get(id), list: () => vfx.service.list(), search: (q, o) => vfx.service.search(q, o), addExample: (k) => vfx.service.addExample(k), writeProjectFiles: (e) => vfx.service.writeProjectFiles(e) },
   anim: () => anim.service.listAnimClips(),
@@ -645,7 +652,7 @@ const thumbs = createThumbsWiring({
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[thumbs] ${text}` }),
   memory,
   principles: principles.service,
-  vision: (tier) => labModel(tier),
+  vision: (tier) => labModel('thumbs', tier),
   images: integrations.images,
   openCloud: integrations.openCloud,
   studio: {
@@ -737,7 +744,7 @@ const uiMotion = createUiMotionWiring({
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[uimotion] ${text}` }),
   memory,
-  model: (tier) => labModel(tier),
+  model: (tier) => labModel('uimotion', tier),
   gate: gating.service,
   secrets: integrations.secrets,
   lune: async () => (await vfx.service.status()).lune.available,

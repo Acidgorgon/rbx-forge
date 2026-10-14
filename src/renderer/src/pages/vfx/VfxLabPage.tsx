@@ -408,6 +408,14 @@ function Detail({ entry, progress, recipes, live, onClose, onTrashed }: { entry:
             </dd>
             <dt>origin</dt>
             <dd className="mono">{entry.origin}</dd>
+            {entry.modelNote && (
+              <>
+                <dt>model</dt>
+                <dd className="note vfx-model-note" role="note">
+                  {entry.modelNote}
+                </dd>
+              </>
+            )}
             {!!entry.importNotes?.length && (
               <>
                 <dt>import</dt>
@@ -723,11 +731,13 @@ export function VfxLabPage() {
         if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the timeline did not compile')
         await load()
         setSelected(r.entry.id)
+        if (r.entry.modelNote) actions.toast({ text: `${r.entry.name}: drafted without a model`, detail: r.entry.modelNote, kind: 'err', ms: 12_000 })
         if (r.warnings.length) actions.toast({ text: `${r.entry.name}: ${r.warnings.length} timeline warning${r.warnings.length === 1 ? '' : 's'}`, detail: r.warnings.slice(0, 2).join(' · '), kind: 'info', ms: 4000 })
       } else {
         const entry = await h.vfxMake(what, { maxIterations: iters, threshold })
         await load()
         setSelected(entry.id)
+        if (entry.modelNote) actions.toast({ text: `${entry.name}: drafted without a model`, detail: entry.modelNote, kind: 'err', ms: 12_000 })
       }
       setPrompt('')
     } catch (e) {

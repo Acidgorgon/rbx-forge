@@ -11,7 +11,7 @@ import { isEffortChoice } from '../../shared/modelCaps.ts'
 import { ChatImageStore, chatImageStore, setChatImageStore } from './chatImages.ts'
 import type { HarnessContext } from '../context.ts'
 import { routeModel, tiersFor } from './budget/budget.ts'
-import { LAB_MODELS_SETTING, resolveLabModel, type LabTier } from '../../shared/labModels.ts'
+import { LAB_MODELS_SETTING, LAST_CHAT_MODEL_SETTING, resolveLabModel, type LabTier } from '../../shared/labModels.ts'
 import { runOpenAiLoop } from './openaiLoop.ts'
 import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
 import { ChatManager, type TeamRunner } from './chat.ts'
@@ -173,6 +173,52 @@ function report(cb: NonNullable<ShotOptions['onUsage']>, model: string, u: Usage
   }
 }
 
+// The last chat model that answered (LAST_CHAT_MODEL_SETTING, kept by ChatManager). Labs and other
+// one-shot calls fall back to it when the default model's provider or a tier model does not work (a
+// Claude subscription without the flagship model, a default model on a provider with no key, Codex
+// not signed in, ...).
+export function lastChatModel(ctx: Pick<HarnessContext, 'getSetting'>): ModelChoice | null {
+  const v = ctx.getSetting<{ provider?: unknown; model?: unknown } | null>(LAST_CHAT_MODEL_SETTING, null)
+  return v && isProviderId(v.provider) && typeof v.model === 'string' && v.model.trim() ? { provider: v.provider, model: v.model.trim() } : null
+}
+
+// Errors that say nothing about whether a model works (retrying another model would not help, or
+// the next call on this one may well succeed): they are not remembered as "this model fails".
+const TRANSIENT = /overloaded|rate.?limit|\b429\b|\b529\b|timed? ?out|timeout|ECONNRESET|ETIMEDOUT|EAI_AGAIN|socket hang up|network|aborted/i
+// Models that failed recently (provider:model -> error), skipped while others remain.
+const FAILED_TTL = 10 * 60_000
+const failedModels = new Map<string, { message: string; until: number }>()
+
+export function resetLabModelFailures(): void {
+  failedModels.clear()
+}
+
+export interface ShotAttempt {
+  provider: ProviderId
+  model: string
+}
+
+// The models a one-shot call tries, in order: the tier's model on the default provider, the default
+// model itself, then the same for the last chat model that answered (so the Labs use what chat uses).
+export function shotAttempts(
+  bases: ModelChoice[],
+  pick: (base: ModelChoice) => string
+): ShotAttempt[] {
+  const out: ShotAttempt[] = []
+  const add = (provider: ProviderId, model: string) => {
+    if (model && !out.some((a) => a.provider === provider && a.model === model)) out.push({ provider, model })
+  }
+  for (const b of bases) {
+    add(b.provider, pick(b))
+    add(b.provider, b.model)
+  }
+  return out
+}
+
+function shotLabel(a: ShotAttempt): string {
+  return a.provider === 'anthropic' ? a.model : `${a.provider} ${a.model}`
+}
+
 async function oneShot(
   ctx: HarnessContext,
   w: { queryFn?: QueryFn; fetchFn?: FetchFn; credentials: Credentials; providers: Providers; meter: Meter },
@@ -184,21 +230,63 @@ async function oneShot(
   tier?: LabTier,
   onUsage?: ShotOptions['onUsage']
 ): Promise<string> {
-  const base = w.providers.defaultModel()
-  // Codex: the ChatGPT plan through the CLI (no API spend, so no spending-cap check).
-  if (base.provider === 'codex') return codexService().oneShot(system, prompt, { images, model: base.model })
-  // Spending cap (Settings > Usage): refuse before the call.
-  assertSpend('labs')
+  const primary = w.providers.defaultModel()
+  const chat = lastChatModel(ctx)
+  const bases = chat && !(chat.provider === primary.provider && chat.model === primary.model) ? [primary, chat] : [primary]
   const tiers = ctx.getSetting('modelTiers', undefined)
-  const model = tier
-    ? resolveLabModel(tier, ctx.getSetting(LAB_MODELS_SETTING, {}), base.model, tiersFor({ provider: base.provider, model: base.model, tiers }))
-    : images.length
-      ? base.model
-      : routeModel({ task: 'summary', text: prompt, settings: { provider: base.provider, model: base.model, tiers } }).model
-  if (base.provider === 'anthropic') {
+  const labs = ctx.getSetting(LAB_MODELS_SETTING, {})
+  const attempts = shotAttempts(bases, (b) =>
+    b.provider === 'codex'
+      ? b.model
+      : tier
+        ? resolveLabModel(tier, labs, b.model, tiersFor({ provider: b.provider, model: b.model, tiers }))
+        : images.length
+          ? b.model
+          : routeModel({ task: 'summary', text: prompt, settings: { provider: b.provider, model: b.model, tiers } }).model
+  )
+  const now = Date.now()
+  const known = (a: ShotAttempt) => {
+    const f = failedModels.get(`${a.provider}:${a.model}`)
+    return f && f.until > now ? f : null
+  }
+  // Skip models that failed a moment ago, unless nothing else is left.
+  const fresh = attempts.filter((a) => !known(a))
+  const order = fresh.length ? fresh : attempts
+  const errors: string[] = attempts.filter((a) => known(a) && fresh.length).map((a) => `${shotLabel(a)}: ${known(a)!.message}`)
+  for (const [i, a] of order.entries()) {
+    // Spending cap (Settings > Usage): refuse before an API call (Codex runs on the ChatGPT plan).
+    if (a.provider !== 'codex') assertSpend('labs')
+    try {
+      const out = await shotOnce(ctx, w, a, system, prompt, images, onUsage)
+      if (i > 0 || errors.length) ctx.log({ service: 'agent', stream: 'info', text: `[labs] used ${shotLabel(a)}${tier ? ` for the ${tier} tier` : ''} (${errors.join('; ')})` })
+      return out
+    } catch (e) {
+      const message = ((e as Error).message || String(e)).replace(/\s+/g, ' ').trim().slice(0, 400)
+      if (!TRANSIENT.test(message)) failedModels.set(`${a.provider}:${a.model}`, { message, until: Date.now() + FAILED_TTL })
+      errors.push(`${shotLabel(a)}: ${message}`)
+      ctx.log({ service: 'agent', stream: 'stderr', text: `[labs] ${shotLabel(a)} failed: ${message}` })
+    }
+  }
+  throw new Error(errors.length > 1 ? `no model answered (${errors.join('; ')})` : errors[0] ?? 'no model is set up')
+}
+
+async function shotOnce(
+  ctx: HarnessContext,
+  w: { queryFn?: QueryFn; fetchFn?: FetchFn; credentials: Credentials; providers: Providers; meter: Meter },
+  a: ShotAttempt,
+  system: string,
+  prompt: string,
+  images: ImagePayload[],
+  onUsage?: ShotOptions['onUsage']
+): Promise<string> {
+  const { provider, model } = a
+  // Codex: the ChatGPT plan through the CLI (no API spend).
+  if (provider === 'codex') return codexService().oneShot(system, prompt, { images, model })
+  if (provider === 'anthropic') {
     const auth = await w.credentials.anthropicAuth()
     if (!auth.ready) throw new Error(auth.error ?? 'Anthropic is not set up.')
     let out = ''
+    let answered = false
     const tracker = new SdkUsageTracker(model)
     for await (const m of (w.queryFn ?? sdkQuery)({
       prompt: images.length ? anthropicPrompt(prompt, images) : prompt,
@@ -222,16 +310,18 @@ async function oneShot(
       w.meter.ledger.recordAll(records)
       if (onUsage) for (const r of records) report(onUsage, r.model, r)
       if (m.type === 'result') {
+        answered = true
         if (m.subtype === 'success' && !m.is_error) out = m.result
-        else throw new Error(m.subtype === 'success' ? m.result : m.errors?.join('; ') || m.subtype)
+        else throw new Error(m.subtype === 'success' ? m.result || 'the model returned an error' : m.errors?.join('; ') || m.subtype)
       }
     }
+    if (!answered) throw new Error('the Claude CLI ended without an answer')
     return out.trim()
   }
-  const ep = await w.providers.endpoint(base.provider)
+  const ep = await w.providers.endpoint(provider)
   if ('error' in ep) throw new Error(ep.error)
   let out = ''
-  const res = await (usesResponsesApi(base.provider, model) ? runResponsesLoop : runOpenAiLoop)({
+  const res = await (usesResponsesApi(provider, model) ? runResponsesLoop : runOpenAiLoop)({
     baseUrl: ep.baseUrl,
     headers: ep.headers,
     model,
@@ -244,12 +334,12 @@ async function oneShot(
     emit: (m) => {
       if (m.role === 'assistant') out = m.text
     },
-    extraBody: extraBody(base.provider, model),
+    extraBody: extraBody(provider, model),
     fetchFn: w.fetchFn,
     onUsage: (raw) => {
-      w.meter.ledger.recordOpenAi(raw, { provider: base.provider, model })
+      w.meter.ledger.recordOpenAi(raw, { provider, model })
       const u = onUsage ? fromOpenAiUsage(raw) : null
-      if (u && onUsage) report(onUsage, model, priced(model, u, { provider: base.provider }).usage)
+      if (u && onUsage) report(onUsage, model, priced(model, u, { provider }).usage)
     }
   })
   if (res.outcome === 'error') throw new Error(res.error ?? 'request failed')

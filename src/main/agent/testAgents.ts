@@ -266,7 +266,7 @@ export class TestAgentRunner {
       let budgetStop: string | undefined
       try {
         for await (const m of queryFn({ prompt, options })) {
-          for (const cm of toChatMessages(m, run.agent.id)) this.push(run, cm)
+          for (const cm of toChatMessages(m, run.agent.id, undefined, { model: run.choice.model })) this.push(run, cm)
           if (meter) {
             meter.ledger.recordAll(tracker.onMessage(m), { agentId: run.agent.id })
             meter.setLive(run.agent.id, tracker.live())

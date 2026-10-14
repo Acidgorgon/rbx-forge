@@ -37,9 +37,9 @@ import { anthropicPrompt, contentText, type ImagePayload, type ImageResolver, us
 import {
   allowServer,
   model,
-  AUTH_HELP,
+  authHelpFor,
   executableOption,
-  isAuthError,
+  isAuthHelp,
   OPENAI_TOOLS_NOTE,
   sdkQuery,
   studioMcp,
@@ -64,6 +64,7 @@ import { Checkpoints } from './checkpoints.ts'
 import { codexService, type CodexService } from './codex/service.ts'
 import { codexPrompt, codexSandboxFor } from './codex/chat.ts'
 import { estimateTokens } from './budget/tokens.ts'
+import { LAST_CHAT_MODEL_SETTING } from '../../shared/labModels.ts'
 
 const SETTING = 'chats'
 const MAX_MESSAGES = 500
@@ -573,7 +574,13 @@ export class ChatManager {
     const from = chat.messages.length
     let fix: string | null = null
     void start()
-      .then(() => this.afterTurn(chat, mode, from))
+      .then(() => {
+        // The Labs fall back to the last chat model that answered (agent/index.ts oneShot).
+        const turn = chat.messages.slice(from)
+        const answered = turn.some((m) => m.role === 'assistant' && m.agentId === 'main' && m.text.trim()) && !turn.some((m) => m.role === 'system' && /error|fail|denied|invalid|not (?:available|set up|signed in)/i.test(m.text))
+        if (!abort.signal.aborted && answered) this.ctx.setSetting(LAST_CHAT_MODEL_SETTING, { provider, model: modelId })
+        return this.afterTurn(chat, mode, from)
+      })
       .then(async () => {
         // Cross-check: a model from another provider reviews a multi-file edit.
         if (!abort.signal.aborted && !isReadOnlyMode(mode)) fix = await this.crossCheck(chat, from, text, abort.signal).catch((e) => {
@@ -873,7 +880,7 @@ export class ChatManager {
       const input = payloads.length ? anthropicPrompt(prompt, payloads) : prompt
       for await (const m of queryFn({ prompt: input, options: this.buildOptions(chat, root, abort, modelId, env, rules, effort) })) {
         if ('session_id' in m && m.session_id && chat.sdkSessionId !== m.session_id) chat.sdkSessionId = m.session_id
-        for (const cm of toChatMessages(m, 'main', subs)) this.push(chat, cm)
+        for (const cm of toChatMessages(m, 'main', subs, { model: modelId })) this.push(chat, cm)
         const records = tracker.onMessage(m)
         // Per-model usage of the chat: the result's modelUsage delta (main loop + subagents) when
         // the meter keeps the session baseline, else the main loop's usage.
@@ -892,9 +899,13 @@ export class ChatManager {
       }
     } catch (e) {
       if (abort.signal.aborted) this.push(chat, systemMessage('main', 'Stopped.'))
-      else if (isAuthError((e as Error).message)) {
-        if (!chat.messages.slice(-3).some((x) => x.text === AUTH_HELP)) this.push(chat, systemMessage('main', AUTH_HELP))
-      } else this.push(chat, systemMessage('main', `Error: ${(e as Error).message}`))
+      else {
+        // A per-model 403 names the model; a real auth failure gets the sign-in help (once).
+        const help = authHelpFor((e as Error).message, modelId)
+        if (help) {
+          if (!chat.messages.slice(-3).some((x) => isAuthHelp(x.text))) this.push(chat, systemMessage('main', help))
+        } else this.push(chat, systemMessage('main', `Error: ${(e as Error).message}`))
+      }
     } finally {
       if (meter) {
         meter.ledger.recordAll(tracker.finish(), { chatId: chat.id })

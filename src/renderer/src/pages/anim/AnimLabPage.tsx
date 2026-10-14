@@ -1201,6 +1201,7 @@ export function AnimLabPage() {
         ? await h.animRemix(what, { maxIterations: iters, threshold, scope, rig, base: autoBase!.id, ...(g.restatement ? { restatement: g.restatement } : {}) })
         : await h.animCompose(what, { maxIterations: iters, threshold, scope, rig, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
       if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the script did not compile')
+      if (r.modelError) actions.toast({ text: `${r.entry.name}: drafted without a model`, detail: r.modelError, kind: 'err', ms: 12_000 })
       await load()
       setSelected(r.entry.id)
       setView('library')

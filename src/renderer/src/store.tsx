@@ -185,6 +185,9 @@ export type CreateKind = 'ModuleScript' | 'Script' | 'LocalScript' | 'Feature' |
 // ---------------------------------------------------------------- layout persistence
 
 const LAYOUT_KEY = 'forge.layout.v1'
+// Labs model-call failures already shown (lab|error -> time), so a refine loop does not stack toasts.
+const labErrorSeen = new Map<string, number>()
+const LAB_NAMES: Record<string, string> = { vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab' }
 const DEFAULT_LAYOUT: Layout = { sideOpen: true, sideView: 'explorer', sideW: 268, bottomOpen: true, bottomH: 214, bottomTab: 'output', rightOpen: true, rightW: 360, sideAuto: false }
 
 function loadLayout(): Layout {
@@ -989,6 +992,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       h.on('sync:entry', (entries) => void refreshOpen(entries.flatMap((e) => (e.from ? [e.file, e.from] : [e.file])))),
       h.on('services:status', (services) => set({ services })),
       h.on('log:line', (line) => dispatch({ type: 'log', line })),
+      // A Labs model call failed: say why (once a minute per lab and error) instead of a silent fallback.
+      h.on('labs:modelError', ({ lab, message }) => {
+        const key = `${lab ?? ''}|${message}`
+        const last = labErrorSeen.get(key) ?? 0
+        if (Date.now() - last < 60_000) return
+        labErrorSeen.set(key, Date.now())
+        const name = lab ? LAB_NAMES[lab] : 'Labs'
+        actions.toast({ text: `${name}: the model call failed, using the built-in fallback`, detail: message, kind: 'err', ms: 12_000 })
+      }),
       h.on('project:changed', (project) => {
         const before = stateRef.current.project?.root ?? null
         if (before && before !== (project?.root ?? null)) {

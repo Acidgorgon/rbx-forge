@@ -104,6 +104,6 @@ export function lastErrorLine(stderr: string): string {
     .replace(/\x1b\[[0-9;]*m/g, '')
     .split(/\r?\n/)
     .map((l) => l.trim())
-    .filter((l) => l && !/^Reading (prompt|additional input) from stdin/i.test(l))
+    .filter((l) => l && !/^Reading (prompt|additional input) from stdin/i.test(l) && !/^WARNING: proceeding\b/i.test(l))
   return lines.slice(-3).join(' ').slice(0, 400)
 }

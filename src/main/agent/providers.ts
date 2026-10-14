@@ -47,7 +47,7 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
   custom: { label: 'Custom (OpenAI-compatible)', editableBaseUrl: true, needsKey: false, defaults: [] },
   // The user's Codex CLI signed in with ChatGPT (agent/codex). codex-default = no --model (the
   // model set in the user's Codex config); the others are passed as --model.
-  codex: { label: 'Codex (ChatGPT plan)', needsKey: false, defaults: [CODEX_DEFAULT_MODEL, 'gpt-6.1-sol', 'gpt-6-astra'] }
+  codex: { label: 'Codex (ChatGPT plan)', needsKey: false, defaults: [CODEX_DEFAULT_MODEL, 'gpt-6.1-sol', 'gpt-6-astra', 'gpt-6-sol', 'gpt-6-luna', 'gpt-5.6-terra'] }
 }
 
 const CONFIG_SETTING = 'providerConfig'
@@ -225,12 +225,22 @@ export class Providers {
     const fetched = this.modelCache.get(provider)?.models ?? []
     // A local Ollama lists what is actually pulled; suggestions would only fail.
     if (provider === 'ollama' && fetched.length) return fetched.slice()
+    // Codex lists the models this login can use; "codex-default" (the user's Codex config) stays first.
+    if (provider === 'codex' && fetched.length) return merge([CODEX_DEFAULT_MODEL], fetched)
     return merge(PROVIDERS[provider].defaults, fetched)
   }
 
   // Fetches GET {base}/models when the provider is usable; falls back to defaults on any error.
   async models(provider: ProviderId, refresh = false): Promise<string[]> {
-    if (provider === 'anthropic' || provider === 'codex') return PROVIDERS[provider].defaults.slice()
+    if (provider === 'anthropic') return PROVIDERS[provider].defaults.slice()
+    // Codex: what the CLI offers for this login (`codex debug models`), after "codex-default".
+    if (provider === 'codex') {
+      const listed = await this.codex()
+        .models({ refresh })
+        .catch(() => [])
+      if (listed.length) this.modelCache.set('codex', { at: Date.now(), models: listed })
+      return this.cachedModels('codex')
+    }
     const cached = this.modelCache.get(provider)
     if (cached && !refresh && Date.now() - cached.at < MODELS_TTL) return this.cachedModels(provider)
     const ep = await this.endpoint(provider)

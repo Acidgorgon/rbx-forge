@@ -46,6 +46,10 @@ export function buildExecArgs(i: ExecArgsInput): string[] {
 
 export const LOGIN_STATUS_ARGS = ['login', 'status']
 export const LOGIN_ARGS = ['login']
+// Device-code sign-in: prints a URL and a one-time code instead of opening a browser (binary.ts).
+export const DEVICE_LOGIN_ARGS = ['login', '--device-auth']
+// The model catalog for the current login, as JSON (binary.ts parseModelCatalog).
+export const MODELS_ARGS = ['debug', 'models']
 export const LOGOUT_ARGS = ['logout']
 export const VERSION_ARGS = ['--version']
 

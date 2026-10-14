@@ -7,12 +7,13 @@
 // Three account operations (status / signIn / signOut) are the public surface the Settings
 // "Sign in with ChatGPT" control uses; exec / oneShot / generateImages run work on the plan.
 
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { defaultContext, envGet, toolEnv } from '../../services/tools.ts'
-import { buildExecArgs, codexEnv, LOGIN_ARGS, LOGIN_STATUS_ARGS, LOGOUT_ARGS, VERSION_ARGS, type CodexSandbox } from './args.ts'
-import { findCodex, loginUrl, parseLoginStatus, parseVersion, type CodexAuthMethod } from './binary.ts'
+import { buildExecArgs, codexEnv, DEVICE_LOGIN_ARGS, LOGIN_ARGS, LOGIN_STATUS_ARGS, LOGOUT_ARGS, MODELS_ARGS, VERSION_ARGS, type CodexSandbox } from './args.ts'
+import { DeviceAuthParser, deviceAuthUnsupported, findCodex, loginUrl, parseLoginStatus, parseModelCatalog, parseVersion, type CodexAuthMethod } from './binary.ts'
+import { CODEX_INSTALL_DOCS, CODEX_NPM_VERSION, findNpm, installArgs, installEnv, installError, installProgressLine } from './install.ts'
 import { CodexEventMapper, type CodexUpdate, type CodexUsage } from './events.ts'
 import { lastErrorLine, runCli, type RunOptions, type SpawnedRun } from './process.ts'
 
@@ -24,15 +25,38 @@ export interface CodexStatus {
   version?: string
   loggedIn: boolean
   method?: CodexAuthMethod
+  // The binary is Forge's own copy under <userData>/tools/codex (install.ts).
+  privateInstall?: boolean
+  // Not installed, but npm is there, so signing in can install it first.
+  canInstall?: boolean
   // One line for the UI.
   detail: string
   checkedAt: number
 }
 
+// installing: npm is fetching the CLI; device: waiting for the one-time code to be entered;
+// browser: the CLI opened the browser login (older CLI or device code turned off).
+export type CodexSignInStage = 'installing' | 'device' | 'browser'
+
+export interface SignInUpdate {
+  stage?: CodexSignInStage
+  // device: the page to enter the code on; browser: the login page, for when the browser did not open.
+  url?: string
+  // device: the one-time code the CLI printed.
+  userCode?: string
+  message?: string
+}
+
 export interface SignInControl {
   signal: AbortSignal
-  // url: the login page, for when the browser did not open.
-  progress?: (u: { url?: string; message?: string }) => void
+  progress?: (u: SignInUpdate) => void
+}
+
+export interface SignInResult {
+  ok: boolean
+  message?: string
+  // Where to read more when it failed for a reason the user has to fix (no npm).
+  helpUrl?: string
 }
 
 export interface ExecInput {
@@ -67,6 +91,10 @@ export interface CodexServiceDeps {
   binOverride?: () => string | null
   // Locates the binary (tests pass a fake).
   findBin?: (override: string | null) => string | null
+  // Forge's private install folder (<userData>/tools/codex); null = never install.
+  privatePrefix?: () => string | null
+  // Locates npm for the install (tests pass a fake).
+  findNpm?: () => string | null
   env?: () => NodeJS.ProcessEnv
   run?: CliRunner
   log?: (text: string, stream?: 'info' | 'stderr') => void
@@ -75,7 +103,10 @@ export interface CodexServiceDeps {
 }
 
 const STATUS_TTL = 30_000
-const SIGN_IN_TIMEOUT = 10 * 60_000
+// The device code expires after 15 minutes.
+const SIGN_IN_TIMEOUT = 15 * 60_000
+const INSTALL_TIMEOUT = 5 * 60_000
+const MODELS_TTL = 10 * 60_000
 const ONE_SHOT_TIMEOUT = 5 * 60_000
 
 export class CodexService {
@@ -84,6 +115,8 @@ export class CodexService {
   private pending: Promise<CodexStatus> | null = null
   private signingIn: AbortController | null = null
   private listeners = new Set<(s: CodexStatus) => void>()
+  private modelList: { at: number; models: string[] } | null = null
+  private modelsPending: Promise<string[]> | null = null
 
   constructor(deps: CodexServiceDeps = {}) {
     this.deps = deps
@@ -93,9 +126,18 @@ export class CodexService {
     return (this.deps.now ?? Date.now)()
   }
 
+  private prefix(): string | null {
+    return this.deps.privatePrefix?.() ?? null
+  }
+
   bin(): string | null {
     const override = this.deps.binOverride?.() ?? null
-    return (this.deps.findBin ?? ((o) => findCodex(defaultContext(), o)))(override)
+    return (this.deps.findBin ?? ((o) => findCodex(defaultContext(), o, this.prefix())))(override)
+  }
+
+  private npm(): string | null {
+    if (!this.prefix()) return null
+    return (this.deps.findNpm ?? (() => findNpm(defaultContext())))()
   }
 
   env(): NodeJS.ProcessEnv {
@@ -144,7 +186,13 @@ export class CodexService {
   private async check(): Promise<CodexStatus> {
     const path = this.bin()
     const at = this.now()
-    if (!path) return this.publish({ installed: false, loggedIn: false, detail: `Codex CLI not found. ${CODEX_INSTALL_HINT}`, checkedAt: at })
+    if (!path) {
+      if (this.npm()) return this.publish({ installed: false, canInstall: true, loggedIn: false, detail: 'Signing in installs the Codex CLI for Forge first (about a minute).', checkedAt: at })
+      const detail = this.prefix() ? 'Codex CLI not found, and Forge needs npm (it comes with Node.js) to install it. Install Node.js, or install the Codex CLI yourself.' : `Codex CLI not found. ${CODEX_INSTALL_HINT}`
+      return this.publish({ installed: false, loggedIn: false, detail, checkedAt: at })
+    }
+    const prefix = this.prefix()
+    const privateInstall = !!prefix && path.startsWith(prefix)
     const env = this.env()
     try {
       let verOut = ''
@@ -156,7 +204,7 @@ export class CodexService {
       const version = parseVersion(`${verOut}\n${ver.stderr}`) ?? undefined
       // login status prints on stderr; stdout is read too in case a version moves it.
       const parsed = st.timedOut ? { loggedIn: false, detail: 'codex login status did not answer' } : parseLoginStatus(st.code ?? 1, `${st.stderr}\n${stOut}`)
-      return this.publish({ installed: true, path, ...(version ? { version } : {}), ...parsed, checkedAt: at })
+      return this.publish({ installed: true, path, ...(version ? { version } : {}), ...(privateInstall ? { privateInstall } : {}), ...parsed, checkedAt: at })
     } catch (e) {
       return this.publish({ installed: false, path, loggedIn: false, detail: `Could not run ${path}: ${(e as Error).message}`, checkedAt: at })
     }
@@ -166,38 +214,146 @@ export class CodexService {
     return !!this.signingIn
   }
 
-  // Runs `codex login`: the CLI opens the browser for "Sign in with ChatGPT" and stores the
-  // credentials itself. Resolves when the CLI exits (signed in, failed, cancelled or timed out).
-  async signIn(ctl: SignInControl): Promise<{ ok: boolean; message?: string }> {
-    if (this.signingIn) return { ok: false, message: 'A sign-in is already running. Finish it in the browser, or cancel it.' }
-    const path = this.bin()
-    if (!path) return { ok: false, message: `Codex CLI not found. ${CODEX_INSTALL_HINT}` }
+  // One click: installs the CLI for Forge when there is none (install.ts), then runs
+  // `codex login --device-auth` and reports the URL and one-time code it prints; the user enters the
+  // code on the ChatGPT page and the CLI stores the login itself. Falls back to the browser login
+  // (`codex login`) when the CLI cannot do device codes. Resolves when the CLI exits.
+  async signIn(ctl: SignInControl): Promise<SignInResult> {
+    if (this.signingIn) return { ok: false, message: 'A sign-in is already running. Finish it, or cancel it.' }
     const abort = new AbortController()
     this.signingIn = abort
     const onCancel = () => abort.abort()
-    ctl.signal.addEventListener('abort', onCancel, { once: true })
-    let sentUrl = false
-    const watch = (text: string) => {
-      const url = loginUrl(text)
-      if (url && !sentUrl) {
-        sentUrl = true
-        ctl.progress?.({ url, message: 'Finish signing in in your browser.' })
-      }
-    }
+    if (ctl.signal.aborted) abort.abort()
+    else ctl.signal.addEventListener('abort', onCancel, { once: true })
+    const cancelled = { ok: false, message: 'Sign-in cancelled.' }
     try {
-      ctl.progress?.({ message: 'Opening the ChatGPT sign-in page...' })
-      const r = await this.run({ bin: path, args: LOGIN_ARGS, cwd: this.cwd(), env: this.env(), signal: abort.signal, timeoutMs: SIGN_IN_TIMEOUT, onStderr: watch, onStdoutLine: watch })
-      const st = await this.status({ refresh: true })
-      if (r.aborted) return { ok: false, message: 'Sign-in cancelled.' }
-      if (r.timedOut) return { ok: false, message: 'Sign-in timed out after 10 minutes.' }
-      if (st.loggedIn) return { ok: true, message: st.detail }
-      return { ok: false, message: lastErrorLine(r.stderr) || `codex login exited with code ${r.code ?? '?'}` }
+      let path = this.bin()
+      if (!path) {
+        const inst = await this.install(ctl, abort.signal)
+        if (!inst.ok) return inst
+        path = inst.path
+      }
+      if (abort.signal.aborted) return cancelled
+      // Already signed in with ChatGPT: a new device login would clear that login first.
+      const before = await this.status({ refresh: true })
+      if (abort.signal.aborted) return cancelled
+      if (before.loggedIn && before.method === 'chatgpt') return { ok: true, message: before.detail }
+      const r = await this.deviceLogin(path, ctl, abort.signal)
+      if (r !== 'unsupported') return r
+      return await this.browserLogin(path, ctl, abort.signal)
     } catch (e) {
       return { ok: false, message: `Could not run codex login: ${(e as Error).message}` }
     } finally {
       ctl.signal.removeEventListener('abort', onCancel)
       this.signingIn = null
+      this.modelList = null
     }
+  }
+
+  // `npm install --prefix <userData>/tools/codex @openai/codex@<pinned>`. A failed or cancelled
+  // install removes what it left, so a half-installed CLI is never picked up.
+  private async install(ctl: SignInControl, signal: AbortSignal): Promise<{ ok: true; path: string } | (SignInResult & { ok: false })> {
+    const prefix = this.prefix()
+    if (!prefix) return { ok: false, message: `Codex CLI not found. ${CODEX_INSTALL_HINT}`, helpUrl: CODEX_INSTALL_DOCS }
+    const npm = this.npm()
+    if (!npm) {
+      return {
+        ok: false,
+        message: 'The Codex CLI is not installed, and Forge needs npm (it comes with Node.js) to install it. Install Node.js, or install the Codex CLI yourself, then sign in again.',
+        helpUrl: CODEX_INSTALL_DOCS
+      }
+    }
+    ctl.progress?.({ stage: 'installing', message: `Installing the Codex CLI ${CODEX_NPM_VERSION} for Forge...` })
+    this.deps.log?.(`installing @openai/codex@${CODEX_NPM_VERSION} into ${prefix}`)
+    const cleanup = () => rm(join(prefix, 'node_modules'), { recursive: true, force: true }).catch(() => undefined)
+    let output = ''
+    let last = ''
+    const onLine = (line: string) => {
+      output = (output + line + '\n').slice(-16_000)
+      const msg = installProgressLine(line)
+      // Do not step back from "Downloading" to "Looking up" (npm interleaves cache lookups).
+      if (msg && /^Looking up/.test(msg) && last && !/^Looking up/.test(last)) return
+      if (msg && msg !== last) {
+        last = msg
+        ctl.progress?.({ stage: 'installing', message: msg })
+      }
+    }
+    let r: SpawnedRun
+    try {
+      await mkdir(prefix, { recursive: true })
+      r = await this.run({ bin: npm, args: installArgs(prefix), cwd: prefix, env: installEnv(this.deps.env?.() ?? toolEnv()), signal, timeoutMs: INSTALL_TIMEOUT, onStdoutLine: onLine, onStderr: (t) => t.split(/\r?\n/).forEach(onLine) })
+    } catch (e) {
+      await cleanup()
+      return { ok: false, message: `Could not run npm: ${(e as Error).message}`, helpUrl: CODEX_INSTALL_DOCS }
+    }
+    if (r.aborted || r.timedOut || r.code !== 0) {
+      await cleanup()
+      if (r.aborted) return { ok: false, message: 'Sign-in cancelled.' }
+      if (r.timedOut) return { ok: false, message: 'Installing the Codex CLI took too long (5 minutes). Check your connection and try again.' }
+      this.deps.log?.(`npm install failed (${r.code}): ${installError(r.code, `${output}\n${r.stderr}`)}`, 'stderr')
+      return { ok: false, message: `Could not install the Codex CLI: ${installError(r.code, `${output}\n${r.stderr}`)}`, helpUrl: CODEX_INSTALL_DOCS }
+    }
+    this.cached = null
+    const path = this.bin()
+    if (!path) return { ok: false, message: "npm finished, but the codex command is not in Forge's tools folder.", helpUrl: CODEX_INSTALL_DOCS }
+    return { ok: true, path }
+  }
+
+  private async deviceLogin(path: string, ctl: SignInControl, signal: AbortSignal): Promise<SignInResult | 'unsupported'> {
+    const parser = new DeviceAuthParser()
+    let output = ''
+    const feed = (line: string) => {
+      output = (output + line + '\n').slice(-16_000)
+      if (parser.line(line) && parser.code) {
+        ctl.progress?.({ stage: 'device', userCode: parser.code, ...(parser.url ? { url: parser.url } : {}), message: 'Enter this code on the ChatGPT sign-in page. Waiting for you to finish...' })
+      }
+    }
+    ctl.progress?.({ stage: 'device', message: 'Getting a sign-in code from ChatGPT...' })
+    const r = await this.run({ bin: path, args: DEVICE_LOGIN_ARGS, cwd: this.cwd(), env: this.env(), signal, timeoutMs: SIGN_IN_TIMEOUT, onStdoutLine: feed, onStderr: (t) => t.split(/\r?\n/).forEach(feed) })
+    if (r.aborted) return { ok: false, message: 'Sign-in cancelled.' }
+    if (r.timedOut) return { ok: false, message: 'Sign-in timed out (the code expires after 15 minutes). Try again.' }
+    if (r.code !== 0 && !parser.code && deviceAuthUnsupported(`${output}\n${r.stderr}`)) return 'unsupported'
+    const st = await this.status({ refresh: true })
+    if (st.loggedIn && r.code === 0) return { ok: true, message: st.detail }
+    return { ok: false, message: lastErrorLine(r.stderr) || `codex login exited with code ${r.code ?? '?'}` }
+  }
+
+  // `codex login`: the CLI opens the browser for "Sign in with ChatGPT".
+  private async browserLogin(path: string, ctl: SignInControl, signal: AbortSignal): Promise<SignInResult> {
+    let sentUrl = false
+    const watch = (text: string) => {
+      const url = loginUrl(text)
+      if (url && !sentUrl) {
+        sentUrl = true
+        ctl.progress?.({ stage: 'browser', url, message: 'Finish signing in in your browser.' })
+      }
+    }
+    ctl.progress?.({ stage: 'browser', message: 'Opening the ChatGPT sign-in page...' })
+    const r = await this.run({ bin: path, args: LOGIN_ARGS, cwd: this.cwd(), env: this.env(), signal, timeoutMs: SIGN_IN_TIMEOUT, onStderr: watch, onStdoutLine: watch })
+    const st = await this.status({ refresh: true })
+    if (r.aborted) return { ok: false, message: 'Sign-in cancelled.' }
+    if (r.timedOut) return { ok: false, message: 'Sign-in timed out. Try again.' }
+    if (st.loggedIn) return { ok: true, message: st.detail }
+    return { ok: false, message: lastErrorLine(r.stderr) || `codex login exited with code ${r.code ?? '?'}` }
+  }
+
+  // The models the CLI offers for this login (`codex debug models`, best first), cached 10 minutes.
+  // [] when the CLI is missing, signed out, or cannot list them (callers fall back to defaults).
+  async models(opts: { refresh?: boolean } = {}): Promise<string[]> {
+    if (!opts.refresh && this.modelList && this.now() - this.modelList.at < MODELS_TTL) return this.modelList.models
+    if (this.modelsPending) return this.modelsPending
+    this.modelsPending = (async () => {
+      const s = await this.status()
+      if (!s.installed || !s.loggedIn || !s.path) return []
+      let out = ''
+      const r = await this.run({ bin: s.path, args: MODELS_ARGS, cwd: this.cwd(), env: this.env(), timeoutMs: 20_000, onStdoutLine: (l) => (out += `${l}\n`) }).catch(() => null)
+      const models = r && r.code === 0 ? parseModelCatalog(out) : []
+      this.modelList = { at: this.now(), models }
+      return models
+    })().finally(() => {
+      this.modelsPending = null
+    })
+    return this.modelsPending
   }
 
   cancelSignIn(): void {
@@ -209,12 +365,14 @@ export class CodexService {
   async signOut(): Promise<CodexStatus> {
     const path = this.bin()
     if (path) await this.run({ bin: path, args: LOGOUT_ARGS, cwd: this.cwd(), env: this.env(), timeoutMs: 15_000 }).catch(() => null)
+    this.modelList = null
     return this.status({ refresh: true })
   }
 
   // Why Codex cannot run right now, or null when it can.
   async notReady(): Promise<string | null> {
     const s = await this.status()
+    if (!s.installed && s.canInstall) return 'Codex is not set up yet. Use "Sign in with ChatGPT (Codex)" in Settings > Accounts > OpenAI; it installs the Codex CLI for Forge.'
     if (!s.installed) return s.detail
     if (!s.loggedIn) return 'Codex is not signed in. Use "Sign in with ChatGPT (Codex)" in Settings > Accounts > OpenAI.'
     return null

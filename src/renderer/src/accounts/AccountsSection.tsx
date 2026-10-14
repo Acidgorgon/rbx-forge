@@ -101,17 +101,46 @@ function KeyEditor({ a, onDone }: { a: AccountSummary; onDone?: () => void }) {
   )
 }
 
+// Codex's one-time device code: big, copyable, with the page to enter it on.
+function DeviceCode({ code, url }: { code: string; url?: string }) {
+  const { actions } = useStore()
+  const [copied, setCopied] = useState(false)
+  const copy = async () => {
+    try {
+      await navigator.clipboard.writeText(code)
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1500)
+    } catch (e) {
+      actions.toast({ text: 'Could not copy the code', detail: errorText(e), kind: 'err' })
+    }
+  }
+  return (
+    <div className="acct-device">
+      <div className="note">1. Open the ChatGPT sign-in page. 2. Enter this code. Forge finishes on its own.</div>
+      <div className="acct-device-row">
+        <code className="acct-device-code" aria-label="Sign-in code">{code}</code>
+        <button className="btn small" onClick={() => void copy()}>{copied ? 'Copied' : 'Copy'}</button>
+        {url && (
+          <a className="btn primary small" href={url} target="_blank" rel="noreferrer">Open sign-in page</a>
+        )}
+      </div>
+      <div className="note">Only enter this code on a page you opened from here. The code expires in 15 minutes.</div>
+    </div>
+  )
+}
+
 function SignInProgressPanel({ a, p }: { a: AccountSummary; p: SignInProgress }) {
   const { actions } = useStore()
   const [code, setCode] = useState('')
   return (
-    <div className="acct-progress" role="status">
+    <div className="acct-progress" role="status" data-stage={p.stage ?? ''}>
       <div className="row">
         <span className="spinner-dot" aria-hidden />
         <span className="grow">{p.message ?? 'Starting sign-in...'}</span>
         <button className="btn small ghost" onClick={() => void window.harness.accountsCancelSignIn(a.id)}>Cancel</button>
       </div>
-      {p.url && (
+      {p.userCode && <DeviceCode code={p.userCode} url={p.url} />}
+      {p.url && !p.userCode && p.stage !== 'device' && (
         <div className="note">
           Browser didn't open?{' '}
           <a className="link-btn" href={p.url} target="_blank" rel="noreferrer">Open the sign-in page</a>
@@ -196,7 +225,8 @@ function AccountCard({ a, progress, testing, onTest }: { a: AccountSummary; prog
       const r = await window.harness.accountsSignIn(a.id)
       if (r.phase === 'done') {
         await actions.refreshProviders()
-        actions.toast({ text: `${a.label}: signed in`, kind: 'ok' })
+        // Codex says when it became the default for chat / images.
+        actions.toast({ text: `${a.label}: signed in`, ...(a.id === 'openai' && r.message && /default/.test(r.message) ? { detail: r.message } : {}), kind: 'ok' })
       } else if (r.phase === 'failed' || r.phase === 'timeout') {
         actions.toast({ text: `${a.label}: sign-in did not finish`, detail: r.message, kind: 'err' })
       }
@@ -243,6 +273,12 @@ function AccountCard({ a, progress, testing, onTest }: { a: AccountSummary; prog
         <CheckLine check={a.lastCheck} testing={testing} />
 
         {running && progress && <SignInProgressPanel a={a} p={progress} />}
+        {!running && progress?.phase === 'failed' && progress.helpUrl && (
+          <div className="note acct-warn">
+            {progress.message}{' '}
+            <a className="link-btn" href={progress.helpUrl} target="_blank" rel="noreferrer">How to install</a>
+          </div>
+        )}
 
         {s && !running && (
           <div className="acct-actions">

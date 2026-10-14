@@ -10,7 +10,8 @@ const LABEL: Record<ProviderId, string> = {
   openrouter: 'OpenRouter',
   gemini: 'Google Gemini',
   ollama: 'Ollama',
-  custom: 'Custom (OpenAI-compatible)'
+  custom: 'Custom (OpenAI-compatible)',
+  codex: 'Codex (ChatGPT plan)'
 }
 
 const DEFAULTS: Record<ProviderId, string[]> = {
@@ -19,7 +20,8 @@ const DEFAULTS: Record<ProviderId, string[]> = {
   openrouter: ['anthropic/claude-sonnet-5.5', 'openai/gpt-6-astra', 'google/gemini-3.8-flash'],
   gemini: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview'],
   ollama: ['qwen3.8', 'qwen3.6', 'llama3.1'],
-  custom: []
+  custom: [],
+  codex: ['codex-default', 'gpt-6.1-sol', 'gpt-6-astra']
 }
 
 // What GET /models would add once a key is present.
@@ -43,7 +45,7 @@ const FETCHED: Partial<Record<ProviderId, string[]>> = {
   custom: ['local-model']
 }
 
-const ORDER: ProviderId[] = ['anthropic', 'openai', 'openrouter', 'gemini', 'ollama', 'custom']
+const ORDER: ProviderId[] = ['anthropic', 'openai', 'openrouter', 'gemini', 'ollama', 'custom', 'codex']
 
 export function providersMock(emit: Emit) {
   const none = typeof location !== 'undefined' && new URLSearchParams(location.search).get('providers') === 'none'
@@ -53,11 +55,13 @@ export function providersMock(emit: Emit) {
     openrouter: none ? null : 'sk-or-v1-mock-41d7',
     gemini: null,
     ollama: null,
-    custom: null
+    custom: null,
+    codex: null
   }
   const baseUrls: Partial<Record<ProviderId, string>> = { ollama: 'http://localhost:11434/v1' }
   let ollamaRunning = !none
   let useClaudeLogin = false
+  let codexSignedIn = false
   let defaultModel: ModelChoice = { provider: 'anthropic', model: 'claude-opus-5-5' }
   const fetched: Partial<Record<ProviderId, string[]>> = {}
 
@@ -73,6 +77,13 @@ export function providersMock(emit: Emit) {
     if (key) {
       p.keyHint = `…${key.slice(-4)}`
       p.keySource = 'stored'
+    }
+    if (id === 'codex') {
+      p.needsKey = false
+      p.ready = codexSignedIn
+      p.detail = codexSignedIn ? 'Signed in with ChatGPT' : 'Not logged in'
+      p.codex = { installed: true, loggedIn: codexSignedIn, version: '0.140.0', ...(codexSignedIn ? { method: 'chatgpt' as const } : {}) }
+      return p
     }
     if (id === 'anthropic') {
       p.ready = !!key || useClaudeLogin
@@ -111,7 +122,26 @@ export function providersMock(emit: Emit) {
     | 'setAnthropicUseClaudeLogin'
     | 'hasApiKey'
     | 'setApiKey'
+    | 'codexStatus'
+    | 'codexSignIn'
+    | 'codexCancelSignIn'
+    | 'codexSignOut'
   > = {
+    async codexStatus() {
+      return info('codex').codex!
+    },
+    async codexSignIn() {
+      await new Promise((r) => setTimeout(r, 600))
+      codexSignedIn = true
+      changed()
+      return { ok: true, message: 'Signed in with ChatGPT' }
+    },
+    async codexCancelSignIn() {},
+    async codexSignOut() {
+      codexSignedIn = false
+      changed()
+      return info('codex').codex!
+    },
     async listProviders() {
       return list()
     },

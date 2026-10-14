@@ -12,6 +12,7 @@ const methods = [
   'setChatEffort', 'getDefaultEffort', 'setDefaultEffort', 'addChatImage', 'getChatImage',
   'listProviders', 'setProviderKey', 'setProviderConfig', 'listModels', 'setChatModel',
   'getDefaultModel', 'setDefaultModel', 'getAnthropicUseClaudeLogin', 'setAnthropicUseClaudeLogin',
+  'codexStatus', 'codexSignIn', 'codexCancelSignIn', 'codexSignOut',
   'getAgents', 'runAgents', 'cancelAgent',
   'lspStart',
   'getBlink',

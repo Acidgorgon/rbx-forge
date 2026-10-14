@@ -270,11 +270,12 @@ export interface GroupUsage {
   costUsd?: number
 }
 
-// AI providers. 'anthropic' runs through the Claude Agent SDK; the others through Forge's own
-// OpenAI-compatible agent loop (POST {baseUrl}/chat/completions, streamed, with function calling).
-export type ProviderId = 'anthropic' | 'openai' | 'openrouter' | 'gemini' | 'ollama' | 'custom'
+// AI providers. 'anthropic' runs through the Claude Agent SDK; 'codex' through the user's own Codex
+// CLI (`codex exec`, ChatGPT plan sign-in); the others through Forge's own OpenAI-compatible agent
+// loop (POST {baseUrl}/chat/completions, streamed, with function calling).
+export type ProviderId = 'anthropic' | 'openai' | 'openrouter' | 'gemini' | 'ollama' | 'custom' | 'codex'
 
-export const PROVIDER_IDS: ProviderId[] = ['anthropic', 'openai', 'openrouter', 'gemini', 'ollama', 'custom']
+export const PROVIDER_IDS: ProviderId[] = ['anthropic', 'openai', 'openrouter', 'gemini', 'ollama', 'custom', 'codex']
 
 export interface ProviderInfo {
   id: ProviderId
@@ -295,6 +296,17 @@ export interface ProviderInfo {
   detail?: string
   // Runtime model metadata (vision, effort levels) by model id, when the provider reports it.
   meta?: Record<string, ModelMeta>
+  // codex only: the CLI and its sign-in (the credentials stay with the CLI).
+  codex?: CodexAccount
+}
+
+export interface CodexAccount {
+  installed: boolean
+  loggedIn: boolean
+  method?: 'chatgpt' | 'apikey' | 'other'
+  version?: string
+  path?: string
+  signingIn?: boolean
 }
 
 export interface ModelChoice {
@@ -523,6 +535,8 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'agents:changed': TestAgent[]
   // Provider readiness/keys/models changed (a key was saved, a base URL edited...).
   'providers:changed': ProviderInfo[]
+  // Codex sign-in progress (url: the login page, for when the browser did not open).
+  'codex:signin': { url?: string; message?: string }
   // JSON-RPC message from luau-lsp (or a harness/lsp* bridge notification), see lsp/index.ts.
   'lsp:message': unknown
   // events.blink (or an import) was re-parsed or re-checked.
@@ -595,6 +609,12 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   // (or CLAUDE_CODE_OAUTH_TOKEN) when no API key is set. Personal use only.
   getAnthropicUseClaudeLogin(): Promise<boolean>
   setAnthropicUseClaudeLogin(on: boolean): Promise<void>
+  // Codex (ChatGPT plan): the CLI's sign-in. signIn runs `codex login` (opens the browser) and resolves
+  // when it finishes; signOut runs `codex logout`. Forge never sees the credentials.
+  codexStatus(refresh?: boolean): Promise<CodexAccount>
+  codexSignIn(): Promise<{ ok: boolean; message?: string }>
+  codexCancelSignIn(): Promise<void>
+  codexSignOut(): Promise<CodexAccount>
 
   // Test agents
   getAgents(): Promise<TestAgent[]>

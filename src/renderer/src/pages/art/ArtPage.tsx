@@ -6,6 +6,7 @@ import type { ArtCostEstimate, ArtGenerateInput, ArtItem, ArtQuality, ArtRegistr
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
+import { CODEX_IMAGE_NOTE } from '@shared/artTypes'
 import { attachImageToChat } from '../../assistant/attachments'
 import { insertIntoComponent, isComponentPath, videImageLabel, IMAGES_REQUIRE } from './videSnippet'
 import './art.css'
@@ -160,7 +161,7 @@ function KeyCard({ status, onStatus }: { status: ArtStatus; onStatus: (s: ArtSta
       <div className="set-row">
         <div className="set-text">
           <div className="set-title">Daily image budget</div>
-          <div className="note">Generations (yours and agents') stop at this estimate per day. 0 = no cap.</div>
+          <div className="note">Generations (yours and agents') stop at this estimate per day. 0 = no cap. Not used on the Codex (ChatGPT plan) backend.</div>
         </div>
         <div className="set-ctl">
           <div className="unit-input">
@@ -455,6 +456,9 @@ export function ArtPage() {
   }, [shown])
   const current = items.find((i) => i.path === selected) ?? null
   const overCap = !!estimate && estimate.dailyCapUsd > 0 && estimate.spentTodayUsd + estimate.totalUsd > estimate.dailyCapUsd
+  // Image backend 'codex': the ChatGPT plan through the Codex CLI (no key, cost or cap; Codex picks the size).
+  const codex = status?.settings.backend === 'codex'
+  const canGenerate = codex ? !!status?.codex?.ready : !!status?.openaiKey
 
   if (!state.project) {
     return (
@@ -477,6 +481,18 @@ export function ArtPage() {
           </div>
           <div className="actions">
             {status && (
+              <select
+                className="input"
+                value={codex ? 'codex' : 'api'}
+                onChange={async (e) => setStatus(await h.artSetSettings({ backend: e.target.value === 'codex' ? 'codex' : 'api' }))}
+                aria-label="Image backend"
+                title="Who makes the images here, in Thumbnail Lab and for VFX textures"
+              >
+                <option value="api">OpenAI API key</option>
+                <option value="codex">Codex (ChatGPT plan)</option>
+              </select>
+            )}
+            {status && !codex && (
               <select className="input" value={status.settings.model} onChange={async (e) => setStatus(await h.artSetSettings({ model: e.target.value as ArtSettings['model'] }))} aria-label="Image model">
                 {status.models.map((m) => (
                   <option key={m} value={m}>
@@ -494,7 +510,14 @@ export function ArtPage() {
           </div>
         </div>
 
-        {status && !status.openaiKey && (
+        {status && codex && !status.codex?.ready && (
+          <div className="callout warn row">
+            <span className="grow">{status.codex?.detail ?? 'Codex is not ready.'} Images on the Codex backend use your ChatGPT plan through the Codex CLI.</span>
+            <button className="btn small" onClick={() => actions.openSettings('codex')}>Open Settings</button>
+          </div>
+        )}
+        {status && codex && status.codex?.ready && status.codex.detail.includes('API key') && <div className="callout warn">{status.codex.detail}</div>}
+        {status && !codex && !status.openaiKey && (
           <div className="callout warn row">
             <span className="grow">Image generation uses your OpenAI API key. Add it under Settings → Providers → OpenAI.</span>
             <button className="btn small" onClick={() => actions.openSettings('openai')}>Open Settings</button>
@@ -527,7 +550,7 @@ export function ArtPage() {
           <div className="art-opts">
             <label className="art-opt">
               <span>size</span>
-              <select className="input" value={size} onChange={(e) => setSize(e.target.value)}>
+              <select className="input" value={size} onChange={(e) => setSize(e.target.value)} disabled={codex} title={codex ? 'Codex picks the size itself (auto)' : undefined}>
                 {[...new Set([...SIZES, size])].map((s) => (
                   <option key={s} value={s}>
                     {s}
@@ -537,7 +560,7 @@ export function ArtPage() {
             </label>
             <label className="art-opt">
               <span>quality</span>
-              <select className="input" value={quality} onChange={(e) => setQuality(e.target.value as ArtQuality | '')}>
+              <select className="input" value={quality} onChange={(e) => setQuality(e.target.value as ArtQuality | '')} disabled={codex} title={codex ? 'Codex picks the quality itself (auto)' : undefined}>
                 <option value="">default ({status?.settings.quality ?? 'high'})</option>
                 {QUALITIES.map((q) => (
                   <option key={q} value={q}>
@@ -581,7 +604,7 @@ export function ArtPage() {
             <button className="btn small ghost" onClick={async () => setRefs([...refs, ...(await h.artChooseReferences())].slice(0, 8))}>
               <Icon name="plus" size={11} /> Reference image
             </button>
-            {refs.length > 0 && !mask && (
+            {refs.length > 0 && !mask && !codex && (
               <button className="btn small ghost" onClick={async () => setMask((await h.artChooseReferences())[0] ?? null)} title="PNG with transparent pixels where the first reference should change">
                 <Icon name="plus" size={11} /> Mask (optional)
               </button>
@@ -590,7 +613,9 @@ export function ArtPage() {
           </div>
           <div className="art-go">
             <span className={`note grow${overCap ? ' err-text' : ''}`}>
-              {estimate ? (
+              {codex ? (
+                <>{CODEX_IMAGE_NOTE}{mask ? ' Masks need the API backend.' : ''}</>
+              ) : estimate ? (
                 <>
                   ≈ <b className="mono">{usd(estimate.totalUsd)}</b> · {estimate.n} × {estimate.size} {estimate.quality} · {estimate.model}
                   {overCap ? ` · over today's ${usd(estimate.dailyCapUsd)} budget` : ''}
@@ -604,7 +629,7 @@ export function ArtPage() {
                 <span className="spinner" aria-hidden /> {busy}
               </span>
             )}
-            <button className="btn primary" disabled={!!busy || !prompt.trim() || !status?.openaiKey || overCap} onClick={() => void generate()}>
+            <button className="btn primary" disabled={!!busy || !prompt.trim() || !canGenerate || (!codex && overCap)} onClick={() => void generate()}>
               <Icon name="play" size={11} /> Generate
             </button>
           </div>

@@ -9,6 +9,7 @@ import { mergeToolCall, runOpenAiLoop, trimHistory, type OaiMessage, type OaiToo
 import { gentreeTools, toFunctionSpecs, toolJsonSchema } from '../src/main/agent/tools.ts'
 import { Credentials, keySetting } from '../src/main/agent/credentials.ts'
 import { Providers, PROVIDERS } from '../src/main/agent/providers.ts'
+import { CodexService } from '../src/main/agent/codex/service.ts'
 import { ChatManager } from '../src/main/agent/chat.ts'
 import { TestAgentRunner } from '../src/main/agent/testAgents.ts'
 import { z } from 'zod'
@@ -328,10 +329,12 @@ test('providers report readiness, endpoints and model lists', async () => {
     if (String(url).includes('openai.com')) return new Response('{}', { status: 500 })
     throw new Error('offline')
   }) as unknown as typeof fetch
-  const providers = new Providers(fake.ctx, creds, fetchFn)
+  // Codex: no CLI on this machine (agent/codex; covered in codex.test.ts).
+  const providers = new Providers(fake.ctx, creds, fetchFn, () => new CodexService({ findBin: () => null }))
   let list = await providers.list()
   const by = (id: string) => list.find((p) => p.id === id)!
-  assert.deepEqual(list.map((p) => p.id), ['anthropic', 'openai', 'openrouter', 'gemini', 'ollama', 'custom'])
+  assert.deepEqual(list.map((p) => p.id), ['anthropic', 'openai', 'openrouter', 'gemini', 'ollama', 'custom', 'codex'])
+  assert.equal(by('codex').ready, false)
   assert.equal(by('anthropic').ready, false)
   assert.equal(by('openai').ready, false)
   assert.equal(by('ollama').ready, true, 'ollama is reachable without a key')

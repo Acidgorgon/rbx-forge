@@ -26,6 +26,8 @@ export interface ArtWireDeps {
   resolveReference?: (ref: string) => Promise<string | null>
   fetch?: ArtServiceDeps['fetch']
   sleep?: ArtServiceDeps['sleep']
+  // Image backend 'codex' (ChatGPT plan through the Codex CLI).
+  codex?: ArtServiceDeps['codex']
 }
 
 export interface ArtWiring {
@@ -75,6 +77,7 @@ export function createArtWiring(deps: ArtWireDeps): ArtWiring {
     resolveReference: deps.resolveReference ?? defaultResolveReference,
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
+    ...(deps.codex ? { codex: deps.codex } : {}),
     onChanged: (root) => deps.emit('art:changed', { root }),
     onProgress: (p) => deps.emit('art:progress', p)
   })

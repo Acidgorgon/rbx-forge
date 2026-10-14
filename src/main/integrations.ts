@@ -38,6 +38,9 @@ import { git as runGit } from './services/collab/git.ts'
 import { renameFeature, FEATURE_NAME } from './services/featureOps.ts'
 import * as release from './services/release/index.ts'
 import { createArtWiring, type ArtWireDeps } from './services/art/wire.ts'
+import { backendOf, type CodexImages } from './services/art/imageBackend.ts'
+import { codexImages } from './agent/codex/images.ts'
+import type { ImageBackend } from '../shared/artTypes.ts'
 import { Credentials } from './agent/credentials.ts'
 import { TestService, testTools } from './services/tests/index.ts'
 import { createUiPreviewWiring, type UiPreviewWireDeps } from './services/uiPreview/wire.ts'
@@ -91,7 +94,7 @@ export interface Integrations {
   // Open Cloud asset uploads outside the Art page (Animation Lab): the key and creator set there.
   openCloud: { key(): Promise<string | null>; creator(): { userId?: number; groupId?: number } }
   // OpenAI image generation outside the Art page (VFX Lab textures): the key, model and budget set there.
-  images: { openAiKey(): Promise<string | null>; settings(): { model: string; quality: string; dailyCapUsd: number }; spentToday(): Promise<number> }
+  images: { openAiKey(): Promise<string | null>; settings(): { model: string; quality: string; dailyCapUsd: number; backend?: ImageBackend }; spentToday(): Promise<number>; codex?: CodexImages }
 }
 
 const SECRET_KINDS: ReleaseSecretKind[] = ['openCloudApiKey', 'discordWebhook']
@@ -116,12 +119,15 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
 
   // ---------------------------------------------------------------- art (OpenAI images, Roblox import)
   let credentials: Credentials | null = null
+  // Image backend 'codex': the ChatGPT plan through the user's Codex CLI.
+  const imageCodex = codexImages()
   const art = createArtWiring({
     root: deps.root,
     settings,
     secrets,
     userDataDir: deps.userDataDir,
     openAiKey: () => (credentials ??= new Credentials(deps.ctx)).getKey('openai'),
+    codex: imageCodex,
     emit,
     ...(deps.art ?? {})
   })
@@ -476,9 +482,10 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
       openAiKey: () => (credentials ??= new Credentials(deps.ctx)).getKey('openai'),
       settings: () => {
         const s = art.service.settings()
-        return { model: s.model, quality: s.quality, dailyCapUsd: s.dailyCapUsd }
+        return { model: s.model, quality: s.quality, dailyCapUsd: s.dailyCapUsd, backend: backendOf(s.backend) }
       },
-      spentToday: () => art.service.spentToday()
+      spentToday: () => art.service.spentToday(),
+      codex: imageCodex
     },
     notifyTestFailure: (event) => {
       const r = deps.root()

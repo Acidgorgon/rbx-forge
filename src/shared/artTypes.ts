@@ -108,7 +108,24 @@ export interface ArtSettings {
   creatorUserId?: number
   creatorGroupId?: number
   assetType: 'Image' | 'Decal'
+  // Who makes the images (Art, Thumbnail Lab, VFX textures): 'api' = the OpenAI Images API with
+  // the OpenAI key (billed, daily budget applies); 'codex' = the ChatGPT plan through the Codex
+  // CLI's built-in image tool (plan limits, no spend cap). Unset = 'api'.
+  backend?: ImageBackend
 }
+
+export type ImageBackend = 'api' | 'codex'
+
+// The Codex backend's state, on every image status when it is the chosen backend.
+export interface CodexImageInfo {
+  ready: boolean
+  detail: string
+}
+
+// Recorded as the model of images made through Codex (it runs gpt-image-2 on the plan).
+export const CODEX_IMAGE_MODEL = 'codex-gpt-image-2'
+// Shown wherever a cost would be: there is none to show.
+export const CODEX_IMAGE_NOTE = 'ChatGPT plan (Codex): counts toward your plan limits, no spend cap. Codex picks the size; up to 4 images per run.'
 
 export interface ArtStatus {
   project: boolean
@@ -119,6 +136,8 @@ export interface ArtStatus {
   settings: ArtSettings
   styles: ArtStylePreset[]
   models: ArtModel[]
+  // Set when settings.backend is 'codex'.
+  codex?: CodexImageInfo
 }
 
 export interface ArtImportInput {

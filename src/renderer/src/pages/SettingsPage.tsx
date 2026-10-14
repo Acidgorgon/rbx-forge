@@ -24,7 +24,8 @@ const BLURB: Record<ProviderId, string> = {
   openrouter: 'Hundreds of models from many labs with one key.',
   gemini: "Google's Gemini models through their OpenAI-compatible endpoint.",
   ollama: 'Local models on this machine. No key needed; start Ollama and pull a model with tool support.',
-  custom: 'Any server that speaks the OpenAI Chat Completions API (LM Studio, vLLM, a gateway...).'
+  custom: 'Any server that speaks the OpenAI Chat Completions API (LM Studio, vLLM, a gateway...).',
+  codex: 'Your ChatGPT plan through the official Codex CLI on this machine. Forge never sees your sign-in; the CLI keeps it.'
 }
 const KEY_PLACEHOLDER: Partial<Record<ProviderId, string>> = { anthropic: 'sk-ant-...', openai: 'sk-...', openrouter: 'sk-or-...', gemini: 'AIza...', custom: 'Optional' }
 const ENV_NAME: Partial<Record<ProviderId, string>> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', openrouter: 'OPENROUTER_API_KEY', gemini: 'GEMINI_API_KEY' }
@@ -171,6 +172,72 @@ function ClaudeLoginToggle() {
   )
 }
 
+// Codex (ChatGPT plan): status and "Sign in with ChatGPT", which runs `codex login` (the CLI opens
+// the browser and keeps the credentials; Forge never sees them).
+function CodexSignIn({ p }: { p: ProviderInfo }) {
+  const { actions } = useStore()
+  const [busy, setBusy] = useState<'in' | 'out' | null>(p.codex?.signingIn ? 'in' : null)
+  const [url, setUrl] = useState<string | null>(null)
+  useEffect(() => window.harness.on('codex:signin', (u) => u.url && setUrl(u.url)), [])
+  const c = p.codex
+  if (!c?.installed) {
+    return (
+      <div className="pv-field">
+        <span className="note grow">
+          Install the Codex CLI first: <code>npm i -g @openai/codex</code> (or <code>brew install --cask codex</code> on a Mac), then come back here.
+        </span>
+        <button className="btn small" onClick={() => void window.harness.codexStatus(true).then(() => actions.refreshProviders())}>Check again</button>
+      </div>
+    )
+  }
+  const signIn = async () => {
+    setBusy('in')
+    setUrl(null)
+    try {
+      const r = await window.harness.codexSignIn()
+      actions.toast({ text: r.ok ? 'Codex signed in' : 'Codex sign-in did not finish', ...(r.message ? { detail: r.message } : {}), kind: r.ok ? 'ok' : 'err' })
+    } catch (e) {
+      actions.toast({ text: 'Codex sign-in failed', detail: errorText(e), kind: 'err' })
+    } finally {
+      setBusy(null)
+      setUrl(null)
+      await actions.refreshProviders()
+    }
+  }
+  return (
+    <div className="pv-field">
+      <span className="pv-label">Account</span>
+      <span className="note grow ellipsis">{c.loggedIn ? (c.method === 'apikey' ? 'Codex uses an API key, not your ChatGPT plan' : 'Signed in with ChatGPT') : 'Not signed in'}{c.version ? ` · codex ${c.version}` : ''}</span>
+      {busy === 'in' && url && (
+        <a className="btn small ghost" href={url} target="_blank" rel="noreferrer">Open sign-in page</a>
+      )}
+      {busy === 'in' ? (
+        <button className="btn small" onClick={() => void window.harness.codexCancelSignIn()}>Cancel</button>
+      ) : c.loggedIn && c.method !== 'apikey' ? (
+        <button
+          className="btn small danger"
+          disabled={!!busy}
+          title="Runs codex logout: signs Codex out on this computer, not only in Forge"
+          onClick={async () => {
+            if (!window.confirm('Sign Codex out on this computer? This runs `codex logout`, which also signs out the Codex CLI and IDE extensions.')) return
+            setBusy('out')
+            try {
+              await window.harness.codexSignOut()
+            } finally {
+              setBusy(null)
+              await actions.refreshProviders()
+            }
+          }}
+        >
+          Sign out
+        </button>
+      ) : (
+        <button className="btn primary small" disabled={!!busy} onClick={() => void signIn()}>Sign in with ChatGPT</button>
+      )}
+    </div>
+  )
+}
+
 function ProviderCard({ p }: { p: ProviderInfo }) {
   const status = p.ready ? 'ready' : p.id === 'ollama' ? 'not running' : 'not set up'
   return (
@@ -183,9 +250,10 @@ function ProviderCard({ p }: { p: ProviderInfo }) {
         </div>
         <span className={`badge-o ${p.ready ? 'ok' : ''}`} title={p.detail}>{status}</span>
       </div>
-      {p.detail && !/^No (API key|base URL)$/.test(p.detail) && <div className="note pv-detail">{p.detail}</div>}
+      {p.detail && p.id !== 'codex' && !/^No (API key|base URL)$/.test(p.detail) && <div className="note pv-detail">{p.detail}</div>}
       {(p.id === 'custom' || p.id === 'ollama') && <BaseUrlField p={p} />}
-      {p.id !== 'ollama' && <KeyField p={p} />}
+      {p.id !== 'ollama' && p.id !== 'codex' && <KeyField p={p} />}
+      {p.id === 'codex' && <CodexSignIn p={p} />}
       {p.id === 'anthropic' && <ClaudeLoginToggle />}
     </div>
   )

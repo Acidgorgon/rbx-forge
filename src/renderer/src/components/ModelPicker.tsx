@@ -10,10 +10,11 @@ const SHORT: Record<ProviderId, string> = {
   openrouter: 'OpenRouter',
   gemini: 'Gemini',
   ollama: 'Ollama',
-  custom: 'Custom'
+  custom: 'Custom',
+  codex: 'Codex'
 }
 
-const MARK: Record<ProviderId, string> = { anthropic: 'A', openai: 'O', openrouter: 'R', gemini: 'G', ollama: 'ol', custom: 'C' }
+const MARK: Record<ProviderId, string> = { anthropic: 'A', openai: 'O', openrouter: 'R', gemini: 'G', ollama: 'ol', custom: 'C', codex: 'Cx' }
 
 // Models shown per provider before "type to search".
 const PER_GROUP = 6
@@ -169,7 +170,7 @@ export function ModelPicker({
                           onAddKey(p.id)
                         }}
                       >
-                        {p.id === 'ollama' ? 'Set up' : p.id === 'custom' ? 'Add URL' : 'Add key'}
+                        {p.id === 'ollama' ? 'Set up' : p.id === 'custom' ? 'Add URL' : p.id === 'codex' ? 'Sign in' : 'Add key'}
                       </button>
                     )}
                   </div>

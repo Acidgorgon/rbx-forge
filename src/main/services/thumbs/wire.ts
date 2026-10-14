@@ -5,6 +5,8 @@ import { join } from 'node:path'
 import type { PrincipleHooks } from '../../../shared/principles/types.ts'
 import type { ThumbGenerateInput, ThumbScope, ThumbSettings } from '../../../shared/thumbs/types.ts'
 import type { ArtFetch } from '../art/openaiImages.ts'
+import type { CodexImages } from '../art/imageBackend.ts'
+import type { ImageBackend } from '../../../shared/artTypes.ts'
 import { ThumbService, type ThumbMemory, type ThumbTier, type VisionFn } from './service.ts'
 
 export interface ThumbsWireDeps {
@@ -17,7 +19,7 @@ export interface ThumbsWireDeps {
   memory?: ThumbMemory
   principles?: PrincipleHooks
   vision?: (tier: ThumbTier) => VisionFn | null
-  images?: { openAiKey(): Promise<string | null>; settings(): { model: string; quality: string; dailyCapUsd: number }; spentToday(): Promise<number> }
+  images?: { openAiKey(): Promise<string | null>; settings(): { model: string; quality: string; dailyCapUsd: number; backend?: ImageBackend }; spentToday(): Promise<number>; codex?: CodexImages }
   openCloud?: { key(): Promise<string | null>; creator(): { userId?: number; groupId?: number } }
   toPng?: (bytes: Buffer) => Promise<Buffer | null>
   chooseImages?: () => Promise<string[]>
@@ -39,6 +41,7 @@ export function createThumbsWiring(deps: ThumbsWireDeps): ThumbsWiring {
     settings: deps.settings,
     openAiKey: deps.images?.openAiKey,
     imageSettings: deps.images?.settings,
+    codexImages: deps.images?.codex,
     artSpentToday: deps.images?.spentToday,
     robloxKey: deps.openCloud?.key,
     creator: deps.openCloud?.creator,

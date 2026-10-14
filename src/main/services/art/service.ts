@@ -24,6 +24,8 @@ import { uploadImageAsset } from './robloxAssets.ts'
 import { STYLE_PRESETS, fullPrompt, slugify, stylePreset } from './styles.ts'
 import { applyGitPolicy, CONCEPTS_DIR, dayOf, insideRoot, listConcepts, nextIndex, readItem, restoreConcept, trashConcept, UI_DIR, writeConcept, writeSidecar } from './store.ts'
 import { assertSpend, chargeSpend } from '../spend/gate.ts'
+import { backendOf, codexBackend, type CodexImages } from './imageBackend.ts'
+import { CODEX_IMAGE_MODEL, CODEX_IMAGE_NOTE } from '../../../shared/artTypes.ts'
 
 export const ART_MODELS: ArtModel[] = ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2', 'gpt-image-1.5', 'gpt-image-1-mini']
 export const DEFAULT_SETTINGS: ArtSettings = { model: 'gpt-image-2.5-flare', quality: 'high', gitPolicy: 'track-small', dailyCapUsd: 5, assetType: 'Image' }
@@ -54,6 +56,8 @@ export interface ArtServiceDeps {
   // Minimum gap between OpenAI requests (ms) and concurrent generations.
   minIntervalMs?: number
   maxConcurrent?: number
+  // The ChatGPT plan through Codex (settings.backend 'codex').
+  codex?: CodexImages
 }
 
 export class ArtService {
@@ -101,14 +105,17 @@ export class ArtService {
   async status(): Promise<ArtStatus> {
     const r = this.deps.root()
     const roblox = await this.deps.robloxKey().catch(() => null)
+    const settings = this.settings(r)
+    const codex = codexBackend(settings.backend, this.deps.codex)
     return {
       project: !!r,
       openaiKey: !!(await this.deps.openAiKey().catch(() => null)),
       robloxKey: !!roblox,
       ...(roblox ? { robloxKeySource: roblox.source } : {}),
-      settings: this.settings(r),
+      settings,
       styles: STYLE_PRESETS,
-      models: ART_MODELS
+      models: ART_MODELS,
+      ...(codex ? { codex: await codex.status().catch((e) => ({ ready: false, detail: (e as Error).message })) } : {})
     }
   }
 
@@ -146,6 +153,9 @@ export class ArtService {
 
   async estimate(input: ArtGenerateInput): Promise<ArtCostEstimate> {
     const q = this.resolveRequest(input)
+    if (codexBackend(this.settings().backend, this.deps.codex)) {
+      return { model: CODEX_IMAGE_MODEL, quality: 'auto', size: 'auto', n: Math.min(q.n, 4), perImageUsd: 0, totalUsd: 0, spentTodayUsd: await this.spentToday(), dailyCapUsd: 0, note: CODEX_IMAGE_NOTE }
+    }
     const per = estimateImageUsd(q.model, q.quality, q.size)
     return {
       model: q.model,
@@ -194,6 +204,8 @@ export class ArtService {
     const prompt = String(input.prompt ?? '').trim()
     if (!prompt) throw new Error('Write a prompt first')
     if (prompt.length > 30_000) throw new Error('Prompt is too long (OpenAI allows 32,000 characters)')
+    const codex = codexBackend(this.settings().backend, this.deps.codex)
+    if (codex) return this.generateCodex(root, prompt, input, codex)
     const apiKey = await this.deps.openAiKey()
     if (!apiKey) throw new Error('No OpenAI API key. Add one in Settings > Providers > OpenAI.')
     const q = this.resolveRequest(input)
@@ -259,6 +271,68 @@ export class ArtService {
     const policy = this.settings(root).gitPolicy
     if (policy !== 'track' || items.some((i) => i.bytes > 5 * 1024 * 1024)) await applyGitPolicy(root, policy).catch(() => undefined)
     this.deps.onProgress?.({ id: job, stage: 'done', detail: `${items.length} image${items.length === 1 ? '' : 's'}` })
+    this.deps.onChanged?.(root)
+    return items
+  }
+
+  // The ChatGPT plan through Codex: no key, no budget or spending cap, no cost. Masks are an
+  // Images API feature; references go to Codex as reference images.
+  private async generateCodex(root: string, prompt: string, input: ArtGenerateInput, codex: CodexImages): Promise<ArtItem[]> {
+    if (input.maskPath) throw new Error('Masks need the OpenAI API image backend (Art page settings). Codex edits from a description and reference images only.')
+    const q = this.resolveRequest(input)
+    const refs = await Promise.all(q.refs.map((r) => this.readReference(root, r)))
+    const full = fullPrompt(prompt, q.style, q.transparent)
+    const job = randomUUID().slice(0, 8)
+    this.deps.onProgress?.({ id: job, stage: 'generating', detail: `Codex · ${Math.min(q.n, 4)} image${q.n === 1 ? '' : 's'}` })
+    let res: { images: Buffer[]; notes: string[] }
+    try {
+      res = await this.slot(() => codex.generate({ prompt: full, n: q.n, size: q.size, transparent: q.transparent, references: refs.map((r) => r.dataUrl) }))
+    } catch (error) {
+      this.deps.onProgress?.({ id: job, stage: 'failed', detail: (error as Error).message })
+      throw error
+    }
+    const date = dayOf(this.now())
+    const slug = slugify(input.slug || prompt)
+    const dir = join(root, ...CONCEPTS_DIR.split('/'), date)
+    let index = await nextIndex(dir, slug)
+    const items: ArtItem[] = []
+    for (const bytes of res.images) {
+      const size = pngSize(bytes)
+      const mime = mimeOf(bytes)
+      const outputFormat = mime === 'image/jpeg' ? ('jpeg' as const) : mime === 'image/webp' ? ('webp' as const) : ('png' as const)
+      const item = await writeConcept(
+        root,
+        {
+          path: `${CONCEPTS_DIR}/${date}/${slug}-${index}.${outputFormat === 'jpeg' ? 'jpg' : outputFormat}`,
+          date,
+          slug,
+          index,
+          prompt,
+          fullPrompt: full,
+          style: q.style,
+          model: CODEX_IMAGE_MODEL,
+          size: size ? `${size.width}x${size.height}` : 'auto',
+          quality: 'auto',
+          background: q.transparent ? 'transparent' : 'auto',
+          outputFormat,
+          mode: refs.length ? 'edit' : 'generate',
+          ...(refs.length ? { referencePaths: refs.map((r) => r.path) } : {}),
+          seed: null,
+          costUsd: 0,
+          createdAt: new Date(this.now()).toISOString(),
+          bytes: bytes.byteLength,
+          ...(size ? { width: size.width, height: size.height } : {}),
+          source: input.source ?? 'page'
+        },
+        bytes
+      )
+      items.push(item)
+      index++
+    }
+    const policy = this.settings(root).gitPolicy
+    if (policy !== 'track' || items.some((i) => i.bytes > 5 * 1024 * 1024)) await applyGitPolicy(root, policy).catch(() => undefined)
+    const notes = res.notes.length ? ` · ${res.notes.join(' ')}` : ''
+    this.deps.onProgress?.({ id: job, stage: 'done', detail: `${items.length} image${items.length === 1 ? '' : 's'} (Codex)${notes}` })
     this.deps.onChanged?.(root)
     return items
   }
@@ -379,7 +453,8 @@ function sanitize(s: ArtSettings): ArtSettings {
     quality: QUALITIES.includes(s.quality) ? s.quality : DEFAULT_SETTINGS.quality,
     gitPolicy: (['track-small', 'track', 'ignore'] as const).includes(s.gitPolicy) ? s.gitPolicy : DEFAULT_SETTINGS.gitPolicy,
     dailyCapUsd: typeof s.dailyCapUsd === 'number' && s.dailyCapUsd >= 0 && Number.isFinite(s.dailyCapUsd) ? s.dailyCapUsd : DEFAULT_SETTINGS.dailyCapUsd,
-    assetType: s.assetType === 'Decal' ? 'Decal' : 'Image'
+    assetType: s.assetType === 'Decal' ? 'Decal' : 'Image',
+    ...(backendOf(s.backend) === 'codex' ? { backend: 'codex' as const } : {})
   }
   const id = (v: unknown) => (typeof v === 'number' && Number.isSafeInteger(v) && v > 0 ? v : typeof v === 'string' && /^\d+$/.test(v) ? Number(v) : undefined)
   const u = id(s.creatorUserId)

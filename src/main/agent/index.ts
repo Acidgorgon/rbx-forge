@@ -1,7 +1,7 @@
 // IPC entry point for the agent layer. main/index.ts calls registerAgentIpc once.
 
 import type { IpcMain } from 'electron'
-import type { ChatMessage, ModelChoice, OrchestrateMode, ProviderId, ProviderInfo } from '@shared/types'
+import type { ChatMessage, CodexAccount, ModelChoice, OrchestrateMode, ProviderId, ProviderInfo } from '@shared/types'
 import { INVOKE_PREFIX } from '../../shared/types.ts'
 import type { NewChatOptions } from '@shared/types'
 import { join } from 'node:path'
@@ -28,6 +28,7 @@ import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './im
 import { executableOption, OPENAI_TOOLS_NOTE, sdkQuery, type QueryFn } from './sdk.ts'
 import { SERVICE_WRITE_TOOLS } from './serviceTools.ts'
 import { TestAgentRunner } from './testAgents.ts'
+import { CodexService, codexService, setCodexService, type CodexStatus } from './codex/service.ts'
 import { defaultGroupIo } from './group/io.ts'
 import { Restater } from './restate.ts'
 import { normalizeRestatement, type RestateLab } from '../../shared/restate/types.ts'
@@ -177,9 +178,11 @@ async function oneShot(
   tier?: LabTier,
   onUsage?: ShotOptions['onUsage']
 ): Promise<string> {
+  const base = w.providers.defaultModel()
+  // Codex: the ChatGPT plan through the CLI (no API spend, so no spending-cap check).
+  if (base.provider === 'codex') return codexService().oneShot(system, prompt, { images, model: base.model })
   // Spending cap (Settings > Usage): refuse before the call.
   assertSpend('labs')
-  const base = w.providers.defaultModel()
   const tiers = ctx.getSetting('modelTiers', undefined)
   const model = tier
     ? resolveLabModel(tier, ctx.getSetting(LAB_MODELS_SETTING, {}), base.model, tiersFor({ provider: base.provider, model: base.model, tiers }))
@@ -396,11 +399,22 @@ function choice(c: unknown): ModelChoice | undefined {
   return isProviderId(p) && typeof model === 'string' && model.trim() ? { provider: p, model } : undefined
 }
 
+function codexAccount(s: CodexStatus): CodexAccount {
+  return { installed: s.installed, loggedIn: s.loggedIn, ...(s.method ? { method: s.method } : {}), ...(s.version ? { version: s.version } : {}), ...(s.path ? { path: s.path } : {}), ...(codexService().signingInNow() ? { signingIn: true } : {}) }
+}
+
 export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
   opts: { memory?: MemoryHooks; userDataDir?: string; gating?: () => Promise<GatingCostRow[] | null> } = {}
 ): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string>; providers(): Promise<ProviderInfo[]>; defaultProvider(): ProviderId } {
+  // Codex CLI: an optional path from settings ('codexPath') wins over PATH lookup.
+  setCodexService(
+    new CodexService({
+      binOverride: () => ctx.getSetting<string | null>('codexPath', null),
+      log: (text, stream = 'info') => ctx.log({ service: 'agent', stream, text: `[codex] ${text}` })
+    })
+  )
   const layer = createAgentLayer(ctx, { memory: opts.memory, ...(opts.userDataDir ? { userCommandsDir: join(opts.userDataDir, 'commands') } : {}), ...(opts.gating ? { gating: opts.gating } : {}) })
   // Chat images live under userData/chat-images (history keeps only references).
   setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))
@@ -485,6 +499,25 @@ export function registerAgentIpc(
       credentials.setUseClaudeLogin(on === true)
       await providersChanged()
     },
+    // Codex (ChatGPT plan): the CLI signs in and keeps the credentials (agent/codex/service.ts).
+    codexStatus: async (refresh?: unknown) => codexAccount(await codexService().status({ refresh: refresh === true })),
+    codexSignIn: async () => {
+      const abort = new AbortController()
+      const p = codexService().signIn({
+        signal: abort.signal,
+        progress: (u) => ctx.emit('codex:signin', u)
+      })
+      void providersChanged()
+      const r = await p
+      await providersChanged()
+      return r
+    },
+    codexCancelSignIn: () => codexService().cancelSignIn(),
+    codexSignOut: async () => {
+      const s = await codexService().signOut()
+      await providersChanged()
+      return codexAccount(s)
+    },
 
     // Token usage meter and budgets.
     getUsage: (scope: unknown, id?: unknown) => {
@@ -563,6 +596,7 @@ export function registerAgentIpc(
       layer.oneShot('Summarize these incoming git changes for a teammate on a Roblox (Luau, Rojo) game: what changed, by whom, which features are touched and anything that may conflict with local work. Terse bullet points, at most 200 words.', prompt),
     dispose() {
       for (const name of Object.keys(handlers)) ipcMain.removeHandler(INVOKE_PREFIX + name)
+      codexService().cancelSignIn()
       layer.dispose()
     }
   }

@@ -64,6 +64,7 @@ import { Checkpoints } from './checkpoints.ts'
 import { codexService, type CodexService } from './codex/service.ts'
 import { codexPrompt, codexSandboxFor } from './codex/chat.ts'
 import { estimateTokens } from './budget/tokens.ts'
+import { LAST_CHAT_MODEL_SETTING } from '../../shared/labModels.ts'
 
 const SETTING = 'chats'
 const MAX_MESSAGES = 500
@@ -573,7 +574,13 @@ export class ChatManager {
     const from = chat.messages.length
     let fix: string | null = null
     void start()
-      .then(() => this.afterTurn(chat, mode, from))
+      .then(() => {
+        // The Labs fall back to the last chat model that answered (agent/index.ts oneShot).
+        const turn = chat.messages.slice(from)
+        const answered = turn.some((m) => m.role === 'assistant' && m.agentId === 'main' && m.text.trim()) && !turn.some((m) => m.role === 'system' && /error|fail|denied|invalid|not (?:available|set up|signed in)/i.test(m.text))
+        if (!abort.signal.aborted && answered) this.ctx.setSetting(LAST_CHAT_MODEL_SETTING, { provider, model: modelId })
+        return this.afterTurn(chat, mode, from)
+      })
       .then(async () => {
         // Cross-check: a model from another provider reviews a multi-file edit.
         if (!abort.signal.aborted && !isReadOnlyMode(mode)) fix = await this.crossCheck(chat, from, text, abort.signal).catch((e) => {

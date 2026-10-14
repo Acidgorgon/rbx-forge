@@ -4,10 +4,16 @@
 //              summaries, reflection after ratings, retrieval and ranking text.
 //   default -> the user's chosen chat model: drafting scripts (compose) and script repair.
 //   critic  -> the provider's big tier: the vision critique at key beats and the final pass.
+// A call whose model fails (a subscription without the flagship model, a default model on a provider
+// with no key, Codex not signed in) moves on to the default model and then to the last chat model
+// that answered (agent/index.ts oneShot); when none answers, the lab shows the error.
 
 export type LabTier = 'cheap' | 'default' | 'critic'
 export const LAB_TIERS: readonly LabTier[] = ['cheap', 'default', 'critic']
 export const LAB_MODELS_SETTING = 'labs.models'
+// The last chat model that answered a turn ({ provider, model }): the Labs fall back to it when the
+// default model or a tier model does not work, so they use whatever chat uses.
+export const LAST_CHAT_MODEL_SETTING = 'labs.lastChatModel'
 
 export interface LabModels {
   cheap?: string

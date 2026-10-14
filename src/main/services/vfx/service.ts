@@ -9,7 +9,7 @@
 import type { LabTier } from '../../../shared/labModels.ts'
 import type { LabGate } from '../../../shared/gating/hooks.ts'
 import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
-import { composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
+import { ComposeGaveUp, composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, emitAttributes, importNotes, IMPORT_VERSION, perfWarnings, pruneToVfx, type PerfWarning } from '../../../shared/vfx/analyze.ts'
@@ -26,7 +26,7 @@ import { draftSpec, libraryTextures, promptTags } from '../../../shared/vfx/draf
 import { luauModule, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
 import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeSkill } from '../../../shared/vfx/recipes.ts'
-import { compactEffect, effectFromSpec, safeName, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
+import { compactEffect, effectFromSpec, safeName, shortTitle, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
 import type { VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
 import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { entryId, PROJECT_VFX_DIR, safeFileName, VfxLibraryError, VfxStore } from './library.ts'
@@ -145,7 +145,19 @@ export function extractScript(raw: string): string | null {
 // "-- Name: HollowPurple" on the first lines of a script, else a name from the request.
 export function scriptName(script: string, request: string): string {
   const m = /^\s*--\s*Name:\s*([A-Za-z][\w ]{0,40})/m.exec(script.split('\n').slice(0, 3).join('\n'))
-  return safeName(m?.[1] ?? request.replace(/\b(make|a|an|the|effect|vfx|please|with|and|of)\b/gi, ' ')).slice(0, 40) || 'Sequence'
+  return (m ? safeName(m[1]).slice(0, 40) : shortTitle(request, 'Sequence')) || 'Sequence'
+}
+
+// The note on an entry the model did not draft, with the actual error.
+export function draftedWithout(error: string): string {
+  return `Drafted without a model because: ${error.replace(/\s+/g, ' ').trim().slice(0, 500)}`
+}
+
+// A numbers-only critique after the vision call failed: say so (with the error) instead of
+// "no vision model", which reads as if none were set up.
+export function visionFailed(c: VfxCritique, error: string): VfxCritique {
+  const why = error.replace(/\s+/g, ' ').trim().slice(0, 300)
+  return { ...c, summary: c.summary.replace(/^Numbers-only check \(no vision model/, `Numbers-only check (the vision model call failed: ${why}`) }
 }
 
 export class VfxService {
@@ -601,14 +613,16 @@ export class VfxService {
   }
 
   // Creates (or replaces, with `id`) a generated entry from a spec and writes it into the project.
-  async create(spec: VfxSpec, opts: { id?: string; prompt?: string } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+  async create(spec: VfxSpec, opts: { id?: string; prompt?: string; modelNote?: string } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
     return this.saveEffect(effectFromSpec(spec), { ...opts, description: spec.description, tags: spec.tags })
   }
 
   // Saves an effect as a generated entry (new, or replacing `id`) and writes it into the project.
   // Writes src/shared/VFX/<Name> too, except for built-in examples (writeProject: false, and later
   // saves of an example not written yet): those reach the project only through Export / Add to game.
-  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string; restatement?: Restatement; writeProject?: boolean; reuseTextures?: boolean } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+  // modelNote: why the model did not draft it ("Drafted without a model because: ..."); a later save
+  // without one clears it.
+  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string; restatement?: Restatement; writeProject?: boolean; reuseTextures?: boolean; modelNote?: string } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
     const spec = { name: raw.name, description: opts.description, tags: opts.tags }
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new VfxError(`no VFX entry "${opts.id}"`)
@@ -633,6 +647,8 @@ export class VfxService {
       ...(opts.refId ? { refId: opts.refId } : {}),
       ...(opts.restatement ? { restatement: opts.restatement } : {})
     } as VfxEntry
+    if (opts.modelNote) entry.modelNote = opts.modelNote.slice(0, 600)
+    else delete entry.modelNote
     let saved = await store.save(entry)
     const unwrittenExample = !!prev && !prev.entry.written && String(prev.entry.origin ?? '').startsWith('example:')
     if (this.deps.projectRoot() && opts.writeProject !== false && !unwrittenExample) saved = await this.writeProjectFiles(saved)
@@ -799,7 +815,7 @@ export class VfxService {
       return pinned ? this.withMatch(c, effect, pinned, raw) : c
     } catch (e) {
       this.deps.log?.(`vfx: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')
-      const c = principled(heuristicCritique(effect, recipe, refNames))
+      const c = visionFailed(principled(heuristicCritique(effect, recipe, refNames)), (e as Error).message)
       return pinned ? this.withMatch(c, effect, pinned) : c
     }
   }
@@ -898,7 +914,7 @@ export class VfxService {
 
   // First spec for a prompt: the default model when available (recipe + references in the prompt),
   // else the deterministic draft (shared/vfx/draft.ts).
-  async draft(prompt: string): Promise<{ spec: VfxSpec; source: 'model' | 'draft' }> {
+  async draft(prompt: string): Promise<{ spec: VfxSpec; source: 'model' | 'draft'; modelError?: string }> {
     const tags = promptTags(prompt)
     const recipe = await this.recipeFor(tags.length ? tags : prompt.toLowerCase().split(/\W+/))
     const entries = await this.list()
@@ -923,7 +939,7 @@ export class VfxService {
       return { spec, source: 'model' }
     } catch (e) {
       this.deps.log?.(`vfx: model draft unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
-      return { spec: fallback, source: 'draft' }
+      return { spec: fallback, source: 'draft', modelError: (e as Error).message }
     }
   }
 
@@ -931,8 +947,8 @@ export class VfxService {
   async make(prompt: string, opts: VfxRefineOptions & { wait?: boolean } = {}): Promise<{ entry: VfxEntry; refined?: Promise<unknown> }> {
     const text = String(prompt ?? '').trim()
     if (text.length < 3) throw new VfxError('Describe the effect, e.g. "a fire slash with embers".')
-    const { spec } = await this.draft(text)
-    const { entry } = await this.create(spec, { prompt: text })
+    const { spec, modelError } = await this.draft(text)
+    const { entry } = await this.create(spec, { prompt: text, ...(modelError ? { modelNote: draftedWithout(modelError) } : {}) })
     if (!this.deps.capture) return { entry }
     const refined = this.refine(entry.id, opts).catch((e) => this.deps.log?.(`vfx: refine failed: ${(e as Error).message}`, 'stderr'))
     if (opts.wait) await refined
@@ -985,6 +1001,7 @@ export class VfxService {
     const text = String(request ?? '').trim() || (pinned ? `an effect like the reference video ${pinned.name}` : '')
     if (text.length < 3) throw new VfxError('Describe the effect, e.g. "a fireball that charges, flies forward and explodes".')
     let source: VfxScriptResult['source'] = 'draft'
+    let modelError: string | undefined
     let result: VfxScriptResult | null = null
     let script = opts.script?.trim() ? opts.script : ''
     const vision = this.deps.vision?.('default')
@@ -1024,6 +1041,7 @@ export class VfxService {
         source = 'model'
       } catch (e) {
         this.deps.log?.(`vfx: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
+        modelError = e instanceof ComposeGaveUp ? `the model's script did not run (${e.message})` : (e as Error).message
       }
     }
     if (!result) {
@@ -1038,9 +1056,10 @@ export class VfxService {
     }
     const refTags = pinned ? ((await this.find(pinned.id))?.entry.tags ?? []).filter((t) => t !== 'video') : []
     const tags = [...new Set([...promptTags(text), ...refTags, 'sequence'])]
-    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})`, ...(pinned ? { refId: pinned.id } : {}), ...(restatement ? { restatement } : {}) })
+    const modelNote = source === 'draft' && modelError ? draftedWithout(modelError) : undefined
+    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})`, ...(pinned ? { refId: pinned.id } : {}), ...(restatement ? { restatement } : {}), ...(modelNote ? { modelNote } : {}) })
     await this.ensureChoreographySkill()
-    const out: VfxScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source }
+    const out: VfxScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source, ...(modelError && source === 'draft' ? { modelError } : {}) }
     if (opts.refine !== false && this.deps.capture) {
       const refined = this.refine(entry.id, opts).catch((e) => this.deps.log?.(`vfx: refine failed: ${(e as Error).message}`, 'stderr'))
       if (opts.wait) await refined

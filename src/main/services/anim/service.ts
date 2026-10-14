@@ -17,7 +17,7 @@ import type { AnimCoverage, AnimImportOptions, AnimImportPreview, AnimMoveSets, 
 import type { LabTier } from '../../../shared/labModels.ts'
 import type { LabGate } from '../../../shared/gating/hooks.ts'
 import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
-import { composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
+import { ComposeGaveUp, composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
 import { bvhToClip, BvhError, parseBvh } from '../../../shared/anim/bvh.ts'
 import { clipFromSequence, readKeyframeSequencesXml, writeKeyframeSequenceXml, type RawSequence } from '../../../shared/anim/rbxmx.ts'
 import { clipSummary, finishAnimRun, compileAnim, type AnimRecordResult } from '../../../shared/anim/compile.ts'
@@ -955,6 +955,7 @@ export class AnimService {
     let result: AnimScriptResult | null = null
     let script = opts.script?.trim() ? opts.script : ''
     const writer = this.model('default')
+    let modelError: string | undefined
     if (!script && writer) {
       const all = await this.list()
       const refs = await this.references(tags, text, undefined, rig)
@@ -1000,6 +1001,7 @@ export class AnimService {
         source = 'model'
       } catch (e) {
         this.deps.log?.(`anim: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
+        modelError = e instanceof ComposeGaveUp ? `the model's script did not run (${e.message})` : (e as Error).message
       }
     }
     if (!result) {
@@ -1012,7 +1014,7 @@ export class AnimService {
     const refTags = pinned ? ((await this.find(pinned.id))?.entry.tags ?? []).filter((t) => t !== 'video') : []
     const entry = await this.saveClip(result.clip!, { prompt: text, tags: [...new Set([...tags, ...refTags, ...setAutoTags(result.clip!, '', set)])], scope: opts.scope, ...(pinned ? { refId: pinned.id } : {}), ...(restatement ? { restatement } : {}) })
     await this.ensureGuideSkill()
-    const out: AnimScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source }
+    const out: AnimScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source, ...(source === 'draft' && modelError ? { modelError: `Drafted without a model because: ${modelError.replace(/\s+/g, ' ').trim().slice(0, 500)}` } : {}) }
     if (opts.refine !== false && this.deps.capture) {
       const refined = this.refine(entry.id, opts).catch((e) => this.deps.log?.(`anim: refine failed: ${(e as Error).message}`, 'stderr'))
       if (opts.wait) await refined
@@ -1242,7 +1244,9 @@ export class AnimService {
       return done(pinned ? this.withMatch(c, clip, pinned, raw) : c)
     } catch (e) {
       this.deps.log?.(`anim: vision critique unavailable (${(e as Error).message}); using the numbers-only check`, 'stderr')
-      const c = principled(heuristicAnimCritique(clip, checks, profile, refNames))
+      const h = heuristicAnimCritique(clip, checks, profile, refNames)
+      const why = (e as Error).message.replace(/\s+/g, ' ').trim().slice(0, 300)
+      const c = principled({ ...h, summary: h.summary.replace(/^Numbers-only check \(no vision model\)/, `Numbers-only check (the vision model call failed: ${why})`) })
       return done(pinned ? this.withMatch(c, clip, pinned) : c)
     }
   }

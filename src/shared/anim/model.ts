@@ -281,6 +281,8 @@ export interface AnimScriptResult {
   checks?: AnimCheckReport
   entry?: AnimEntry
   source?: 'model' | 'draft' | 'example' | 'remix'
+  // compose with source 'draft': "Drafted without a model because: <error>".
+  modelError?: string
 }
 
 export interface AnimImportResult {

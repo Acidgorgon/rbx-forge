@@ -3,7 +3,7 @@ import { rmSync } from 'node:fs'
 import { after, test } from 'node:test'
 import { cleanRel, fromDisk, fsProbe, isSkipped, loadPlaces, parseFileName, placeFor, scriptForm, toDisk, unsafeName, type PlaceMap } from '../src/main/services/sync/mapping.ts'
 import { diff3, matchLines, normalise, toFileText } from '../src/main/services/sync/merge.ts'
-import { canonicalModel, canonicalValue, detectStyle, modelFromStudio, readModel, writeMeta, writeModel } from '../src/main/services/sync/modelJson.ts'
+import { canonicalModel, canonicalValue, shortFloat, detectStyle, modelFromStudio, readModel, writeMeta, writeModel } from '../src/main/services/sync/modelJson.ts'
 import { MATCH_PLACE, MENU_PLACE, MENU_PLACE_2, makeFsfProject, put } from './syncFixture.ts'
 
 const roots: string[] = []
@@ -244,6 +244,22 @@ test('modelFromStudio takes non-script descendants, tags and attributes', () => 
   assert.deepEqual(readModel(text), model)
   assert.equal(canonicalValue({ String: 'x' }), 'x')
   assert.deepEqual(canonicalValue({ Vector3: [1, 2, 3] }), { Vector3: [1, 2, 3] })
+})
+
+test("float32 read-back noise from Studio compares equal to the disk's short decimals", () => {
+  const f = Math.fround
+  assert.equal(shortFloat(f(0.2)), 0.2)
+  assert.equal(shortFloat(f(0.3)), 0.3)
+  assert.equal(shortFloat(0.1), 0.1)
+  // Doubles that are not float32 values stay exactly as they are.
+  assert.equal(shortFloat(0.1 + 0.2), 0.1 + 0.2)
+  assert.equal(shortFloat(123456789), 123456789)
+  const disk = JSON.stringify({ className: 'Folder', children: [{ name: 'Fire', className: 'ParticleEmitter', properties: { Rate: 12.5, Color: { ColorSequence: { keypoints: [{ time: 0, color: [1, 0.2, 0.3] }] } }, Size: { Float32: 0.7 } } }] }, null, 2)
+  const studio = modelFromStudio({ id: '1', path: ['VFX'], className: 'Folder' }, [
+    { id: '2', path: ['VFX', 'Fire'], className: 'ParticleEmitter', properties: { Rate: 12.5, Color: { ColorSequence: { keypoints: [{ time: 0, color: [1, f(0.2), f(0.3)] }] } }, Size: f(0.7) } }
+  ])
+  assert.equal(writeModel(studio), canonicalModel(disk))
+  assert.doesNotMatch(writeModel(studio), /0\.2000000/)
 })
 
 test('writeMeta keeps unmanaged keys', () => {

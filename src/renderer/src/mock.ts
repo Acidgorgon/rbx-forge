@@ -33,14 +33,19 @@ import { vfxTexturesMock } from './mockVfxTextures'
 import { animMock } from './mockAnim'
 import { refMock } from './mockRef'
 import { abilityMock } from './mockAbility'
+import { uiMotionMock } from './mockUiMotion'
 import { studioMock } from './mockStudio'
 import { forgeSyncMock } from './mockForgeSync'
 import { principlesMock } from './mockPrinciples'
 import { gatingMock } from './mockGating'
+import { thumbsMock } from './mockThumbs'
+import { addToGameMock, doctorMock, spendMock } from './mockQolc'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
 import { restateMock } from './mockRestate'
+import { qolMock } from './mockQol'
+import { chatModesMock } from './mockChatModes'
 import { BLINK_OUTPUTS, eventsBlink, generatedClient, generatedServer, mockBlinkModel } from './mockBlink'
 
 type Handler = (payload: never) => void
@@ -561,13 +566,16 @@ const groupDeps = {
   emit,
   chats,
   messages: chatMessages,
-  models: async () => (await providers.api.listProviders()).flatMap((p) => p.models.map((model) => ({ provider: p.id, model })))
+  models: async () => (await providers.api.listProviders()).flatMap((p) => p.models.map((model) => ({ provider: p.id, model }))),
+  readyModels: async () => (await providers.api.listProviders()).filter((p) => p.ready).flatMap((p) => p.models.map((model) => ({ provider: p.id, model })))
 }
 seedGroupChat(groupDeps)
 const group = groupMock(groupDeps)
 const extras = chatExtrasMock({ emit, chats, messages: chatMessages, addGuest: (id, c) => group.api.addGuest(id, c) })
 // Restate first (mockRestate.ts): big requests get a restatement card before the reply.
 const restate = restateMock({ emit, messages: chatMessages, reply: (id, text) => streamReply(id, text), log: (text) => log('agent', text, 'info') })
+// Chat modes + slash commands (mockChatModes.ts): plan cards, diff cards, command output.
+const chatModes = chatModesMock({ emit, chats, messages: chatMessages, files, reply: (id, text) => streamReply(id, text), log: (text) => log('agent', text, 'info') })
 
 function chatReply(text: string): { tools: [string, string][]; answer: string } {
   const t = text.toLowerCase()
@@ -846,11 +854,16 @@ const api: HarnessApi = {
     const c = chats.find((x) => x.id === sessionId)
     if (c) extras.route(c, text)
     if (c && c.title === 'New chat') c.title = text.length > 42 ? text.slice(0, 40) + '…' : text
-    void (c?.guests?.length ? Promise.resolve(false) : restate.intercept(sessionId, text)).then((carded) => (carded ? undefined : group.handleSend(sessionId, text).then((handled) => (handled ? undefined : streamReply(sessionId, text)))))
+    const readOnly = c?.chatMode === 'ask' || c?.chatMode === 'plan'
+    const carded = c?.guests?.length ? Promise.resolve(false) : readOnly ? Promise.resolve(false) : restate.intercept(sessionId, text)
+    void carded
+      .then((x) => x || (!c?.guests?.length && chatModes.intercept(sessionId, text)))
+      .then((x) => (x ? undefined : group.handleSend(sessionId, text).then((handled) => (handled ? undefined : streamReply(sessionId, text)))))
   },
   ...group.api,
   ...extras.api,
   ...restate.api,
+  ...chatModes.api,
   async stopChat(sessionId) {
     running.delete(sessionId)
     emit('chat:busy', { sessionId, busy: false })
@@ -902,6 +915,7 @@ const api: HarnessApi = {
   // Video references (mockRef.ts) layer over both lab mocks.
   ...refMock(emit, vfxMock(emit), animMock(emit)),
   ...abilityMock(emit),
+  ...uiMotionMock(emit),
   // Studio check (mockStudio.ts): fake Forge Bridge + SVG Studio frames; ?studio=ready|offline|noplugin|outdated|nocapture.
   ...studioMock(emit),
   // Principle priorities (mockPrinciples.ts): weights learned from a seeded rating log.
@@ -909,6 +923,14 @@ const api: HarnessApi = {
   ...forgeSync.api,
   // Lab gating (mockGating.ts): seeded decisions, cost table and decision models.
   ...gatingMock(emit),
+  // Thumbnail Lab (mockThumbs.ts): canvas-drawn references, bases and variations measured with the shared code.
+  ...thumbsMock(emit),
+  // Quality of life (mockQol.ts): bug report, settings, session file, away digest; ?digest=none.
+  ...qolMock(emit, () => logs.slice(), () => project),
+  // Forge Doctor, spending cap, Add to game (mockQolc.ts): ?doctor=ok|issues, ?spend=ok|warn|stop.
+  ...doctorMock(emit),
+  ...spendMock(emit),
+  ...addToGameMock(),
 
   on(event, handler) {
     let set = listeners.get(event)

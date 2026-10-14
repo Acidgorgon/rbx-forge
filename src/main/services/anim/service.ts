@@ -1081,19 +1081,33 @@ export class AnimService {
     const root = this.deps.projectRoot()
     if (!root) throw new AnimError('Open the game project first: export writes into src/shared/Animations.')
     needClip(entry)
-    const hit = await this.find(entry.id)
-    const store = hit?.store ?? this.user
     const name = animModuleName(entry.clip.name || entry.name)
     let dir = entry.written ? entry.written.module.replace(/\/init\.luau$/, '') : `${ANIM_SRC_DIR}/${name}`
     if (!entry.written) for (let i = 2; await exists(join(root, dir)); i++) dir = `${ANIM_SRC_DIR}/${name}${i}`
     const abs = resolve(root, dir)
     if (!abs.startsWith(resolve(root) + sep)) throw new AnimError('animation path escapes the project')
     await mkdir(abs, { recursive: true })
-    await writeFile(join(abs, 'init.luau'), animLuauModule(entry.clip, { description: entry.description.slice(0, 300), assetId: entry.roblox?.assetId }), 'utf8')
-    await writeFile(join(abs, ANIM_SEQUENCE_FILE), writeKeyframeSequenceXml(entry.clip), 'utf8')
+    for (const f of this.exportFiles(entry, dir)) await writeFile(join(root, ...f.path.split('/')), f.content, 'utf8')
+    return this.markWritten(entry, dir)
+  }
+
+  // The files a clip writes when it lives in `dir` (repo-relative): a ModuleScript (AnimationId as
+  // rbxassetid:// once uploaded) with the KeyframeSequence as its child "Sequence". One exporter for
+  // writeProjectFiles and "Add to game".
+  exportFiles(entry: AnimEntry, dir: string): { path: string; content: string; role: string }[] {
+    needClip(entry)
+    return [
+      { path: `${dir}/init.luau`, content: animLuauModule(entry.clip, { description: entry.description.slice(0, 300), assetId: entry.roblox?.assetId }), role: 'animation module' },
+      { path: `${dir}/${ANIM_SEQUENCE_FILE}`, content: writeKeyframeSequenceXml(entry.clip), role: 'KeyframeSequence' }
+    ]
+  }
+
+  // Records where a clip lives in the project (later edits and uploads write back there).
+  async markWritten(entry: AnimEntry, dir: string): Promise<AnimEntry> {
     const written = { module: `${dir}/init.luau`, model: `${dir}/${ANIM_SEQUENCE_FILE}` }
     if (entry.written?.module === written.module) return entry
-    return store.save({ ...entry, written })
+    const hit = await this.find(entry.id)
+    return (hit?.store ?? this.user).save({ ...entry, written })
   }
 
   async export(id: string): Promise<AnimExportResult> {

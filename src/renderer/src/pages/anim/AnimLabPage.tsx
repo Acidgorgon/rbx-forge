@@ -4,6 +4,7 @@
 // main); and a detail view with the live preview, timeline, Script tab, checks and iterations. The
 // header's R15 / R6 switch sets the project rig new clips use; a clip converts between rigs in its detail.
 import { useCallback, useEffect, useMemo, useState } from 'react'
+import { usePersisted } from '../../qol/sessionStore'
 import type { AnimClip, AnimCoverage, AnimEntry, AnimImportPreview, AnimLabStatus, AnimRefineProgress, AnimScope, AnimStyle, AnimStyleProfile, LearnedPose, R15Joint, RigType } from '@shared/types'
 import { ANIM_RUBRIC_KEYS } from '@shared/anim/model'
 import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
@@ -23,10 +24,12 @@ import { isRefFile } from '../videoref/decode'
 import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 import { principleLabel } from '@shared/principles/catalog'
 import '../vfx/vfx.css'
+import { AnimCompare, CompareButton } from '../compare/LabCompare'
 import './anim.css'
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
+import { AddToGameButton } from '../qolc/AddToGame'
 
 const IMPORT_HINT = '.rbxm · .rbxmx (KeyframeSequence) · .bvh (mocap; FBX: export BVH from Blender) · folders · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['heavy overhead punch', 'quick jab', 'roundhouse kick', 'dodge roll back', 'fireball cast', 'stagger from a hit', 'combat idle']
@@ -420,6 +423,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
   const [clip, setClip] = useState<AnimClip>(entry.clip)
   const [notes, setNotes] = useState(entry.notes)
   const [busy, setBusy] = useState<string | null>(null)
+  const [comparing, setComparing] = useState(false)
   useEffect(() => {
     setClip(entry.clip)
     setNotes(entry.notes)
@@ -518,9 +522,11 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
           </button>
         )}
         <StudioCheckButton kind="anim" id={entry.id} onShow={() => setTab('studio')} />
+        <CompareButton onClick={() => setComparing(true)} count={entry.iterations?.length} />
         <button className="btn small" onClick={() => void exportIt()} disabled={!status?.projectRoot || !!busy} title="Write src/shared/Animations/<Name>/init.luau + Sequence.rbxmx and copy a command-bar line">
           {busy === 'Export' ? <span className="spinner" aria-hidden /> : <Icon name="studio" size={11} />} Export
         </button>
+        <AddToGameButton lab="anim" id={entry.id} disabled={!status?.projectRoot || !!busy} />
         <button className="btn small" onClick={() => void upload()} disabled={!status?.upload || !!busy} title={status?.upload ? 'Upload as an Animation asset with Open Cloud (Art page key)' : 'Add an Open Cloud key (asset:read + asset:write) and creator on the Art page'}>
           {busy === 'Upload' ? <span className="spinner" aria-hidden /> : <Icon name="upload" size={11} />} Upload
         </button>
@@ -574,6 +580,7 @@ function Detail({ entry, entries, progress, status, onClose }: { entry: AnimEntr
       {tab === 'checks' && <Checks entry={entry} />}
       {tab === 'studio' && <StudioCheckPanel kind="anim" id={entry.id} />}
       {tab === 'iterations' && entry.refId && <PinnedCompare entry={entry} />}
+      {comparing && <AnimCompare entry={entry} onClose={() => setComparing(false)} onUse={(c, label) => void h.animUpdate(entry.id, { clip: c }).then(() => actions.toast({ text: `Using ${label}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'iterations' && <Iterations entry={entry} onRestore={(c, n) => void h.animUpdate(entry.id, { clip: c }).then(() => actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'iterations' && <LabDecisions lab="anim" entryId={entry.id} />}
       {tab === 'info' && (
@@ -717,11 +724,12 @@ export function AnimLabPage() {
   const [entries, setEntries] = useState<AnimEntry[]>([])
   const [style, setStyle] = useState<AnimStyle | null>(null)
   const [cov, setCov] = useState<AnimCoverage | null>(null)
-  const [selected, setSelected] = useState<string | null>(null)
+  // Selection and library tab survive restarts (qol/sessionStore).
+  const [selected, setSelected] = usePersisted<string | null>('anim.selected', null)
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState<string | null>(null)
   const [scope, setScope] = useState<AnimScope>('user')
-  const [view, setView] = useState<'library' | 'style' | 'priorities'>('library')
+  const [view, setView] = usePersisted<'library' | 'style' | 'priorities'>('anim.view', 'library')
   const [prompt, setPrompt] = useState('')
   const [iters, setIters] = useState(4)
   const [threshold, setThreshold] = useState(7.5)

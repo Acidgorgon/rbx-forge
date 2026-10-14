@@ -35,6 +35,7 @@ import type { VfxEffect } from '../../../../shared/vfx/types.ts'
 import type { TextureGenerateInput, TextureStatus } from '../../../../shared/vfxTextureTypes.ts'
 import { decodePng, encodePng } from './png.ts'
 import { PROJECT_TEXTURE_DIR, TextureError, TextureStore, textureId } from './store.ts'
+import { assertSpend, chargeSpend } from '../../spend/gate.ts'
 
 export interface TextureMemory {
   remember(input: { scope: 'user' | 'project'; kind?: 'memory' | 'skill'; type?: 'user' | 'project' | 'feedback' | 'reference'; name: string; description: string; body: string }, source?: 'agent' | 'reflection' | 'style' | 'user'): Promise<{ entry: { name: string } }>
@@ -241,8 +242,11 @@ export class TextureService {
     const total = round(per * n)
     const spent = await this.spentToday()
     if (s.dailyCapUsd > 0 && spent + total > s.dailyCapUsd) throw new TextureError(`This would pass today's image budget (${formatUsd(spent)} spent + ${formatUsd(total)} > ${formatUsd(s.dailyCapUsd)}). Raise it on the Art page, or use a procedural texture (free).`)
+    // App-wide spending cap (Settings > Usage).
+    assertSpend('images')
     const prompt = texturePrompt(o.kind, o.description, o.tint)
     const res = await generateImages({ model: s.model, prompt, n, size: AI_SIZE, quality: s.quality, background: 'transparent', outputFormat: 'png' }, { apiKey: key, fetch: this.deps.fetch, sleep: this.deps.sleep })
+    chargeSpend({ provider: 'openai', source: 'images', costUsd: total })
     const sprites = res.images.map((bytes) => prepareSprite(decodePng(bytes), { tint: o.tint, size: o.frames > 1 ? 256 : clampSize(input.size, 512) }))
     const now = this.now()
     const name = (input.name?.trim() || o.description || texturePreset(o.kind).label).slice(0, 48)

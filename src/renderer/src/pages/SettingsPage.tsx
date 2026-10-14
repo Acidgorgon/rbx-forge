@@ -13,6 +13,10 @@ import { UpdatesSection } from '../updates/UpdatesSection'
 import { ForgeSyncSettings } from './ForgeSyncSettings'
 import { LabsSettings } from './LabsSettings'
 import { RestateSettingRow } from './RestateSettings'
+import { QolSettings } from '../qol/QolSettings'
+import { DoctorBanner } from './qolc/Doctor'
+import { SpendSettingsSection } from './qolc/Spend'
+import { FigmaTokenSettings } from './FigmaTokenSettings'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -30,11 +34,14 @@ const SECTIONS = [
   ['model', 'Default model'],
   ['chat', 'Chat'],
   ['providers', 'Providers'],
+  ['usage', 'Usage'],
   ['budgets', 'Budgets'],
   ['labs', 'Labs'],
+  ['integrations', 'Integrations'],
   ['places', 'Places'],
   ['sync', 'Sync'],
   ['toolchain', 'Toolchain'],
+  ['notifications', 'Notifications'],
   ['updates', 'Updates']
 ] as const
 
@@ -295,6 +302,7 @@ export function SettingsPage() {
             <div className="sub">{providers ? `${ready} of ${providers.length} providers ready` : 'Loading...'}</div>
           </div>
         </div>
+        <DoctorBanner />
         <nav className="set-nav" aria-label="Settings sections">
           {SECTIONS.map(([id, label]) => (
             <button key={id} className="chip" onClick={() => jump(id)}>{label}</button>
@@ -347,6 +355,11 @@ export function SettingsPage() {
           <div className="pv-list">{providers?.map((p) => <ProviderCard key={p.id} p={p} />)}</div>
         </section>
 
+        <section className="set-sec" id="set-usage">
+          <h2>Usage and spending cap</h2>
+          <SpendSettingsSection />
+        </section>
+
         <section className="set-sec" id="set-budgets">
           <h2>Budgets</h2>
           {budget ? BUDGET_FIELDS.map((f) => <BudgetField key={f.key} f={f} value={budget[f.key]} onSave={(v) => void saveBudget({ [f.key]: v })} />) : <div className="note">Loading...</div>}
@@ -363,6 +376,11 @@ export function SettingsPage() {
           <h2>Labs</h2>
           <LabsSettings />
           <RestateSettingRow scope="labs" />
+        </section>
+
+        <section className="set-sec" id="set-integrations">
+          <h2>Integrations</h2>
+          <FigmaTokenSettings />
         </section>
 
         <section className="set-sec" id="set-places">
@@ -415,6 +433,11 @@ export function SettingsPage() {
         <section className="set-sec" id="set-toolchain">
           <h2>Toolchain</h2>
           <ToolchainSection />
+        </section>
+
+        <section className="set-sec" id="set-notifications">
+          <h2>Notifications</h2>
+          <QolSettings />
         </section>
 
         <section className="set-sec" id="set-updates">

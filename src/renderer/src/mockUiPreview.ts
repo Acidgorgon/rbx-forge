@@ -2,7 +2,7 @@
 // The trees are real: mockUiPreviewData.json was recorded from Lune running the fixture stories in
 // test/fixtures/ui-preview-project (initial tree plus prop diffs after scripted clicks). Clicks
 // replay those recordings; a few fixture controls are mirrored by hand.
-import type { HarnessApi, HarnessEvents, UiConsoleEntry, UiControl, UiOp, UiPreviewEvent, UiSessionState, UiStoryList, UiTreeSnapshot, UiValue } from '@shared/types'
+import type { HarnessApi, HarnessEvents, UiConsoleEntry, UiControl, UiInput, UiOp, UiOpenRequest, UiPreviewEvent, UiSessionState, UiStoryList, UiTreeSnapshot, UiValue } from '@shared/types'
 import data from './mockUiPreviewData.json'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
@@ -22,6 +22,17 @@ const storyList = (data as unknown as { stories: UiStoryList }).stories
 // Fixture sources, so Edit mode can rewrite literals in the browser preview (seeded into mock files).
 export const uiPreviewMockSources = (data as unknown as { sources: Record<string, string> }).sources
 
+// Live story sources from other mocks (the UI Motion Lab's lab story, mockUiMotion.ts): open()
+// returns a session state for files they own, then input() gets that session's input.
+export interface MockStorySource {
+  open(request: UiOpenRequest, session: number, send: (event: UiPreviewEvent) => void): UiSessionState | null
+  input(message: UiInput): void
+  close(): void
+}
+export const mockStorySources: MockStorySource[] = []
+// Project images other mocks provide (Figma import PNGs), by content string.
+export const mockImages: Record<string, string> = {}
+
 type Methods = 'uiPreviewStories' | 'uiPreviewOpen' | 'uiPreviewClose' | 'uiPreviewInput' | 'uiPreviewState' | 'uiPreviewImages' | 'uiPreviewSaveExport'
 
 export function uiPreviewMock(emit: Emit, log: (text: string) => void): Pick<HarnessApi, Methods> {
@@ -32,6 +43,7 @@ export function uiPreviewMock(emit: Emit, log: (text: string) => void): Pick<Har
   let path: string[] = []
   let props = new Map<number, Record<string, UiValue>>()
   let timer: ReturnType<typeof setInterval> | null = null
+  let live: MockStorySource | null = null
   const send = (event: UiPreviewEvent) => emit('uiPreview:event', event)
 
   const materialize = (keys: string[]): Map<number, Record<string, UiValue>> => {
@@ -82,6 +94,17 @@ export function uiPreviewMock(emit: Emit, log: (text: string) => void): Pick<Har
     async uiPreviewOpen(request) {
       stop()
       session++
+      live?.close()
+      live = null
+      for (const src of mockStorySources) {
+        const st = src.open(request, session, send)
+        if (!st) continue
+        live = src
+        state = st
+        rec = null
+        send({ session, type: 'reset', file: request.file, status: st.status, reason: 'open' })
+        return structuredClone(st)
+      }
       rec = recordings[request.file] ?? null
       path = []
       const tree: UiTreeSnapshot = rec ? structuredClone(rec.initial) : { root: null, nodes: [] }
@@ -113,10 +136,13 @@ export function uiPreviewMock(emit: Emit, log: (text: string) => void): Pick<Har
     },
     async uiPreviewClose() {
       stop()
+      live?.close()
+      live = null
       state = null
       rec = null
     },
     async uiPreviewInput(message) {
+      if (live) return live.input(message)
       if (!state || !rec) return
       if (message.type === 'click') {
         const node = state.tree.nodes.find((n) => n.id === message.id)
@@ -153,7 +179,7 @@ export function uiPreviewMock(emit: Emit, log: (text: string) => void): Pick<Har
     },
     async uiPreviewImages(refs) {
       // No network in the browser preview: every Roblox image is a placeholder showing its id.
-      return Object.fromEntries(refs.map((r) => [r, { state: 'placeholder' as const, reason: 'browser preview' }]))
+      return Object.fromEntries(refs.map((r) => [r, mockImages[r] ? { state: 'ok' as const, url: mockImages[r] } : { state: 'placeholder' as const, reason: 'browser preview' }]))
     },
     async uiPreviewSaveExport(name) {
       log(`ui preview: exported art/ui-exports/${name}`)

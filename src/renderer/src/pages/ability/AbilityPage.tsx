@@ -4,6 +4,7 @@
 // live preview, the timeline, the editor, the critique (timing rules + vision critic) and the client
 // Luau export. The labs stay separate: moves reference their items by id.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { usePersisted } from '../../qol/sessionStore'
 import { timingChecks } from '@shared/ability/critique'
 import { applyPatch } from '@shared/ability/model'
 import { ABILITY_RUBRIC, type Ability, type AbilityEntry, type AbilityExportResult, type AbilityStatus, type TimeRef } from '@shared/ability/types'
@@ -16,10 +17,12 @@ import { Inspector } from './Inspector'
 import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
 import '../vfx/vfx.css'
 import './ability.css'
+import { AbilityCompare, CompareButton } from '../compare/LabCompare'
 import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
+import { AddToGameButton } from '../qolc/AddToGame'
 
 const SUGGESTIONS = ['charged palm blast that knocks me back', 'dash punch', 'ground slam shockwave', 'rising uppercut with sparks', 'quick sword slash']
 const EXAMPLES = [{ key: 'hollow-purple', label: 'Hollow Purple' }]
@@ -150,6 +153,7 @@ function ExportPanel({ entry, status, onExport, result, busy }: { entry: Ability
         <button className="btn small primary" onClick={onExport} disabled={busy || !status?.projectRoot} title={status?.projectRoot ? `Write ${status.exportDir}/${entry.name}.luau and AbilityRunner.luau` : 'Open a project first'}>
           {busy ? <span className="spinner" aria-hidden /> : <Icon name="code" size={11} />} Export to game
         </button>
+        <AddToGameButton lab="ability" id={entry.id} disabled={busy || !status?.projectRoot} title="Choose the place and folder, review the files first" />
         <span className="note mono">{status?.exportDir ? `${status.exportDir}/` : 'open a project to export'}</span>
       </div>
       <p className="note">
@@ -205,6 +209,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
   const [saving, setSaving] = useState(false)
   const [busy, setBusy] = useState<'critique' | 'export' | null>(null)
   const [exported, setExported] = useState<AbilityExportResult | null>(null)
+  const [comparing, setComparing] = useState(false)
   const pending = useRef<Ability | null>(null)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
 
@@ -331,9 +336,11 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
           {busy === 'critique' ? <span className="spinner" aria-hidden /> : <Icon name="eye" size={11} />} Critique
         </button>
         <StudioCheckButton kind="ability" id={entry.id} before={flush} onShow={() => setTab('studio')} />
+        <CompareButton onClick={() => void flush().then(() => setComparing(true))} />
         <button className="btn small" onClick={() => void doExport()} disabled={!!busy || !status?.projectRoot} title={status?.projectRoot ? 'Write the client module and AbilityRunner into the game' : 'Open a project to export'}>
           <Icon name="code" size={11} /> Export
         </button>
+        <AddToGameButton lab="ability" id={entry.id} disabled={!!busy || !status?.projectRoot} />
         {issues > 0 && (
           <button className="badge-o ab-issues" onClick={() => setTab('critique')}>
             <Icon name="warn" size={10} /> {issues} timing issue{issues === 1 ? '' : 's'}
@@ -346,6 +353,7 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
         </button>
       </div>
 
+      {comparing && <AbilityCompare entry={entry} onClose={() => setComparing(false)} />}
       <div className="seg vfx-tabs" role="tablist">
         {(['edit', 'critique', 'studio', 'export', 'info'] as const).map((k) => (
           <button key={k} role="tab" aria-selected={tab === k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}>
@@ -405,11 +413,12 @@ export function AbilityPage() {
   const [status, setStatus] = useState<AbilityStatus | null>(null)
   const [entries, setEntries] = useState<AbilityEntry[]>([])
   const [vfxEntries, setVfxEntries] = useState<VfxEntry[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
+  // Selection and library tab survive restarts (qol/sessionStore).
+  const [selected, setSelected] = usePersisted<string | null>('ability.selected', null)
   const [query, setQuery] = useState('')
   const [prompt, setPrompt] = useState('')
   const [making, setMaking] = useState(false)
-  const [view, setView] = useState<'moves' | 'priorities'>('moves')
+  const [view, setView] = usePersisted<'moves' | 'priorities'>('ability.view', 'moves')
 
   const load = useCallback(async () => {
     try {

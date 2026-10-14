@@ -17,11 +17,18 @@
 
 import { randomUUID } from 'node:crypto'
 import { z } from 'zod'
-import type { ChatImage, ChatMessage, GroupParticipant, GroupUsage, ModelChoice, ProviderId, Speaker } from '@shared/types'
+import type { BoardItem, ChatImage, ChatMessage, GroupParticipant, GroupSettings, GroupUsage, ModelChoice, ProviderId, Speaker } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
-import { fromAnthropicUsage, fromOpenAiUsage } from './budget/usage.ts'
+import { fromAnthropicUsage, fromOpenAiUsage, priced, type Usage } from './budget/usage.ts'
 import type { Credentials } from './credentials.ts'
-import { makeParticipant, resolveModel, sameModel, type Resolution } from '../../shared/modelResolve.ts'
+import { makeParticipant, resolveConsultModel, sameModel, unconfiguredText, type ConsultResolution } from '../../shared/modelResolve.ts'
+import { boardFromConclusion, boardFromPlan, boardPack } from '../../shared/group/board.ts'
+import { bareTool, conclusionMarkdown } from '../../shared/group/consult.ts'
+import { parsePatchProposal } from '../../shared/group/patch.ts'
+import { parseReview, reviewPrompt } from '../../shared/group/review.ts'
+import { normalizeGroupSettings } from '../../shared/group/settings.ts'
+import { runConsult, type ConsultOutcome, type SpeakResult } from './group/consult.ts'
+import { groupReadTools, guardReadOnly, type GroupIo } from './group/readTools.ts'
 import { runOpenAiLoop, type FetchFn } from './openaiLoop.ts'
 import { extraBody, type Providers } from './providers.ts'
 import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
@@ -32,7 +39,8 @@ import { supportsVision } from '../../shared/modelCaps.ts'
 import { defineTool, gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
 
 // Read tools a guest may use, when guest tools are on. Never any of WRITE_TOOLS.
-export const GUEST_TOOLS = ['project_overview', 'list_scripts', 'read_script', 'explorer_tree', 'find_instance', 'search_code', 'project_map', 'find_symbol', 'blink_events', 'recall', 'use_skill'] as const
+// Group chat v2 adds git_diff, read_diagnostics (group/readTools.ts), service_logs and blink_check.
+export const GUEST_TOOLS = ['project_overview', 'list_scripts', 'read_script', 'explorer_tree', 'find_instance', 'search_code', 'project_map', 'find_symbol', 'blink_events', 'blink_check', 'service_logs', 'git_diff', 'read_diagnostics', 'recall', 'use_skill'] as const
 // Lines per read_script call for guests (the host gets 400).
 export const GUEST_READ_LINES = 120
 
@@ -65,7 +73,10 @@ export interface Room {
   signal: AbortSignal
   push(m: ChatMessage): void
   addGuest(p: GroupParticipant): void
-  recordUsage(speaker: Speaker, usage: { input: number; output: number }): void
+  recordUsage(speaker: Speaker, usage: { input: number; output: number; costUsd?: number }): void
+  // Group chat v2: the chat's Board (decisions, open questions, conclusions) and its update.
+  board?: BoardItem[]
+  setBoard?(items: BoardItem[]): void
   // Something the host did not see (direct answers, roundtable turns): shown on its next turn.
   note(text: string): void
   // Images of the latest user message; guests that read images get them with an ask.
@@ -82,11 +93,15 @@ export interface GroupDeps {
   extraReadTools?: (ctx: HarnessContext) => GentreeTool<any>[]
   // Project instructions block (.forge aiRules + AGENTS.md), appended to the host's system prompt.
   rules?: () => Promise<string>
+  // git + lint runners for git_diff / read_diagnostics (group/readTools.ts).
+  groupIo?: GroupIo
 }
 
 export interface ContextPackInput {
   ask: string
   projectSummary?: string
+  // The chat's Board block (boardPack); with it, fewer recent messages are needed.
+  board?: string
   transcript: ChatMessage[]
   host: Speaker
   recent?: number
@@ -116,7 +131,7 @@ export function buildContextPack(input: ContextPackInput): string {
   const per = input.messageChars ?? DEFAULTS.messageChars
   const ask = `## Ask\n${clip(input.ask, Math.min(1500, Math.floor(maxChars / 4)))}`
   const project = input.projectSummary ? `## Project\n${clip(input.projectSummary, Math.min(1000, Math.floor(maxChars / 6)))}` : ''
-  const head = [ask, project].filter(Boolean).join('\n\n')
+  const head = [ask, project, input.board ?? ''].filter(Boolean).join('\n\n')
 
   const lines = input.transcript
     .filter((m) => (m.role === 'user' || m.role === 'assistant') && m.text.trim())
@@ -183,6 +198,19 @@ function modeInstruction(mode: GroupMode, from: string, message: string, extra: 
   }
 }
 
+export interface SpeakOptions {
+  system?: string
+  tools?: boolean
+  card?: ChatMessage['card']
+  images?: ChatImage[]
+  // Keep the reply text out of the chat (the caller posts a card instead).
+  silent?: boolean
+}
+
+const REVIEW_SYSTEM = (me: Speaker, host: Speaker) => `You are ${me.label}, a second-opinion code reviewer in RBX Forge, a desktop harness for a Roblox game (Luau, Rojo). ${host.label} (the host) made the edit; you are read-only and only report findings in the requested format. Be precise; do not invent problems.`
+
+const HOST_CONSULT_SYSTEM = (me: Speaker) => `You are ${me.label}, the host of a group chat inside RBX Forge, a desktop harness for a Roblox game (Luau, Rojo). You are consulting another model to reach a well-checked conclusion for the user. You may use the read-only project tools to verify claims; you cannot edit files in a consult. Be concrete and brief. Name files and functions. Do not agree just to finish: agree only with what you checked or are confident of.`
+
 export class GroupChat {
   private ctx: HarnessContext
   private deps: GroupDeps
@@ -213,13 +241,28 @@ export class GroupChat {
     return out
   }
 
-  // Resolves a name to a participant (by alias or fuzzy) or to a model the user has ready.
-  async resolve(phrase: string, room: Pick<Room, 'host' | 'guests'>): Promise<Resolution<ModelChoice & { alias?: string }>> {
+  // Group chat v2 settings (consult turns and caps, cross-check).
+  groupSettings(): GroupSettings {
+    return normalizeGroupSettings(this.ctx.getSetting<unknown>('groupChat', {}))
+  }
+
+  // Every model the provider catalogue knows, ready or not (for "not set up" answers).
+  async known(): Promise<ModelChoice[]> {
+    const p = this.deps.providers
+    if (!p) return []
+    const infos = await p.list()
+    return infos.flatMap((info) => info.models.map((model) => ({ provider: info.id, model })))
+  }
+
+  // Resolves a name to a participant (by alias or fuzzy) or to a model the user has ready. A bare
+  // family name ("gemini", "claude") picks the flagship; a model whose provider is not set up comes
+  // back as 'unconfigured' so the chat can say so (with the Settings link) instead of failing.
+  async resolve(phrase: string, room: Pick<Room, 'host' | 'guests'>): Promise<ConsultResolution<ModelChoice & { alias?: string }>> {
     const people = [room.host, ...room.guests]
-    const inRoom = resolveModel(phrase, people, room.host)
+    const inRoom = resolveConsultModel(phrase, people, [], room.host)
     if (inRoom.kind === 'ok') return inRoom
     const all = await this.available()
-    const r = resolveModel(phrase, all, room.host)
+    const r = resolveConsultModel(phrase, all, await this.known().catch(() => []), room.host)
     if (r.kind === 'ok') return { kind: 'ok', choice: people.find((p) => sameModel(p, r.choice)) ?? r.choice }
     return inRoom.kind === 'ambiguous' ? inRoom : r
   }
@@ -235,25 +278,28 @@ export class GroupChat {
     return p
   }
 
-  // Read tools for a guest: the GUEST_TOOLS subset, with read_script capped to GUEST_READ_LINES.
+  // Read tools for a guest: the GUEST_TOOLS subset of the host's read tools (same implementations,
+  // read-only mode), git_diff and read_diagnostics, with read_script capped to GUEST_READ_LINES.
+  // guardReadOnly drops anything that can write, whatever the sources return.
   guestTools(): GentreeTool<any>[] {
-    const base = [...gentreeTools(this.ctx, { readOnly: true, ...(this.deps.toolFs ? { fs: this.deps.toolFs } : {}) }), ...(this.deps.extraReadTools?.(this.ctx) ?? [])]
-    const allowed = new Set<string>(GUEST_TOOLS)
-    return base
-      .filter((t) => allowed.has(t.name))
-      .map((t) => {
-        if (t.name !== 'read_script') return t
-        const capped: GentreeTool<any> = {
-          ...t,
-          description: `Read a project file with line numbers. Optional 1-based inclusive line range; at most ${GUEST_READ_LINES} lines per call.`,
-          handler: async (args: any, extra: unknown) => {
-            const from = args.from ?? 1
-            const to = Math.min(args.to ?? from + GUEST_READ_LINES - 1, from + GUEST_READ_LINES - 1)
-            return t.handler({ ...args, from, to }, extra)
-          }
+    const base = [
+      ...gentreeTools(this.ctx, { readOnly: true, ...(this.deps.toolFs ? { fs: this.deps.toolFs } : {}) }),
+      ...(this.deps.extraReadTools?.(this.ctx) ?? []),
+      ...groupReadTools(this.ctx, this.deps.groupIo)
+    ]
+    return guardReadOnly(base, GUEST_TOOLS).map((t) => {
+      if (t.name !== 'read_script') return t
+      const capped: GentreeTool<any> = {
+        ...t,
+        description: `Read a project file with line numbers. Optional 1-based inclusive line range; at most ${GUEST_READ_LINES} lines per call.`,
+        handler: async (args: any, extra: unknown) => {
+          const from = args.from ?? 1
+          const to = Math.min(args.to ?? from + GUEST_READ_LINES - 1, from + GUEST_READ_LINES - 1)
+          return t.handler({ ...args, from, to }, extra)
         }
-        return capped
-      })
+      }
+      return capped
+    })
   }
 
   // One-paragraph project summary from project_overview (cached for a minute).
@@ -279,20 +325,22 @@ export class GroupChat {
     return text
   }
 
+  // The guest's context pack. With a non-empty Board, the board block stands in for most of the
+  // history (at most 3 recent messages).
   async contextPack(room: Room, ask: string, recent = this.setting<number>('recentMessages')): Promise<string> {
+    const board = boardPack(room.board)
     return buildContextPack({
       ask,
       projectSummary: await this.projectSummary(),
+      ...(board ? { board } : {}),
       transcript: room.messages,
       host: room.host,
-      recent,
+      recent: board ? Math.min(recent, 3) : recent,
       maxChars: this.setting<number>('packChars'),
       messageChars: this.setting<number>('messageChars')
     })
   }
 
-  // Runs one participant on a prompt; its messages stream into the room under its speaker.
-  // Returns the participant's final text.
   // Image bytes for a participant: only when its model reads images.
   async imagesFor(p: GroupParticipant, images: ChatImage[] | undefined): Promise<ImagePayload[]> {
     if (!images?.length || !hasChatImageStore()) return []
@@ -308,29 +356,54 @@ export class GroupChat {
     return out
   }
 
-  async speak(room: Room, p: GroupParticipant, prompt: string, opts: { system?: string; tools?: boolean; card?: ChatMessage['card']; images?: ChatImage[] } = {}): Promise<string> {
+  // Runs one participant on a prompt; its messages stream into the room under its speaker.
+  // Returns the participant's final text.
+  async speak(room: Room, p: GroupParticipant, prompt: string, opts: SpeakOptions = {}): Promise<string> {
+    return (await this.speakFull(room, p, prompt, opts)).text
+  }
+
+  // speak() plus what the call cost and which tools it used. `silent` keeps the text out of the
+  // chat (tool chips still show). A guest's reply with a unified diff also posts a patch card.
+  async speakFull(room: Room, p: GroupParticipant, prompt: string, opts: SpeakOptions = {}): Promise<SpeakResult> {
     const speaker = speakerOf(p)
     const tools = opts.tools ?? room.guestTools
     const rules = p.role === 'host' && !opts.system ? ((await this.deps.rules?.().catch(() => '')) ?? '') : ''
     const system = opts.system ?? (p.role === 'host' ? HOST_SYSTEM(speaker) + rules : GUEST_SYSTEM(speaker, room.host, tools))
     const texts = new Map<string, string>()
+    const used: { name: string; input: string }[] = []
+    let tokens = 0
+    let cost: number | undefined
     const emit = (m: ChatMessage) => {
-      if (m.role === 'assistant') texts.set(m.id, m.text)
+      if (m.role === 'assistant') {
+        texts.set(m.id, m.text)
+        if (opts.silent) return
+      }
+      if (m.role === 'tool' && m.tool) used.push({ name: bareTool(m.tool.name), input: m.tool.input })
       room.push({ ...m, agentId: 'main', speaker, ...(opts.card && m.role === 'assistant' ? { card: opts.card } : {}) })
     }
-    const usage = (u: { input: number; output: number; cacheRead?: number; cacheWrite?: number } | null) => {
-      if (u) room.recordUsage(speaker, { input: u.input + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0), output: u.output })
+    const usage = (u: Usage | null) => {
+      if (!u) return
+      const input = u.input + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0)
+      const pr = priced(p.model, u, { provider: p.provider })
+      tokens += input + u.output
+      if (pr.usage.costUsd !== undefined) cost = (cost ?? 0) + pr.usage.costUsd
+      room.recordUsage(speaker, { input, output: u.output, ...(pr.usage.costUsd !== undefined ? { costUsd: pr.usage.costUsd } : {}) })
     }
     const toolList = tools ? this.guestTools() : []
     const maxTokens = this.setting<number>('guestMaxTokens')
     const maxTurns = tools ? this.setting<number>('guestMaxTurns') : 1
     const images = await this.imagesFor(p, opts.images)
+    const done = (): SpeakResult => {
+      const text = [...texts.values()].join('\n\n').trim()
+      if (p.role === 'guest' && text && !opts.silent) this.proposePatch(room, speaker, text)
+      return { text, tokens, ...(cost !== undefined ? { costUsd: cost } : {}), tools: used }
+    }
 
     if (p.provider === 'anthropic') {
       const auth = await this.deps.credentials.anthropicAuth()
       if (!auth.ready) {
         emit({ id: randomUUID(), role: 'system', text: `${p.label}: ${auth.error ?? 'Anthropic is not set up.'}`, at: Date.now(), agentId: 'main' })
-        return ''
+        return { text: '', tokens: 0, tools: [] }
       }
       const abort = new AbortController()
       const onAbort = () => abort.abort()
@@ -367,13 +440,13 @@ export class GroupChat {
       } finally {
         room.signal.removeEventListener('abort', onAbort)
       }
-      return [...texts.values()].join('\n\n').trim()
+      return done()
     }
 
     const ep = this.deps.providers ? await this.deps.providers.endpoint(p.provider) : { error: 'Providers are not available.' }
     if ('error' in ep) {
       emit({ id: randomUUID(), role: 'system', text: `${p.label}: ${ep.error}`, at: Date.now(), agentId: 'main' })
-      return ''
+      return { text: '', tokens: 0, tools: [] }
     }
     const responses = usesResponsesApi(p.provider, p.model)
     const cap = responses ? { max_output_tokens: maxTokens } : outputCap(p.provider, maxTokens)
@@ -393,7 +466,100 @@ export class GroupChat {
       onUsage: (raw) => usage(fromOpenAiUsage(raw))
     })
     if (result.outcome === 'error') this.ctx.log({ service: 'agent', stream: 'stderr', text: `group chat ${p.label}: ${result.error}` })
-    return [...texts.values()].join('\n\n').trim()
+    return done()
+  }
+
+  // A guest's unified diff becomes a patch proposal card; only the host's write path applies it.
+  proposePatch(room: Room, speaker: Speaker, text: string): ChatMessage | null {
+    const found = parsePatchProposal(text)
+    if (!found) return null
+    const n = found.files.length
+    const m: ChatMessage = {
+      id: randomUUID(),
+      role: 'assistant',
+      text: `${speaker.label} proposed a patch to ${n} file${n === 1 ? '' : 's'}: ${found.files.map((f) => f.path).join(', ')}`,
+      at: Date.now(),
+      agentId: 'main',
+      speaker,
+      card: 'patch',
+      patch: { diff: found.diff, files: found.files, by: { label: speaker.label, provider: speaker.provider, model: speaker.model }, state: 'proposed' }
+    }
+    room.push(m)
+    room.note(`${speaker.label} proposed a patch (${found.files.map((f) => f.path).join(', ')}); the user can apply it or ask you to merge it.`)
+    return m
+  }
+
+  // The converging consult (group/consult.ts): guest and host go back and forth until they agree
+  // or hit the caps, then the host's Conclusion card is posted and the Board is filled from it.
+  async consult(room: Room, guest: GroupParticipant, question: string, opts: { maxTurns?: number } = {}): Promise<{ outcome: ConsultOutcome; card: ChatMessage | null }> {
+    const s = this.groupSettings()
+    const maxTurns = Math.max(1, Math.min(6, Math.floor(opts.maxTurns ?? s.consultTurns)))
+    room.push({
+      id: randomUUID(),
+      role: 'system',
+      text: `Consult: ${room.host.label} ↔ ${guest.label} · up to ${maxTurns} exchange${maxTurns === 1 ? '' : 's'} · cap ${Math.round(s.consultMaxTokens / 1000)}k tokens${s.consultMaxUsd > 0 ? ` / $${s.consultMaxUsd.toFixed(2)}` : ''}`,
+      at: Date.now(),
+      agentId: 'main'
+    })
+    const pack = await this.contextPack(room, question)
+    const outcome = await runConsult(
+      {
+        host: room.host,
+        guest,
+        signal: room.signal,
+        speak: (who, prompt, o) =>
+          this.speakFull(room, who === 'host' ? room.host : guest, prompt, { tools: o.tools, ...(o.silent ? { silent: true } : {}), ...(who === 'host' ? { system: HOST_CONSULT_SYSTEM(speakerOf(room.host)) } : {}), ...(who === 'guest' ? { images: room.images } : {}) })
+      },
+      question,
+      pack,
+      { maxTurns, maxTokens: s.consultMaxTokens, maxUsd: s.consultMaxUsd, tools: room.guestTools }
+    )
+    if (!outcome.conclusion) {
+      room.push({ id: randomUUID(), role: 'system', text: outcome.error ?? `${guest.label} gave no answer.`, at: Date.now(), agentId: 'main' })
+      return { outcome, card: null }
+    }
+    const conclusion = { ...outcome.conclusion, question }
+    const card: ChatMessage = {
+      id: randomUUID(),
+      role: 'assistant',
+      text: conclusionMarkdown(conclusion),
+      at: Date.now(),
+      agentId: 'main',
+      speaker: speakerOf(room.host),
+      card: 'conclusion',
+      conclusion
+    }
+    room.push(card)
+    if (room.setBoard) room.setBoard(boardFromConclusion(room.board ?? [], card.id, conclusion))
+    room.note(`Conclusion of your consult with ${guest.label} (shown to the user as a card):\n${clip(card.text, 1500)}`)
+    return { outcome, card }
+  }
+
+  // Cross-check review: a model from another provider reviews the host's multi-file edit. Posts a
+  // review card and returns it; the caller runs the host's fix turn for blocking findings.
+  async review(room: Room, reviewer: GroupParticipant, request: string, files: string[], diff: string): Promise<ChatMessage> {
+    const prompt = `${boardPack(room.board)}\n\n${reviewPrompt(room.host.label, request, files, diff)}`.trim()
+    const r = await this.speakFull(room, reviewer, prompt, { tools: room.guestTools, silent: true, system: REVIEW_SYSTEM(speakerOf(reviewer), room.host) })
+    const parsed = parseReview(r.text)
+    const blocking = parsed.findings.filter((f) => f.severity === 'blocking').length
+    const card: ChatMessage = {
+      id: randomUUID(),
+      role: 'assistant',
+      text: r.text ? `Cross-check by ${reviewer.label}: ${parsed.verdict === 'approve' ? 'approved' : `${blocking} blocking finding${blocking === 1 ? '' : 's'}`}` : `Cross-check by ${reviewer.label} gave no answer.`,
+      at: Date.now(),
+      agentId: 'main',
+      speaker: speakerOf(reviewer),
+      card: 'review',
+      review: {
+        reviewer: { label: reviewer.label, provider: reviewer.provider, model: reviewer.model },
+        files,
+        ...parsed,
+        state: !r.text ? 'skipped' : blocking ? 'pending' : 'reviewed',
+        ...(!r.text ? { detail: 'no answer' } : {})
+      }
+    }
+    room.push(card)
+    return card
   }
 
   // Ask mode (consult_model) and direct mode (@mention): one guest answers.
@@ -433,6 +599,8 @@ export class GroupChat {
     const pack = await this.contextPack(room, topic, people.length * n + 1)
     const plan = await this.speak(room, room.host, `${pack}\n\n---\n${modeInstruction('synthesis', '', topic, { topic })}`, { tools: false, card: 'plan' })
     if (plan) room.note(`Your roundtable plan (shown to the user as a plan card): ${clip(plan, 1500)}`)
+    const card = [...room.messages].reverse().find((m) => m.card === 'plan')
+    if (plan && card && room.setBoard) room.setBoard(boardFromPlan(room.board ?? [], card.id, card.text, topic))
     return plan
   }
 
@@ -443,6 +611,7 @@ export class GroupChat {
     const find = async (room: Room, name: string) => {
       const r = await this.resolve(name, room)
       if (r.kind === 'none') return { error: `No ready model matches "${name}". Ready providers' models can be listed in the model picker; ask the user which model they mean.` }
+      if (r.kind === 'unconfigured') return { error: `${unconfiguredText(r.choice)} Tell the user this; do not pretend to have consulted it.` }
       if (r.kind === 'ambiguous') return { error: `"${name}" is ambiguous: ${r.options.map((o) => `${o.provider}/${o.model}`).join(', ')}. Ask the user which one they mean.` }
       return { choice: r.choice }
     }
@@ -462,6 +631,23 @@ export class GroupChat {
           if (room.signal.aborted) return fail('cancelled')
           if (!text) return fail(`${guest.label} gave no answer (see the chat for errors).`)
           return ok(`${guest.label} (@${guest.alias}) replied:\n${clip(text, DEFAULTS.replyChars)}`)
+        }
+      ),
+      defineTool(
+        'consult_until_agreed',
+        'Consult another model in a structured back-and-forth until you both agree (or a turn/cost cap is hit), then post a Conclusion card for the user (answer, agreed, disagreed with who said what, confidence, what each of you checked). Use it when the user asks you to "ask X and report back", "check with X" or get a second opinion. Returns the conclusion; edit files afterwards in your own turn if the conclusion calls for it.',
+        { model: z.string().min(1), question: z.string().min(1), max_turns: z.number().int().min(1).max(6).optional() },
+        async (args) => {
+          const room = getRoom()
+          if (!room) return fail('group chat is not available here')
+          const hit = await find(room, args.model)
+          if ('error' in hit) return fail(hit.error!)
+          const guest = this.ensureGuest(room, hit.choice!)
+          if (guest === room.host) return fail('that is you; consult another model')
+          const { outcome, card } = await this.consult(room, guest, args.question, args.max_turns ? { maxTurns: args.max_turns } : {})
+          if (room.signal.aborted) return fail('cancelled')
+          if (!card) return fail(outcome.error ?? `${guest.label} gave no answer.`)
+          return ok(`Consult with ${guest.label} ended (${card.conclusion?.ended}, ${card.conclusion?.turns} exchange(s)). The user sees this Conclusion card:\n${clip(card.text, DEFAULTS.replyChars)}`)
         }
       ),
       defineTool(

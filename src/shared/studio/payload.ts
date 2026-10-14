@@ -18,7 +18,7 @@ import { KEY_COLOR } from './crop.ts'
 import { BRIDGE_VERSION, type BridgeBeat, type BridgeCamera, type BridgeJob, type BridgeModule, type InstanceJson, type PropJson } from './protocol.ts'
 
 // The previews' "front" views (pages/*/preview), so Studio frames line up with the preview frames.
-export const CAMERAS: Record<BridgeJob['kind'], BridgeCamera> = {
+export const CAMERAS: Record<Exclude<BridgeJob['kind'], 'snapshot'>, BridgeCamera> = {
   vfx: { pos: [5.5, 5.2, -9.5], target: [0, 3.2, -1], fov: 70 },
   anim: { pos: [6.4, 4.8, -9.8], target: [0, 2.4, -0.6], fov: 50 },
   ability: { pos: [6.5, 5.5, -10.5], target: [0, 3, -2], fov: 70 }
@@ -223,4 +223,25 @@ export function abilityJob(ability: Ability, effects: Record<string, VfxEffect>,
 // Size of a job on the wire (the plugin's HttpService answers are capped well above this).
 export function jobBytes(job: BridgeJob): number {
   return new TextEncoder().encode(JSON.stringify(job)).length
+}
+
+// Thumbnail Lab: capture the user's own Studio viewport as it is (no stage, the camera is not moved).
+// The plugin shows the key colour to find the viewport, removes it, then answers one beat.
+export function snapshotJob(opts: { id: string; name?: string }): BridgeJob {
+  return {
+    id: opts.id,
+    version: BRIDGE_VERSION,
+    kind: 'snapshot',
+    mode: 'stepped',
+    name: opts.name ?? 'Thumbnail capture',
+    rig: 'R15',
+    duration: 0,
+    beats: [{ t: 0, label: 'view' }],
+    camera: { pos: [0, 0, 0], target: [0, 0, -1], fov: 70 },
+    modules: [],
+    calibrate: true,
+    key: KEY_COLOR,
+    linger: 0,
+    timeout: 20
+  }
 }

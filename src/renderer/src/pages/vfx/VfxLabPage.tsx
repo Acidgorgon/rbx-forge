@@ -3,6 +3,7 @@
 // detail view with the live three.js preview, the parameter editor (writes back to the effect's
 // Luau module and .rbxmx) and the iteration history side by side.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { usePersisted } from '../../qol/sessionStore'
 import type { VfxEffect, VfxEntry, VfxLabStatus, VfxRecipe, VfxRefineProgress, VfxScope } from '@shared/types'
 import { RUBRIC_KEYS } from '@shared/vfx/types'
 import { perfWarnings } from '@shared/vfx/analyze'
@@ -21,8 +22,10 @@ import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '..
 import { principleLabel } from '@shared/principles/catalog'
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
 import './vfx.css'
+import { CompareButton, VfxCompare } from '../compare/LabCompare'
 import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
+import { AddToGameButton } from '../qolc/AddToGame'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg · video refs: mp4/webm/mov/gif'
 const SUGGESTIONS = ['sword slash', 'fire aura', 'lightning impact', 'heal burst', 'dash trail', 'energy beam']
@@ -168,6 +171,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
   const [draft, setDraft] = useState<VfxEffect | undefined>(entry.effect)
   const [saving, setSaving] = useState(false)
   const [tags, setTags] = useState(entry.tags.join(', '))
+  const [comparing, setComparing] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const pendingRef = useRef<VfxEffect | null>(null)
 
@@ -283,9 +287,11 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
             </button>
           )}
           <StudioCheckButton kind="vfx" id={entry.id} before={flush} onShow={() => setTab('studio')} />
+          <CompareButton onClick={() => void flush().then(() => setComparing(true))} count={entry.iterations?.length} />
           <button className="btn small" onClick={() => void studio()} title="Write src/shared/VFX/<Name>, sync with Rojo, copy a command-bar line">
             <Icon name="studio" size={11} /> Test in Studio
           </button>
+          {entry.effect && <AddToGameButton lab="vfx" id={entry.id} />}
           {entry.written && <span className="note mono vfx-written" title={`${entry.written.module}\n${entry.written.model}`}>{entry.written.module}</span>}
           <span className="grow" />
           <button className="btn small ghost danger" onClick={() => void remove()} aria-label="Delete">
@@ -330,6 +336,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
         </button>
       </div>
 
+      {comparing && <VfxCompare entry={entry} onClose={() => setComparing(false)} onUse={(e, label) => (edit(e), actions.toast({ text: `Using ${label}`, kind: 'ok', ms: 2000 }))} />}
       {tab === 'params' && draft && <ParamEditor effect={draft} onChange={edit} />}
       {tab === 'script' && draft && <ScriptPanel entry={entry} effect={draft} onPreview={setDraft} />}
       {tab === 'studio' && draft && <StudioCheckPanel kind="vfx" id={entry.id} before={flush} />}
@@ -407,7 +414,8 @@ export function VfxLabPage() {
   const [status, setStatus] = useState<VfxLabStatus | null>(null)
   const [entries, setEntries] = useState<VfxEntry[]>([])
   const [recipes, setRecipes] = useState<VfxRecipe[]>([])
-  const [selected, setSelected] = useState<string | null>(null)
+  // Selection and library tab survive restarts (qol/sessionStore).
+  const [selected, setSelected] = usePersisted<string | null>('vfx.selected', null)
   const [query, setQuery] = useState('')
   const [tag, setTag] = useState<string | null>(null)
   const [scope, setScope] = useState<VfxScope>('user')
@@ -421,7 +429,7 @@ export function VfxLabPage() {
   const [drag, setDrag] = useState(false)
   const [progress, setProgress] = useState<Record<string, VfxRefineProgress>>({})
   // Library view: effects, or the custom texture library (TextureLab).
-  const [view, setView] = useState<'effects' | 'textures' | 'priorities'>('effects')
+  const [view, setView] = usePersisted<'effects' | 'textures' | 'priorities'>('vfx.view', 'effects')
   // Video reference import review (a dropped / picked clip), and the reference pinned to Make.
   const [refImport, setRefImport] = useState<{ file: File | null } | null>(null)
   const [pin, setPin] = useState<{ id: string; name: string } | null>(null)

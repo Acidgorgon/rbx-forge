@@ -177,7 +177,7 @@ local function moduleFor(file: string)
 	folder.Name = "ForgeStories"
 	inst = world.globals.Instance.new("ModuleScript", folder)
 	inst.Name = string.match(file, "([^/]+)%.luau?$") or file
-	world.byFile[file] = inst
+	world:bindFile(inst, file)
 	return inst
 end
 

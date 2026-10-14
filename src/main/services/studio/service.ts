@@ -8,6 +8,7 @@
 
 import { insetRect, type Rect } from '../../../shared/studio/crop.ts'
 import { newJobId, type BridgeJob } from '../../../shared/studio/protocol.ts'
+import { snapshotJob } from '../../../shared/studio/payload.ts'
 import { PLUGIN_FILE, PLUGIN_VERSION, pluginRbxmx, pluginSource, pluginVersionOf } from '../../../shared/studio/plugin.ts'
 import { beatTargets, DEFAULT_LAG_MS, stageDrift, startEpoch } from '../../../shared/studio/timing.ts'
 import { STUDIO_PREFER_SETTING, type StudioCheckKind, type StudioCheckOptions, type StudioCheckRecord, type StudioFrame, type StudioMark, type StudioPhase, type StudioStatus } from '../../../shared/studio/types.ts'
@@ -300,6 +301,54 @@ export class StudioService {
     } finally {
       await session.close().catch(() => undefined)
     }
+  }
+
+  // Thumbnail Lab: the user's current Studio view as a PNG (at most maxWidth wide). Through the Forge
+  // Bridge when Studio is connected (a snapshot job: the plugin finds the viewport with the key colour,
+  // clears the selection, builds no stage and leaves the camera alone); otherwise, or when the plugin
+  // is too old for snapshot jobs, a plain grab of the whole Studio window.
+  snapshot(maxWidth = 1920): Promise<{ png: Buffer; via: 'bridge' | 'window'; window: string }> {
+    return this.serial(async () => {
+      if (!this.deps.capturer || !this.deps.image) throw new StudioCheckError('no-capture', 'Capturing Studio needs the desktop app (window capture).')
+      const image = this.deps.image
+      const b = this.deps.bridge
+      const place = b.studio()?.place
+      const settle = this.deps.settleMs ?? 80
+      if (b.listening && b.connected()) {
+        const session = await this.deps.capturer.open({ place }).catch((e) => {
+          throw new StudioCheckError('no-capture', `Could not record the Studio window: ${(e as Error).message}`)
+        })
+        try {
+          const job = snapshotJob({ id: newJobId() })
+          let crop: Rect | null = null
+          let frame: CapturedFrame | null = null
+          await b.run(job, async (ev, at) => {
+            if (ev.type === 'calibrate') {
+              const f = await session.grabAfter(at + settle)
+              const r = image.keyRect(f.png, job.key)
+              crop = r ? insetRect(r, 2) : null
+              return { crop: !!r }
+            }
+            if (ev.type === 'beat') frame = await session.grabAfter(at + settle)
+            return {}
+          })
+          if (frame) return { png: image.crop((frame as CapturedFrame).png, crop, maxWidth), via: 'bridge' as const, window: session.window }
+        } catch (e) {
+          this.deps.log?.(`studio: snapshot through the bridge failed (${(e as Error).message}); grabbing the window`, 'stderr')
+        } finally {
+          await session.close().catch(() => undefined)
+        }
+      }
+      const session = await this.deps.capturer.open({ place }).catch((e) => {
+        throw new StudioCheckError('no-capture', `Could not record the Studio window: ${(e as Error).message}`)
+      })
+      try {
+        const f = await session.grabAfter(this.now() + 150)
+        return { png: image.crop(f.png, null, maxWidth), via: 'window' as const, window: session.window }
+      } finally {
+        await session.close().catch(() => undefined)
+      }
+    })
   }
 
   // Wraps a lab's preview capture: Studio frames when "critique in Studio" is on and Studio is

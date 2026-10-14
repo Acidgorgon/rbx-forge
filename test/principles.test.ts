@@ -5,6 +5,7 @@
 // score aggregation with weights (focus, change ordering), weight learning from ratings and notes,
 // video reference principles, the PrincipleService store and the labs feeding it on ratings.
 import assert from 'node:assert/strict'
+import { thumbChecks } from '../src/shared/thumbs/checks.ts'
 import { test } from 'node:test'
 import { mkdtemp, readFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -17,6 +18,8 @@ import { animKind, CRITIC_TOKEN_BUDGET, estimateTokens, parsePlanObject, parseSc
 import { anticipationCheck, arcsCheck, animPrincipleChecks, followThroughCheck, loopabilityCheck, slowInOutCheck, timingCheck } from '../src/shared/principles/animChecks.ts'
 import { breakupCheck, budgetCheck, contrastCheck, dissipationCheck, layersCheck, vfxAnticipationCheck, vfxPrincipleChecks, vfxTimingCheck } from '../src/shared/principles/vfxChecks.ts'
 import { abilityPrincipleChecks } from '../src/shared/principles/abilityChecks.ts'
+import { uiPrincipleChecks } from '../src/shared/principles/uiChecks.ts'
+import { presetSpec } from '../src/shared/uimotion/spec.ts'
 import { blendOverall, focusPrinciples, mergePrincipleScores, orderChanges, parsePrincipleScores, principleOverall, scorePrinciples } from '../src/shared/principles/score.ts'
 import { applyFeedback, learnProfile, MAX_WEIGHT, MIN_WEIGHT, noteMentions, prioritiesText } from '../src/shared/principles/learn.ts'
 import { withAnimPrinciples, withVfxPrinciples } from '../src/shared/principles/attach.ts'
@@ -73,6 +76,8 @@ test('catalogues: the 12 animation principles plus 4 game ones, the VFX set, com
   for (const c of vfxPrincipleChecks(effectFromSpec(LAYERED))) produced.add(c.id)
   for (const c of vfxPrincipleChecks(seqEffect())) produced.add(c.id)
   for (const c of abilityPrincipleChecks(punchAbility())) produced.add(c.id)
+  for (const c of thumbChecks({ width: 1920, height: 1080, palette: [], saturation: 0.4, vivid: 0.2, luma: 0.4, contrast: 0.2, colorfulness: 0.4, edgeDensity: 0.1, centerFocus: 1.2 }, { legibility256: 6, legibility160: 5, focal256: 6, focal160: 5, detailKept: 0.8, bottomLoad: 0.3, popDark: 0.4, popLight: 0.4 })) produced.add(c.id)
+  for (const c of uiPrincipleChecks(presetSpec('bouncy', 'Button'))) produced.add(c.id)
   for (const id of produced) assert.ok(m.has(id), `${id} is produced by code but not marked measurable`)
   for (const id of m) assert.ok(produced.has(id), `${id} is marked measurable but no check produced it`)
 })

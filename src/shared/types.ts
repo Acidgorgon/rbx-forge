@@ -9,6 +9,8 @@ export type * from './uiPreviewTypes.ts'
 export type * from './artTypes.ts'
 import type { SetupApi, SetupEvents } from './setupTypes.ts'
 import type { ChatExtrasApi, ChatImage, EffortChoice, ModelMeta, NewChatOptions } from './chatTypes.ts'
+import type { BoardItem, ConclusionData, GroupApi, PatchProposal, ReviewData } from './groupTypes.ts'
+export type * from './groupTypes.ts'
 // Collab, release, tests, analytics, usage, orchestrator and feature-rename IPC types.
 export type * from './integrationTypes.ts'
 import type { MemoryApi, MemoryEvents } from './memoryTypes.ts'
@@ -28,6 +30,8 @@ import type { AnimApi, AnimEvents } from './animTypes.ts'
 export type * from './animTypes.ts'
 import type { AbilityApi, AbilityEvents } from './abilityTypes.ts'
 export type * from './abilityTypes.ts'
+import type { UiMotionApi, UiMotionEvents } from './uiMotionTypes.ts'
+export type * from './uiMotionTypes.ts'
 import type { StudioApi, StudioEvents } from './studio/types.ts'
 export type * from './studio/types.ts'
 import type { RefApi, RefEvents } from './refTypes.ts'
@@ -40,7 +44,20 @@ export type * from './sync/types.ts'
 import type { GatingApi, GatingEvents } from './gating/types.ts'
 export type * from './gating/types.ts'
 import type { RestateApi, RestateCard } from './restateTypes.ts'
+import type { ChatModesApi } from './chatModesApi.ts'
+import type { ChatMode, DiffCardData, PlanCardData } from './chatModes.ts'
 export type * from './restateTypes.ts'
+import type { ThumbsApi, ThumbsEvents } from './thumbs/types.ts'
+export type * from './thumbs/types.ts'
+import type { QolApi, QolEvents } from './qol/types.ts'
+export type * from './qol/types.ts'
+// qol-c: Forge Doctor, spending cap, Add to game.
+import type { DoctorApi, DoctorEvents } from './doctor/types.ts'
+export type * from './doctor/types.ts'
+import type { SpendApi, SpendEvents } from './spend/types.ts'
+export type * from './spend/types.ts'
+import type { AddToGameApi } from './addToGame/types.ts'
+export type * from './addToGame/types.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -210,10 +227,22 @@ export interface ChatMessage {
   speaker?: Speaker
   // Group chats: 'plan' = the host's roundtable synthesis, 'checklist' = a plan turned into a task list.
   // 'restate' = "Restate first": Forge's reading of a big request, waiting for a yes or an edit.
-  card?: 'plan' | 'checklist' | 'restate'
+  card?: 'plan' | 'checklist' | 'restate' | 'conclusion' | 'patch' | 'review'
   restate?: RestateCard
+  // Group chat v2 cards (groupTypes.ts): consult conclusion, guest patch proposal, cross-check review.
+  conclusion?: ConclusionData
+  patch?: PatchProposal
+  review?: ReviewData
+  // System notice with a fix: a model whose provider is not set up links to Settings → Providers.
+  settingsLink?: ProviderId
   // Attached (user) or produced (assistant/tool) images, as store references.
   images?: ChatImage[]
+  // Chat modes (shared/chatModes.ts): the mode the turn ran in; an edit waiting for Accept / Reject;
+  // a Plan-mode plan card; the slash command whose output this is (never sent to a model).
+  mode?: ChatMode
+  diff?: DiffCardData
+  planMode?: PlanCardData
+  command?: string
 }
 
 // A model taking part in a group chat. label is for display ("GPT-6.1 Sol"), alias is the
@@ -237,6 +266,8 @@ export interface GroupUsage {
   input: number
   output: number
   calls: number
+  // Cost in USD (provider-reported or from the price table); unset when the model has no price.
+  costUsd?: number
 }
 
 // AI providers. 'anthropic' runs through the Claude Agent SDK; the others through Forge's own
@@ -283,6 +314,8 @@ export interface ChatSession {
   guestTools?: boolean
   // Group chat: per-model token usage.
   usage?: GroupUsage[]
+  // Group chat: the Board (decisions, open questions, conclusions).
+  board?: BoardItem[]
   // Token/cost meter for the whole chat (all models), from the usage ledger.
   meter?: UsageSummary
   // Model routing of the last turn (budget/budget.ts routeModel): which model ran and why.
@@ -295,6 +328,8 @@ export interface ChatSession {
   orchestrate?: OrchestrateMode
   // Orchestrator runs started from this chat, oldest first (see getOrchestration).
   orchestrations?: string[]
+  // Chat mode (Ask / Plan / Edit with approval / Auto-accept); unset = 'edit'.
+  chatMode?: ChatMode
 }
 
 export type TestAgentState = 'queued' | 'running' | 'passed' | 'failed' | 'error' | 'cancelled'
@@ -469,7 +504,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -494,7 +529,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

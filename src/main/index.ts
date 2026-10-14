@@ -1,4 +1,4 @@
-import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell } from 'electron'
+import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell, systemPreferences } from 'electron'
 import { existsSync, statSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import {
@@ -53,6 +53,8 @@ import { withRefTools } from './services/videoref/tools.ts'
 import { createAbilityWiring } from './services/ability/wire.ts'
 import { abilityElectronDeps } from './services/ability/electron.ts'
 import { withAbilityTools } from './services/ability/tools.ts'
+import { createUiMotionWiring } from './services/uimotion/wire.ts'
+import { uiMotionElectronDeps } from './services/uimotion/electron.ts'
 import { createPrincipleWiring } from './services/principles/wire.ts'
 import { createGatingWiring } from './services/gating/wire.ts'
 import type { LabTier } from '../shared/labModels.ts'
@@ -65,6 +67,13 @@ import { homedir } from 'node:os'
 import { studioElectronDeps } from './services/studio/electron.ts'
 import { withStudioTools } from './services/studio/tools.ts'
 import { defaultChatImage } from './services/art/wire.ts'
+import { createThumbsWiring } from './services/thumbs/wire.ts'
+import { thumbsElectronDeps } from './services/thumbs/electron.ts'
+import { createQol } from './services/qol/wire.ts'
+import { createSpendWiring } from './services/spend/wire.ts'
+import { createDoctorWiring } from './services/doctor/wire.ts'
+import { doctorMarkdown } from '../shared/doctor/format.ts'
+import { createAddToGameWiring } from './services/addToGame/wire.ts'
 
 // Name and data folder. The data folder stays "rbx-forge" (what development builds have always
 // used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
@@ -95,7 +104,10 @@ function installCsp(): void {
   })
 }
 
+// Quality of life (services/qol): sees every event for done notifications and the away digest.
+let qolObserve: ((event: string, payload: unknown) => void) | null = null
 function emit<K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]): void {
+  qolObserve?.(event, payload)
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(event, payload)
   }
@@ -215,6 +227,7 @@ function requireProject(): Project {
 }
 
 async function closeProject(): Promise<void> {
+  if (project) await qol.service.onProjectClose()
   terminal.onProjectClose()
   integrations.onProjectClose()
   project?.close()
@@ -348,6 +361,7 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   await integrations.onProjectOpen(full).catch((error) => harnessLog(`integrations: ${error}`, 'stderr'))
   setup.onProjectOpen(full)
   void memory.onProjectOpen()
+  await qol.service.onProjectOpen(full).catch(() => undefined)
   return opened.info
 }
 
@@ -570,6 +584,118 @@ const ability = createAbilityWiring({
 })
 registerPackSection({ id: 'abilities', label: 'Ability library', dir: () => ability.service.userLibraryDir })
 
+// Thumbnail Lab (services/thumbs): reference thumbnails -> style profiles, base images from the game
+// (files or a Studio capture through the Forge Bridge), OpenAI variations through the Art page's key
+// and budget, the thumbnail critic, ratings / CTR that teach taste, and the Open Cloud upload.
+const thumbs = createThumbsWiring({
+  userDataDir: app.getPath('userData'),
+  root: () => project?.info.root ?? null,
+  gameName: () => project?.info.name,
+  settings,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[thumbs] ${text}` }),
+  memory,
+  principles: principles.service,
+  vision: (tier) => labModel(tier),
+  images: integrations.images,
+  openCloud: integrations.openCloud,
+  studio: {
+    snapshot: () => studio.service.snapshot(),
+    status: async () => {
+      const s = await studio.service.status()
+      return { connected: s.studio.connected, message: s.message }
+    }
+  },
+  // Image spend counts in the Labs cost-per-kept table (default tier: it is the "compose" step).
+  chargeImage: (usd) => void gating.service.charge('default', { input: 0, output: 0, costUsd: usd }),
+  ...thumbsElectronDeps()
+})
+registerPackSection({ id: 'thumbs', label: 'Thumbnail Lab library', dir: () => thumbs.service.userLibraryDir })
+// Quality of life (services/qol): bug reports, done notifications, session restore, away digest.
+const qol = createQol({
+  userDataDir: app.getPath('userData'),
+  getSetting: (key, fallback) => settings.get(key, fallback),
+  setSetting: (key, value) => settings.set(key, value),
+  logs: () => logs.get(),
+  root: () => project?.info.root ?? null,
+  projectName: () => project?.info.name,
+  emit: (event, payload) => emit(event as keyof HarnessEvents, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text }),
+  git: (args, cwd) => run(findTool('git') || 'git', args, cwd),
+  syncStatus: async () => (await forgeSync.handlers.syncStatus()) as never,
+  studioConflicts: () => ctx.studioConflicts(),
+  gitStatus: async () => (git ? git.status() : null),
+  testsLast: async () => (await integrations.handlers.testsLast()) as never
+})
+qolObserve = (event, payload) => qol.service.observe(event, payload)
+// qol-c: spending cap (userData/spend.json; every AI call is charged and checked), Forge Doctor
+// (Help menu, palette, Settings) and "Add to game" (VFX / Animation / Ability labs, adapters for more).
+const spend = createSpendWiring({
+  userDataDir: app.getPath('userData'),
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text) => logs.push({ service: 'harness', stream: 'info', text: `[spend] ${text}` })
+})
+const doctor = createDoctorWiring({
+  platform: process.platform,
+  appVersion: app.getVersion(),
+  isPackaged: app.isPackaged,
+  userDataDir: app.getPath('userData'),
+  homeDir: homedir(),
+  env: process.env,
+  projectRoot: () => project?.info.root ?? null,
+  places: () => project?.listPlaces() ?? [],
+  serveAllPlaces: () => appSettings().serveAllPlaces,
+  activePlace: () => project?.getActivePlace()?.file ?? null,
+  services: () => supervisor.statuses(),
+  toolchainStatus: () => setup.handlers.toolchainStatus() as never,
+  toolchainRepair: () => Promise.resolve(setup.handlers.toolchainSetup({ mode: 'repair' })),
+  installProjectTools: (root) => setup.onProjectOpen(root),
+  studioStatus: () => studio.service.status(),
+  installPlugin: () => studio.service.installPlugin(),
+  pluginsDir: () => pluginsDir({ platform: process.platform, env: process.env, home: homedir() }),
+  syncStatus: () => forgeSync.handlers.syncStatus() as never,
+  disableLegacyPlugins: () => Promise.resolve(forgeSync.handlers.syncDisableLegacyPlugin()),
+  providers: () => agentIpc.providers(),
+  defaultProvider: () => agentIpc.defaultProvider(),
+  openCloudKey: () => integrations.openCloud.key(),
+  openAiKey: () => integrations.images.openAiKey(),
+  updateState: () => updater.handlers.updateGetState() as never,
+  updateCheck: () => Promise.resolve(updater.handlers.updateCheck()),
+  startRojo: () => supervisor.start('rojo'),
+  screenRecording: () => (process.platform === 'darwin' ? (systemPreferences.getMediaAccessStatus('screen') as 'granted') : null),
+  openExternal: (url) => void shell.openExternal(url),
+  emit: (report) => emit('doctor:report', report)
+})
+const addToGame = createAddToGameWiring({
+  root: () => project?.info.root ?? null,
+  settings,
+  log: (text) => logs.push({ service: 'harness', stream: 'info', text: `[add to game] ${text}` }),
+  vfx: vfx.service,
+  textures: vfx.textures,
+  anim: anim.service,
+  ability: ability.service
+})
+const qolcHandlers = { ...doctor.handlers, ...spend.handlers, ...addToGame.handlers }
+// Bug reports carry a Forge Doctor section (home folder shown as ~).
+qol.service.setBugReportExtra(async () => doctorMarkdown(await doctor.service.run(), { home: homedir() }))
+// UI Motion Lab (services/uimotion): Figma imports (plugin JSON or a link; the token lives in the
+// encrypted secret store) and effect stacks compiled to client Luau modules.
+const uiMotion = createUiMotionWiring({
+  principles: principles.service,
+  userDataDir: app.getPath('userData'),
+  root: () => project?.info.root ?? null,
+  projectFile: () => project?.activePlace ?? null,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[uimotion] ${text}` }),
+  memory,
+  model: (tier) => labModel(tier),
+  gate: gating.service,
+  secrets: integrations.secrets,
+  lune: async () => (await vfx.service.status()).lune.available,
+  ...uiMotionElectronDeps()
+})
+registerPackSection({ id: 'uimotion', label: 'UI motion library', dir: () => uiMotion.service.userLibraryDir })
+
 const handlers: Record<string, (...args: any[]) => unknown> = {
   openProject: (root?: string) => openProject(root),
   getProject: () => ctx.project(),
@@ -632,13 +758,17 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 for (const [name, handler] of Object.entries(handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...gating.wrap('vfx', vfx.handlers), ...gating.wrap('anim', anim.handlers), ...studio.handlers, ...refs.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers })) {
+// Long lab / build calls notify when they finish (services/qol).
+const timed = (name: string, handler: (...args: any[]) => unknown) => qol.service.timed(name, handler)
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...gating.wrap('vfx', vfx.handlers), ...gating.wrap('anim', anim.handlers), ...studio.handlers, ...refs.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers, ...qolcHandlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
-  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
+  const fn = timed(name, handler)
+  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
 }
-for (const [name, handler] of Object.entries(gating.wrap('ability', ability.handlers))) {
+for (const [name, handler] of Object.entries({ ...gating.wrap('ability', ability.handlers), ...gating.wrap('thumbs', thumbs.handlers), ...gating.wrap('uimotion', uiMotion.handlers) })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
-  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
+  const fn = timed(name, handler)
+  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
 }
 ipcMain.on(INVOKE_PREFIX + 'lspSend', (_event, message: unknown) => lsp.send(message))
 // Caption-button overlay colours follow the renderer theme (Windows/Linux only).
@@ -654,7 +784,7 @@ ipcMain.on('forge:titlebarTheme', (event, theme: unknown) => {
   }
   win?.setBackgroundColor(light ? '#e4e7eb' : '#0c0e11')
 })
-const agentIpc = registerAgentIpc(ctx, ipcMain, { memory, userDataDir: app.getPath('userData') })
+const agentIpc = registerAgentIpc(ctx, ipcMain, { memory, userDataDir: app.getPath('userData'), gating: async () => (await gating.service.view()).costs })
 
 function preloadPath(): string {
   const dir = join(__dirname, '../preload')
@@ -735,6 +865,7 @@ app.on('before-quit', (event) => {
   memory.dispose()
   brainSync.dispose()
   updater.dispose()
+  void spend.dispose()
   vfx.service.dispose()
   anim.service.dispose()
   void studio.dispose()

@@ -447,12 +447,13 @@ test('"communicate with openai sol 6.1 and come up with a plan" invites Sol and 
 
 test('ambiguous names are asked about in the chat instead of guessed', async () => {
   const { chats, f } = await setup({ ready: ['openai', 'gemini'], route: () => ({ sse: ccText('x') }) })
-  const chat = chats.create({ provider: 'openai', model: 'gpt-6-astra' })
-  await chats.send(chat.id, 'talk with gemini about the map layout')
+  // "gemini" alone now picks the flagship (Gemini 3.1 Pro); "gpt 6" matches Astra and Luna equally.
+  const chat = chats.create({ provider: 'gemini', model: 'gemini-3.8-flash' })
+  await chats.send(chat.id, 'talk with gpt 6 about the map layout')
   await idle(chats, chat.id)
   const last = chats.messages(chat.id)!.at(-1)!
   assert.equal(last.role, 'system')
-  assert.match(last.text, /Which model did you mean by “gemini”\? .*gemini\/gemini-3.1-pro-preview/)
+  assert.match(last.text, /Which model did you mean by “gpt 6”\? .*openai\/gpt-6-astra.*openai\/gpt-6-luna|Which model did you mean by “gpt 6”\? .*openai\/gpt-6-luna.*openai\/gpt-6-astra/)
   assert.equal(f.requests.length, 0)
 })
 

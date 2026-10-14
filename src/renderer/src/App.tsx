@@ -9,6 +9,7 @@ import { EditorArea } from './shell/EditorArea'
 import { BottomPanel } from './shell/BottomPanel'
 import { Palette } from './shell/Palette'
 import { Dialogs, Toasts } from './shell/Overlays'
+import { QolcOverlays } from './pages/qolc/QolcOverlays'
 import { buildCommands, keySpec, normalizeSpec } from './shell/commands'
 import { ExplorerView } from './views/ExplorerView'
 import { ScriptsView } from './views/ScriptsView'
@@ -19,6 +20,7 @@ import { TeamView } from './views/TeamView'
 import { AssistantPanel } from './assistant/AssistantPanel'
 import { ToolchainGate } from './setup/Toolchain'
 import { terminalOwnsKey } from './terminal/session'
+import { QolRoot } from './qol/QolRoot'
 import './shell/workbench.css'
 import './views/views.css'
 import './pages/pages.css'
@@ -190,7 +192,9 @@ function Shell() {
       <Palette />
       <Dialogs />
       <Toasts />
+      <QolcOverlays />
       <ToolchainGate />
+      <QolRoot />
     </div>
   )
 }

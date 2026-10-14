@@ -17,10 +17,14 @@
   </head>
   <body>
     <h1>Forge UI</h1>
-    <p>Paste Forge JSON (RBX Forge › UI Preview › Figma › Forge JSON) and import it, or select an imported frame and export it back to Forge.</p>
+    <p><b>UI Motion Lab:</b> select any frame, component or layer and send it to Forge to test springs and effects on it.</p>
+    <div class="row">
+      <button class="primary" id="send">Send selection to Forge</button>
+    </div>
+    <p>UI Preview round trip: paste Forge JSON (RBX Forge › UI Preview › Figma › Forge JSON) and import it, or select an imported frame and export it back to Forge.</p>
     <textarea id="json" spellcheck="false" placeholder='{ "format": "forge-ui", … }'></textarea>
     <div class="row">
-      <button class="primary" id="import">Import Forge JSON</button>
+      <button id="import">Import Forge JSON</button>
       <button id="export">Export selection to Forge</button>
       <button id="copy">Copy</button>
       <button id="save">Download .json</button>
@@ -33,6 +37,11 @@
         $('status').className = err ? 'err' : ''
       }
       let story = 'frame'
+      let fileName = ''
+      $('send').onclick = () => {
+        status('Reading the selection…')
+        parent.postMessage({ pluginMessage: { type: 'send' } }, '*')
+      }
       $('import').onclick = () => {
         const json = $('json').value.trim()
         if (!json) return status('Paste Forge JSON first.', true)
@@ -50,15 +59,23 @@
         const blob = new Blob([$('json').value], { type: 'application/json' })
         const a = document.createElement('a')
         a.href = URL.createObjectURL(blob)
-        a.download = `${story.split('/').pop().replace(/\.story\.luau?$/, '')}.from-figma.json`
+        a.download = fileName || `${story.split('/').pop().replace(/\.story\.luau?$/, '')}.from-figma.json`
         a.click()
       }
       onmessage = (e) => {
         const msg = e.data.pluginMessage
         if (!msg) return
         if (msg.type === 'imported') status(`Imported ${msg.name} (${msg.count} top-level elements).`)
+        if (msg.type === 'sent') {
+          $('json').value = msg.json
+          fileName = `${msg.name.replace(/[^A-Za-z0-9_-]+/g, '') || 'Selection'}.forge-figma.json`
+          const kb = Math.round(msg.bytes / 1024)
+          const miss = msg.missing.length ? ` Could not export: ${msg.missing.join(', ')}.` : ''
+          status(`${msg.name}: ${msg.summary}; ${msg.images} image${msg.images === 1 ? '' : 's'}, ${kb} KB.${miss} Copy or download it, then in Forge: UI Motion Lab › Import from Figma.`, msg.missing.length > 0)
+        }
         if (msg.type === 'exported') {
           $('json').value = msg.json
+          fileName = ''
           story = msg.story || story
           status('Exported. Copy or download it, then use Import from Figma in Forge.')
         }

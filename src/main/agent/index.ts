@@ -1,7 +1,7 @@
 // IPC entry point for the agent layer. main/index.ts calls registerAgentIpc once.
 
 import type { IpcMain } from 'electron'
-import type { ChatMessage, ModelChoice, OrchestrateMode, ProviderId } from '@shared/types'
+import type { ChatMessage, ModelChoice, OrchestrateMode, ProviderId, ProviderInfo } from '@shared/types'
 import { INVOKE_PREFIX } from '../../shared/types.ts'
 import type { NewChatOptions } from '@shared/types'
 import { join } from 'node:path'
@@ -16,9 +16,10 @@ import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
 import { ChatManager, type TeamRunner } from './chat.ts'
 import { Credentials } from './credentials.ts'
 import { Meter } from './meter.ts'
-import { fromOpenAiUsage, priced, SdkUsageTracker, type Usage } from './budget/usage.ts'
+import { estimateCost, fromOpenAiUsage, priced, SdkUsageTracker, type Usage } from './budget/usage.ts'
+import { assertSpend, chargeSpend, sourceOfRecord, spendBlock } from '../services/spend/gate.ts'
 import type { FetchFn } from './openaiLoop.ts'
-import { capsBudget, classifyTool, defaultWriteTargets, openAiRunAgent, Orchestrator, sdkRunAgent, type RunAgent, type ToolClass, type WriteTargets } from './orchestrator/index.ts'
+import { capsBudget, classifyTool, defaultWriteTargets, openAiRunAgent, Orchestrator, sdkRunAgent, type AgentEvent, type RunAgent, type ToolClass, type WriteTargets } from './orchestrator/index.ts'
 import { projectRulesLoader, withRules } from './projectRules.ts'
 import { withMemoryLoader, type MemoryHooks } from './memory/hooks.ts'
 import { extraBody, isProviderId, Providers } from './providers.ts'
@@ -26,9 +27,12 @@ import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './im
 import { executableOption, OPENAI_TOOLS_NOTE, sdkQuery, type QueryFn } from './sdk.ts'
 import { SERVICE_WRITE_TOOLS } from './serviceTools.ts'
 import { TestAgentRunner } from './testAgents.ts'
+import { defaultGroupIo } from './group/io.ts'
 import { Restater } from './restate.ts'
 import { normalizeRestatement, type RestateLab } from '../../shared/restate/types.ts'
 import { gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type ToolFs } from './tools.ts'
+import { chatModeHandlers, memoryNote } from './modesIpc.ts'
+import type { GatingCostRow } from './commands/index.ts'
 
 export interface AgentLayer {
   chats: ChatManager
@@ -82,7 +86,7 @@ export const forgeWriteTargets: WriteTargets = (name, args) => {
 // Builds the agent layer without Electron (tests pass a stub query function and fetch).
 export function createAgentLayer(
   ctx: HarnessContext,
-  opts: { queryFn?: QueryFn; credentials?: Credentials; fetchFn?: FetchFn; toolFs?: ToolFs; meterSaveDelayMs?: number; memory?: MemoryHooks } = {}
+  opts: { queryFn?: QueryFn; credentials?: Credentials; fetchFn?: FetchFn; toolFs?: ToolFs; meterSaveDelayMs?: number; memory?: MemoryHooks; userCommandsDir?: string; gating?: () => Promise<GatingCostRow[] | null> } = {}
 ): AgentLayer {
   const credentials = opts.credentials ?? new Credentials(ctx)
   const providers = new Providers(ctx, credentials, opts.fetchFn)
@@ -91,6 +95,8 @@ export function createAgentLayer(
   // and orchestrator roles alike.
   const rules = withMemoryLoader(projectRulesLoader(ctx), opts.memory)
   const meter = new Meter(ctx, { saveDelayMs: opts.meterSaveDelayMs })
+  // Every ledger record (chat, test agents, one-shot Labs calls) also charges the spending cap.
+  meter.ledger.onRecord((r) => chargeSpend({ provider: r.provider, source: sourceOfRecord(r), costUsd: r.costUsd, at: r.at }))
   const orchestrator = createOrchestrator(ctx, { ...opts, credentials, providers, rules, meter })
   const team = teamRunner(ctx, orchestrator)
   let chats: ChatManager
@@ -105,7 +111,14 @@ export function createAgentLayer(
   })
   // Background reflection: a chat that goes idle is reviewed by the memory layer (debounced there).
   const chatCtx = opts.memory ? tapChatBusy(ctx, opts.memory, (id) => chats.messages(id) ?? null) : ctx
-  chats = new ChatManager(chatCtx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team, restater })
+  chats = new ChatManager(chatCtx, {
+    queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team, restater, groupIo: defaultGroupIo(),
+    // Slash commands (agent/commands): /compact on the cheap tier, /memory notes, /cost Labs rows.
+    oneShot: (system, prompt) => layer.oneShot(system, prompt, { tier: 'cheap' }),
+    remember: memoryNote(opts.memory),
+    ...(opts.userCommandsDir ? { userCommandsDir: opts.userCommandsDir } : {}),
+    ...(opts.gating ? { gating: opts.gating } : {})
+  })
   const agents = new TestAgentRunner(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter })
   layer = {
     chats,
@@ -163,6 +176,8 @@ async function oneShot(
   tier?: LabTier,
   onUsage?: ShotOptions['onUsage']
 ): Promise<string> {
+  // Spending cap (Settings > Usage): refuse before the call.
+  assertSpend('labs')
   const base = w.providers.defaultModel()
   const tiers = ctx.getSetting('modelTiers', undefined)
   const model = tier
@@ -192,7 +207,10 @@ async function oneShot(
         maxTurns: 1
       }
     })) {
-      if (onUsage) for (const r of tracker.onMessage(m as never)) report(onUsage, r.model, r)
+      const records = tracker.onMessage(m as never)
+      // One-shot calls go into the usage ledger too (day totals and the spending cap).
+      w.meter.ledger.recordAll(records)
+      if (onUsage) for (const r of records) report(onUsage, r.model, r)
       if (m.type === 'result') {
         if (m.subtype === 'success' && !m.is_error) out = m.result
         else throw new Error(m.subtype === 'success' ? m.result : m.errors?.join('; ') || m.subtype)
@@ -242,8 +260,14 @@ interface OrchestratorWiring {
 function createOrchestrator(ctx: HarnessContext, w: OrchestratorWiring): Orchestrator {
   // Adapters are built per spec: auth/endpoint are resolved when a task starts. The project rules
   // block is appended to each role's constant prompt (constant per project, so still cacheable).
-  const runAgent: RunAgent = (spec) => ({
+  const runAgent: RunAgent = (spec) => withSpendCharges(inner, spec)
+  const inner: RunAgent = (spec) => ({
     async *[Symbol.asyncIterator]() {
+      const block = spendBlock()
+      if (block) {
+        yield { type: 'error' as const, message: block }
+        return
+      }
       const rules = await w.rules().catch(() => '')
       const withRulesSpec = { ...spec, system: withRules(spec.system, rules) }
       const provider = spec.provider ?? 'anthropic'
@@ -286,6 +310,30 @@ function createOrchestrator(ctx: HarnessContext, w: OrchestratorWiring): Orchest
   })
 }
 
+// Orchestrated runs are not in the usage ledger: their usage events charge the spending cap.
+// Anthropic (SDK) runs report tokens without cost and the cost on the result (cost-only delta), so
+// only explicit costs count there; other providers are priced from the table when no cost is given.
+export function orchestratorCharge(provider: ProviderId, model: string, u: Usage): number {
+  if (u.costUsd !== undefined) return u.costUsd
+  if (provider === 'anthropic') return 0
+  return estimateCost(model, u, { provider }) ?? 0
+}
+
+export function withSpendCharges(run: RunAgent, spec: Parameters<RunAgent>[0]): AsyncIterable<AgentEvent> {
+  return {
+    async *[Symbol.asyncIterator]() {
+      const provider = spec.provider ?? 'anthropic'
+      for await (const e of run(spec)) {
+        if (e.type === 'usage') {
+          const cost = orchestratorCharge(provider, spec.model, e.usage)
+          if (cost > 0) chargeSpend({ provider, source: 'orchestrator', costUsd: cost })
+        }
+        yield e
+      }
+    }
+  }
+}
+
 // One orchestration for a chat message; resolves when the run ends.
 function teamRunner(ctx: HarnessContext, orchestrator: Orchestrator): TeamRunner {
   return async ({ chatId, text, choice, signal, onStart }) => {
@@ -322,7 +370,7 @@ async function projectContext(ctx: HarnessContext): Promise<string | undefined> 
 }
 
 function restateLab(v: unknown): RestateLab {
-  if (v === 'vfx' || v === 'anim' || v === 'ability') return v
+  if (v === 'vfx' || v === 'anim' || v === 'ability' || v === 'thumbs' || v === 'uimotion') return v
   throw new Error(`unknown lab ${String(v)}`)
 }
 
@@ -350,9 +398,9 @@ function choice(c: unknown): ModelChoice | undefined {
 export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
-  opts: { memory?: MemoryHooks; userDataDir?: string } = {}
-): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string> } {
-  const layer = createAgentLayer(ctx, { memory: opts.memory })
+  opts: { memory?: MemoryHooks; userDataDir?: string; gating?: () => Promise<GatingCostRow[] | null> } = {}
+): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string>; providers(): Promise<ProviderInfo[]>; defaultProvider(): ProviderId } {
+  const layer = createAgentLayer(ctx, { memory: opts.memory, ...(opts.userDataDir ? { userCommandsDir: join(opts.userDataDir, 'commands') } : {}), ...(opts.gating ? { gating: opts.gating } : {}) })
   // Chat images live under userData/chat-images (history keeps only references).
   setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))
   const { chats, agents, credentials, providers, meter, orchestrator, team, restater } = layer
@@ -403,6 +451,13 @@ export function registerAgentIpc(
     planToChecklist: async (id: string, messageId: unknown) => {
       chats.planToChecklist(id, String(messageId ?? ''))
     },
+    // Group chat v2 (agent/group/*).
+    getGroupSettings: () => chats.getGroupSettings(),
+    setGroupSettings: (next: unknown) => chats.setGroupSettings(next && typeof next === 'object' ? (next as Record<string, never>) : {}),
+    applyPatchProposal: (id: unknown, messageId: unknown) => chats.applyPatchProposal(String(id ?? ''), String(messageId ?? '')),
+    mergePatchProposal: (id: unknown, messageId: unknown) => chats.mergePatchProposal(String(id ?? ''), String(messageId ?? '')),
+    dismissPatchProposal: async (id: unknown, messageId: unknown) => chats.dismissPatchProposal(String(id ?? ''), String(messageId ?? '')),
+    saveBoard: async (id: unknown, items: unknown) => chats.saveBoard(String(id ?? ''), items),
     hasApiKey: () => credentials.hasApiKey(),
     setApiKey: async (key: string) => {
       await credentials.setKey('anthropic', String(key ?? ''))
@@ -488,7 +543,10 @@ export function registerAgentIpc(
 
     getAgents: () => agents.list(),
     runAgents: (scenarios: string[], c?: unknown) => agents.run(Array.isArray(scenarios) ? scenarios : [], choice(c)),
-    cancelAgent: (id: string) => agents.cancel(id)
+    cancelAgent: (id: string) => agents.cancel(id),
+
+    // Chat modes + slash commands (agent/modesIpc.ts).
+    ...chatModeHandlers(chats)
   }
 
   for (const [name, fn] of Object.entries(handlers)) {
@@ -497,6 +555,9 @@ export function registerAgentIpc(
 
   return {
     vision: (system, prompt, images, o) => layer.visionShot(system, prompt, images, o),
+    // Forge Doctor: which providers have a key (never the key itself).
+    providers: () => providers.list(),
+    defaultProvider: () => providers.defaultModel().provider,
     summarize: (prompt) =>
       layer.oneShot('Summarize these incoming git changes for a teammate on a Roblox (Luau, Rojo) game: what changed, by whom, which features are touched and anything that may conflict with local work. Terse bullet points, at most 200 words.', prompt),
     dispose() {

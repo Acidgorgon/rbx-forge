@@ -1,11 +1,14 @@
 {
   "compilerOptions": {
     "target": "es2017",
-    "lib": ["es2017"],
+    "lib": ["es2020"],
+    "module": "esnext",
+    "moduleResolution": "bundler",
+    "allowImportingTsExtensions": true,
+    "noEmit": true,
     "strict": true,
-    "noEmitOnError": true,
-    "typeRoots": ["./node_modules/@types", "./node_modules/@figma"],
-    "outDir": "."
+    "skipLibCheck": true,
+    "typeRoots": ["./node_modules/@types", "./node_modules/@figma"]
   },
   "files": ["code.ts"]
 }

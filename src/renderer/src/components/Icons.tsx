@@ -42,6 +42,7 @@ const PATHS = {
   terminal: <><rect x="1.8" y="2.8" width="12.4" height="10.4" rx="1.5" /><path d="m4.5 6.5 2 1.8-2 1.8M8 10.2h3.5" /></>,
   studio: <><path d="m3 3.5 9.5 2.5-2.5 9.5L.5 13z" transform="translate(1.5 -1)" /><rect x="6.3" y="6.3" width="3" height="3" transform="rotate(15 7.8 7.8)" /></>,
   bell: <><path d="M4 11V7.5a4 4 0 0 1 8 0V11l1 1.5H3z" /><path d="M6.5 14h3" /></>,
+  bug: <><rect x="5" y="5" width="6" height="8" rx="3" /><path d="M6.2 4.2 5 3M9.8 4.2 11 3M5 8H2.5M13.5 8H11M5 11l-2 1.5M11 11l2 1.5M5 6.5 3 5M11 6.5l2-1.5M8 7v6" /></>,
   sun: <><circle cx="8" cy="8" r="2.8" /><path d="M8 1.5v1.5M8 13v1.5M1.5 8H3M13 8h1.5M3.4 3.4l1 1M11.6 11.6l1 1M3.4 12.6l1-1M11.6 4.4l1-1" /></>,
   moon: <path d="M13 9.5A5.5 5.5 0 0 1 6.5 3a5.5 5.5 0 1 0 6.5 6.5z" />,
   monitor: <><rect x="2" y="2.8" width="12" height="8.4" rx="1.2" /><path d="M6 13.8h4M8 11.2v2.6" /></>,
@@ -65,6 +66,7 @@ const PATHS = {
   tool: <path d="M10.2 2.4a3.2 3.2 0 0 0-3.9 4.2l-3.9 3.9a1.2 1.2 0 0 0 1.7 1.7l3.9-3.9a3.2 3.2 0 0 0 4.2-3.9l-1.9 1.9-1.6-.4-.4-1.6z" />,
   external: <><path d="M9 2.5h4.5V7M13.5 2.5 7.5 8.5" /><path d="M11.5 9.5v3a1 1 0 0 1-1 1h-7a1 1 0 0 1-1-1v-7a1 1 0 0 1 1-1h3" /></>,
   round: <><circle cx="8" cy="3.2" r="1.4" /><circle cx="3.6" cy="10.8" r="1.4" /><circle cx="12.4" cy="10.8" r="1.4" /><path d="M6.6 4.2 4.4 9.4M9.4 4.2l2.2 5.2M5.2 11.3h5.6" /></>,
+  thumbnail: <><rect x="1.8" y="3.5" width="12.4" height="9" rx="1.2" /><path d="M4 6.2h3.4M4 8.2h2.2" /><path d="m8.6 10.4 1.8-2.4 2 2.4" /></>,
   board: <><rect x="2" y="2.5" width="3.4" height="11" rx=".8" /><rect x="6.3" y="2.5" width="3.4" height="7" rx=".8" /><rect x="10.6" y="2.5" width="3.4" height="9" rx=".8" /></>,
   lock: <><rect x="3.5" y="7" width="9" height="6.5" rx="1.2" /><path d="M5.5 7V5.2a2.5 2.5 0 0 1 5 0V7" /></>,
   upload: <><path d="M8 10.5V2.8M5 5.5l3-3 3 3" /><path d="M2.8 10.5v1.7a1 1 0 0 0 1 1h8.4a1 1 0 0 0 1-1v-1.7" /></>,
@@ -78,6 +80,7 @@ const PATHS = {
   image: <><rect x="2" y="2.5" width="12" height="11" rx="1.5" /><circle cx="5.8" cy="6" r="1.2" /><path d="m2.5 12 3.8-3.6 2.6 2.4 2.2-2 2.4 2.2" /></>,
   memory: <><path d="M4 2.5h8v11H4a1 1 0 0 1-1-1v-9a1 1 0 0 1 1-1z" /><path d="M5.8 2.5v11M8.2 5.8h2M8.2 8.2h2" /></>,
   figure: <><circle cx="8.6" cy="2.8" r="1.3" /><path d="M8.2 4.6 7.4 9l-2.6 4.2M7.4 9l2.4 1.6.4 3M8 5.6l2.8 1.6 1.6-1.4M8 5.6 5.2 6.4 4 8.4" /></>,
+  tap: <><rect x="1.8" y="3" width="9.5" height="5.5" rx="2.2" /><path d="M8.6 7.2v6.6l1.7-1.5 1.3 2.2 1.2-.7-1.3-2.2 2.2-.3z" /></>,
   sparkle: <><path d="M7 2v2.6M7 9.4V12M2 7h2.6M9.4 7H12M3.6 3.6l1.6 1.6M8.8 8.8l1.6 1.6M10.4 3.6 8.8 5.2M5.2 8.8l-1.6 1.6" /><path d="M12.2 10.6v3.2M10.6 12.2h3.2" /></>
 } satisfies Record<string, ReactNode>
 

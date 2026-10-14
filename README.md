@@ -89,6 +89,47 @@ The assistant panel is a chat with project tools: overview, list/read/edit/write
 - **Keys.** Settings has a card per provider. A pasted key is encrypted with the OS keychain (Electron safeStorage) and never sent to the window. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` and `OLLAMA_API_KEY` are used when nothing is stored. Model lists come from each provider's `GET /models`, and you can type any model id.
 - **Claude Code login.** An Anthropic API key is Anthropic's documented way to authenticate apps built on the Agent SDK, and it is the default. *Use my Claude Code login (personal use only)* in Settings lets Forge fall back to the Claude Code login on this machine (or `CLAUDE_CODE_OAUTH_TOKEN`) when no key is set. That is for your own personal use and draws from your Claude Pro/Max plan limits. It is off by default.
 
+### Chat modes and commands
+
+![Plan mode: the agent investigates read-only and proposes a plan to approve](docs/screenshots/181-plan-card-dark.png)
+
+The pill under the message box sets how the assistant works in this chat. **Shift+Tab** cycles it, and the chat remembers its mode. Each of your messages shows the mode it was sent in.
+
+| Mode | What the agent may do |
+| --- | --- |
+| **Ask** | Read and search only. Every tool that writes or runs something (file edits, `new_feature`, Blink and Wally edits, sync, `run_in_terminal`, Studio tools, Bash) is removed. |
+| **Plan** | Investigates read-only, then shows a plan card with steps, files and risks. *Approve & run* switches the chat to the edit mode you pick and runs the plan. *Edit plan* lets you change it first, and *Keep planning* closes the card so you can push back. On Claude this is the Agent SDK's `plan` permission mode. Other providers get the same read-only tool set and a plan prompt. |
+| **Edit with approval** (default) | Every file edit shows a diff card. *Accept* or *Reject* it, or untick hunks and accept the rest; Forge applies only the hunks you kept. Other write tools show what they will run and wait the same way. |
+| **Auto-accept edits** | Edits inside the project apply without asking (the SDK's `acceptEdits`). `Packages/` and paths outside the project stay blocked. |
+
+Ask and Plan are enforced three ways on Claude: the write tools are left out of the tool list, `disallowedTools` names them, and a `PreToolUse` hook denies anything that is not a read tool. Other providers only get the read tools. A tool Forge doesn't know counts as a write. The team (orchestrator) only runs in Auto-accept, or when the routing pill is set to *team*.
+
+![Slash commands with descriptions](docs/screenshots/184-slash-typeahead-dark.png)
+
+Type `/` for the commands (Claude Code's set):
+
+- `/ask <question>`, `/plan <request>`: send one message in that mode.
+- `/clear` starts the conversation over in the same chat. `/compact [focus]` summarizes it on the cheap tier and carries on from the summary, showing the tokens saved.
+- `/model [provider/model]`, `/effort [level]`: switch for this chat. With no argument, `/model` opens a picker.
+- `/cost`: tokens and cost for this chat, today's total, and the Labs' cost per kept result from lab gating. `/context` shows what fills the context window (system prompt, rules and memory, tools, conversation).
+- `/memory` opens Memory. `/memory <note>` saves a project note.
+- `/init` reads the project and writes notes to `.forge/AGENTS.md`, which every agent then reads after the root `AGENTS.md`. If the file already exists, `/init` merges: your lines stay as they are and only new bullets and sections are added. The root `AGENTS.md` is never written.
+- `/review [focus]` reviews the uncommitted git diff in Ask mode.
+- `/resume` picks a past chat. `/export` saves the chat as markdown in `.forge/exports/`.
+- `/rewind` restores files, the conversation, or both to before a turn. Before each turn in Edit or Auto mode, Forge snapshots the project into a separate git repository at `.forge/checkpoints/shadow.git`, with the project as its work tree. Your own `.git`, branches, index and history are never touched, and ignored files such as `Packages/` are left alone. A rewind takes a snapshot first, so you can undo it.
+- `/todos` shows the agent's task list. `/permissions` shows which tools run, ask or are blocked in the current mode. `/help` lists everything, including your own commands.
+
+**Custom commands** are markdown files: `.forge/commands/*.md` in the project (shared with the team) or the `commands` folder in Forge's user data folder (just you). The file name is the command (`econ/balance.md` becomes `/econ:balance`). `$ARGUMENTS` is replaced by what you type after the command and `$1`…`$9` by single words. Optional frontmatter: `description`, `argument-hint` and `mode` (`ask`, `plan`, `edit` or `auto`). A Claude Code `allowed-tools` line that lists no write tool runs the command in Ask mode.
+
+```markdown
+---
+description: Check a feature's economy numbers
+argument-hint: <feature>
+mode: ask
+---
+Review prices, rewards and drop rates in the $ARGUMENTS feature. Flag anything that breaks progression.
+```
+
 ### Restate first
 
 ![The assistant restates a big request as goal, problem and assumptions, then waits](docs/screenshots/100-restate-chat-card-dark.png)
@@ -105,6 +146,18 @@ Before a big task, Forge says back what it thinks you want and waits. The card h
 ![Group chat: Claude hosts, GPT and Gemini advise, and the host writes a plan](docs/screenshots/42-dark-group-room.png)
 
 Invite other models into a chat. The host model has the project tools and is the only one that edits files. Guests are read-only advisers, and you choose whether they may read project files. `@sol what do you think?` asks one guest directly. "Talk to Sol about…" lets the host consult a guest. A **roundtable** has the models take turns on a topic for 1 to 4 rounds, then the host writes a plan card (agreements, disagreements, recommendation) that becomes a task list in one click. Guests get a compact context pack instead of the whole history, and the usage panel shows tokens per model.
+
+#### Consults, second opinions and the Board
+
+![Conclusion card: Opus and Sol agreed after 2 of 3 exchanges, with what each model checked](docs/screenshots/170-group-conclusion-dark.png)
+
+Say "ask gpt 6.1 sol how to fix the shop race, come up with a conclusion and report back", "check with gemini …" or "get a second opinion from opus". The guest answers first, then the host and the guest take turns, each ending with a stance (agree, partly, disagree), until they agree or reach the turn cap (3 exchanges by default). The host then posts a **Conclusion card**: the answer, what they agreed on, where they disagreed and who said what, a confidence level, and what each model actually checked (taken from its tool calls, not from what it says). The host can also start a consult itself with `consult_until_agreed`.
+
+- **Model names**: "gpt 6.1 sol", "sol", "opus" and "gemini" all work. A bare family name picks its flagship (Gemini 3.1 Pro, Claude Opus). If a model's provider is not set up, Forge says so and links to **Settings → Providers** instead of failing silently.
+- **Read-only guests**: when *Guests can read project files* is on, guests can search code, read files, list scripts and instances, read lint diagnostics (selene) and see the git diff. They use the host's own read tools with the same caps. They never get a write tool. A guest can propose a change as a unified diff, which shows up as a **patch card**: *Apply* writes it through the host's write path (all files or none), and *Ask host to merge* has the host adapt it in its own turn.
+- **Cross-check edits** (off by default): after the host edits 2 or more files, a model from another provider reviews the diff. A compact review card lists the findings, and the host has to address any blocking ones in a follow-up turn.
+- **Board**: each group chat has a Board with decisions, open questions and conclusions. Conclusion and plan cards fill it automatically, and you can edit it. Guests get the Board in their context pack instead of long history.
+- **Limits**: each consult has a token cap and a cost cap (120k tokens and $0.75 by default). When the consult reaches a cap, the host concludes with what it has. Guest calls are counted in the chat's usage meter, and the usage panel shows tokens and cost per model. Big consults get the restate-first card, following its setting.
 
 ### Multi-agent orchestration
 
@@ -150,6 +203,22 @@ The VFX Lab's **textures** tab makes particle, beam and trail textures. **Proced
 
 Drop an mp4, webm, mov or GIF on the VFX Lab or Animation Lab (or click **Video ref**), trim it to the part that matters, drag to crop, and press **Analyse**. Forge decodes small frames in the app itself (no ffmpeg) and measures the beats from motion energy (anticipation, release, impact, dissipate), flashes, the palette of each beat, glow, and the size and direction of motion. The Animation Lab also gets a holds vs fast-motion lane. The reference is saved in the library with a contact sheet and key frames, and the vision model (critic tier) describes it in the background. Poses come from that description; Forge does no pose estimation. **Make it like this**, or pinning a reference to Make, passes its beats, palette, description and key frames to compose. The critic then scores how well the render matches the reference, and the iterations tab shows the two side by side. A rated reference feeds learned styles only through its timing and palette. The assistant can use `ref_import` (from a path), `ref_get` and `ref_list`.
 
+### Thumbnail Lab
+
+![Thumbnail Lab: four variations with scores, the discovery preview and the critique panel](docs/screenshots/161-thumbs-critique-dark.png)
+
+Make experience thumbnails with OpenAI's image models in a style you like, built from shots of your own game. It reuses the Art page's OpenAI key (kept in the OS keychain), pricing and daily budget.
+
+- **References teach style only.** Drop, paste or pick thumbnails you like, or add an image URL (it is downloaded and kept locally). Each reference gets code-measured stats (palette, saturation, contrast, colourfulness, edge density, centre focus) and a vision **style card**: framing, palette, saturation, outline, rim light, glow, text (word count, size, placement), emotion, focal contrast and clutter. The card never records characters, logos or the text itself. Select several references to make a named **style profile**. Profiles are stored at user scope and included in .forgepack files and Brain Sync; project scope is also available.
+- **Bases from the real game.** Pick project screenshots, or use **Capture Studio** to grab the Studio viewport through the Forge Bridge plugin (the plugin crops the viewport and leaves your camera alone; with an older plugin Forge grabs the whole Studio window instead). Roblox requires that "graphics shown must be representative of the actual in-game visuals" and that thumbnails show no mechanics or UI the game does not have ([Creator Hub: Thumbnails](https://create.roblox.com/docs/production/promotion/thumbnails)). For that reason the game shots are what gets edited. The prompt is built from the style fields only, with names of the reference games stripped out, and it tells the model never to copy characters, logos or text. The critic also runs a **copy guard**: a flagged variation has its honesty score capped and is never picked as best.
+- **Generate.** "Make a thumbnail of ___" restates the brief first, shows the cost (n × price, today's spend against the cap), then makes all N variations (default 4, up to 10) in **one** call. With game shots it calls `/v1/images/edits` with the shots plus up to two style references (the edit endpoint takes up to 16 images); without shots it calls `/v1/images/generations`. Both take `n` from 1 to 10. The gpt-image-2 family takes custom sizes whose sides are multiples of 16, so Forge asks for 1920×1088 and crops to 1920×1080 (16:9). Other models get 1536×1024 and a cover crop. Models are a setting: `gpt-image-2.5-sunburst` by default and `gpt-image-1-mini` as the cheap option. See the Images API reference for [generate](https://developers.openai.com/api/reference/resources/images/methods/generate) and [edit](https://developers.openai.com/api/reference/resources/images/methods/edit).
+- **Critique.** Each variation is scored against the `thumb` principles: readable at small size, one focal point, contrast and separation, three words of text or fewer, faces and emotion, colour pop on the discovery page, honest to the game, and nothing essential along the bottom edge. Code renders every variation at 256×144 and 160×90 and measures legibility, focal strength, detail kept, the visual weight in the bottom strip, and how far the colours stand out from Roblox's dark and light page backgrounds. The critic (critic tier) sees the variation next to the game shots. The best of N is ranked by the critique, your learned taste, and copy flags. **Refine** edits a variation with the critic's changes and your note.
+- **Discovery preview.** A strip shows every variation at its real pixel size on a dark or light page, so you can see what survives at phone size.
+- **Taste and CTR.** +1 or −1 and **would ship** teach which image stats you prefer. After a thumbnail has run on Roblox, type in impressions and clicks from Creator Hub analytics. CTR is a stronger label than ratings: once a thumbnail has at least 200 impressions and there are at least two thumbnails to compare, the ones whose CTR interval sits clearly above or below the median count up to 4× a rating. The learned taste goes into a `thumbnail-taste` memory skill and the principle priorities.
+- **Roblox.** **Upload to Roblox** creates an **Image** asset through the Open Cloud Assets API. **Add to experience…** adds the image to the live experience's thumbnails through the **experimental** Open Cloud endpoint `POST /legacy-game-internationalization/v1/game-thumbnails/games/{universeId}/language-codes/{languageCode}/image` (API key scope `legacy-universe:manage`), and only after you confirm it with the universe id ([reference](https://create.roblox.com/docs/cloud/reference/features/localization)). Order the thumbnails in Creator Hub.
+
+![Thumbnail Lab references board: style cards with framing, palette, outline and text](docs/screenshots/162-thumbs-references-light.png)
+
 ### Animation and VFX principles
 
 ![VFX Lab iterations: per-principle scorecard with the focus the next round fixes first](docs/screenshots/120-vfx-principle-scorecard-dark.png)
@@ -161,6 +230,40 @@ The VFX Lab, Animation Lab and Ability Composer score their work against named p
 - **Refine.** The lowest-scoring principles, weighted by your priorities, become the focus. The next critique sees the focus first, and changes tagged with a focus principle are applied first. Each iteration shows a compact scorecard. A row marked `›` is in the focus. `c`, `m` and `c+m` show whether the critic, the code or both scored that row. Click a row to see the note and the fix.
 - **Your priorities.** Thumbs up and down, and the notes you write, teach a weight for each principle. A thumbs down on a result whose weak point was arcs raises the arcs weight. A thumbs up despite weak readability lowers that weight. Notes that name a principle ("floaty", "pops off") push it up. Weights range from ×0.4 to ×2.5. They are stored under `<userData>/principles`, included in .forgepack files and device sync, and summarised in memory. The **priorities** tab of each lab shows them and has a Reset button.
 - **References.** Video references list which principles they show and how, using the vision model's notes where it gave them and measured beats, flashes, palette and motion otherwise. Compose and the critic receive that list.
+
+### UI Motion Lab: springs and effects on your Figma buttons
+
+![UI Motion Lab: a Figma button with its stack next to the Snappy and Bouncy presets, with the spring timeline](docs/screenshots/150-uimotion-compare-dark.png)
+
+The **UI Motion Lab** (activity bar, tap icon) runs your real UI component in the live preview and lets you try motion on it. It works like the VFX Lab.
+
+- **Import from Figma.** There are two ways in, and both write a component module and a story into the project's UI folder (next to its storybook), with PNGs under `art/ui/<Name>/`. Both also show a mapping report that lists what was approximated or dropped.
+  - **Plugin.** Run `figma-plugin/`, select any frame, component or layer and click **Send selection to Forge**. Then paste or drop the JSON. No token is needed and the plugin has no network access.
+  - **Link.** Paste a Figma link. This uses the Figma REST API:
+    - [`GET /v1/files/:key/nodes`](https://developers.figma.com/docs/rest-api/file-endpoints/) for the node tree;
+    - `GET /v1/images/:key` for vector renders;
+    - `GET /v1/files/:key/images` for image fills.
+    It authenticates with the `X-Figma-Token` header ([REST API docs](https://developers.figma.com/docs/rest-api/)), honours `Retry-After` on 429 ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)) and caches responses for 5 minutes. The personal access token is set under *Settings › Integrations › Figma token* and needs the `file_content:read` scope. It is stored encrypted with Electron `safeStorage` in the main process, and is never sent to the renderer, written to the project or included in a pack.
+- **What maps.**
+  - Auto layout becomes `UIListLayout` (with direction, gap, alignment, space-between and wrap), plus `UIPadding` and `UIFlexItem` for fill and hug.
+  - Corners become `UICorner`, and strokes become `UIStroke`.
+  - Linear, radial and angular gradients become `UIGradient`.
+  - Text keeps its size, colour, alignment, case and line height. Fonts go through a fallback table to the nearest Roblox `Font`.
+  - Drop shadows and blurs are approximated.
+  - Constraints become Scale/Offset and `AnchorPoint`.
+- **Effects.** The effect library has 11 effects:
+  - feedback: hover spring, press spring;
+  - accents: scale pop, click squash, shine sweep, glow pulse, click ripple;
+  - ambient: tilt to cursor, idle float;
+  - transitions: appear, disappear.
+
+  Every spring takes a frequency (Hz) and a damping ratio. It is solved in closed form, so it does not depend on frame rate, and its half-response time and overshoot appear next to the sliders.
+- **Preview.** Hover and click the component in the live preview, which is driven by the same Lune runtime as UI Preview. You can compare 2 or 3 presets or library stacks side by side. The timeline plots scale, lift, glow and fade across hover, press, release and leave.
+- **Export.** The stack is a JSON spec. Export compiles it to a client Luau module, `Motion/<Name>Effects.luau`, used as `Effects.attach(button)`. It also writes a story. Both follow the project file's mapping (Rojo / Forge Sync). The module respects `GuiService.ReducedMotionEnabled`.
+- **AI.**
+  - **Make it feel** composes a stack from a description. It restates the request first, and Labs gating and the Labs tiers apply.
+  - **Critique** captures frames at rest, hover, pressed, released and settled. It scores them against six UI principles: responsiveness under 100 ms, anticipation, overshoot restraint, consistency, readability and reduced motion. Code measures all six from the springs.
+  - **Library.** Ratings feed your priorities, and stacks you keep go into the user or project library.
 
 ### Saving tokens
 
@@ -217,6 +320,90 @@ DAU, retention, session length, revenue and concurrent players for the experienc
 ![Team panel with file claims, pull requests, activity and history (light theme)](docs/screenshots/27-team-light.png)
 
 The Team panel shows **claims** (shared "working on" markers in `.forge/claims.json`, flagged when stale or contested), open pull requests (through `gh`, or a GitHub compare link), an activity feed that merges git history with Studio sync events, the history and blame of the open file, and lint problems. Team settings are kept in `.forge/project.json` and committed. Forge has light and dark themes. Use the sun/moon button in the title bar.
+
+### Quality of life
+
+#### Compare any two versions
+
+![VFX Lab compare: two versions side by side on one timeline, with score and parameter deltas](docs/screenshots/200-compare-vfx-iterations-dark.png)
+
+The VFX Lab, the Animation Lab and the Ability Composer have a **Compare** button next to Studio check. It opens two versions side by side in the lab's own preview, so you can see what a refine round actually changed.
+
+- **Pick any two.** A and B can each be the current version, any refine iteration (the best one is marked) or any other entry in the library. It opens on the best scored version that differs from the current one. The swap button switches A and B.
+- **One timeline.** Play, pause, loop, speed and the scrubber drive both previews together, so they are always on the same frame. **Same time** plays both in seconds, and the shorter one holds its last frame. **Stretch** scales both to the same length so you can compare phases. **A/B flip** shows one frame and switches between A and B in place (press `F`). Space plays or pauses, and `,` and `.` step one frame.
+- **What changed.** The score card shows the overall score, every rubric score and every principle score for A and B, with the change. The params list shows each parameter that changed, was added or was removed: nodes by name (`Fireball/Core.Rate`), number and color sequences as one line, joints by key times, easing and pose, and ability events by kind and label. You can filter it by text or by kind.
+- **Use a version.** In the VFX and Animation labs, **Use #n** restores the chosen iteration as the current version.
+
+![Ability Composer compare in the light theme](docs/screenshots/205-compare-ability-light.png)
+
+The compare is generic. `CompareView` / `CompareDialog` (`src/renderer/src/components/compare/`) take a list of `CompareItem`s and a `renderPane(item, ctx)`. A canvas lab wraps its scene class in `<ScenePane create load loadKey />`, and other renderers use `useCompareTime(ctx, draw)`. The data side is in `src/shared/compare/` (`flattenParams`, `diffParams`, score and principle deltas, `defaultPair`, the shared clock), so another lab only needs an item builder like the ones in `labs.ts`.
+#### Bug reports, notifications, restore and digest
+
+![Since your last session: Studio edits, commits by others, a finished lab run, a conflict and failing tests](docs/screenshots/190-qol-away-digest-dark.png)
+
+- **Report a bug**: use the bug button in the title bar, the palette (*Report a bug…*) or Settings > Notifications. Forge takes a screenshot of its window, then asks what happened and what you expected. The report adds the open page, the app and OS versions, the project **name** (the full path only if you tick it), recent renderer and main-process errors and the last 300 log lines from every service. Anything that looks like a key, token, password, cookie or webhook is replaced with `[REDACTED]`, and your home folder shows as `~`. Forge saves `report.md` and `screenshot.png` under `<userData>/bug-reports/<time>/` and copies the markdown to your clipboard; **Reveal** opens the folder. Nothing is uploaded.
+- **Done notifications**: you get an OS notification, with optional sound, when a long task finishes or needs you:
+  - lab compose / refine / critique runs (VFX, Animation, Ability, plus any lab that sends `<lab>:progress` events);
+  - team runs and their change requests;
+  - chat replies that took over 30 s;
+  - Lune tests, test agents and releases;
+  - new Forge Sync conflicts.
+
+  Clicking a notification brings Forge forward on the right page. In **Settings > Notifications** you choose *In background* (default), *Always* or *Off*, and turn each category on or off.
+- **Pick up where you left off**: Forge saves your session to `<userData>/session-state.json` (versioned) and reopens it on start and after an auto-update restart:
+  - open tabs and the active tab;
+  - panel layout;
+  - chat drafts and scroll position;
+  - the selected entry and tab in each lab;
+  - editor cursors.
+
+  Files or entries you deleted in the meantime are skipped.
+- **Since you were away**: a card that shows when you open a project, and when you come back after an hour idle. It lists:
+  - teammate edits Forge Sync pulled from Studio;
+  - new git commits by other people (since the HEAD you last saw);
+  - lab runs that finished;
+  - open Studio conflicts and held places;
+  - failing tests from the last run.
+
+  Each line opens its place in Forge. You can dismiss the card, and turn it off in Settings.
+
+![Report a bug dialog with the redacted report preview](docs/screenshots/192-qol-bug-report-dark.png)
+### Doctor, budget, Add to game
+
+![Forge Doctor with failing, to-check and OK checks](docs/screenshots/210-doctor-issues-dark.png)
+
+**Forge Doctor** (Help menu `ⓘ`, the command palette, or the banner at the top of Settings) checks your whole setup in one run and lists each check as OK, check, or failing. The checks cover:
+
+- the rokit toolchain and its pinned versions
+- Python (for the project sync engine)
+- git and `gh`
+- Studio, the Forge Bridge plugin version and any legacy StudioSync plugins
+- the bridge and `rojo serve` ports
+- the Studio connection, and whether HTTP requests are allowed
+- Forge Sync gate state and conflicts
+- whether a key is set for each provider (keys are never shown)
+- Open Cloud key scopes, checked with Roblox's [API key introspection](https://create.roblox.com/docs/cloud/auth/api-keys) endpoint
+- the OpenAI key used for Art
+- free disk space
+- the project files, Wally packages and sourcemap
+- the updater
+- the macOS screen-recording permission
+
+Each problem comes with a one-click fix or the exact command to run. **Copy as Markdown** puts the report into a bug report, with your home folder replaced by `~`.
+
+![Usage and spending cap settings near the daily cap](docs/screenshots/214-settings-usage-warn-dark.png)
+
+**Spending cap** (Settings > Usage) sets one daily and one monthly USD budget for every AI call: chat, group chats, test agents, team runs, the Labs and image generation. At 80% (adjustable) you get a toast and a status-bar pill. At 100%, new calls are refused with a clear message and a **Raise cap for today** button. The page breaks spending down by provider and by feature and shows the last 14 days. Days and months are counted in your local time. The data stays on your computer in `spend.json` in the app data folder.
+
+![Add to game dialog with a diff to confirm before overwriting](docs/screenshots/217-a2g-diff-light.png)
+
+**Add to game** (VFX Lab, Animation Lab, Ability Composer) writes a lab result into your game:
+
+1. Pick the place (`*.project.json`) and the folder. Forge suggests one from your project layout and remembers your last choice for each lab.
+2. Review the files. The dialog lists every file it will write, using the labs' own exporters and the Rojo mapping. Each one is marked new, unchanged or changed.
+3. Confirm any overwrites. A changed file is only overwritten after you open its diff and tick it.
+
+The result shows the `require` line to paste into Studio's command bar. Other labs can add their own adapter to the same dialog.
 
 ## Install
 

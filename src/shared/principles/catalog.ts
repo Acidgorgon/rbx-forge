@@ -5,6 +5,8 @@
 // critics pick the relevant ones per request; the catalogue is never sent whole.
 
 import type { Principle, PrincipleDomain } from './types.ts'
+import { THUMB_PRINCIPLES } from './thumbCatalog.ts'
+import { UI_PRINCIPLES } from './uiCatalog.ts'
 
 export const ANIM_PRINCIPLES: Principle[] = [
   {
@@ -390,7 +392,7 @@ export const VFX_PRINCIPLES: Principle[] = [
   }
 ]
 
-export const ALL_PRINCIPLES: Principle[] = [...ANIM_PRINCIPLES, ...VFX_PRINCIPLES]
+export const ALL_PRINCIPLES: Principle[] = [...ANIM_PRINCIPLES, ...VFX_PRINCIPLES, ...THUMB_PRINCIPLES, ...UI_PRINCIPLES]
 const BY_ID = new Map(ALL_PRINCIPLES.map((p) => [p.id, p]))
 
 export function principle(id: string): Principle | undefined {
@@ -398,7 +400,7 @@ export function principle(id: string): Principle | undefined {
 }
 
 export function principlesFor(domain: PrincipleDomain): Principle[] {
-  return domain === 'anim' ? ANIM_PRINCIPLES : VFX_PRINCIPLES
+  return domain === 'anim' ? ANIM_PRINCIPLES : domain === 'thumb' ? THUMB_PRINCIPLES : domain === 'ui' ? UI_PRINCIPLES : VFX_PRINCIPLES
 }
 
 export function principleName(id: string): string {
@@ -407,7 +409,7 @@ export function principleName(id: string): string {
 
 // Short label for scorecards (terminal style).
 export function principleLabel(id: string): string {
-  return id.replace(/^fx-/, '')
+  return id.replace(/^(?:fx|th|ui)-/, '')
 }
 
 // Ids the code checks can measure.

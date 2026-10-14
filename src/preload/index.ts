@@ -8,6 +8,7 @@ const methods = [
   'getStudioConflicts', 'resolveStudioConflict',
   'listChats', 'newChat', 'getChat', 'sendChat', 'stopChat', 'hasApiKey', 'setApiKey',
   'addGuest', 'removeGuest', 'setGuestTools', 'startRoundtable', 'planToChecklist',
+  'getGroupSettings', 'setGroupSettings', 'applyPatchProposal', 'mergePatchProposal', 'dismissPatchProposal', 'saveBoard',
   'setChatEffort', 'getDefaultEffort', 'setDefaultEffort', 'addChatImage', 'getChatImage',
   'listProviders', 'setProviderKey', 'setProviderConfig', 'listModels', 'setChatModel',
   'getDefaultModel', 'setDefaultModel', 'getAnthropicUseClaudeLogin', 'setAnthropicUseClaudeLogin',
@@ -68,12 +69,18 @@ const methods = [
   // Ability Composer (moves: animation + VFX + shake / screen / hit-stop / movement)
   'abilityStatus', 'abilityList', 'abilityGet', 'abilitySave', 'abilityDelete', 'abilityRate', 'abilityCompose', 'abilityCritique',
   'abilityExport', 'abilityExamples', 'abilityAddExample', 'abilityFile', 'abilitySaveThumb', 'abilityChooseSounds', 'abilitySoundUrl',
+  // UI Motion Lab (Figma import, effect stacks -> client Luau)
+  'uiMotionStatus', 'uiMotionList', 'uiMotionGet', 'uiMotionSave', 'uiMotionDelete', 'uiMotionRate', 'uiMotionComponents',
+  'uiMotionImportFigmaDoc', 'uiMotionImportFigmaUrl', 'uiMotionFigmaToken', 'uiMotionSetFigmaToken', 'uiMotionClearFigmaToken',
+  'uiMotionTestFigmaToken', 'uiMotionLabStory', 'uiMotionCompose', 'uiMotionCritique', 'uiMotionExport', 'uiMotionSnap', 'uiMotionFile',
   // Studio check (Forge Bridge plugin: play in Roblox Studio, capture the key beats)
   'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile',
   // Video references (VFX Lab + Animation Lab: "make it like this")
   'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
   // Restate first (chat cards, Labs briefs)
   'getRestateSettings', 'setRestateSettings', 'restateBrief', 'restateConfirm', 'confirmChatRestate',
+  // Chat modes + slash commands
+  'setChatMode', 'sendChatMode', 'reviewChatEdit', 'planCardAction', 'listChatCommands', 'runChatCommand', 'listChatCheckpoints', 'rewindChat',
   // Principle priorities (learned from Labs ratings)
   'principlesView', 'principlesReset',
   // Forge Sync (Studio -> disk, gates rojo serve)
@@ -81,8 +88,20 @@ const methods = [
   'forgeSyncSettings', 'setForgeSyncSettings',
   // Lab gating (decision log, decision models, cost per kept)
   'labGatingView', 'labGatingSet', 'labGatingRetrain', 'labGatingReset',
+  // Thumbnail Lab (references, style profiles, bases, variations, critic, CTR, upload)
+  'thumbStatus', 'thumbSetSettings', 'thumbRefs', 'thumbAddRefs', 'thumbChooseImages', 'thumbAnalyzeRef', 'thumbUpdateRef', 'thumbDeleteRef',
+  'thumbProfiles', 'thumbSaveProfile', 'thumbDeleteProfile', 'thumbBases', 'thumbAddBases', 'thumbCaptureStudio', 'thumbDeleteBase',
+  'thumbEstimate', 'thumbGenerate', 'thumbCritique', 'thumbRefine', 'thumbList', 'thumbRate', 'thumbShip', 'thumbNotes', 'thumbDelete',
+  'thumbAddCtr', 'thumbRemoveCtr', 'thumbUpload', 'thumbSetExperience', 'thumbTaste', 'thumbFile',
+  // Quality of life (bug reports, notifications, session restore, away digest)
+  'qolGetSettings', 'qolSetSettings', 'qolBugReportStart', 'qolBugReport', 'qolBugReportPreview', 'qolRevealPath', 'qolReportError',
+  'qolLoadSession', 'qolSaveSession', 'qolDigest', 'qolSeen', 'qolTestNotify',
   // Self-update (electron-updater)
-  'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
+  'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease',
+  // Forge Doctor, spending cap, Add to game (qol-c)
+  'doctorRun', 'doctorLast', 'doctorFix',
+  'spendState', 'spendSetSettings', 'spendRaiseToday', 'spendClearOverride',
+  'addToGameOptions', 'addToGamePreview', 'addToGameApply'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]
 
 // Compile-time check: every HarnessApi method is exposed (tsc names any that is missing).

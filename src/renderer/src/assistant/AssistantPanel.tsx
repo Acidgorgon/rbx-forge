@@ -1,6 +1,7 @@
 // Assistant panel (SPEC §7.5) in the terminal style: model / mode pills, usage meter, compact
 // messages (no avatars), group chat, orchestrator task board, and the "> Type a message" composer.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { useChatDraft, useChatScroll, rememberChatScroll } from '../qol/chatSession'
 import type { BoardView, ChatImage, ChatMessage, OrchestrateMode, TaskView } from '@shared/types'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
@@ -17,7 +18,12 @@ import { AttachGlyph, ImageThumb, MessageImages } from './ChatImages'
 import { EffortPicker, RouteSummary, useVision } from './EffortPicker'
 import { acceptedImageType } from './imageScale'
 import { RestateMessage } from './RestateMessage'
+import { ConclusionCard, PatchCard, ReviewCard, SettingsNotice, splitStance, StancePill } from './GroupCards'
 import './chatextras.css'
+import { ModeBadge, ModePill, cycleMode, useChatMode } from './commands/ModePill'
+import { PlanModeCard } from './commands/PlanModeCard'
+import { DiffCard } from './commands/DiffCard'
+import { CommandOutput, slashMatches, useCommandList, useSlashRunner } from './commands/slash'
 
 type Item = { kind: 'msg'; m: ChatMessage } | { kind: 'tools'; ms: ChatMessage[]; id: string }
 
@@ -82,7 +88,7 @@ export function Message({ m }: { m: ChatMessage }) {
   if (m.role === 'user') {
     return (
       <div className="m-user">
-        <span className="m-who">you</span>
+        <span className="m-who">you{m.mode && <ModeBadge mode={m.mode} />}</span>
         <div className="m-body">
           {m.text && <div className="m-text selectable">{m.text}</div>}
           {m.images?.length ? <MessageImages images={m.images} size="sm" /> : null}
@@ -90,17 +96,25 @@ export function Message({ m }: { m: ChatMessage }) {
       </div>
     )
   }
-  if (m.role === 'system') return <div className="m-system selectable">{m.text}</div>
+  if (m.command) return <CommandOutput m={m} />
+  if (m.role === 'system') return m.settingsLink ? <SettingsNotice m={m} /> : <div className="m-system selectable">{m.text}</div>
+  if (m.planMode) return <PlanModeCard m={m} />
+  if (m.diff) return <DiffCard m={m} />
   if (m.card === 'plan') return <PlanCard m={m} />
   if (m.card === 'checklist') return <ChecklistCard m={m} />
   if (m.card === 'restate' && m.restate) return <RestateMessage m={m} />
+  if (m.card === 'conclusion' && m.conclusion) return <ConclusionCard m={m} />
+  if (m.card === 'patch' && m.patch) return <PatchCard m={m} />
+  if (m.card === 'review' && m.review) return <ReviewCard m={m} />
   const fromAgent = m.agentId && m.agentId !== 'main'
   const host = !!chat && !!m.speaker && m.speaker.provider === chat.provider && m.speaker.model === chat.model
+  const st = m.speaker && isGroup(chat) ? splitStance(m.text) : { text: m.text, stance: null }
   return (
     <div className="m-assistant selectable">
       {fromAgent && <AgentTag id={m.agentId} />}
       {m.speaker && isGroup(chat) && <SpeakerHead s={m.speaker} host={host} chat={chat} />}
-      {m.text && <Markdown text={m.text} />}
+      {st.text && <Markdown text={st.text} />}
+      {st.stance && <StancePill stance={st.stance} />}
       {m.images?.length ? <MessageImages images={m.images} /> : null}
     </div>
   )
@@ -179,16 +193,6 @@ const MODES: { id: OrchestrateMode; label: string; hint: string }[] = [
   { id: 'team', label: 'team mode', hint: 'A lead plans and specialists build, test and review in parallel' }
 ]
 
-const SLASH: { cmd: string; desc: string }[] = [
-  { cmd: '/new', desc: 'new thread' },
-  { cmd: '/team', desc: 'run the request as a team (orchestrator)' },
-  { cmd: '/restate', desc: 'restate the goal first, then wait for a yes' },
-  { cmd: '/roundtable', desc: 'group chat: models take turns on a topic' },
-  { cmd: '/agents', desc: 'play-test in Studio with test agents' },
-  { cmd: '/tests', desc: 'run the Lune tests' },
-  { cmd: '/lint', desc: 'run selene + StyLua' },
-  { cmd: '/sync', desc: 'sync with collaborators' }
-]
 
 let handledInsert = 0
 
@@ -263,6 +267,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
   }
   const problems = useProblems()
   const [text, setText] = useState('')
+  useChatDraft(id, text, setText)
   const [caret, setCaret] = useState(0)
   const [pick, setPick] = useState(0)
   const [closedAt, setClosedAt] = useState<number | null>(null)
@@ -283,7 +288,11 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
     ...(groupChat ? models.map((o) => ({ kind: 'model' as const, o })) : []),
     ...files.map((s) => ({ kind: 'file' as const, path: s.path, name: s.name }))
   ]
-  const slash = text.startsWith('/') && !text.includes(' ') ? SLASH.filter((c) => c.cmd.startsWith(text.toLowerCase())) : []
+  // Chat mode (Ask / Plan / Edit / Auto) and slash commands (built-ins + custom, commands/slash.tsx).
+  const chatMode = useChatMode()
+  const commandList = useCommandList(text.startsWith('/') && !/\s/.test(text))
+  const slash = slashMatches(commandList, text)
+  const slashRunner = useSlashRunner({ anchor: () => ref.current, mode: chatMode.mode, send: (t, m) => void actions.send(t, [], m ? { mode: m } : {}) })
 
   useLayoutEffect(() => {
     const el = ref.current
@@ -342,6 +351,14 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
     }
     const [cmd, ...rest] = t.split(/\s+/)
     const arg = rest.join(' ')
+    // /ask and /plan: this one message in that mode; other Forge commands run in main.
+    if ((cmd.toLowerCase() === '/ask' || cmd.toLowerCase() === '/plan') && arg) {
+      setText('')
+      const sent = vision ? images : []
+      setImages([])
+      return void actions.send(arg, sent, { mode: cmd.toLowerCase() === '/ask' ? 'ask' : 'plan' })
+    }
+    if (slashRunner.run(t)) return setText('')
     switch (cmd.toLowerCase()) {
       case '/new':
         setText('')
@@ -377,7 +394,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
     const sent = vision ? images : []
     setImages([])
     if (mode === 'team' && !id && !sent.length) void actions.startOrchestration(t)
-    else void actions.send(t, sent)
+    else void actions.send(t, sent, chatMode.pendingMode ? { mode: chatMode.pendingMode } : {})
   }
 
   const onKey = (e: KeyboardEvent<HTMLTextAreaElement>) => {
@@ -390,7 +407,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
       }
       if (e.key === 'Tab' && !e.shiftKey) {
         e.preventDefault()
-        if (slash.length) insertAt(0, slash[Math.min(pick, slash.length - 1)].cmd + ' ')
+        if (slash.length) insertAt(0, `/${slash[Math.min(pick, slash.length - 1)].name} `)
         else choose(Math.min(pick, options.length - 1))
         return
       }
@@ -406,10 +423,10 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
         return
       }
     }
+    // Shift+Tab cycles the chat mode (Ask -> Plan -> Edit -> Auto); routing has its own pill.
     if (e.key === 'Tab' && e.shiftKey) {
       e.preventDefault()
-      const i = MODES.findIndex((m) => m.id === mode)
-      setMode(MODES[(i + 1) % MODES.length].id)
+      cycleMode(chatMode.mode, chatMode.setMode)
       return
     }
     // ⌘↵ sends; Enter is a newline (it is a code tool).
@@ -427,9 +444,11 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
         <div className="cmp-pop" onMouseDown={(e) => e.preventDefault()}>
           {slash.length > 0
             ? slash.map((c, i) => (
-                <button key={c.cmd} className={`cmp-opt${i === pick ? ' on' : ''}`} onClick={() => insertAt(0, c.cmd + ' ')}>
-                  <span>{c.cmd}</span>
-                  <span className="faint ellipsis">{c.desc}</span>
+                <button key={c.name} className={`cmp-opt${i === pick ? ' on' : ''}`} onClick={() => insertAt(0, `/${c.name} `)}>
+                  <span className="cm-opt-name">/{c.name}</span>
+                  {c.args && <span className="cm-opt-args">{c.args}</span>}
+                  <span className="faint ellipsis">{c.description}</span>
+                  {c.source && c.source !== 'builtin' && <span className="cm-opt-src">{c.source}</span>}
                 </button>
               ))
             : (
@@ -537,10 +556,14 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
       </div>
       <div className="cmp-hint" title={modeInfo.hint}>
         <span className="cmp-hint-l">
-          <span className="cmp-mode">››</span> {modeInfo.label} on <span className="faint">(</span><span className="kc">Shift</span><span className="faint">+</span><span className="kc">Tab</span><span className="faint"> to cycle)</span>
+          <ModePill mode={chatMode.mode} setMode={chatMode.setMode} />
+          <span className="cm-cycle" title={`Shift+Tab cycles the chat mode · routing: ${modeInfo.label}`}>
+            <span className="kc">Shift</span>+<span className="kc">Tab</span>
+          </span>
         </span>
         <span className="kc cmp-send-kc" title="Send">{keyHint('mod+enter')}</span>
       </div>
+      {slashRunner.node}
     </div>
   )
 }
@@ -608,6 +631,7 @@ export function AssistantPanel() {
     const el = scroller.current
     if (el && stick.current) el.scrollTop = el.scrollHeight
   }, [items, busy, boards.length])
+  useChatScroll(id, scroller, stick, items.length)
 
   const history = (el: HTMLElement) => {
     const entries: MenuEntry[] = [{ header: 'Threads' }]
@@ -663,6 +687,7 @@ export function AssistantPanel() {
           onScroll={(e) => {
             const el = e.currentTarget
             stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 80
+            rememberChatScroll(id, el.scrollTop, stick.current)
           }}
         >
           {noProvider && (

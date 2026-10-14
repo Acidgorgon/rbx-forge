@@ -7,6 +7,9 @@ import { instancePathOfFile, featuresOf, scriptsFlat, realmOfFile } from '../lib
 import { sparks } from '../lib/sparks'
 import { newTerminal, requestFocus, runTask, startTerminals, termStore } from '../terminal/session'
 import { requestPack } from '../pages/memory/MemoryPack'
+import { requestBugReport, requestDigest } from '../qol/QolRoot'
+import { openNotificationSettings } from '../qol/QolSettings'
+import { openDoctor, openUsageSettings } from '../pages/qolc/events'
 
 export interface Command {
   id: string
@@ -91,6 +94,9 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Navigate', 'go.line', 'Go to line…', () => actions.openPalette(':'), { keys: 'ctrl+g', icon: <Icon name="arrowRight" /> })
   add('Navigate', 'forge', 'Open Forge tab', () => actions.openPage('forge'), { keys: 'mod+shift+h', icon: <Icon name="hammer" /> })
   add('Navigate', 'toolchain', 'Toolchain: install or repair tools', () => (actions.openPage('settings'), setTimeout(() => document.getElementById('set-toolchain')?.scrollIntoView({ block: 'start' }), 80)), { icon: <Icon name="tool" />, detail: 'rokit · rojo · wally · lune · luau-lsp…' })
+  add('Help', 'doctor', 'Forge Doctor: check my setup', openDoctor, { icon: <Icon name="check" />, detail: 'toolchain · Studio · ports · sync · keys · disk · project' })
+  add('Help', 'spend.settings', 'Spending cap and usage', () => openUsageSettings(actions), { icon: <Icon name="chart" />, detail: 'daily + monthly AI budget' })
+  add('Help', 'spend.raise', 'Raise spending cap for today', () => void window.harness.spendRaiseToday().then((s) => actions.toast({ text: `Cap raised for today (+$${s.overrideToday.toFixed(2)})`, kind: 'ok', ms: 3000 })), { icon: <Icon name="arrowUp" /> })
   add('Navigate', 'settings', 'Open Settings', () => actions.openPage('settings'), { keys: 'mod+comma', icon: <Icon name="gear" /> })
   add('Navigate', 'packages', 'Open Packages (Wally, Rokit)', () => actions.openPage('packages'), { icon: <Icon name="package" /> })
   add('Navigate', 'release', 'Open Release', () => actions.openPage('release'), { icon: <Icon name="rocket" /> })
@@ -98,7 +104,9 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Navigate', 'art', 'Open Art (image concepts)', () => actions.openPage('art'), { icon: <Icon name="image" /> })
   add('Navigate', 'anim', 'Open Animation Lab', () => actions.openPage('anim'), { icon: <Icon name="figure" />, detail: 'R15 animations · library · make & refine' })
   add('Navigate', 'vfx', 'Open VFX Lab', () => actions.openPage('vfx'), { icon: <Icon name="sparkle" />, detail: 'particle effects · library · make & refine' })
+  add('Navigate', 'uimotion', 'Open UI Motion Lab', () => actions.openPage('uimotion'), { icon: <Icon name="tap" />, detail: 'Figma import · hover / press springs, shine, glow, ripple · compiled to Luau' })
   add('Navigate', 'ability', 'Open Ability Composer', () => actions.openPage('ability'), { icon: <Icon name="bolt" />, detail: 'moves · animation + VFX + shake + hit-stop on one timeline' })
+  add('Navigate', 'thumbs', 'Open Thumbnail Lab', () => actions.openPage('thumbs'), { icon: <Icon name="thumbnail" />, detail: 'experience thumbnails · style profiles · CTR' })
   add('Navigate', 'uipreview', 'Open UI Preview (UI Labs stories)', () => actions.openPage('uipreview'), { icon: <Icon name="monitor" /> })
   add('Navigate', 'memory', 'Open Memory & skills', () => actions.openPage('memory'), { icon: <Icon name="memory" /> })
   // Memory export/import and device sync (pages/memory/MemoryPack.tsx).
@@ -156,6 +164,11 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('View', 'motion.full', 'Motion: Full', () => setMotionMode('full'), { icon: <Icon name="eye" /> })
   add('View', 'motion.reduced', 'Motion: Reduced', () => setMotionMode('reduced'), { icon: <Icon name="eye" /> })
   add('View', 'motion.off', 'Motion: Off', () => setMotionMode('off'), { icon: <Icon name="eye" /> })
+
+  // Help (qol/)
+  add('Help', 'help.bug', 'Report a bug…', requestBugReport, { icon: <Icon name="bug" />, detail: 'screenshot + logs, redacted, saved locally' })
+  add('Help', 'help.digest', 'Show what changed since my last session', requestDigest, { icon: <Icon name="clock" />, detail: 'Studio edits, commits, lab runs, conflicts' })
+  add('Help', 'help.notifications', 'Notification settings', () => openNotificationSettings(() => actions.openPage('settings')), { icon: <Icon name="bell" /> })
 
   // File
   if (active) add('File', 'file.save', 'Save', () => void actions.saveFile(active), { keys: 'mod+s', icon: <Icon name="download" /> })

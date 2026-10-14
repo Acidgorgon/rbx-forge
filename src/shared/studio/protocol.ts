@@ -60,7 +60,8 @@ export interface BridgeBeat {
 export interface BridgeJob {
   id: string
   version: number
-  kind: 'vfx' | 'anim' | 'ability'
+  // snapshot (Thumbnail Lab): no stage, no camera change; capture the user's current viewport.
+  kind: 'vfx' | 'anim' | 'ability' | 'snapshot'
   // realtime: play once at full speed, Forge records the window and picks the frames nearest each
   // beat. stepped: the plugin poses the rig at each beat (Animator:StepAnimations) and waits.
   mode: 'realtime' | 'stepped'

@@ -1793,6 +1793,12 @@ function World:instanceForFile(file: string)
 	return self.byFile[file]
 end
 
+-- Gives an instance a source file (a story outside the Rojo tree, e.g. the UI Motion Lab's scratch story).
+function World:bindFile(inst, file: string)
+	data[inst].file = file
+	self.byFile[file] = inst
+end
+
 function World:fileOf(inst): string?
 	return isInstance(inst) and data[inst].file or nil
 end

@@ -89,7 +89,7 @@ export function usePrincipleWeights(): Record<string, number> {
   return w
 }
 
-const LAB_LABEL: Record<string, string> = { vfx: 'vfx', anim: 'anim', ability: 'move' }
+const LAB_LABEL: Record<string, string> = { vfx: 'vfx', anim: 'anim', ability: 'move', uimotion: 'ui' }
 
 // "Your priorities": how much each principle counts for this user, learned from their ratings.
 export function PrinciplePriorities({ domains }: { domains: PrincipleDomain[] }) {
@@ -144,7 +144,7 @@ export function PrinciplePriorities({ domains }: { domains: PrincipleDomain[] })
           return (
             <li key={p.id} className={d > 0.05 ? 'up' : d < -0.05 ? 'down' : ''}>
               <span className="pr-name mono" title={p.rule}>
-                {domains.length > 1 && <span className="faint">{p.domain === 'vfx' ? 'fx·' : 'an·'}</span>}
+                {domains.length > 1 && <span className="faint">{p.domain === 'vfx' ? 'fx·' : p.domain === 'ui' ? 'ui·' : 'an·'}</span>}
                 {principleLabel(p.id)}
                 {p.measured && <span className="faint" title="Measured in code as well as judged by the critic"> ·m</span>}
               </span>

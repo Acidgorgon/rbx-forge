@@ -39,8 +39,8 @@ export interface QolDeps {
   emit: (event: string, payload: unknown) => void
   log: (text: string, stream?: LogLine['stream']) => void
   isFocused: () => boolean
-  // Shows one OS notification; onClick focuses Forge and opens the target.
-  showNotification: (n: { title: string; body: string; sound: boolean }, onClick: () => void) => void
+  // Shows one OS notification; onClick focuses Forge and opens the target. false: the OS has none.
+  showNotification: (n: { title: string; body: string; sound: boolean }, onClick: () => void) => boolean | void
   focusWindow: () => void
   capture: () => Promise<Uint8Array | null>
   copy: (text: string) => void
@@ -154,8 +154,13 @@ export class QolService {
   }
 
   private taskDone(name: string, start: number, ok: boolean, error?: string): void {
-    const c = this.router.task(name, this.now() - start, ok, error)
-    if (c) this.deliver(c)
+    try {
+      const c = this.router.task(name, this.now() - start, ok, error)
+      if (c) this.deliver(c)
+    } catch (e) {
+      // Runs in a promise callback: a throw here would be an unhandled rejection in main.
+      this.deps.log(`[qol] notify ${name}: ${e}`, 'stderr')
+    }
   }
 
   deliver(c: NotifyCandidate): boolean {
@@ -174,7 +179,8 @@ export class QolService {
 
   testNotify(): void {
     const s = this.settings().notify
-    this.deps.showNotification({ title: 'RBX Forge notifications work', body: 'Click to come back to Forge.', sound: s.sound }, () => this.deps.focusWindow())
+    const shown = this.deps.showNotification({ title: 'RBX Forge notifications work', body: 'Click to come back to Forge.', sound: s.sound }, () => this.deps.focusWindow())
+    if (shown === false) throw new Error('This system does not support desktop notifications.')
   }
 
   // ---- errors

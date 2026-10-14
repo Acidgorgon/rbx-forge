@@ -61,7 +61,14 @@ export function formatLogLine(line: LogLine): string {
 
 export function assembleBugReport(facts: BugReportFacts): AssembledReport {
   const replace: { from: string; to: string }[] = []
-  if (facts.project && !facts.includePath && facts.project.root) replace.push({ from: facts.project.root, to: `<${facts.project.name || 'project'}>` })
+  if (facts.project && !facts.includePath && facts.project.root) {
+    const to = `<${facts.project.name || 'project'}>`
+    replace.push({ from: facts.project.root, to })
+    // Sections that already shortened the home folder (Forge Doctor) show the root as ~/...
+    const home = facts.homeDir?.replace(/[\\/]+$/, '')
+    const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase()
+    if (home && norm(facts.project.root).startsWith(norm(home) + '/')) replace.push({ from: '~' + facts.project.root.slice(home.length), to })
+  }
   if (facts.homeDir) replace.push({ from: facts.homeDir, to: '~' })
   let redactions = 0
   const clean = (text: string) => {
@@ -111,6 +118,6 @@ export function assembleBugReport(facts: BugReportFacts): AssembledReport {
   lines.push(`## Last ${logs.length} log lines`, '')
   lines.push(logs.length ? fence(clean(logs.map(formatLogLine).join('\n'))) : '_No log lines._', '')
 
-  if (redactions) lines.push(`_${redactions} value${redactions === 1 ? '' : 's'} that looked like keys, tokens, passwords or cookies were replaced with [REDACTED]._`, '')
+  if (redactions) lines.push(`_${redactions} value${redactions === 1 ? '' : 's'} that looked like keys, tokens, passwords, cookies or email addresses were replaced with [REDACTED]._`, '')
   return { markdown: lines.join('\n'), redactions }
 }

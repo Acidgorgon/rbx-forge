@@ -22,7 +22,7 @@ export function createQol(wiring: Wiring) {
     ...wiring,
     isFocused: () => BrowserWindow.getFocusedWindow() !== null,
     showNotification: (n, onClick) => {
-      if (!Notification.isSupported()) return
+      if (!Notification.isSupported()) return false
       const note = new Notification({ title: n.title, body: n.body, silent: !n.sound })
       live.add(note)
       note.on('click', () => {
@@ -31,6 +31,7 @@ export function createQol(wiring: Wiring) {
       })
       note.on('close', () => live.delete(note))
       note.show()
+      return true
     },
     focusWindow: () => {
       const w = mainWindow()

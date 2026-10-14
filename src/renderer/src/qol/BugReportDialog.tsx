@@ -73,7 +73,7 @@ export function BugReportDialog({ screenshot, onClose }: { screenshot: boolean; 
 
   return (
     <Dialog title="Report a bug" onClose={onClose} width={560}>
-      <p>Saved on this computer and copied to your clipboard. Keys, tokens, passwords and cookies in the logs are replaced with [REDACTED].</p>
+      <p>Saved on this computer and copied to your clipboard. Keys, tokens, passwords, cookies and email addresses are replaced with [REDACTED], and your home folder with ~.</p>
       <label className="field qol-field">
         <span>What happened</span>
         <textarea className="input" rows={4} autoFocus value={what} onChange={(e) => setWhat(e.target.value)} placeholder="I pressed Refine on the purple slash and the preview went black…" />

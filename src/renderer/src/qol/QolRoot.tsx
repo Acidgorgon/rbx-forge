@@ -71,7 +71,12 @@ function useSessionRestore(): void {
       try {
         const [session, settings] = await Promise.all([loadSession(), window.harness.qolGetSettings()])
         if (!settings.restore) return
-        if (session.layout) actions.setLayout(session.layout as Partial<Layout>)
+        if (session.layout) {
+          // Only known panel keys with the right type (a hand-edited or older file must not break the layout).
+          const cur = state.layout as unknown as Record<string, unknown>
+          const patch = Object.fromEntries(Object.entries(session.layout).filter(([k, v]) => k in cur && typeof v === typeof cur[k] && (typeof v !== 'number' || (v >= 0 && v < 10_000))))
+          if (Object.keys(patch).length) actions.setLayout(patch as Partial<Layout>)
+        }
         const ps = root ? session.projects[root] : null
         if (!ps || !ps.tabs.length) return
         const files = ps.tabs.filter((t) => t.kind === 'file' && t.path).map((t) => t.path!)

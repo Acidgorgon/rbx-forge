@@ -84,6 +84,33 @@ test('redactor: path replacements cover both separators', () => {
   assert.equal(text, 'opened <Tree> and <Tree>/src')
 })
 
+test('redactor: Windows home paths in any case, escaped or URI form; other accounts too', () => {
+  const replace = [{ from: 'C:\\Users\\Acid Gorgon\\Games\\Tree', to: '<Tree>' }, { from: 'C:\\Users\\Acid Gorgon', to: '~' }]
+  const input = [
+    'open c:\\users\\acid gorgon\\games\\tree\\src\\a.luau',
+    '{"path":"C:\\\\Users\\\\Acid Gorgon\\\\AppData\\\\Roaming"}',
+    'uri file:///c%3A/Users/Acid%20Gorgon/x',
+    'lsp file:///c%3A/Users/Acid Gorgon/Games/Tree/init.luau',
+    'other C:\\Users\\Mira\\Desktop and /Users/mira/Documents and /home/mira/.config',
+    'public C:\\Users\\Public\\Roblox stays'
+  ].join('\n')
+  const { text } = redact(input, { replace })
+  for (const leak of ['acid gorgon', 'Acid Gorgon', 'Acid%20Gorgon', 'Mira', 'mira']) assert.ok(!text.includes(leak), `leaked ${leak}: ${text}`)
+  assert.ok(text.includes('open <Tree>\\src\\a.luau'), text)
+  assert.ok(text.includes('lsp file:///<Tree>/init.luau'), text)
+  assert.ok(text.includes('~\\\\AppData'), text)
+  assert.ok(text.includes('C:\\Users\\Public\\Roblox'), text)
+  // A longer folder name that only starts like the home folder is not cut in half.
+  assert.equal(redact('/Users/acidgorgon/x', { replace: [{ from: '/Users/acid', to: '~' }] }).text, '~/x')
+})
+
+test('redactor: email addresses', () => {
+  const { text, count } = redact('author Mira Lee <mira.lee+forge@example.co.uk> pushed; remote git@github.com:acid/tree.git')
+  assert.ok(!text.includes('mira.lee'), text)
+  assert.ok(text.includes('git@github.com:acid/tree.git'), text)
+  assert.equal(count, 1)
+})
+
 // ---------------------------------------------------------------- report assembly
 
 function facts(over: Partial<BugReportFacts> = {}): BugReportFacts {
@@ -124,6 +151,12 @@ test('bug report: sections, last 300 log lines, project name only, everything re
   assert.ok(redactions >= 2)
   assert.ok(markdown.includes('![Forge window](screenshot.png)'))
   assert.ok(markdown.includes('[REDACTED]._'))
+})
+
+test('bug report: a Doctor section that already shortened home to ~ does not leak the project path', () => {
+  const { markdown } = assembleBugReport(facts({ extra: [{ title: 'Forge Doctor', body: '| WARN | Disk: Project | 2.0 GB free at ~/Games/Tree. |' }] }))
+  assert.ok(!markdown.includes('~/Games/Tree'), markdown)
+  assert.ok(markdown.includes('free at <Tree>.'))
 })
 
 test('bug report: full path only when ticked; no screenshot section without one; extra sections', () => {
@@ -608,4 +641,23 @@ test('service: the automatic open digest is answered once per project open (a re
   f.service.observe('sync:entry', [{ file: 'src/b.luau', action: 'pulled', instancePath: [], at: f.clock.now + 5 }])
   f.clock.now += 10
   assert.ok(await f.service.digest({ reason: 'open' }))
+})
+
+test('service: test notification reports a system without notifications; a failing notifier never rejects', async () => {
+  const none = fake({ showNotification: () => false })
+  assert.throws(() => none.service.testNotify(), /does not support desktop notifications/)
+  const logged: string[] = []
+  const broken = fake({ showNotification: () => { throw new Error('toast failed') }, log: (t) => void logged.push(t), router: { longTaskMs: 0 } })
+  broken.service.setSettings({ notify: { mode: 'always' } })
+  const rejections: unknown[] = []
+  const onRejection = (r: unknown) => void rejections.push(r)
+  process.on('unhandledRejection', onRejection)
+  try {
+    await broken.service.timed('vfxRefine', async () => 'ok')()
+    await new Promise((r) => setTimeout(r, 10))
+  } finally {
+    process.off('unhandledRejection', onRejection)
+  }
+  assert.deepEqual(rejections, [])
+  assert.ok(logged.some((l) => l.includes('toast failed')), logged.join('\n'))
 })

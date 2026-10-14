@@ -115,6 +115,16 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
     }
   }, [openPaths])
 
+  // When the editor goes away (every file tab closed at once, e.g. on a project switch) the effect
+  // above does not run again: drop the remaining models, or a file with the same path in the next
+  // project would reopen the old project's text (Monaco reuses a model by path).
+  useEffect(
+    () => () => {
+      for (const m of monaco.editor.getModels()) if (m.uri.scheme === 'file' && !m.isAttachedToEditor()) m.dispose()
+    },
+    []
+  )
+
   // Markers (luau-lsp, Blink) feed the Problems panel and status bar.
   useEffect(() => {
     let timer: ReturnType<typeof setTimeout> | null = null

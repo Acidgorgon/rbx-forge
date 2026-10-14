@@ -205,3 +205,11 @@ export function spendState(book: SpendBook, settings: SpendSettings, now: number
     history
   }
 }
+
+// "25", "$25", "12,50" (decimal comma), "1,000" / "1 000" (thousands) -> number; '' -> null; NaN when unreadable.
+export function parseUsd(text: string): number | null {
+  let t = text.trim().replace(/^\$/, '').replace(/[\s\u00a0]/g, '')
+  if (t === '') return null
+  t = /^\d+,\d{1,2}$/.test(t) ? t.replace(',', '.') : t.replace(/,/g, '')
+  return /^\d*\.?\d+$|^\d+\.$/.test(t) ? Number(t) : NaN
+}

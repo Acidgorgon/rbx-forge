@@ -79,6 +79,10 @@ import { createAddToGameWiring } from './services/addToGame/wire.ts'
 // used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
 app.setName('RBX Forge')
 app.setPath('userData', join(app.getPath('appData'), 'rbx-forge'))
+// Windows shows toast notifications only for the AppUserModelID of a Start menu shortcut: the
+// installer's shortcut carries appId (electron-builder.yml). Without this, "run finished"
+// notifications silently never appear on Windows.
+if (process.platform === 'win32') app.setAppUserModelId(app.isPackaged ? 'com.acidgorgon.rbxforge' : process.execPath)
 
 // One window per user: a second launch (double-clicking the app again) focuses the first.
 if (!app.requestSingleInstanceLock()) {
@@ -298,6 +302,9 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   project = opened
   settings.setLastProject(full)
   harnessLog(`opened ${full}`)
+  // Before project:changed reaches the renderer: its "since you were away" request (3.5 s later)
+  // must not run against the previous project's last-seen state while sync and services start.
+  await qol.service.onProjectOpen(full).catch(() => undefined)
 
   opened.watch((change) => {
     if (change.info) emit('project:changed', opened.info)
@@ -361,7 +368,6 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   await integrations.onProjectOpen(full).catch((error) => harnessLog(`integrations: ${error}`, 'stderr'))
   setup.onProjectOpen(full)
   void memory.onProjectOpen()
-  await qol.service.onProjectOpen(full).catch(() => undefined)
   return opened.info
 }
 

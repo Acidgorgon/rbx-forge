@@ -146,6 +146,8 @@ export interface AnalyticsStatus {
   apiProblem?: string
   poller: { running: boolean; intervalMinutes: number; snapshots: number; lastAt?: string }
   imports: ImportSummary[]
+  // No key and public stats not turned on: Forge makes no Roblox calls (the page shows how to add a key).
+  keyless?: boolean
 }
 
 export interface ImportSummary {

@@ -220,6 +220,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     dataDir: join(deps.userDataDir, 'analytics'),
     getReleases: releaseMarkers,
     pollIntervalMinutes: settings.get<number>('analytics.pollMinutes', 15),
+    publicWithoutKey: () => settings.get<boolean>('analytics.publicWithoutKey', false) === true,
     onSnapshot: (snapshot) => emit('analytics:snapshot', snapshot)
   })
   const configureAnalytics = async (r: string | null) => {
@@ -230,7 +231,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     const placeId = cfg?.publish.placeId ?? ids.placeId ?? (await release.studioSyncPlaceIds(r).catch(() => []))[0]
     const universeId = cfg?.publish.universeId ?? ids.universeId
     analytics.configure({ root: r, placeId, universeId })
-    if (settings.get('analytics.poller', true) && (placeId || universeId)) {
+    if (settings.get('analytics.poller', true) && (placeId || universeId) && !(await analytics.keyless())) {
       try {
         ;(await analytics.publicPoller()).start()
       } catch (error) {
@@ -414,6 +415,8 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
       const k = String(key ?? '').trim()
       if (!release.looksLikeApiKey(k)) throw new Error('That does not look like an Open Cloud API key.')
       await analytics.setApiKey(k, scope === 'global' ? 'global' : 'project')
+      // A first key starts public tracking too (it waited for the key or the opt-in).
+      await configureAnalytics(deps.root()).catch(() => undefined)
       return analytics.status()
     },
     analyticsClearApiKey: async (scope?: SecretScope) => {
@@ -436,6 +439,8 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     analyticsRemoveImport: async (input: { metric: string; breakdown?: Record<string, string> }) => (await analytics.importStore()).remove(String(input?.metric ?? ''), input?.breakdown),
     analyticsPoller: async (running: boolean) => {
       settings.set('analytics.poller', !!running)
+      // Turning public tracking on is the opt-in to keyless Roblox calls.
+      if (running) settings.set('analytics.publicWithoutKey', true)
       if (running) (await analytics.publicPoller()).start()
       else analytics.stopPoller()
       return analytics.status()

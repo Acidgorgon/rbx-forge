@@ -146,15 +146,19 @@ export function AnalyticsPage() {
     const off = h.on('analytics:snapshot', () => loadStatus())
     return off
   }, [])
+  // No key and public stats off: no Roblox calls at all (wait for the status before deciding).
+  const canFetch = !!status && !status.keyless
   useEffect(() => {
     setOvErr(null)
+    if (!canFetch) return
     void h.analyticsOverview({ range }).then(setOverview).catch((e) => setOvErr(errorText(e)))
     void h.analyticsAcquisition({ range }).then(setAcq).catch(() => setAcq(null))
-  }, [range, status?.hasApiKey, status?.universeId])
+  }, [range, status?.hasApiKey, status?.universeId, canFetch])
   useEffect(() => {
     setSeries(null)
+    if (!canFetch) return
     void h.analyticsSeries({ metric, range, granularity: gran, breakdown: breakdown ? [breakdown] : undefined, limit: breakdown ? 5 : undefined }).then(setSeries).catch((e) => setSeries({ range: { start: '', end: '' }, source: null, series: [], notes: [errorText(e)], releases: [] }))
-  }, [metric, range, gran, breakdown, status?.hasApiKey])
+  }, [metric, range, gran, breakdown, status?.hasApiKey, canFetch])
   useEffect(() => {
     if (status?.hasApiKey) void h.analyticsCatalog().then((c) => setCatalog(c.items)).catch(() => setCatalog(null))
   }, [status?.hasApiKey])
@@ -187,7 +191,7 @@ export function AnalyticsPage() {
   const needsSetup = status && (!status.hasApiKey || status.apiProblem)
   const kpis = overview?.kpis ?? []
   const metricLabel = kpis.find((k) => k.metric === metric)?.label ?? metric
-  const live = overview?.live
+  const liveStats = overview?.live
   const signals = useMemo(() => [...(overview?.signals ?? []), ...(acq?.signals ?? [])], [overview, acq])
 
   return (
@@ -196,7 +200,7 @@ export function AnalyticsPage() {
         <div className="page-head">
           <div>
             <h1>Analytics</h1>
-            <div className="sub">{live?.name ?? state.project?.name ?? 'No project'}{status?.universeId ? ` · universe ${status.universeId}` : ''}{overview ? ` · ${overview.range.start} to ${overview.range.end}` : ''}</div>
+            <div className="sub">{liveStats?.name ?? state.project?.name ?? 'No project'}{status?.universeId ? ` · universe ${status.universeId}` : ''}{overview ? ` · ${overview.range.start} to ${overview.range.end}` : ''}</div>
           </div>
           <div className="actions">
             <div className="seg">
@@ -230,78 +234,92 @@ export function AnalyticsPage() {
           </section>
         )}
 
-        {ovErr && <div className="callout err">{ovErr}</div>}
-        <div className="kpis">
-          {kpis.map((k) => <Kpi key={k.metric} k={k} active={k.metric === metric} onClick={() => setMetric(k.metric)} />)}
-          {live && (
-            <div className="kpi static" title="Public game stats (no key needed)">
-              <div className="row"><span className="kpi-label grow">Playing now</span><span className="tag warn">Public</span></div>
-              <div className="kpi-value">{fmtNum(live.playing)}</div>
-              <span className="faint">{fmtValue(live.visits, '')} visits · {fmtValue(live.favorites, '')} favs</span>
-            </div>
-          )}
-          {!overview && !ovErr && [0, 1, 2, 3].map((i) => <div key={i} className="kpi skeleton" />)}
-        </div>
-
-        {signals.length > 0 && (
-          <section className="set-sec">
-            <h2>Signals</h2>
-            {signals.map((s) => (
-              <div key={s.id} className="lrow static signal" title={Object.entries(s.evidence).map(([k, v]) => `${k}: ${v}`).join('\n')}>
-                <span className={`sev ${SEV[s.severity].cls}`}><Icon name={SEV[s.severity].icon} size={13} /></span>
-                <span className="grow">{s.text}</span>
-                <button className="mini-btn" onClick={() => actions.ask(`Analytics signal: ${s.text} What in the code could explain this? `)}>Ask</button>
+        {status?.keyless ? (
+          <section className="set-sec empty-state" role="note" aria-label="Analytics needs a key">
+            <h2>No analytics yet</h2>
+            <p className="note">
+              Add an Open Cloud API key above to see this experience's analytics. Until then Forge makes no calls to Roblox for this page. You can still import Creator
+              Dashboard CSVs below, or turn on public stats (no key needed; Forge then polls Roblox's public game API).
+            </p>
+            <button className="btn small" onClick={async () => setStatus(await h.analyticsPoller(true))}>Use public stats without a key</button>
+          </section>
+        ) : (
+          <>
+          {ovErr && <div className="callout err">{ovErr}</div>}
+          <div className="kpis">
+            {kpis.map((k) => <Kpi key={k.metric} k={k} active={k.metric === metric} onClick={() => setMetric(k.metric)} />)}
+            {liveStats && (
+              <div className="kpi static" title="Public game stats (no key needed)">
+                <div className="row"><span className="kpi-label grow">Playing now</span><span className="tag warn">Public</span></div>
+                <div className="kpi-value">{fmtNum(liveStats.playing)}</div>
+                <span className="faint">{fmtValue(liveStats.visits, '')} visits · {fmtValue(liveStats.favorites, '')} favs</span>
               </div>
-            ))}
-          </section>
-        )}
+            )}
+            {!overview && !ovErr && [0, 1, 2, 3].map((i) => <div key={i} className="kpi skeleton" />)}
+          </div>
 
-        <section className="set-sec">
-          <h2>
-            {metricLabel}
-            {series?.source && <span className="tag">{SOURCE_LABEL[series.source]}</span>}
-            <span className="grow" />
-            <select className="input" value={breakdown} onChange={(e) => setBreakdown(e.target.value)} aria-label="Breakdown">
-              {BREAKDOWNS.map((b) => <option key={b} value={b}>{b ? `by ${b}` : 'no breakdown'}</option>)}
-            </select>
-            <div className="seg">
-              {(['day', 'week', 'month'] as AnalyticsGranularity[]).map((g) => <button key={g} className={gran === g ? 'on' : ''} onClick={() => setGran(g)}>{g}</button>)}
-            </div>
-          </h2>
-          <div className="chart-box">{series ? <Chart data={series} /> : <div className="chart-empty"><span className="spinner" /></div>}</div>
-          {series && series.series.length > 1 && (
-            <div className="row legend">{series.series.map((s, i) => <span key={i} className={`lg s${i % 4}`}>{Object.values(s.breakdown ?? {}).join(' / ') || s.metric}</span>)}</div>
+          {signals.length > 0 && (
+            <section className="set-sec">
+              <h2>Signals</h2>
+              {signals.map((s) => (
+                <div key={s.id} className="lrow static signal" title={Object.entries(s.evidence).map(([k, v]) => `${k}: ${v}`).join('\n')}>
+                  <span className={`sev ${SEV[s.severity].cls}`}><Icon name={SEV[s.severity].icon} size={13} /></span>
+                  <span className="grow">{s.text}</span>
+                  <button className="mini-btn" onClick={() => actions.ask(`Analytics signal: ${s.text} What in the code could explain this? `)}>Ask</button>
+                </div>
+              ))}
+            </section>
           )}
-          {series?.notes.map((n, i) => <div key={i} className="note">{n}</div>)}
-        </section>
 
-        {acq && (
           <section className="set-sec">
-            <h2>Acquisition</h2>
-            <div className="table-wrap">
-              <table className="tbl">
-                <thead>
-                  <tr><th>Source</th><th>Impressions</th><th>Plays</th><th>Qualified</th><th>Plays / impr.</th></tr>
-                </thead>
-                <tbody>
-                  {acq.bySource.map((r) => (
-                    <tr key={r.source}>
-                      <td>{r.source}</td>
-                      <td>{fmtValue(r.impressions, '')}</td>
-                      <td>{fmtValue(r.plays, '')}</td>
-                      <td>{fmtValue(r.qualifiedPlays, '')}</td>
-                      <td>{r.playsPerImpression === null ? '—' : `${(r.playsPerImpression * 100).toFixed(2)}%`} {r.playsPerImpression !== null && r.playsPerImpressionPrev ? <Delta metric="x" change={r.playsPerImpression / r.playsPerImpressionPrev - 1} /> : null}</td>
-                    </tr>
-                  ))}
-                </tbody>
-              </table>
-            </div>
-            <div className="row note" style={{ flexWrap: 'wrap', gap: 14, marginTop: 8 }}>
-              {acq.homeRecs.map((r) => <span key={r.metric}>{r.label} {fmtValue(r.current, 'ratio')} <Delta metric={r.metric} change={r.change} /></span>)}
-              {acq.newVsReturning.map((r) => <span key={r.segment}>{r.segment} DAU {fmtValue(r.dau, '')} <Delta metric="DailyActiveUsers" change={r.change} /></span>)}
-              {acq.publicTrend.likeRatio !== null && <span>like ratio {fmtValue(acq.publicTrend.likeRatio, 'ratio')}</span>}
-            </div>
+            <h2>
+              {metricLabel}
+              {series?.source && <span className="tag">{SOURCE_LABEL[series.source]}</span>}
+              <span className="grow" />
+              <select className="input" value={breakdown} onChange={(e) => setBreakdown(e.target.value)} aria-label="Breakdown">
+                {BREAKDOWNS.map((b) => <option key={b} value={b}>{b ? `by ${b}` : 'no breakdown'}</option>)}
+              </select>
+              <div className="seg">
+                {(['day', 'week', 'month'] as AnalyticsGranularity[]).map((g) => <button key={g} className={gran === g ? 'on' : ''} onClick={() => setGran(g)}>{g}</button>)}
+              </div>
+            </h2>
+            <div className="chart-box">{series ? <Chart data={series} /> : <div className="chart-empty"><span className="spinner" /></div>}</div>
+            {series && series.series.length > 1 && (
+              <div className="row legend">{series.series.map((s, i) => <span key={i} className={`lg s${i % 4}`}>{Object.values(s.breakdown ?? {}).join(' / ') || s.metric}</span>)}</div>
+            )}
+            {series?.notes.map((n, i) => <div key={i} className="note">{n}</div>)}
           </section>
+
+          {acq && (
+            <section className="set-sec">
+              <h2>Acquisition</h2>
+              <div className="table-wrap">
+                <table className="tbl">
+                  <thead>
+                    <tr><th>Source</th><th>Impressions</th><th>Plays</th><th>Qualified</th><th>Plays / impr.</th></tr>
+                  </thead>
+                  <tbody>
+                    {acq.bySource.map((r) => (
+                      <tr key={r.source}>
+                        <td>{r.source}</td>
+                        <td>{fmtValue(r.impressions, '')}</td>
+                        <td>{fmtValue(r.plays, '')}</td>
+                        <td>{fmtValue(r.qualifiedPlays, '')}</td>
+                        <td>{r.playsPerImpression === null ? '—' : `${(r.playsPerImpression * 100).toFixed(2)}%`} {r.playsPerImpression !== null && r.playsPerImpressionPrev ? <Delta metric="x" change={r.playsPerImpression / r.playsPerImpressionPrev - 1} /> : null}</td>
+                      </tr>
+                    ))}
+                  </tbody>
+                </table>
+              </div>
+              <div className="row note" style={{ flexWrap: 'wrap', gap: 14, marginTop: 8 }}>
+                {acq.homeRecs.map((r) => <span key={r.metric}>{r.label} {fmtValue(r.current, 'ratio')} <Delta metric={r.metric} change={r.change} /></span>)}
+                {acq.newVsReturning.map((r) => <span key={r.segment}>{r.segment} DAU {fmtValue(r.dau, '')} <Delta metric="DailyActiveUsers" change={r.change} /></span>)}
+                {acq.publicTrend.likeRatio !== null && <span>like ratio {fmtValue(acq.publicTrend.likeRatio, 'ratio')}</span>}
+              </div>
+            </section>
+          )}
+
+          </>
         )}
 
         <div className="grid2">

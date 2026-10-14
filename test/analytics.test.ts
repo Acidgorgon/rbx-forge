@@ -368,3 +368,23 @@ test('every tool has a JSON-schema-able zod shape and a description', async () =
     assert.equal(schema.type, 'object')
   }
 })
+
+test('service: no key and public stats not turned on -> keyless status, no Roblox calls', async () => {
+  const f = fakeFetch()
+  const secrets = new MemorySecretStore()
+  const clock = fakeClock()
+  let allowPublic = false
+  const svc = new AnalyticsService({ secrets, dataDir: tempDir(), root: '/game', placeId: 123, fetch: f.fetch, sleep: clock.sleep, now: clock.now, publicWithoutKey: () => allowPublic })
+  const s = await svc.status()
+  assert.equal(s.keyless, true)
+  assert.equal(s.hasApiKey, false)
+  assert.equal(s.universeId, null, 'the place is not looked up without a key')
+  assert.equal(await svc.keyless(), true)
+  assert.equal(f.calls.length, 0, 'no network calls')
+  // A key (or the opt-in) lifts it.
+  secrets.data.set(analyticsSecretKey('/game'), 'key-123')
+  assert.equal(await svc.keyless(), false)
+  secrets.data.delete(analyticsSecretKey('/game'))
+  allowPublic = true
+  assert.equal(await svc.keyless(), false)
+})

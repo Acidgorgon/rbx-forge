@@ -58,6 +58,9 @@ export interface AnalyticsServiceDeps {
   onSnapshot?: (snapshot: PublicSnapshot) => void
   // Days the API/dashboard usually lags (default 1): relative ranges end this many days before today.
   lagDays?: number
+  // Without a key, may Forge call Roblox's public APIs (universe lookup, public stats)? Default true;
+  // the app passes the user's opt-in, so a keyless project makes no network calls.
+  publicWithoutKey?: () => boolean
 }
 
 export interface SeriesRequest {
@@ -206,14 +209,23 @@ export class AnalyticsService {
     return this.poller
   }
 
+  // No key and no opt-in to public stats: nothing may reach Roblox.
+  async keyless(): Promise<boolean> {
+    return !(await this.apiKey()) && !(this.deps.publicWithoutKey?.() ?? true)
+  }
+
   async status(): Promise<AnalyticsStatus> {
-    let universeId: number | null = null
-    try {
-      universeId = await this.universeId()
-    } catch {
-      universeId = null
-    }
     const hasApiKey = !!(await this.apiKey())
+    const keyless = !hasApiKey && !(this.deps.publicWithoutKey?.() ?? true)
+    let universeId: number | null = null
+    if (keyless) universeId = this.universe ?? null
+    else {
+      try {
+        universeId = await this.universeId()
+      } catch {
+        universeId = null
+      }
+    }
     const base: AnalyticsStatus = {
       universeId,
       placeId: this.deps.placeId ?? null,
@@ -222,6 +234,7 @@ export class AnalyticsService {
       imports: []
     }
     if (this.client.lastAuthProblem) base.apiProblem = this.client.lastAuthProblem
+    if (keyless) return { ...base, keyless: true, imports: universeId === null ? [] : (await this.importStore()).list() }
     if (universeId === null) return base
     const poller = await this.publicPoller()
     const history = poller.history()

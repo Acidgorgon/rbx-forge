@@ -131,7 +131,14 @@ export function UiMotionLabPage() {
 
   // Selecting a stack loads its spec into the editor (and its component, when imported here).
   const pick = (e: UiMotionEntry | null) => {
-    if (saveTimer.current) clearTimeout(saveTimer.current)
+    // An edit still waiting for its autosave goes to the stack it was made on, not lost.
+    if (saveTimer.current) {
+      clearTimeout(saveTimer.current)
+      saveTimer.current = null
+      if (selected) void h.uiMotionSave(draft, { id: selected }).catch((err) => actions.toast({ text: 'Could not save the stack', detail: errorText(err), kind: 'err' }))
+      // Re-picking the stack being edited keeps the editor as it is.
+      if (e && e.id === selected) return
+    }
     setSelected(e?.id ?? null)
     setExported(null)
     if (!e) return
@@ -150,6 +157,7 @@ export function UiMotionLabPage() {
     if (saveTimer.current) clearTimeout(saveTimer.current)
     const id = selected
     saveTimer.current = setTimeout(() => {
+      saveTimer.current = null
       void h.uiMotionSave(spec, { id }).catch((e) => actions.toast({ text: 'Could not save the stack', detail: errorText(e), kind: 'err' }))
     }, 500)
   }
@@ -252,6 +260,9 @@ export function UiMotionLabPage() {
 
   const remove = async () => {
     if (!current) return
+    // A pending autosave would recreate nothing and only fail with "no motion stack".
+    if (saveTimer.current) clearTimeout(saveTimer.current)
+    saveTimer.current = null
     await h.uiMotionDelete(current.id).catch(() => undefined)
     setSelected(null)
     await load()

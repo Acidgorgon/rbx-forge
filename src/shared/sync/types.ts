@@ -120,6 +120,10 @@ export interface SyncStatus {
   // Files Forge wrote from Studio that git still shows as modified/untracked (uncommitted teammate edits).
   pendingStudioEdits: string[]
   legacyPluginInstalled?: boolean
+  // Added by the integration worker: file names of the legacy plugin(s) found, and a warning shown
+  // when a git pull / branch switch ran with uncommitted Studio edits.
+  legacyPlugins?: string[]
+  warning?: string
 }
 
 // Settings keys.

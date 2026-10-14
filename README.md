@@ -29,12 +29,31 @@ The editor is in the screenshot at the top of this page.
 
 ![Source control with Studio conflicts, incoming changes and the pre-sync check](docs/screenshots/25-sync-dark.png)
 
-- **Studio sync, both ways.** Rojo pushes files into Studio. Script edits made in Studio (including Team Create) come back into the repo through the template's `tools/studio-sync.py`. When a file changed in both places it is held under `.studio-sync/conflicts` and opens as a side-by-side diff where you pick the Studio or the repo version.
+- **Studio sync, both ways.** Rojo pushes files into Studio. Edits made in Studio (including Team Create) come back into the repo through [Forge Sync](#forge-sync-studio-first-then-rojo), or the project's own `tools/studio-sync.py` when you pick it in Settings > Sync. When a file changed in both places it is held under `.studio-sync/conflicts` and opens as a side-by-side diff where you pick the Studio or the repo version.
 - **Collaborator sync.** Source control shows ahead/behind, incoming commits grouped by feature (with overlap warnings against your local changes), and a selene + StyLua pre-sync check. **Sync now** (or every N minutes) commits your work, pulls with rebase, falls back to a merge on conflict and pushes. It never force-pushes.
 
 ### Multi-place projects
 
 Every `*.project.json` at the project root is a place. The place switcher in the title bar (and in the palette) changes which place Rojo serves, which sourcemap the explorer and luau-lsp read, and which place releases go to. **Serve all places** runs a `rojo serve` for each place on its own `servePort`.
+
+### Forge Sync: Studio first, then Rojo
+
+![Forge Sync holding a place: a teammate's Studio edit and yours, side by side, with Take disk / Take Studio](docs/screenshots/140-forge-sync-conflict-dark.png)
+
+When a teammate edits scripts in Studio (Team Create) and you then connect Rojo, Rojo pushes your disk copy over their work. Forge Sync stops that, for every place and any Rojo project:
+
+1. **Studio goes first.** When a place opens in Studio, the Forge Bridge plugin sends Forge everything under that place's mapped folders. Rojo serve for that place waits ("Waiting for Studio sync check").
+2. **Forge reconciles three ways.** For each file it compares Studio, disk and the last version both agreed on. A teammate's change is written to disk; yours is left for Rojo to push; changes on both sides are merged line by line when they don't overlap. New folders made in Studio (a new move under `Moves/`), renames, deletes (moved to `.forge/sync/trash`, never removed) and non-script instances (an `Animations` folder becomes `.model.json`) come along too.
+3. **Then Rojo serves.** If both sides changed the same lines, the place is held: open the conflict, compare **disk ⇄ studio**, **base → disk** or **base → studio**, and pick **Take Studio** or **Take disk** (or **Serve anyway**). A new Studio session for a place Rojo already serves stops that serve, re-checks, and restarts it.
+
+![First sync for a place: Studio wins or Disk wins for every file, then commit the teammate edits](docs/screenshots/142-forge-sync-first-run-light.png)
+
+- **First run.** With no shared version yet, a place whose Studio and disk differ asks once: **Studio wins** or **Disk wins**.
+- **Commit teammate edits (N).** Files Forge wrote from Studio are committed on their own, as `Studio edits: Uppercut.luau, NewMove…`, and nothing else you changed is staged. Before a pull or a new feature branch, Forge commits them first (with *Commit local work before pulling* on) or warns you.
+- **Old plugin.** If the project's `StudioSyncPlugin` (`FSFStudioSync.lua`, `RepoStudioSync.lua`) is still in Studio's Plugins folder, Source control offers **Disable it** (renamed to `*.disabled`). With Forge Sync on, `./dev` runs with `FORGE_SYNC=1` so the project's `studio-sync.py` stays off.
+- **Settings > Sync.** *Studio sync*: **Forge (recommended)**, **Project script** (the old `tools/studio-sync.py` path) or **Off**; *Check Studio before Rojo serves* turns the gate off.
+
+![Settings > Sync with the Studio sync engine and the Rojo gate](docs/screenshots/143-forge-sync-settings-dark.png)
 
 ### Services that run themselves
 
@@ -268,6 +287,7 @@ Most settings are in the app (gear at the bottom of the activity bar): providers
 - `providerConfig` (base URLs for `ollama`/`custom`) and `anthropicUseClaudeLogin` (default `false`)
 - `chatMaxTurns`, `studioMcp` (`{ "command": "...", "args": [] }`), `maxParallelAgents` and `agentMaxTurns`
 - `serveAllPlaces` and `allowTemplateDisconnect`
+- `sync.engine` (`forge` default, `project`, `off`) and `sync.gateRojo` (default `true`)
 
 Team settings (version, publish mode and place ids, notifications) live in the project's `.forge/project.json`. Secrets never go there.
 

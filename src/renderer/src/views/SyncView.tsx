@@ -8,6 +8,7 @@ import { FileGlyph } from '../components/ClassIcon'
 import { ago, errorText, keyHint } from '../lib/format'
 import { basename } from '../lib/roblox'
 import { sparks } from '../lib/sparks'
+import { ForgeSyncSection, useForgeSync } from './ForgeSyncSection'
 
 const STATUS_LETTER: Record<string, string> = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R', copied: 'C', typechange: 'T', untracked: 'U', conflicted: '!', unknown: '?' }
 
@@ -21,6 +22,7 @@ export function SyncView() {
   const [checking, setChecking] = useState(false)
   const [remote, setRemote] = useState('')
   const [settings, setSettings] = useState<SyncSettings | null>(state.syncSettings)
+  const [forgeSync, setForgeSync] = useForgeSync()
 
   useEffect(() => {
     void actions.refreshSync()
@@ -91,6 +93,7 @@ export function SyncView() {
         </button>
       </div>
       <div className="panel-body">
+        {state.project && <ForgeSyncSection status={forgeSync} setStatus={setForgeSync} />}
         {!state.project ? (
           <div className="empty"><Icon name="branch" /><span>Open a project first.</span></div>
         ) : git && !git.isRepo ? (
@@ -137,7 +140,7 @@ export function SyncView() {
               </section>
             )}
 
-            <section className="vsec">
+            {forgeSync?.engine !== 'forge' && <section className="vsec">
               <div className="vsec-head">Studio conflicts <span className="count">{state.studioConflicts.length}</span></div>
               {state.studioConflicts.length === 0 ? (
                 <div className="note" style={{ padding: '0 12px' }}>Nothing held. Scripts edited in Studio flow into the repo.</div>
@@ -150,7 +153,7 @@ export function SyncView() {
                   </div>
                 ))
               )}
-            </section>
+            </section>}
 
             <section className="vsec">
               <div className="vsec-head">

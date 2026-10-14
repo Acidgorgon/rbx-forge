@@ -29,7 +29,7 @@ export interface HarnessContext {
   gitStatus(): Promise<GitStatus>
   syncNow(): Promise<GitStatus>
   studioConflicts(): Promise<StudioConflict[]>
-  resolveStudioConflict(path: string, take: 'studio' | 'repo'): Promise<void>
+  resolveStudioConflict(path: string, take: 'studio' | 'repo', placeKey?: string): Promise<void>
 
   // Persistent per-user settings (userData/settings.json).
   getSetting<T>(key: string, fallback: T): T

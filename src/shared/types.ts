@@ -34,6 +34,9 @@ import type { RefApi, RefEvents } from './refTypes.ts'
 export type * from './refTypes.ts'
 import type { PrincipleApi, PrincipleEvents } from './principleTypes.ts'
 export type * from './principleTypes.ts'
+import type { SyncApi, SyncEvents } from './sync/api.ts'
+export type * from './sync/api.ts'
+export type * from './sync/types.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -135,6 +138,11 @@ export interface StudioConflict {
   path: string
   repoSource: string
   studioSource: string
+  // Forge Sync only: the last agreed version (null on first run), the place and why it is held.
+  base?: string | null
+  placeKey?: string
+  instancePath?: string[]
+  reason?: 'both-changed' | 'first-run' | 'deleted-vs-edited'
 }
 
 export interface SyncSettings {
@@ -455,7 +463,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -480,7 +488,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>
@@ -503,7 +511,8 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   getSyncSettings(): Promise<SyncSettings>
   setSyncSettings(settings: SyncSettings): Promise<void>
   getStudioConflicts(): Promise<StudioConflict[]>
-  resolveStudioConflict(path: string, take: 'studio' | 'repo'): Promise<void>
+  // placeKey: Forge Sync conflicts (the same file can be held for two places).
+  resolveStudioConflict(path: string, take: 'studio' | 'repo', placeKey?: string): Promise<void>
 
   // Chat
   listChats(): Promise<ChatSession[]>

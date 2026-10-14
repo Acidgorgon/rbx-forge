@@ -41,6 +41,7 @@ import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
 import { restateMock } from './mockRestate'
+import { chatModesMock } from './mockChatModes'
 import { BLINK_OUTPUTS, eventsBlink, generatedClient, generatedServer, mockBlinkModel } from './mockBlink'
 
 type Handler = (payload: never) => void
@@ -568,6 +569,8 @@ const group = groupMock(groupDeps)
 const extras = chatExtrasMock({ emit, chats, messages: chatMessages, addGuest: (id, c) => group.api.addGuest(id, c) })
 // Restate first (mockRestate.ts): big requests get a restatement card before the reply.
 const restate = restateMock({ emit, messages: chatMessages, reply: (id, text) => streamReply(id, text), log: (text) => log('agent', text, 'info') })
+// Chat modes + slash commands (mockChatModes.ts): plan cards, diff cards, command output.
+const chatModes = chatModesMock({ emit, chats, messages: chatMessages, files, reply: (id, text) => streamReply(id, text), log: (text) => log('agent', text, 'info') })
 
 function chatReply(text: string): { tools: [string, string][]; answer: string } {
   const t = text.toLowerCase()
@@ -846,11 +849,16 @@ const api: HarnessApi = {
     const c = chats.find((x) => x.id === sessionId)
     if (c) extras.route(c, text)
     if (c && c.title === 'New chat') c.title = text.length > 42 ? text.slice(0, 40) + '…' : text
-    void (c?.guests?.length ? Promise.resolve(false) : restate.intercept(sessionId, text)).then((carded) => (carded ? undefined : group.handleSend(sessionId, text).then((handled) => (handled ? undefined : streamReply(sessionId, text)))))
+    const readOnly = c?.chatMode === 'ask' || c?.chatMode === 'plan'
+    const carded = c?.guests?.length ? Promise.resolve(false) : readOnly ? Promise.resolve(false) : restate.intercept(sessionId, text)
+    void carded
+      .then((x) => x || (!c?.guests?.length && chatModes.intercept(sessionId, text)))
+      .then((x) => (x ? undefined : group.handleSend(sessionId, text).then((handled) => (handled ? undefined : streamReply(sessionId, text)))))
   },
   ...group.api,
   ...extras.api,
   ...restate.api,
+  ...chatModes.api,
   async stopChat(sessionId) {
     running.delete(sessionId)
     emit('chat:busy', { sessionId, busy: false })

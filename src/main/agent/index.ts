@@ -29,6 +29,8 @@ import { TestAgentRunner } from './testAgents.ts'
 import { Restater } from './restate.ts'
 import { normalizeRestatement, type RestateLab } from '../../shared/restate/types.ts'
 import { gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type ToolFs } from './tools.ts'
+import { chatModeHandlers, memoryNote } from './modesIpc.ts'
+import type { GatingCostRow } from './commands/index.ts'
 
 export interface AgentLayer {
   chats: ChatManager
@@ -82,7 +84,7 @@ export const forgeWriteTargets: WriteTargets = (name, args) => {
 // Builds the agent layer without Electron (tests pass a stub query function and fetch).
 export function createAgentLayer(
   ctx: HarnessContext,
-  opts: { queryFn?: QueryFn; credentials?: Credentials; fetchFn?: FetchFn; toolFs?: ToolFs; meterSaveDelayMs?: number; memory?: MemoryHooks } = {}
+  opts: { queryFn?: QueryFn; credentials?: Credentials; fetchFn?: FetchFn; toolFs?: ToolFs; meterSaveDelayMs?: number; memory?: MemoryHooks; userCommandsDir?: string; gating?: () => Promise<GatingCostRow[] | null> } = {}
 ): AgentLayer {
   const credentials = opts.credentials ?? new Credentials(ctx)
   const providers = new Providers(ctx, credentials, opts.fetchFn)
@@ -105,7 +107,14 @@ export function createAgentLayer(
   })
   // Background reflection: a chat that goes idle is reviewed by the memory layer (debounced there).
   const chatCtx = opts.memory ? tapChatBusy(ctx, opts.memory, (id) => chats.messages(id) ?? null) : ctx
-  chats = new ChatManager(chatCtx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team, restater })
+  chats = new ChatManager(chatCtx, {
+    queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team, restater,
+    // Slash commands (agent/commands): /compact on the cheap tier, /memory notes, /cost Labs rows.
+    oneShot: (system, prompt) => layer.oneShot(system, prompt, { tier: 'cheap' }),
+    remember: memoryNote(opts.memory),
+    ...(opts.userCommandsDir ? { userCommandsDir: opts.userCommandsDir } : {}),
+    ...(opts.gating ? { gating: opts.gating } : {})
+  })
   const agents = new TestAgentRunner(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter })
   layer = {
     chats,
@@ -350,9 +359,9 @@ function choice(c: unknown): ModelChoice | undefined {
 export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
-  opts: { memory?: MemoryHooks; userDataDir?: string } = {}
+  opts: { memory?: MemoryHooks; userDataDir?: string; gating?: () => Promise<GatingCostRow[] | null> } = {}
 ): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string> } {
-  const layer = createAgentLayer(ctx, { memory: opts.memory })
+  const layer = createAgentLayer(ctx, { memory: opts.memory, ...(opts.userDataDir ? { userCommandsDir: join(opts.userDataDir, 'commands') } : {}), ...(opts.gating ? { gating: opts.gating } : {}) })
   // Chat images live under userData/chat-images (history keeps only references).
   setChatImageStore(new ChatImageStore(join(opts.userDataDir ?? join(tmpdir(), 'rbx-forge'), 'chat-images')))
   const { chats, agents, credentials, providers, meter, orchestrator, team, restater } = layer
@@ -488,7 +497,10 @@ export function registerAgentIpc(
 
     getAgents: () => agents.list(),
     runAgents: (scenarios: string[], c?: unknown) => agents.run(Array.isArray(scenarios) ? scenarios : [], choice(c)),
-    cancelAgent: (id: string) => agents.cancel(id)
+    cancelAgent: (id: string) => agents.cancel(id),
+
+    // Chat modes + slash commands (agent/modesIpc.ts).
+    ...chatModeHandlers(chats)
   }
 
   for (const [name, fn] of Object.entries(handlers)) {

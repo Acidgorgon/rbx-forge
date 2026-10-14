@@ -1,6 +1,7 @@
 // App state: one reducer fed by HarnessApi calls and HarnessEvents, plus the workbench layout
 // (panels, tabs, palette) persisted per machine in localStorage.
 import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
+import type { ChatMode } from '@shared/chatModes'
 import type {
   AppSettings,
   BlinkModel,
@@ -451,7 +452,10 @@ export interface Actions {
   // Chat
   selectChat(id: string): Promise<void>
   newChat(): Promise<void>
-  send(text: string, images?: ChatImage[]): Promise<void>
+  // opts.mode: this message only in that chat mode (/ask, /plan).
+  send(text: string, images?: ChatImage[], opts?: { mode?: ChatMode }): Promise<void>
+  // The active chat's id, creating the chat first when there is none (slash commands).
+  ensureChat(): Promise<string>
   stop(): Promise<void>
   chooseModel(choice: ModelChoice): Promise<void>
   openSettings(focus?: ProviderId): void
@@ -648,7 +652,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       async newChat() {
         dispatch({ type: 'set', patch: { activeChatId: null, pendingModel: null, pendingEffort: null, usage: { ...stateRef.current.usage, chat: null } } })
       },
-      async send(text, images = []) {
+      ensureChat: () => ensureChat(),
+      async send(text, images = [], opts = {}) {
         let id: string
         try {
           id = await ensureChat()
@@ -656,11 +661,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           toast({ text: 'Could not start a chat', detail: (e as Error).message, kind: 'err' })
           return
         }
-        const local: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text, at: Date.now(), agentId: 'main', sessionId: id, ...(images.length ? { images } : {}) }
+        const local: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text, at: Date.now(), agentId: 'main', sessionId: id, ...(images.length ? { images } : {}), ...(opts.mode ? { mode: opts.mode } : {}) }
         dispatch({ type: 'chatMessage', message: local })
         dispatch({ type: 'busy', sessionId: id, busy: true })
         try {
-          await h.sendChat(id, text, images.length ? images.map((i) => i.id) : undefined)
+          if (opts.mode) await h.sendChatMode(id, text, opts.mode, images.length ? images.map((i) => i.id) : undefined)
+          else await h.sendChat(id, text, images.length ? images.map((i) => i.id) : undefined)
         } catch (e) {
           dispatch({ type: 'busy', sessionId: id, busy: false })
           dispatch({ type: 'chatMessage', message: { id: `err-${Date.now()}`, role: 'system', text: `Could not send: ${(e as Error).message}`, at: Date.now(), agentId: 'main', sessionId: id } })

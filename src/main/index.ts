@@ -649,7 +649,7 @@ ipcMain.on('forge:titlebarTheme', (event, theme: unknown) => {
   win?.setTitleBarOverlay?.({ color: light ? '#e4e7eb' : '#0c0e11', symbolColor: light ? '#3c434d' : '#b0b7c2', height: 38 })
   win?.setBackgroundColor(light ? '#e4e7eb' : '#0c0e11')
 })
-const agentIpc = registerAgentIpc(ctx, ipcMain, { memory, userDataDir: app.getPath('userData') })
+const agentIpc = registerAgentIpc(ctx, ipcMain, { memory, userDataDir: app.getPath('userData'), gating: async () => (await gating.service.view()).costs })
 
 function preloadPath(): string {
   const dir = join(__dirname, '../preload')

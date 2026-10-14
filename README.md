@@ -89,6 +89,47 @@ The assistant panel is a chat with project tools: overview, list/read/edit/write
 - **Keys.** Settings has a card per provider. A pasted key is encrypted with the OS keychain (Electron safeStorage) and never sent to the window. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` and `OLLAMA_API_KEY` are used when nothing is stored. Model lists come from each provider's `GET /models`, and you can type any model id.
 - **Claude Code login.** An Anthropic API key is Anthropic's documented way to authenticate apps built on the Agent SDK, and it is the default. *Use my Claude Code login (personal use only)* in Settings lets Forge fall back to the Claude Code login on this machine (or `CLAUDE_CODE_OAUTH_TOKEN`) when no key is set. That is for your own personal use and draws from your Claude Pro/Max plan limits. It is off by default.
 
+### Chat modes and commands
+
+![Plan mode: the agent investigates read-only and proposes a plan to approve](docs/screenshots/181-plan-card-dark.png)
+
+The pill under the message box sets how the assistant works in this chat. **Shift+Tab** cycles it, and the chat remembers its mode. Each of your messages shows the mode it was sent in.
+
+| Mode | What the agent may do |
+| --- | --- |
+| **Ask** | Read and search only. Every tool that writes or runs something (file edits, `new_feature`, Blink and Wally edits, sync, `run_in_terminal`, Studio tools, Bash) is removed. |
+| **Plan** | Investigates read-only, then shows a plan card with steps, files and risks. *Approve & run* switches the chat to the edit mode you pick and runs the plan. *Edit plan* lets you change it first, and *Keep planning* closes the card so you can push back. On Claude this is the Agent SDK's `plan` permission mode. Other providers get the same read-only tool set and a plan prompt. |
+| **Edit with approval** (default) | Every file edit shows a diff card. *Accept* or *Reject* it, or untick hunks and accept the rest; Forge applies only the hunks you kept. Other write tools show what they will run and wait the same way. |
+| **Auto-accept edits** | Edits inside the project apply without asking (the SDK's `acceptEdits`). `Packages/` and paths outside the project stay blocked. |
+
+Ask and Plan are enforced three ways on Claude: the write tools are left out of the tool list, `disallowedTools` names them, and a `PreToolUse` hook denies anything that is not a read tool. Other providers only get the read tools. A tool Forge doesn't know counts as a write. The team (orchestrator) only runs in Auto-accept, or when the routing pill is set to *team*.
+
+![Slash commands with descriptions](docs/screenshots/184-slash-typeahead-dark.png)
+
+Type `/` for the commands (Claude Code's set):
+
+- `/ask <question>`, `/plan <request>`: send one message in that mode.
+- `/clear` starts the conversation over in the same chat. `/compact [focus]` summarizes it on the cheap tier and carries on from the summary, showing the tokens saved.
+- `/model [provider/model]`, `/effort [level]`: switch for this chat. With no argument, `/model` opens a picker.
+- `/cost`: tokens and cost for this chat, today's total, and the Labs' cost per kept result from lab gating. `/context` shows what fills the context window (system prompt, rules and memory, tools, conversation).
+- `/memory` opens Memory. `/memory <note>` saves a project note.
+- `/init` reads the project and writes notes to `.forge/AGENTS.md`, which every agent then reads after the root `AGENTS.md`. If the file already exists, `/init` merges: your lines stay as they are and only new bullets and sections are added. The root `AGENTS.md` is never written.
+- `/review [focus]` reviews the uncommitted git diff in Ask mode.
+- `/resume` picks a past chat. `/export` saves the chat as markdown in `.forge/exports/`.
+- `/rewind` restores files, the conversation, or both to before a turn. Before each turn in Edit or Auto mode, Forge snapshots the project into a separate git repository at `.forge/checkpoints/shadow.git`, with the project as its work tree. Your own `.git`, branches, index and history are never touched, and ignored files such as `Packages/` are left alone. A rewind takes a snapshot first, so you can undo it.
+- `/todos` shows the agent's task list. `/permissions` shows which tools run, ask or are blocked in the current mode. `/help` lists everything, including your own commands.
+
+**Custom commands** are markdown files: `.forge/commands/*.md` in the project (shared with the team) or the `commands` folder in Forge's user data folder (just you). The file name is the command (`econ/balance.md` becomes `/econ:balance`). `$ARGUMENTS` is replaced by what you type after the command and `$1`…`$9` by single words. Optional frontmatter: `description`, `argument-hint` and `mode` (`ask`, `plan`, `edit` or `auto`). A Claude Code `allowed-tools` line that lists no write tool runs the command in Ask mode.
+
+```markdown
+---
+description: Check a feature's economy numbers
+argument-hint: <feature>
+mode: ask
+---
+Review prices, rewards and drop rates in the $ARGUMENTS feature. Flag anything that breaks progression.
+```
+
 ### Restate first
 
 ![The assistant restates a big request as goal, problem and assumptions, then waits](docs/screenshots/100-restate-chat-card-dark.png)

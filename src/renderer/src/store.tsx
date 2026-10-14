@@ -882,9 +882,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       },
       async setAppSettings(patch) {
+        // Show the change at once: the switches are controlled by appSettings, so waiting for the
+        // main process would flip a clicked switch back until the reply arrives.
+        const before = stateRef.current.appSettings
+        if (before) dispatch({ type: 'set', patch: { appSettings: { ...before, ...patch } } })
         try {
           dispatch({ type: 'set', patch: { appSettings: await h.setAppSettings(patch) } })
         } catch (e) {
+          if (before) dispatch({ type: 'set', patch: { appSettings: before } })
           toast({ text: 'Could not save the setting', detail: (e as Error).message, kind: 'err' })
         }
       },

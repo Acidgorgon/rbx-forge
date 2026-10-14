@@ -27,6 +27,7 @@ export function vfxKind(text: string): VfxKind {
 export function requestKinds(lab: PrincipleLab, text: string): RequestKind[] {
   if (lab === 'anim') return [animKind(text)]
   if (lab === 'vfx') return [vfxKind(text)]
+  if (lab === 'thumbs') return []
   return [animKind(text), vfxKind(text)]
 }
 
@@ -43,7 +44,7 @@ export function relevance(p: Principle, kinds: RequestKind[]): number {
 export function selectPrinciples(lab: PrincipleLab, text: string, opts: { weights?: PrincipleWeights; max?: number; planOnly?: boolean; looped?: boolean } = {}): Principle[] {
   const kinds = requestKinds(lab, text)
   if (opts.looped && !kinds.includes('idle')) kinds.push('idle')
-  const domains: PrincipleDomain[] = lab === 'ability' ? ['anim', 'vfx'] : [lab]
+  const domains: PrincipleDomain[] = lab === 'ability' ? ['anim', 'vfx'] : lab === 'thumbs' ? ['thumb'] : [lab]
   const pool = domains.flatMap((d) => principlesFor(d)).filter((p) => !opts.planOnly || p.plan)
   // In the ability composer, effects follow the move: cohesion is always core there.
   const rel = (p: Principle) => (lab === 'ability' && p.id === 'fx-cohesion' ? 1.3 : relevance(p, kinds))

@@ -567,3 +567,41 @@ test('the Forge Bridge plugin compiles with Lune', { skip: lune ? false : 'Lune 
   const out = await new Promise<string>((res, rej) => execFile(lune!, ['run', 'check.luau'], { cwd: dir }, (err, stdout, stderr) => (err ? rej(new Error(stderr || err.message)) : res(stdout))))
   assert.match(out, /ok/)
 })
+
+// ------------------------------------------------------------------ Thumbnail Lab snapshot
+
+test('snapshot: through the bridge (no stage, viewport crop, full width) and the window fallback', async () => {
+  const b = await bridge(100)
+  const session = new FakeSession()
+  const { svc } = service(b, session, {})
+  try {
+    await plugin(b).poll()
+    const studio = fakeStudio(b, async (job, post) => {
+      assert.equal(job.kind, 'snapshot')
+      assert.equal(job.mode, 'stepped')
+      assert.deepEqual(job.modules, [])
+      assert.equal(job.calibrate, true)
+      assert.deepEqual(job.beats, [{ t: 0, label: 'view' }])
+      await post({ type: 'accepted' })
+      assert.deepEqual(await post({ type: 'calibrate' }), { ok: true, crop: true })
+      await post({ type: 'beat', index: 0, t: 0 })
+      await post({ type: 'done', marks: [] })
+    })
+    const [shot] = await Promise.all([svc.snapshot(), studio])
+    assert.equal(shot.via, 'bridge')
+    assert.equal(String(shot.png), 'grab@2|102,52,796x446|1920')
+    assert.equal(session.closed, true)
+  } finally {
+    await b.stop()
+  }
+  // Studio not connected: a plain grab of the window, uncropped.
+  const b2 = await bridge(100)
+  const s2 = new FakeSession()
+  try {
+    const shot = await service(b2, s2, {}).svc.snapshot(1280)
+    assert.equal(shot.via, 'window')
+    assert.equal(String(shot.png), 'grab@1|full|1280')
+  } finally {
+    await b2.stop()
+  }
+})

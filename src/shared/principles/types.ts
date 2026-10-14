@@ -2,8 +2,8 @@
 // per-principle scores the critics and the code checks produce, the user's learned weights and the
 // feedback they are learned from. Pure types (no electron, no node).
 
-export type PrincipleDomain = 'anim' | 'vfx'
-export type PrincipleLab = 'vfx' | 'anim' | 'ability'
+export type PrincipleDomain = 'anim' | 'vfx' | 'thumb'
+export type PrincipleLab = 'vfx' | 'anim' | 'ability' | 'thumbs'
 
 // What a request is, for picking the principles that matter (select.ts).
 export type AnimKind = 'attack' | 'idle' | 'locomotion' | 'emote' | 'reaction'

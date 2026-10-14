@@ -99,6 +99,7 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Navigate', 'anim', 'Open Animation Lab', () => actions.openPage('anim'), { icon: <Icon name="figure" />, detail: 'R15 animations · library · make & refine' })
   add('Navigate', 'vfx', 'Open VFX Lab', () => actions.openPage('vfx'), { icon: <Icon name="sparkle" />, detail: 'particle effects · library · make & refine' })
   add('Navigate', 'ability', 'Open Ability Composer', () => actions.openPage('ability'), { icon: <Icon name="bolt" />, detail: 'moves · animation + VFX + shake + hit-stop on one timeline' })
+  add('Navigate', 'thumbs', 'Open Thumbnail Lab', () => actions.openPage('thumbs'), { icon: <Icon name="thumbnail" />, detail: 'experience thumbnails · style profiles · CTR' })
   add('Navigate', 'uipreview', 'Open UI Preview (UI Labs stories)', () => actions.openPage('uipreview'), { icon: <Icon name="monitor" /> })
   add('Navigate', 'memory', 'Open Memory & skills', () => actions.openPage('memory'), { icon: <Icon name="memory" /> })
   // Memory export/import and device sync (pages/memory/MemoryPack.tsx).

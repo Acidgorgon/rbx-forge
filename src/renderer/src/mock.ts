@@ -37,6 +37,7 @@ import { studioMock } from './mockStudio'
 import { forgeSyncMock } from './mockForgeSync'
 import { principlesMock } from './mockPrinciples'
 import { gatingMock } from './mockGating'
+import { thumbsMock } from './mockThumbs'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -909,6 +910,8 @@ const api: HarnessApi = {
   ...forgeSync.api,
   // Lab gating (mockGating.ts): seeded decisions, cost table and decision models.
   ...gatingMock(emit),
+  // Thumbnail Lab (mockThumbs.ts): canvas-drawn references, bases and variations measured with the shared code.
+  ...thumbsMock(emit),
 
   on(event, handler) {
     let set = listeners.get(event)

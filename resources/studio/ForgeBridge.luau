@@ -5,6 +5,9 @@
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
 -- Forge records the Studio window and keeps the frames at the key beats for its critic.
 --
+-- Thumbnail Lab snapshot jobs build no stage and leave the camera alone: they only find the viewport
+-- (key colour) and let Forge grab the view the user framed.
+--
 -- Everything it creates is removed after each job and the camera is put back. It never runs in play
 -- mode and only talks to 127.0.0.1. Studio asks once to allow HTTP requests to 127.0.0.1 and to allow
 -- script injection (it creates the job's ModuleScripts from Forge's Luau).
@@ -369,6 +372,28 @@ local function runRealtime(job: any, folder: Folder, stage: Model, rig: Model)
 	post(job, { type = "done", marks = marks })
 end
 
+-- Thumbnail Lab: capture the viewport exactly as the user framed it (no stage, camera untouched).
+-- The selection is cleared for the capture so selection boxes do not end up in the thumbnail.
+local function runSnapshot(job: any)
+	local Selection = game:GetService("Selection")
+	local selected = Selection:Get()
+	Selection:Set({})
+	local ok, err = pcall(function()
+		if job.calibrate then
+			calibrate(job)
+		end
+		for i, beat in job.beats do
+			frames(3)
+			post(job, { type = "beat", index = i - 1, t = beat.t })
+		end
+		post(job, { type = "done", marks = {} })
+	end)
+	Selection:Set(selected)
+	if not ok then
+		error(err, 0)
+	end
+end
+
 local function runJob(job: any)
 	if job.version ~= 1 then
 		pcall(post, job, { type = "error", message = "this Forge Bridge plugin is outdated; reinstall it from RBX Forge" })
@@ -379,6 +404,10 @@ local function runJob(job: any)
 	local folder: Folder? = nil
 	local ok, err = pcall(function()
 		post(job, { type = "accepted" })
+		if job.kind == "snapshot" then
+			runSnapshot(job)
+			return
+		end
 		folder = jobFolder()
 		buildModules(job.modules or {}, folder :: Folder)
 		saved = saveView()

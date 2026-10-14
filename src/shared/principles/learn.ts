@@ -27,6 +27,14 @@ export function noteMentions(text: string | undefined, ids?: string[]): string[]
   return pool.filter((p) => p.words.test(text)).map((p) => p.id)
 }
 
+// Mentions limited to the domains of the rated result's principles (a thumbnail note about "colour"
+// does not move the VFX hue principle, and the other way round).
+function feedbackMentions(fb: Pick<PrincipleFeedback, 'scores' | 'notes'>): string[] {
+  const domains = new Set(Object.keys(fb.scores).map((id) => principle(id)?.domain).filter(Boolean))
+  const hits = noteMentions(fb.notes)
+  return domains.size ? hits.filter((id) => domains.has(principle(id)?.domain)) : hits
+}
+
 export function emptyProfile(at = 0): PrincipleProfile {
   return { version: 1, updatedAt: at, ratings: 0, weights: {}, evidence: {} }
 }
@@ -43,7 +51,7 @@ export function applyFeedback(weights: PrincipleWeights, fb: Pick<PrincipleFeedb
     }
   }
   // Notes: mentioned principles count for this user (whichever way they rated).
-  for (const id of noteMentions(fb.notes)) weights[id] = (weights[id] ?? 1) + (fb.rating === 'down' ? NOTE_BOOST.down : NOTE_BOOST.up)
+  for (const id of feedbackMentions(fb)) weights[id] = (weights[id] ?? 1) + (fb.rating === 'down' ? NOTE_BOOST.down : NOTE_BOOST.up)
   for (const id of Object.keys(weights)) weights[id] = Math.max(MIN_WEIGHT, Math.min(MAX_WEIGHT, weights[id]))
 }
 
@@ -62,7 +70,7 @@ export function learnProfile(feedback: PrincipleFeedback[], now = Date.now()): P
       if (fb.rating === 'up') (e.up++, (e.upSum += s))
       else (e.down++, (e.downSum += s))
     }
-    for (const id of noteMentions(fb.notes)) get(id).mentions++
+    for (const id of feedbackMentions(fb)) get(id).mentions++
   }
   const evidence: Record<string, PrincipleEvidence> = {}
   for (const [id, e] of Object.entries(ev)) evidence[id] = { n: e.n, up: e.up, down: e.down, mentions: e.mentions, upMean: e.up ? r2(e.upSum / e.up) : null, downMean: e.down ? r2(e.downSum / e.down) : null }

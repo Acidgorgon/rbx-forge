@@ -266,6 +266,7 @@ export function EditorArea() {
         break
       case 'thumbs':
         page = <ThumbLabPage />
+        break
       case 'uimotion':
         page = <UiMotionLabPage />
         break

@@ -9,7 +9,7 @@ import { watch, type FSWatcher } from 'node:fs'
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
-import type { BlinkDiagnostic, BlinkEvent, BlinkModel, BlinkTypeDecl, LogLine } from '@shared/types'
+import type { BlinkDiagnostic, BlinkEvent, BlinkModel, LogLine } from '@shared/types'
 import { findTool, run } from './tools.ts'
 import { appendDeclaration, BLINK_ENTRY, formatDeclaration, parseBlink, type BlinkEventSpec } from '../../shared/blink/parser.ts'
 

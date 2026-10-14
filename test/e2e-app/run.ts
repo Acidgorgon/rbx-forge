@@ -14,7 +14,7 @@ import { BRIDGE_PORT, launchApp, mainErrors, makeSandbox, portFree, seedSettings
 import { startFakeProvider, type FakeProvider } from './lib/fakeProvider.ts'
 import { makeAppProject } from './lib/project.ts'
 import { SkipFlow } from './lib/ui.ts'
-import { FLOWS, type Flow, type FlowCtx } from './flows/index.ts'
+import { FLOWS, type FlowCtx } from './flows/index.ts'
 
 const OUT = resolve(import.meta.dirname, 'out')
 

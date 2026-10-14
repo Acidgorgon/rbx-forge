@@ -15,7 +15,6 @@ import { loadPlaces, placeFor } from '../src/main/services/sync/mapping.ts'
 import { SESSION_EXPIRE_MS, SyncService } from '../src/main/services/sync/service.ts'
 import { createSync } from '../src/main/services/sync/wire.ts'
 import type { GateState, StudioNode } from '../src/shared/sync/types.ts'
-import { linkPlaces } from './syncFixture.ts'
 
 const dirs: string[] = []
 after(() => {

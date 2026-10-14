@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto'
 import { noProjectDir } from './noProjectDir.ts'
 import { z } from 'zod'
-import type { BoardItem, ChatImage, ChatMessage, GroupParticipant, GroupSettings, GroupUsage, ModelChoice, ProviderId, Speaker } from '@shared/types'
+import type { BoardItem, ChatImage, ChatMessage, GroupParticipant, GroupSettings, ModelChoice, ProviderId, Speaker } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import { fromAnthropicUsage, fromOpenAiUsage, priced, type Usage } from './budget/usage.ts'
 import type { Credentials } from './credentials.ts'

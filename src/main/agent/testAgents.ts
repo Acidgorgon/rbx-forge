@@ -39,7 +39,6 @@ import { routeModel } from './budget/budget.ts'
 import { SdkUsageTracker } from './budget/usage.ts'
 import type { Meter } from './meter.ts'
 import { toSummary } from './meter.ts'
-import { withRules } from './projectRules.ts'
 import { defineTool, gentreeTools, mcpToolName, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
 
 const MAX_KEPT = 50

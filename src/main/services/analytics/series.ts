@@ -1,4 +1,3 @@
-import { metricInfo } from './metrics.ts'
 import type { Aggregation, DateRange, Granularity, Series, SeriesPoint } from './types.ts'
 
 // Date ranges, bucketing and aggregation shared by every source. All times are UTC (the Analytics
@@ -45,10 +44,6 @@ export function resolveRange(spec: string | DateRange | undefined, now: number, 
     return { start: isoDay(s), end: isoDay(e) }
   }
   throw new Error(`Unrecognised range "${spec}". Use e.g. "7d", "28d", "12w" or "2026-09-01..2026-09-30".`)
-}
-
-export function rangeDays(range: DateRange): number {
-  return Math.round((parseTime(range.end) - parseTime(range.start)) / DAY)
 }
 
 // The range of equal length immediately before `range`.
@@ -158,11 +153,6 @@ export function fillInteriorGaps(series: Series): Series {
 // One number for a series over its points, using the metric's aggregation.
 export function summarise(series: Series): number | null {
   return aggregate(series.points.map((p) => p.v), series.aggregation)
-}
-
-export function emptySeries(metric: string, source: Series['source'], granularity: Granularity): Series {
-  const info = metricInfo(metric)
-  return { metric, source, granularity, unit: info.unit, aggregation: info.aggregation, points: [] }
 }
 
 // Rounds for compact output: 3 significant decimals for small values, integers for big ones.

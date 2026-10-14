@@ -15,14 +15,6 @@ type AnimIpc = {
 
 const anim = (): AnimIpc => ((globalThis as { harness?: unknown }).harness ?? {}) as AnimIpc
 
-export async function listAnimClips(): Promise<AnimClipRef[]> {
-  try {
-    return (await anim().listAnimClips?.()) ?? []
-  } catch {
-    return []
-  }
-}
-
 const RATE = 30
 const MAX_SAMPLES = 900
 

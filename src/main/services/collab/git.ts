@@ -3,10 +3,6 @@ import { findTool, outputLines, run, toolEnv, type RunResult } from '../tools.ts
 // Shared plumbing for the collaboration services: one way to run git (and other CLIs) with no
 // prompts, no editors, no pager and stable (unquoted) paths.
 
-export interface GitRunner {
-  (args: string[], cwd: string): Promise<RunResult>
-}
-
 export interface CollabDeps {
   // Full path to git; defaults to findTool('git').
   git?: string
@@ -39,13 +35,6 @@ export function gitBinary(deps: CollabDeps = {}): string {
 // Runs git in root. Never rejects.
 export function git(root: string, args: string[], deps: CollabDeps = {}): Promise<RunResult> {
   return run(gitBinary(deps), ['-c', 'core.quotepath=false', '-c', 'color.ui=false', ...args], root, collabEnv(deps))
-}
-
-// Like git() but throws a readable Error when the command fails.
-export async function gitOk(root: string, args: string[], deps: CollabDeps = {}): Promise<string> {
-  const result = await git(root, args, deps)
-  if (result.code !== 0) throw new Error(firstError(result) || `git ${args[0]} failed`)
-  return result.stdout
 }
 
 export function firstError(result: RunResult): string {

@@ -28,10 +28,6 @@ export function toLspPosition(position: MonacoPosition): LspPosition {
   return { line: position.lineNumber - 1, character: position.column - 1 }
 }
 
-export function toMonacoPosition(position: LspPosition): MonacoPosition {
-  return { lineNumber: position.line + 1, column: position.character + 1 }
-}
-
 export function toLspRange(range: MonacoRange): LspRange {
   return {
     start: { line: range.startLineNumber - 1, character: range.startColumn - 1 },

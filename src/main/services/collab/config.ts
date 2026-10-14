@@ -40,7 +40,6 @@ export const ProjectConfigSchema = z.object({
   // Keys written by other tools or newer Forge versions survive a save.
   .loose()
 
-export type TestScenario = z.infer<typeof TestScenarioSchema>
 export type ProjectConfig = z.infer<typeof ProjectConfigSchema>
 
 export const DEFAULT_BRANCH_PREFIX = 'feature/'

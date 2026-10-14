@@ -232,21 +232,3 @@ export const RETENTION_MATURITY_DAYS: Record<string, number> = {
   ForwardD7Retention: 7,
   ForwardD30Retention: 30
 }
-
-// Acquisition source names shown on the dashboard (create.roblox.com/docs/production/analytics/acquisition).
-// The API's AcquisitionSource dimension values may differ in spelling; discover them with
-// dimension-values. These are for UI labels and agent guidance only.
-export const DASHBOARD_ACQUISITION_SOURCES = [
-  'Home recommendations',
-  'Continue play',
-  "Today's Picks",
-  'Home other',
-  'Friends',
-  'Search',
-  'Charts',
-  'Sponsored ads',
-  'Search ads',
-  'Portal ads',
-  'Teleport',
-  'Other'
-]

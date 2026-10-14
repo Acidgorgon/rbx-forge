@@ -171,16 +171,6 @@ export function canonicalModel(text: string): string | null {
   }
 }
 
-// Instance at `names` below the model root, if present.
-export function findInModel(model: ModelNode, names: string[]): ModelNode | null {
-  let node: ModelNode | undefined = model
-  for (const name of names) {
-    node = node.children.find((c) => c.name === name)
-    if (!node) return null
-  }
-  return node
-}
-
 // ---- meta files ----
 
 // init.meta.json / X.meta.json content for an instance: keeps keys Forge does not manage

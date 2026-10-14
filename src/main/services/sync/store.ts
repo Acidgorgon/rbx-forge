@@ -10,7 +10,6 @@ import { normalise } from './merge.ts'
 
 export type SyncFs = Pick<typeof nodeFs, 'readFile' | 'writeFile' | 'rename' | 'mkdir' | 'readdir' | 'stat' | 'lstat' | 'rm' | 'rmdir' | 'realpath'>
 
-export const SYNC_DIR = '.forge/sync'
 export const INDEX_FILE = '.forge/sync/index.json'
 export const BLOB_DIR = '.forge/sync/blobs'
 export const TRASH_DIR = '.forge/sync/trash'

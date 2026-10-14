@@ -417,8 +417,6 @@ export async function addEvent(
   return { declaration: formatDeclaration(spec).trim(), check }
 }
 
-export { checkBlink as check }
-
 // ---------------------------------------------------------------- generate (real outputs)
 
 export interface GenerateResult {

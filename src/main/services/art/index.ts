@@ -5,8 +5,6 @@ export { STYLE_PRESETS } from './styles.ts'
 export { REGISTRY_PATH } from './registry.ts'
 export { ASSET_SCOPES } from './robloxAssets.ts'
 
-export type ArtSecretScope = 'project' | 'global'
-
 // Secret-store key for the Art Open Cloud key (falls back to the Release key when unset).
 export function artSecretKey(scope?: string): string {
   return scope ? `art.openCloudApiKey.${scope}` : 'art.openCloudApiKey'

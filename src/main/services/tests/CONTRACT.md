@@ -99,7 +99,7 @@ then open the returned path.
 ## AI tools
 
 `testTools(tests)` returns two GentreeTool-shaped objects (`name`, `description`, zod `inputSchema`,
-`handler`). Pass them as `createGentreeServer(ctx, { extraTools: testTools(tests) })`, or add a
+`handler`). Pass them to `wrapInSdkServer([...gentreeTools(ctx), ...testTools(tests)])`, or add a
 `tests()` accessor to `HarnessContext` and build them inside `gentreeTools`. For the
 OpenAI-compatible loop they go through `toFunctionSpecs()` like the others.
 

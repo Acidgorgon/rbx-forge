@@ -73,14 +73,6 @@ export function setChatFont(next: ChatFont): void {
   apply()
 }
 
-export function getThemeMode(): ThemeMode {
-  return mode
-}
-
-export function getMotionMode(): MotionMode {
-  return motion
-}
-
 // Decorative motion allowed (sparks, smooth caret): neither the OS nor the app asks to reduce it.
 export function motionAllowed(): boolean {
   return motion === 'full' && !reduceQuery().matches

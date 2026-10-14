@@ -38,8 +38,6 @@ export const PINNED_TOOLS: PinnedTool[] = [
 // Tool ids Forge installs without rokit's trust prompt in a project's `rokit install`.
 export const KNOWN_TOOL_IDS = new Set(PINNED_TOOLS.map((t) => t.id.toLowerCase()))
 
-export const GIT_DOWNLOAD_URL = 'https://git-scm.com/downloads'
-
 // ---------------------------------------------------------------- environment
 
 export interface ToolchainFs {

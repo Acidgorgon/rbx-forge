@@ -14,14 +14,6 @@ export const NotificationTogglesSchema = z.object({
   'test-failure': z.boolean().default(true)
 })
 
-export const NOTIFY_EVENTS: { kind: NotifyEventKind; label: string; description: string }[] = [
-  { kind: 'release', label: 'Releases', description: 'A new version was tagged, with its changelog.' },
-  { kind: 'publish', label: 'Published to Roblox', description: 'A version went live (Open Cloud, or confirmed after a Studio publish).' },
-  { kind: 'sync', label: 'Syncs', description: 'Someone shared or brought in commits with Sync. Quiet syncs (nothing moved) are never posted.' },
-  { kind: 'push', label: 'Pushes', description: 'Commits pushed to a branch.' },
-  { kind: 'test-failure', label: 'Test agent failures', description: 'An AI play-test scenario failed.' }
-]
-
 export function defaultToggles(): NotificationToggles {
   return NotificationTogglesSchema.parse({})
 }

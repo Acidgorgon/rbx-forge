@@ -220,11 +220,6 @@ export function abilityJob(ability: Ability, effects: Record<string, VfxEffect>,
   }
 }
 
-// Size of a job on the wire (the plugin's HttpService answers are capped well above this).
-export function jobBytes(job: BridgeJob): number {
-  return new TextEncoder().encode(JSON.stringify(job)).length
-}
-
 // Thumbnail Lab: capture the user's own Studio viewport as it is (no stage, the camera is not moved).
 // The plugin shows the key colour to find the viewport, removes it, then answers one beat.
 export function snapshotJob(opts: { id: string; name?: string }): BridgeJob {

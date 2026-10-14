@@ -15,7 +15,6 @@ import { defaultContext, findTool, planSpawn, type Platform, type SpawnPlan, typ
 export const CODEX_NPM_VERSION = '0.162.1'
 export const CODEX_NPM_PACKAGE = '@openai/codex'
 export const CODEX_INSTALL_DOCS = 'https://developers.openai.com/codex/cli'
-export const NODE_DOWNLOAD_URL = 'https://nodejs.org/en/download'
 
 // <userData>/tools/codex
 export function privateCodexPrefix(userDataDir: string, platform: Platform = process.platform): string {

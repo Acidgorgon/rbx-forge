@@ -170,9 +170,12 @@ export class Providers {
     }
     if (provider === 'anthropic') {
       const auth = await this.credentials.anthropicAuth()
-      info.ready = auth.ready
+      // A credential whose last request failed to authenticate is not ready (Settings > Accounts
+      // shows "Sign-in expired"); the next successful request or test clears it.
+      info.ready = auth.ready && !auth.failed
       if (!auth.ready) info.detail = source ? 'Key could not be read' : 'No API key'
-      else if (auth.source === 'claudeLogin') info.detail = 'Using your Claude Code login'
+      else if (auth.failed) info.detail = auth.source === 'key' ? 'API key was rejected' : 'Claude sign-in expired'
+      else if (auth.source === 'claudeLogin') info.detail = 'Using your Claude login'
       else if (auth.source === 'cloud') info.detail = 'Using cloud credentials from the environment'
       return info
     }

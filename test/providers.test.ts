@@ -305,8 +305,13 @@ test('anthropic uses the Claude login only when opted in', async () => {
   assert.equal(on.ready, true)
   assert.equal(on.source, 'claudeLogin')
   assert.equal(on.env?.CLAUDE_CODE_OAUTH_TOKEN, 'oauth-tok')
-  // A key wins over the login and the OAuth token is withheld.
+  // Signing in is an explicit choice: with the login on and found, it comes before a stored key.
   await creds.setKey('anthropic', 'sk-ant')
+  const both = await creds.anthropicAuth()
+  assert.equal(both.source, 'claudeLogin')
+  assert.equal(both.env?.ANTHROPIC_API_KEY, undefined)
+  // "Use an API key instead" turns the login off: the key is used and the OAuth token is withheld.
+  creds.setUseClaudeLogin(false)
   const keyed = await creds.anthropicAuth()
   assert.equal(keyed.source, 'key')
   assert.equal(keyed.env?.ANTHROPIC_API_KEY, 'sk-ant')

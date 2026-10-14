@@ -8,19 +8,26 @@
 // Anthropic: the Agent SDK runs the Claude Code CLI as a subprocess. Forge passes it an explicit
 // environment per query (Options.env) so the documented API-key path is used:
 //   - with a key: ANTHROPIC_API_KEY is set and CLAUDE_CODE_OAUTH_TOKEN is removed;
-//   - without a key, only when the 'anthropicUseClaudeLogin' setting is on: the environment is
-//     passed through, so the CLI uses an existing Claude Code login or CLAUDE_CODE_OAUTH_TOKEN;
+//   - with the 'anthropicUseClaudeLogin' setting on (Settings > Accounts "Sign in with Claude")
+//     and a login found: the environment is passed through without ANTHROPIC_API_KEY, so the CLI
+//     uses the Claude Code login or CLAUDE_CODE_OAUTH_TOKEN. Signing in is an explicit choice, so
+//     it comes before a stored key ("Use an API key instead" turns the setting off);
+//   - otherwise with a key: ANTHROPIC_API_KEY is set and CLAUDE_CODE_OAUTH_TOKEN is removed;
 //   - without either, the query is not started.
 // Cloud providers configured through the environment (CLAUDE_CODE_USE_BEDROCK/VERTEX/FOUNDRY) or a
 // gateway token (ANTHROPIC_AUTH_TOKEN) are explicit configuration and always count as ready.
-// On macOS a Claude Code login lives in the Keychain, which we cannot see; with the opt-in on and
-// no credentials file, Forge still lets the query run and the CLI reports any auth error.
+// "Login found": CLAUDE_CODE_OAUTH_TOKEN, else the last `claude auth status` answer (accounts/
+// claude.ts, set through setLoginProbe), else the credentials file's presence. On macOS the login
+// lives in the Keychain, which only the CLI can see; before it has answered, Forge lets the query
+// run and the CLI reports any auth error. Whether the login actually works is learned from requests
+// (accounts/authHealth.ts): a failed one marks it expired until a request or a test succeeds.
 
 import { existsSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { join } from 'node:path'
 import type { ProviderId } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
+import { AuthHealth } from '../accounts/authHealth.ts'
 
 export const USE_CLAUDE_LOGIN_SETTING = 'anthropicUseClaudeLogin'
 
@@ -69,6 +76,8 @@ export interface AnthropicAuth {
   // Why it is not ready.
   error?: string
   source?: 'key' | 'claudeLogin' | 'cloud'
+  // The last request on this credential failed to authenticate (it may still be retried).
+  failed?: boolean
 }
 
 export class Credentials {
@@ -77,11 +86,15 @@ export class Credentials {
   private env: NodeJS.ProcessEnv
   // Env values present at startup (not ones we injected), so clearing a stored key keeps them.
   private originalEnv: Partial<Record<ProviderId, string>> = {}
+  // Last `claude auth status` answer (true/false), undefined when unknown.
+  private loginProbe: () => boolean | undefined = () => undefined
+  readonly health: AuthHealth
 
   constructor(ctx: HarnessContext, loadSafe: SafeStorageLoader = electronSafeStorage, env: NodeJS.ProcessEnv = process.env) {
     this.ctx = ctx
     this.loadSafe = loadSafe
     this.env = env
+    this.health = new AuthHealth(ctx)
     for (const [p, name] of Object.entries(ENV_KEYS)) {
       const v = env[name!]
       if (v) this.originalEnv[p as ProviderId] = v
@@ -140,28 +153,48 @@ export class Credentials {
     this.ctx.setSetting(USE_CLAUDE_LOGIN_SETTING, !!on)
   }
 
+  setLoginProbe(fn: () => boolean | undefined): void {
+    this.loginProbe = fn
+  }
+
+  // Whether a Claude Code login can be used: true, false, or undefined (macOS Keychain, not checked).
+  claudeLoginFound(): boolean | undefined {
+    const e = this.env
+    if (e.CLAUDE_CODE_OAUTH_TOKEN) return true
+    const probe = this.loginProbe()
+    if (probe !== undefined) return probe
+    if (claudeCodeLoginExists(e)) return true
+    return process.platform === 'darwin' ? undefined : false
+  }
+
   // How the anthropic provider would authenticate right now, and the env for the SDK subprocess.
   async anthropicAuth(): Promise<AnthropicAuth> {
     const e = this.env
+    const cloud = !!(e.CLAUDE_CODE_USE_BEDROCK || e.CLAUDE_CODE_USE_VERTEX || e.CLAUDE_CODE_USE_FOUNDRY || e.ANTHROPIC_AUTH_TOKEN)
+    const login = this.useClaudeLogin() && !cloud ? this.claudeLoginFound() : false
+    if (login === true) {
+      // Never pass a stale key we injected earlier, nor one from the environment.
+      const env: Record<string, string | undefined> = { ...e }
+      delete env.ANTHROPIC_API_KEY
+      return { ready: true, env, source: 'claudeLogin', ...(this.health.failed('claudeLogin') ? { failed: true } : {}) }
+    }
     const key = await this.getKey('anthropic')
     if (key) {
       const env: Record<string, string | undefined> = { ...e, ANTHROPIC_API_KEY: key }
       delete env.CLAUDE_CODE_OAUTH_TOKEN
-      return { ready: true, env, source: 'key' }
+      return { ready: true, env, source: 'key', ...(this.health.failed('key') ? { failed: true } : {}) }
     }
-    if (e.CLAUDE_CODE_USE_BEDROCK || e.CLAUDE_CODE_USE_VERTEX || e.CLAUDE_CODE_USE_FOUNDRY || e.ANTHROPIC_AUTH_TOKEN) {
-      return { ready: true, env: { ...e }, source: 'cloud' }
-    }
+    if (cloud) return { ready: true, env: { ...e }, source: 'cloud' }
     if (this.useClaudeLogin()) {
-      // Never pass a stale key we injected earlier.
-      const env: Record<string, string | undefined> = { ...e }
-      delete env.ANTHROPIC_API_KEY
-      const found = !!e.CLAUDE_CODE_OAUTH_TOKEN || claudeCodeLoginExists(e) || process.platform === 'darwin'
-      return found
-        ? { ready: true, env, source: 'claudeLogin' }
-        : { ready: false, error: 'No Claude Code login found. Run `claude /login`, or add an Anthropic API key in Settings.' }
+      if (login === undefined) {
+        // macOS before the CLI has answered: let the CLI try the Keychain login.
+        const env: Record<string, string | undefined> = { ...e }
+        delete env.ANTHROPIC_API_KEY
+        return { ready: true, env, source: 'claudeLogin', ...(this.health.failed('claudeLogin') ? { failed: true } : {}) }
+      }
+      return { ready: false, error: 'No Claude login found. Use "Sign in with Claude" in Settings > Accounts, or add an Anthropic API key.' }
     }
-    return { ready: false, error: 'Add an Anthropic API key in Settings (or turn on "Use my Claude Code login").' }
+    return { ready: false, error: 'Sign in with Claude or add an Anthropic API key in Settings > Accounts.' }
   }
 
   // Kept for older callers: puts the stored anthropic key into process.env.

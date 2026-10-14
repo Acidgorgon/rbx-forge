@@ -1,0 +1,19 @@
+/* Settings > Accounts cards (AccountsSection.tsx); the card frame is .pv-card from pages.css. */
+.acct-body { margin: 6px 0 0 32px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.acct-body .pv-field { margin: 0; }
+.acct-status { font-size: 12.5px; }
+.acct-headline { color: var(--fg); font-weight: 550; }
+.acct-card.st-expired .acct-headline, .acct-warn { color: var(--warn); }
+.acct-check.ok { color: var(--ok); }
+.acct-check.err { color: var(--err); }
+.acct-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.acct-alt { align-self: flex-start; font-size: 12px; }
+.acct-getkey { white-space: nowrap; font-size: 12px; }
+.acct-progress { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); }
+.acct-progress .row { display: flex; align-items: center; gap: 8px; }
+.acct-confirm { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 8px 10px; border: 1px solid var(--line-strong); border-radius: var(--r-md); }
+.spinner-dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ember); flex: none; animation: acct-pulse 1.2s ease-in-out infinite; }
+@keyframes acct-pulse { 0%, 100% { opacity: 0.35; } 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .spinner-dot { animation: none; } }
+.acct-prompt { margin: 10px 0; display: flex; flex-direction: column; gap: 6px; }
+.acct-prompt .acct-actions { margin-top: 4px; }

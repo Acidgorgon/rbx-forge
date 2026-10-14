@@ -18,6 +18,7 @@ import { AttachGlyph, ImageThumb, MessageImages } from './ChatImages'
 import { EffortPicker, RouteSummary, useVision } from './EffortPicker'
 import { acceptedImageType } from './imageScale'
 import { RestateMessage } from './RestateMessage'
+import { AccountsPrompt } from '../accounts/AccountsPrompt'
 import { ConclusionCard, PatchCard, ReviewCard, SettingsNotice, splitStance, StancePill } from './GroupCards'
 import './chatextras.css'
 import { ModeBadge, ModePill, cycleMode, useChatMode } from './commands/ModePill'
@@ -608,7 +609,6 @@ export function AssistantPanel() {
   const pendingMode = useRef<OrchestrateMode | null>(null)
   const choice = chat ? { provider: chat.provider, model: chat.model } : state.pendingModel ?? state.defaultModel
   const boards = state.boards.filter((b) => (chat?.orchestrations ? chat.orchestrations.includes(b.runId) : false))
-  const noProvider = !!state.providers && state.providers.length > 0 && !state.providers.some((p) => p.ready)
   const problems = useProblems()
 
   useEffect(() => {
@@ -691,13 +691,7 @@ export function AssistantPanel() {
             rememberChatScroll(id, el.scrollTop, stick.current)
           }}
         >
-          {noProvider && (
-            <div className="vbox" style={{ margin: '10px 0' }}>
-              <div style={{ marginBottom: 6 }}>No model provider is set up.</div>
-              <div className="note" style={{ marginBottom: 8 }}>Add an API key for Anthropic, OpenAI, OpenRouter or Gemini, or run Ollama locally.</div>
-              <button className="btn" onClick={() => actions.openSettings()}><Icon name="gear" size={12} /> Settings</button>
-            </div>
-          )}
+          <AccountsPrompt providers={state.providers} current={state.providers?.find((p) => p.id === choice?.provider)} />
           {!messages.length && !boards.length && (
             <div className="as-empty">
               <div>context: {state.activeFile ? basename(state.activeFile) : 'no file'}{problems.length ? ` · ${problems.length} problems` : ''}</div>

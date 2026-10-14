@@ -19,19 +19,22 @@ import type {
   SyncNotice,
   SyncPlace,
   SyncRef,
-  SyncStatus
+  SyncStatus,
+  UnlinkedPlace
 } from '../../../shared/sync/types.ts'
 import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import { PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
+import { isLinkedKey, linkKey, matchPlace, PlaceLinks } from './links.ts'
+import { BaseStore } from './store.ts'
 
 // ---- What the service needs from the engine worker's modules (engine.ts, mapping.ts) ----
 // Structural copies of the contract's Engine API, so this file builds and is tested before they land.
 
 export interface SyncEngineLike {
   reload(): unknown
-  beginSnapshot(placeKey: string, place: SyncPlace): unknown
+  beginSnapshot(placeKey: string, place: SyncPlace, projectFile?: string): unknown
   addSnapshot(placeKey: string, nodes: StudioNode[]): unknown
   finishSnapshot(placeKey: string): Promise<SyncEntry[]>
   applyChanges(placeKey: string, changes: StudioChange[]): Promise<SyncEntry[]>
@@ -72,6 +75,9 @@ export interface SyncConfigQuery {
   placeId: number
   gameId?: number
   place?: string
+  // Plugin v8: the place's ForgeSyncLink attribute (unpublished, linked) and a random id per plugin run.
+  link?: string
+  probe?: string
 }
 
 export interface SyncConfigAnswer {
@@ -82,6 +88,8 @@ export interface SyncConfigAnswer {
   reason?: string
   outline?: string[][]
   outlineMax?: number
+  // Plugin v8: store this link id in the (unpublished) place; the user linked it in Forge.
+  stampLink?: string
 }
 
 export interface OutlineBody {
@@ -140,6 +148,8 @@ export interface SyncServiceDeps {
   pluginsDir: () => string | null
   // The Forge Bridge's view of Studio (the plugin long-polls), to show "connected" per place.
   studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
+  // Every Studio window polling the bridge right now (several places can be open at once).
+  studios?: () => { placeId?: number; place?: string }[]
   // The Forge Bridge plugin file in Studio's plugins folder (null: no plugins folder on this OS).
   plugin?: () => Promise<{ installed: boolean; version?: number } | null>
   // Gate per project file, for the supervisor (rojo serve waits while 'checking' / 'blocked').
@@ -163,6 +173,11 @@ export const TREE_THROTTLE_MS = 1000
 const SEEN_MS = 60_000
 // A snapshot that stops arriving (Studio closed or crashed mid-send) releases the rojo hold after this.
 export const SNAPSHOT_STALE_MS = 30_000
+// A linked session whose Studio stopped talking to Forge (no sync request, no bridge poll) for this
+// long is over: its gate goes back to idle (rojo is not held for a Studio that is gone).
+export const SESSION_EXPIRE_MS = 120_000
+// Unlinked places are listed while their plugin keeps asking for config (v8 every 5 s, older 20 s).
+const UNLINKED_SHOW_MS = 60_000
 // Unsynced references kept per place (a snapshot may arrive in many chunks).
 const SYNC_REFS_KEEP = 2000
 const WRITTEN_FILE = join('.forge', 'sync', 'forge-written.json')
@@ -203,6 +218,10 @@ interface PlaceState {
   missingRoots: string[][]
 }
 
+interface UnlinkedEntry extends UnlinkedPlace {
+  probe?: string
+}
+
 interface ConfigSeen {
   at: number
   placeId: number
@@ -212,6 +231,7 @@ interface ConfigSeen {
 
 export function placeKeyOf(place: SyncPlace, projectFile?: string): string {
   if (place.placeId) return String(place.placeId)
+  if (place.linkId) return `local:${place.linkId}`
   const name = place.name || (projectFile ? projectFile.replace(/\.project\.json$/, '') : 'Place')
   return `unpublished:${name}`
 }
@@ -256,6 +276,7 @@ export function parsePorcelainZ(out: string): string[] {
 
 export class SyncService {
   readonly root: string
+  readonly links: PlaceLinks
   private deps: SyncServiceDeps
   private now: () => number
   private sessions = new Map<string, Session>()
@@ -272,10 +293,18 @@ export class SyncService {
   private closed = false
   // The plugin's last /sync/config request (refused ones carry the reason).
   private lastConfig: ConfigSeen | null = null
+  // Studio places that asked for sync but are not linked to this project (never applied).
+  private unlinked = new Map<string, UnlinkedEntry>()
+  // Unpublished places the user linked: plugin probe id -> link id to stamp into the place.
+  private stamps = new Map<string, string>()
+  // One-time note: sync state of never-linked places was dropped at startup.
+  private discarded: { id: string; text: string } | undefined
+  private expireTimer: ReturnType<typeof setInterval> | null = null
 
   constructor(deps: SyncServiceDeps) {
     this.deps = deps
     this.root = deps.root
+    this.links = new PlaceLinks(deps.root)
     this.now = deps.now ?? Date.now
     deps.engine?.on('changed', () => {
       this.refresh()
@@ -294,8 +323,41 @@ export class SyncService {
 
   async start(): Promise<void> {
     await this.loadWritten()
+    await this.links.load()
+    if (this.deps.mapping) {
+      this.maps = await this.deps.mapping.loadPlaces(this.root).catch(() => [])
+      await this.recoverUnlinked().catch((e) => this.deps.log?.(`sync: could not clean up unlinked places: ${(e as Error).message}`, 'stderr'))
+    }
     await this.reload()
     await this.checkLegacyPlugin()
+    if (!this.expireTimer && !this.closed) {
+      this.expireTimer = setInterval(() => this.expireSessions(), 15_000)
+      ;(this.expireTimer as { unref?: () => void }).unref?.()
+    }
+  }
+
+  // Once per project after the place-linking update: Forge Sync used to take any Studio place (an
+  // unpublished one, or any place when no servePlaceIds were set) as the default place. Its base
+  // state is dropped (never applied again); files it already wrote stay for git to show.
+  private async recoverUnlinked(): Promise<void> {
+    // Without the place files (unreadable for a moment) every place would look unlinked: try next start.
+    if (this.links.recovered || !this.maps.length) return
+    const store = new BaseStore(this.root)
+    await store.load()
+    const dropped: string[] = []
+    for (const key of await store.placeKeys()) {
+      if (isLinkedKey(this.maps, this.links.all(), key)) continue
+      await store.dropPlace(key)
+      dropped.push(key)
+    }
+    if (dropped.length) {
+      await store.save()
+      const names = dropped.map((k) => (k.startsWith('unpublished:') ? `"${k.slice('unpublished:'.length)}"` : /^\d+$/.test(k) ? `place ${k}` : k))
+      const text = `Forge Sync now only syncs Studio places linked to this project. Discarded the sync session of ${names.join(', ')} (not linked): nothing from it is applied any more. Files it already wrote are left as they are; check Source Control to discard them.`
+      this.discarded = { id: `discarded:${dropped.join(',')}`, text }
+      this.deps.log?.(`sync: ${text}`, 'stderr')
+    }
+    await this.links.markRecovered()
   }
 
   // Project files changed (a *.project.json was added/edited): re-read the place maps.
@@ -307,12 +369,49 @@ export class SyncService {
       })
     }
     if (this.deps.engine) await this.serial(async () => this.deps.engine?.reload())
+    // A place no longer listed (servePlaceIds edited) stops syncing right away.
+    for (const state of [...this.placeStates.values()]) {
+      const linkId = state.placeKey.startsWith('local:') ? state.placeKey.slice('local:'.length) : undefined
+      const match = matchPlace(this.maps, this.links.all(), { placeId: state.place.placeId, linkId })
+      if (match && match.projectFile === state.projectFile) continue
+      this.dropSession(state.placeKey, 'no longer linked to this project')
+    }
     this.refresh()
+  }
+
+  private dropSession(placeKey: string, why: string): void {
+    for (const [token, s] of this.sessions) if (s.placeKey === placeKey) this.sessions.delete(token)
+    this.placeStates.delete(placeKey)
+    this.deps.log?.(`sync: stopped syncing ${placeKey}: ${why}`)
+    void this.serial(async () => this.deps.engine?.endSession?.(placeKey))
+  }
+
+  // Studio went away without saying so (window closed, crash): release what its session holds.
+  expireSessions(): void {
+    if (this.closed) return
+    const now = this.now()
+    const polling = this.deps.studios?.() ?? []
+    const single = this.deps.studio?.() ?? null
+    let changed = false
+    for (const state of this.placeStates.values()) {
+      if (now - state.lastSeen < SESSION_EXPIRE_MS) continue
+      const live = polling.some((p) => this.isStudioPlace(p, state.place)) || (!!single?.connected && this.isStudioPlace(single, state.place))
+      if (live) continue
+      if (![...this.sessions.values()].some((x) => x.placeKey === state.placeKey)) continue
+      for (const [token, s] of this.sessions) if (s.placeKey === state.placeKey) this.sessions.delete(token)
+      this.deps.log?.(`sync: Studio session for ${state.projectFile} (${state.placeKey}) ended: no word from Studio for ${Math.round(SESSION_EXPIRE_MS / 1000)} s`)
+      void this.serial(async () => this.deps.engine?.endSession?.(state.placeKey))
+      changed = true
+    }
+    for (const [id, u] of this.unlinked) if (now - u.lastSeen > UNLINKED_SHOW_MS) this.unlinked.delete(id)
+    if (changed) this.refresh()
   }
 
   close(): void {
     this.closed = true
     this.sessions.clear()
+    if (this.expireTimer) clearInterval(this.expireTimer)
+    this.expireTimer = null
     if (this.treeTimer) clearTimeout(this.treeTimer)
     this.treeTimer = null
   }
@@ -336,18 +435,26 @@ export class SyncService {
     }
     if (!this.active()) return off(this.settings().engine === 'forge' ? 'Forge Sync is not available in this build' : `Studio sync is set to "${this.settings().engine}"`)
     if (!this.maps.length) await this.reload()
+    await this.links.load()
     const placeId = Number(q.placeId) || 0
-    // Like Rojo's servePlaceIds: once the project lists its places, another published place (a test
-    // copy, an unrelated game) is not this project. Without this it fell back to default.project.json,
-    // wrote its Studio-only instances into the repo and held that place's rojo serve on its conflicts.
-    if (placeId && this.maps.some((m) => m.placeIds.length) && !this.maps.some((m) => m.placeIds.includes(placeId))) {
-      this.deps.log?.(`sync: off for Studio place ${placeId}: not in any *.project.json servePlaceIds (or tools/studio-sync.json placeIds); add it there to sync this place`)
-      return off(`Place ${placeId} is not in any *.project.json servePlaceIds`)
+    // Only a place linked to this project syncs: its PlaceId in a servePlaceIds / studio-sync.json
+    // placeIds, or linked in Source Control (by PlaceId, or by the link id the plugin keeps in an
+    // unpublished place). Never by name and never "the default place": every unpublished place and
+    // local .rbxlx file has PlaceId 0, and any open place used to land in default.project.json,
+    // writing its scripts into the repo and holding rojo on its "conflicts".
+    const linkId = placeId ? undefined : q.link
+    const match = matchPlace(this.maps, this.links.all(), { placeId, ...(linkId ? { linkId } : {}) })
+    if (!match) {
+      const stamp = q.probe && !placeId ? this.stamps.get(q.probe) : undefined
+      if (stamp) return { ...off('linking: the plugin stores the link in the place'), stampLink: stamp }
+      return off(this.noteUnlinked(q, placeId).why)
     }
-    const map = this.deps.mapping!.placeFor(this.maps, placeId)
+    if (q.probe) this.stamps.delete(q.probe)
+    this.unlinked.delete(this.unlinkedId(q, placeId))
+    const map = this.maps.find((m) => m.projectFile === match.projectFile)
     if (!map) return off('No *.project.json maps this place')
-    const place: SyncPlace = { placeId, ...(q.gameId ? { gameId: Number(q.gameId) } : {}), ...(q.place ? { name: String(q.place) } : {}) }
-    const placeKey = placeKeyOf(place, map.projectFile)
+    const place: SyncPlace = { placeId, ...(q.gameId ? { gameId: Number(q.gameId) } : {}), ...(q.place ? { name: String(q.place) } : {}), ...(linkId ? { linkId } : {}) }
+    const placeKey = match.placeKey
     for (const [token, s] of this.sessions) if (s.placeKey === placeKey) this.sessions.delete(token)
     const token = randomUUID()
     this.sessions.set(token, { token, placeKey, nextSeq: 0, ready: false, rootsSeen: new Set() })
@@ -368,7 +475,8 @@ export class SyncService {
     // Forge dropped (project reopened, a newer config for the place) kept posting outlines nobody took,
     // and the Game tab kept showing instances long deleted in Studio.
     if (!session) return { ok: false, error: 'unknown session', resend: true }
-    const state = this.placeStates.get(session.placeKey)!
+    const state = this.placeStates.get(session.placeKey)
+    if (!state || !samePlace(state.place, body.place)) return { ok: false, error: 'this session belongs to another place', resend: true }
     state.lastSeen = this.now()
     const nodes = Array.isArray(body.nodes) ? body.nodes : []
     const sig = JSON.stringify([nodes, !!body.truncated])
@@ -384,7 +492,8 @@ export class SyncService {
     const session = this.sessions.get(body.session)
     if (!session) return { ok: false, error: 'unknown session', resend: true }
     const engine = this.deps.engine!
-    const state = this.placeStates.get(session.placeKey)!
+    const state = this.placeStates.get(session.placeKey)
+    if (!state || !samePlace(state.place, body.place)) return { ok: false, error: 'this session belongs to another place', resend: true }
     state.lastSeen = this.now()
     try {
       return await this.serial(async () => {
@@ -396,7 +505,7 @@ export class SyncService {
           state.override = false
           state.counts = {}
           state.snapshotRefs = []
-          await engine.beginSnapshot(session.placeKey, state.place)
+          await engine.beginSnapshot(session.placeKey, state.place, state.projectFile)
           this.refresh()
         }
         if (body.seq !== session.nextSeq) {
@@ -465,7 +574,8 @@ export class SyncService {
     const session = this.sessions.get(body.session)
     if (!session) return { ok: false, error: 'unknown session', resend: true }
     if (!session.ready) return { ok: false, error: 'no complete snapshot yet', resend: true }
-    const state = this.placeStates.get(session.placeKey)!
+    const state = this.placeStates.get(session.placeKey)
+    if (!state || !samePlace(state.place, body.place)) return { ok: false, error: 'this session belongs to another place', resend: true }
     state.lastSeen = this.now()
     try {
       if (Array.isArray(body.refs)) this.setRefs(state, body.refs, body.refsTotal)
@@ -503,6 +613,49 @@ export class SyncService {
     if (take === 'studio') await this.markWritten(files)
     this.refresh()
     return this.status()
+  }
+
+  // "Link this place to <project>": persisted in .forge/sync/links.json. A published place by PlaceId;
+  // an unpublished one by a new link id the plugin (v8) stores in the place on its next config request.
+  async linkPlace(id: string, projectFile?: string): Promise<SyncStatus> {
+    const entry = this.unlinked.get(id)
+    if (!entry) throw new Error('That Studio place is not connected any more; open it in Studio and try again')
+    if (!entry.canLink) throw new Error(entry.why)
+    await this.links.load()
+    const file = projectFile ?? (this.maps.find((m) => m.projectFile === 'default.project.json') ?? this.maps[0])?.projectFile
+    if (!file || !this.maps.some((m) => m.projectFile === file)) throw new Error(`No ${projectFile ?? '*.project.json'} in this project`)
+    const link = { projectFile: file, ...(entry.name ? { name: entry.name } : {}), at: this.now() }
+    if (entry.placeId > 0) await this.links.set(linkKey({ placeId: entry.placeId })!, link)
+    else {
+      const linkId = randomUUID()
+      await this.links.set(linkKey({ placeId: 0, linkId })!, link)
+      this.stamps.set(entry.probe!, linkId)
+    }
+    this.unlinked.delete(id)
+    this.deps.log?.(`sync: linked Studio place "${entry.name}"${entry.placeId ? ` (${entry.placeId})` : ''} to ${file}; its first sync waits for your choice`)
+    this.refresh()
+    return this.status()
+  }
+
+  private unlinkedId(q: SyncConfigQuery, placeId: number): string {
+    if (placeId) return `place:${placeId}`
+    return q.probe ? `probe:${q.probe}` : `name:${String(q.place ?? '')}`
+  }
+
+  private noteUnlinked(q: SyncConfigQuery, placeId: number): UnlinkedEntry {
+    const id = this.unlinkedId(q, placeId)
+    const name = String(q.place ?? '') || (placeId ? `Place ${placeId}` : 'Unpublished place')
+    const canLink = placeId > 0 || !!q.probe
+    const why = placeId
+      ? `Place ${placeId} is not linked to this project (not in any *.project.json servePlaceIds or tools/studio-sync.json placeIds)`
+      : canLink
+        ? 'Unpublished place, not linked to this project'
+        : `Unpublished place, not linked to this project. Restart Studio to load Forge Bridge v${PLUGIN_VERSION}, which can link it`
+    const entry: UnlinkedEntry = { id, name, placeId, lastSeen: this.now(), canLink, why, ...(q.probe ? { probe: q.probe } : {}) }
+    const known = this.unlinked.has(id)
+    this.unlinked.set(id, entry)
+    if (!known) this.deps.log?.(`sync: Studio place "${name}" is not linked to this project; nothing from it is synced (Source Control > Link to sync it)`)
+    return entry
   }
 
   async serveAnyway(placeKey: string): Promise<SyncStatus> {
@@ -642,6 +795,12 @@ export class SyncService {
     }
     if (this.warning && status.pendingStudioEdits.length) status.warning = this.warning
     if (status.engine === 'forge') {
+      const now = this.now()
+      const unlinked = [...this.unlinked.values()].filter((u) => now - u.lastSeen <= UNLINKED_SHOW_MS).map(({ probe: _probe, ...u }) => u)
+      if (unlinked.length) status.unlinked = unlinked
+      if (this.discarded) status.discarded = this.discarded
+    }
+    if (status.engine === 'forge') {
       const notice = await this.notice(status.places)
       if (notice) status.notice = notice
     }
@@ -678,6 +837,11 @@ export class SyncService {
     const name = studio.place ? `"${studio.place}"` : 'the place'
     const cfg = this.lastConfig
     if (cfg?.reason && this.isStudioPlace(studio, { placeId: cfg.placeId, name: cfg.name }) && this.now() - cfg.at < 5 * 60_000) {
+      // Not linked: not a sync failure, that place is simply not this project's.
+      if (/not linked to this project/.test(cfg.reason)) {
+        if (places.some((p) => p.connected)) return undefined
+        return { level: 'info', text: `Studio connected, ${name} is not linked to this project: nothing from it is synced. Link it in Source Control to sync it.` }
+      }
       return { level: 'warn', text: `Studio connected, ${name} not synced: ${cfg.reason}.` }
     }
     const state = [...this.placeStates.values()].find((s) => this.isStudioPlace(studio, s.place))
@@ -1022,6 +1186,11 @@ function displayProps(props: Record<string, unknown> | undefined): Record<string
     if (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') (out ??= {})[k] = v
   }
   return out
+}
+
+// A plugin request for a session must come from that session's place.
+function samePlace(a: SyncPlace, b: SyncPlace | undefined): boolean {
+  return !!b && (Number(b.placeId) || 0) === (a.placeId || 0)
 }
 
 function firstLine(text: string): string {

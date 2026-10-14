@@ -227,3 +227,11 @@ export function listFiles(root: string, skip: (rel: string) => boolean = () => f
   walk('')
   return out.sort()
 }
+
+// The user linked these Studio places to place files in Source Control (.forge/sync/links.json):
+// keys `place:<PlaceId>` (published) or `local:<link id>` (unpublished; the plugin sends ?link=).
+export function linkPlaces(root: string, links: Record<string, string>): void {
+  mkdirSync(join(root, '.forge', 'sync'), { recursive: true })
+  const data = { version: 1, links: Object.fromEntries(Object.entries(links).map(([k, projectFile]) => [k, { projectFile, at: 1 }])) }
+  writeFileSync(join(root, '.forge', 'sync', 'links.json'), JSON.stringify(data, null, 2))
+}

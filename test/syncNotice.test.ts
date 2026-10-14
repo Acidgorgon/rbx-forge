@@ -61,6 +61,13 @@ async function make(opts: { root: string; studio: () => Studio; plugin?: { insta
 }
 
 const place = { placeId: 0, gameId: 0, name: 'Place1' }
+const LINK = 'link-0001-place1'
+
+// The user linked the unpublished place in Source Control earlier (the plugin keeps LINK in the place).
+function linkPlace(root: string): void {
+  mkdirSync(join(root, '.forge', 'sync'), { recursive: true })
+  writeFileSync(join(root, '.forge', 'sync', 'links.json'), JSON.stringify({ version: 1, links: { [`local:${LINK}`]: { projectFile: 'default.project.json', name: 'Place1', at: 1 } } }))
+}
 
 test('notice: no plugin installed -> install it (and the status bar is not green)', async () => {
   const service = await make({ root: project(), studio: () => null, plugin: { installed: false } })
@@ -83,13 +90,15 @@ test('notice: plugin installed but Studio never connected', async () => {
 test('notice: unpublished place whose mapped folders are not in Studio yet; connected via the bridge for PlaceId 0', async () => {
   let t = 1_000_000
   const studio: Studio = { placeId: undefined, place: 'Place1', pluginVersion: PLUGIN_VERSION, connected: true }
-  const service = await make({ root: project(), studio: () => studio, now: () => t })
-  const cfg = await service.handler.config({ placeId: 0, gameId: 0, place: 'Place1' })
+  const root = project()
+  linkPlace(root)
+  const service = await make({ root, studio: () => studio, now: () => t })
+  const cfg = await service.handler.config({ placeId: 0, gameId: 0, place: 'Place1', link: LINK })
   assert.equal(cfg.enabled, true)
   assert.deepEqual((await service.handler.snapshot({ session: cfg.sessionToken, place, seq: 0, final: true, nodes: [] })).ok, true)
   t += 5 * 60_000 // long after the last sync request: still connected through the bridge
   let status = await service.status()
-  const p = status.places.find((x) => x.placeKey === 'unpublished:Place1')!
+  const p = status.places.find((x) => x.placeKey === `local:${LINK}`)!
   assert.equal(p.connected, true)
   assert.deepEqual(p.missingRoots, ['ReplicatedStorage.Shared', 'StarterPlayer.StarterPlayerScripts.Client'])
   assert.match(status.notice!.text, /none of the mapped folders exist in Studio yet/)
@@ -116,7 +125,12 @@ test('notice: a place the project does not list (servePlaceIds) says so; an old 
   const cfg = await service.handler.config({ placeId: 999, gameId: 5, place: 'Other' })
   assert.equal(cfg.enabled, false)
   const status = await service.status()
-  assert.match(status.notice!.text, /Studio connected, "Other" not synced: Place 999 is not in any \*\.project\.json servePlaceIds/)
+  // Not linked: said once, as information (another game's place is not a sync failure).
+  assert.match(status.notice!.text, /Studio connected, "Other" is not linked to this project/)
+  assert.equal(status.notice!.level, 'info')
+  assert.deepEqual(status.unlinked?.map((u) => [u.name, u.placeId, u.canLink]), [['Other', 999, true]])
+  assert.equal(status.places.length, 1)
+  assert.equal(status.places[0].gate, 'idle')
 
   studio.placeId = 111
   studio.pluginVersion = PLUGIN_VERSION - 1

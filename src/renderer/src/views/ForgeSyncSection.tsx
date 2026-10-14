@@ -206,6 +206,28 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         )
       })}
 
+      {status.unlinked?.map((u) => {
+        const target = state.activePlace || 'default.project.json'
+        const targetName = state.places.find((x) => x.file === target)?.name || state.project?.name || target.replace(/\.project\.json$/, '')
+        return (
+          <div key={u.id} className="fs-place fs-unlinked">
+            <div className="lrow static" title={`${u.why}.\n\nForge Sync only syncs Studio places linked to this project: a published place listed in servePlaceIds (or tools/studio-sync.json placeIds), or one you link here. Other places (VFX scratch places, other games) can stay open for Studio checks; nothing from them is written, trashed or held.`}>
+              <span className="fs-dot" />
+              <span className="grow ellipsis">Not linked: {u.name}</span>
+              <button
+                className="mini-btn"
+                disabled={!!busy || !u.canLink}
+                title={u.canLink ? `Sync this Studio place with ${targetName} (${target}). Its first sync waits until you pick a side.` : u.why}
+                onClick={() => void act(`link:${u.id}`, () => window.harness.syncLinkPlace(u.id, target), `Linked ${u.name} to ${targetName}. Its first sync waits for your choice.`)}
+              >
+                Link
+              </button>
+            </div>
+            <div className="fs-sub note">Not synced: nothing from this place is written to disk or holds Rojo.{u.canLink ? ` Link it to sync it with ${targetName}.` : ` ${u.why}.`}</div>
+          </div>
+        )
+      })}
+
       <div className="fs-commit">
         <button className={`btn${pending.length ? ' primary' : ''}`} disabled={!pending.length || busy === 'commit'} onClick={() => void commit()} title="Commits only the files Forge wrote from Studio">
           <Icon name="check" size={12} /> {busy === 'commit' ? 'Committing…' : `Commit teammate edits (${pending.length})`}

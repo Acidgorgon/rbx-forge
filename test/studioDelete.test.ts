@@ -2,6 +2,7 @@
 // the Forge Bridge, version and connection gates), the outline answer that makes a forgotten plugin
 // session start over, and how the Forge Bridge plugin template ships with code-only quick updates.
 import assert from 'node:assert/strict'
+import { linkPlaces } from './syncFixture.ts'
 import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
@@ -130,6 +131,7 @@ test('outline from a session Forge no longer knows asks the plugin to start over
   const root = tmp('forge-outline-')
   writeFileSync(join(root, 'default.project.json'), JSON.stringify({ name: 'G', tree: { $className: 'DataModel', ReplicatedStorage: { Shared: { $path: 'src/shared' } } } }))
   mkdirSync(join(root, 'src', 'shared'), { recursive: true })
+  linkPlaces(root, { 'local:link-0001-place1': 'default.project.json' })
   const service = new SyncService({
     root,
     engine: new SyncEngine({ root }),
@@ -144,7 +146,7 @@ test('outline from a session Forge no longer knows asks the plugin to start over
     const answer = await service.handler.outline!({ session: 'forgotten', place: { placeId: 0, name: 'Place1' }, nodes: [] })
     assert.deepEqual(answer, { ok: false, error: 'unknown session', resend: true })
     // A live session takes an empty outline (everything outside the roots deleted) and replaces the old one.
-    const config = await service.handler.config({ placeId: 0, place: 'Place1' })
+    const config = await service.handler.config({ placeId: 0, place: 'Place1', link: 'link-0001-place1' })
     const place = { placeId: 0, name: 'Place1' }
     assert.deepEqual(await service.handler.outline!({ session: config.sessionToken, place, nodes: [{ path: ['ReplicatedStorage', 'Old'], className: 'Folder' }] }), { ok: true })
     assert.deepEqual(service.liveTree('default.project.json')?.nodes.map((x) => x.path.join('.')), ['ReplicatedStorage.Old'])
@@ -189,5 +191,5 @@ test('plugin template: a quick bundle must carry the current template', () => {
   const file = (p: string, text: string): [string, Buffer] => [p, Buffer.from(text)]
   assert.doesNotThrow(() => checkPluginTemplate([file('main/app.js', ''), file('main/studio/ForgeBridge.luau', TEMPLATE)]))
   assert.throws(() => checkPluginTemplate([file('main/app.js', '')]), /main\/studio\/ForgeBridge\.luau is missing/)
-  assert.throws(() => checkPluginTemplate([file('main/studio/ForgeBridge.luau', TEMPLATE.replace(/forge-bridge-template: \d+/, 'forge-bridge-template: 5'))]), /template v5 but the code installs v7/)
+  assert.throws(() => checkPluginTemplate([file('main/studio/ForgeBridge.luau', TEMPLATE.replace(/forge-bridge-template: \d+/, 'forge-bridge-template: 5'))]), /template v5 but the code installs v8/)
 })

@@ -17,6 +17,10 @@ export interface SyncConfigQuery {
   placeId: number
   gameId?: number
   place?: string
+  // Plugin v8: the place's ForgeSyncLink attribute (unpublished places linked in Forge), and a random
+  // id per plugin run so two unlinked places with the same name are told apart.
+  link?: string
+  probe?: string
 }
 
 export interface SyncConfig {
@@ -28,6 +32,9 @@ export interface SyncConfig {
   // most nodes to send. Older plugins ignore both.
   outline?: string[][]
   outlineMax?: number
+  // Plugin v8, with enabled false: the user linked this (unpublished) place in Forge; the plugin stores
+  // this id as ServerStorage's ForgeSyncLink attribute and asks for config again.
+  stampLink?: string
 }
 
 export interface OutlineBody {
@@ -322,6 +329,9 @@ export function parseOutlineBody(v: unknown): OutlineBody {
   return body
 }
 
+// Link ids and probe ids: GUID-ish tokens (HttpService:GenerateGUID(false) / randomUUID()).
+export const LINK_ID_RE = /^[A-Za-z0-9-]{8,64}$/
+
 // Query string of GET /sync/config. placeId is required (0 for an unpublished place).
 export function parseConfigQuery(params: URLSearchParams): SyncConfigQuery {
   const raw = params.get('placeId')
@@ -336,12 +346,16 @@ export function parseConfigQuery(params: URLSearchParams): SyncConfigQuery {
   }
   const place = params.get('place')
   if (place) q.place = place.slice(0, SYNC_LIMITS.maxPlaceName)
+  const link = params.get('link')
+  if (link && LINK_ID_RE.test(link)) q.link = link
+  const probe = params.get('probe')
+  if (probe && LINK_ID_RE.test(probe)) q.probe = probe
   return q
 }
 
 // What the bridge sends back for config; strips anything the plugin does not need and keeps it sane.
 export function sanitizeConfig(c: SyncConfig): SyncConfig {
-  if (!c.enabled) return { enabled: false }
+  if (!c.enabled) return c.stampLink && LINK_ID_RE.test(c.stampLink) ? { enabled: false, stampLink: c.stampLink } : { enabled: false }
   const paths = (list: string[][] | undefined) => (list ?? []).filter((p) => Array.isArray(p) && p.length > 0 && p.every((n) => typeof n === 'string'))
   const out: SyncConfig = { enabled: true, sessionToken: String(c.sessionToken ?? ''), roots: paths(c.roots), skip: paths(c.skip) }
   if (c.outline?.length) {

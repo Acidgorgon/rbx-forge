@@ -54,7 +54,9 @@ export interface Particle {
   w: number
   h: number
   rot: number
+  // Colour x brightness (sRGB values scaled by `bright`; the renderer linearises color / bright).
   color: Rgb
+  bright: number
   alpha: number
   age: number
   life: number
@@ -647,6 +649,13 @@ function particleAt(em: PreparedEmitter, p: ReturnType<typeof emitterParams>, ke
     position = add(point(frameAt, spawn.local), displacement(v0, p.accel, p.drag, age))
     vel = velocityAt(v0, p.accel, p.drag, age)
   }
+  // Velocity-aligned particles with (almost) no motion (Speed 0.01 "sculptures", or drag that
+  // has stopped them) still point along their emission direction, as in Roblox.
+  if (Math.hypot(vel[0], vel[1], vel[2]) < 1e-3) {
+    const d = rotate(frameAt, dirLocal)
+    const m = Math.hypot(d[0], d[1], d[2]) || 1
+    vel = [(d[0] / m) * 1e-2, (d[1] / m) * 1e-2, (d[2] / m) * 1e-2]
+  }
   const tn = age / life
   const size = Math.max(0, evalNumberSequence(p.size, tn, sizeOff)) * look.sizeScale
   const sq = evalNumberSequence(p.squash, tn, squashOff)
@@ -665,6 +674,7 @@ function particleAt(em: PreparedEmitter, p: ReturnType<typeof emitterParams>, ke
     h: size * Math.pow(2, sq),
     rot: rot0 + rotSpeed * age,
     color: [c[0] * b, c[1] * b, c[2] * b],
+    bright: b,
     alpha: 1 - transparency,
     age,
     life,
@@ -727,6 +737,8 @@ export function simulateEmitter(em: PreparedEmitter, t: number, seed = 1): Parti
 export interface BeamFrame {
   id: string
   lightEmission: number
+  // Brightness the colours are scaled by (see Particle.bright).
+  bright: number
   points: Vec3[]
   // Width direction per point (used when FaceCamera is false).
   sides: Vec3[]
@@ -764,10 +776,11 @@ export function simulateBeam(b: PreparedLink, t: number): BeamFrame | null {
   const transp = prop<NumberSequence>(n, 'Transparency')
   const z0 = rotate(A0, [0, 0, 1])
   const z1 = rotate(A1, [0, 0, 1])
-  const frame: BeamFrame = { id: b.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), points: [], sides: [], widths: [], colors: [], alphas: [], us: [] }
+  // Brightness scales the light when LightInfluence < 1 (Beam.Brightness), like particles.
+  const bright = lerp(v('Brightness'), 1, Math.max(0, Math.min(1, prop<number>(n, 'LightInfluence') || 0)))
+  const frame: BeamFrame = { id: b.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), bright, points: [], sides: [], widths: [], colors: [], alphas: [], us: [] }
   let length = 0
   let prev: Vec3 | null = null
-  const bright = v('Brightness')
   for (let i = 0; i <= segs; i++) {
     const s = i / segs
     const m = 1 - s
@@ -792,6 +805,7 @@ export function simulateBeam(b: PreparedLink, t: number): BeamFrame | null {
 export interface TrailFrame {
   id: string
   lightEmission: number
+  bright: number
   // Pairs of edge points (attachment 0 side, attachment 1 side), newest first.
   left: Vec3[]
   right: Vec3[]
@@ -816,8 +830,8 @@ export function simulateTrail(tr: PreparedLink, t: number): TrailFrame | null {
   const tint = tl ? tl.tint(n.id, t) : null
   const maxLen = v('MaxLength') || 0
   const minLen = Math.max(0, v('MinLength'))
-  const bright = v('Brightness')
-  const frame: TrailFrame = { id: tr.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), left: [], right: [], colors: [], alphas: [], us: [] }
+  const bright = lerp(v('Brightness'), 1, Math.max(0, Math.min(1, prop<number>(n, 'LightInfluence') || 0)))
+  const frame: TrailFrame = { id: tr.id, lightEmission: Math.max(0, Math.min(1, v('LightEmission'))), bright, left: [], right: [], colors: [], alphas: [], us: [] }
   let length = 0
   let last: Vec3 | null = null
   // Segments are recorded at a fixed 60 Hz grid so scrubbing gives the same trail.

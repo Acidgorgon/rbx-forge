@@ -21,7 +21,7 @@ import { parseEvent } from '../src/shared/studio/protocol.ts'
 import { MeshService, ASSET_DELIVERY, type MeshFetch } from '../src/main/services/vfx/meshes.ts'
 import { splitEffects, VfxService } from '../src/main/services/vfx/service.ts'
 import { luneExtract } from '../src/main/services/vfx/lune.ts'
-import type { VfxNode } from '../src/shared/vfx/types.ts'
+import type { VfxEffect, VfxNode } from '../src/shared/vfx/types.ts'
 
 // ------------------------------------------------------------------ synthetic mesh files
 
@@ -229,7 +229,7 @@ test('simulate: mesh files, SpecialMesh Scale / Offset tweens, decals and part h
   assert.equal(meshFileOf(ring)?.mode, 'special')
   // SurfaceAppearance.ColorMap wins over TextureID.
   assert.equal(meshFileOf({ ...mp, children: [{ id: 'sa', className: 'SurfaceAppearance', name: 'SA', props: { ColorMap: 'rbxassetid://1' }, children: [] }] })?.textureId, 'rbxassetid://1')
-  const effect = {
+  const effect: VfxEffect = {
     name: 'x',
     roots: [{ id: 'm', className: 'Model', name: 'M', props: {}, children: [mp, ring] }],
     cues: [

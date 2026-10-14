@@ -103,7 +103,7 @@ export function nodeWant(n: VfxNode): TextureWant | null {
   const byName = kindFromText(n.name.replace(/([a-z])([A-Z])/g, '$1 $2'))
   if (byName !== 'other' && byName !== 'beam' && byName !== 'trail') return { kind: byName, className: n.className, words }
   const role = emitterRole(n)
-  const map: Record<string, TextureKind> = { sparks: 'spark', smoke: 'smoke', glow: 'glow', core: 'glow', ring: 'ring', debris: 'debris' }
+  const map: Record<string, TextureKind> = { sparks: 'spark', smoke: 'smoke', glow: 'glow', core: 'glow', ring: 'ring', debris: 'debris', slash: 'slash', crack: 'crack', flash: 'flare' }
   return { kind: map[role] ?? 'glow', className: n.className, words }
 }
 

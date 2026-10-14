@@ -6,7 +6,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePersisted } from '../../qol/sessionStore'
 import type { VfxEffect, VfxEntry, VfxLabStatus, VfxRecipe, VfxRefineProgress, VfxScope } from '@shared/types'
 import { RUBRIC_KEYS } from '@shared/vfx/types'
-import { dedupeWarnings, IMPORT_VERSION, perfWarnings } from '@shared/vfx/analyze'
+import { dedupeWarnings, IMPORT_VERSION, layerRoles, perfWarnings } from '@shared/vfx/analyze'
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
@@ -174,6 +174,8 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
   const [comparing, setComparing] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const pendingRef = useRef<VfxEffect | null>(null)
+  // What each layer does, inferred from its properties (names in imported effects mean nothing).
+  const roles = useMemo(() => (draft ? layerRoles(draft) : []), [draft])
 
   // A new entry, or a server-side update (refine wrote a better version) while no edit is pending.
   useEffect(() => {
@@ -290,7 +292,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
           </button>
         </div>
       )}
-      {draft ? <VfxPreview key={`${entry.id}:${entry.importVersion ?? 1}`} effect={draft} autoSnapshot={!entry.thumbs.length} onSnapshot={(png) => void h.vfxSaveThumb(entry.id, png).catch(() => undefined)} /> : <Media entry={entry} />}
+      {draft ? <VfxPreview key={`${entry.id}:${entry.importVersion ?? 1}`} effect={draft} background={entry.kind === 'model' ? 'studio' : 'dark'} autoSnapshot={!entry.thumbs.length} onSnapshot={(png) => void h.vfxSaveThumb(entry.id, png).catch(() => undefined)} /> : <Media entry={entry} />}
 
       {draft && (
         <div className="vfx-actions">
@@ -412,6 +414,20 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
                 </dd>
                 <dt>textures</dt>
                 <dd className="mono vfx-tex">{entry.stats.textures.join('  ') || '—'}</dd>
+              </>
+            )}
+            {roles.length > 0 && (
+              <>
+                <dt>roles</dt>
+                <dd>
+                  <ul className="vfx-roles" data-testid="vfx-roles">
+                    {roles.map((r) => (
+                      <li key={r.id} title={`${r.className}; inferred from its ${r.by}`}>
+                        <span className="mono">{r.name}</span> → {r.label}
+                      </li>
+                    ))}
+                  </ul>
+                </dd>
               </>
             )}
             {entry.written && (

@@ -12,7 +12,8 @@ import { resolveAbility, rootOffset, screenAt, shakeAt, type EventLengths, type 
 import type { Ability, AbilityRig, BodyPart, VfxEvent } from '@shared/ability/types'
 import type { CFrameArr, VfxEffect } from '@shared/vfx/types'
 import { FxLayer } from '../../vfx/preview/fxLayer'
-import { addStage, BG, TextureCache, type Background, type TextureResolver } from '../../vfx/preview/scene'
+import { TextureCache, type Background, type TextureResolver } from '../../vfx/preview/scene'
+import { LinearOutput, srgbColor, Stage } from '../../vfx/preview/stage'
 import { PoseTrack } from './pose'
 
 export type AbilityView = 'front' | 'side' | 'wide' | 'back'
@@ -42,8 +43,8 @@ function rootAt(resolved: ResolvedAbility, t: number): CFrameArr {
 
 function buildRig(rig: AbilityRig = 'R15'): { group: THREE.Group; parts: Map<BodyPart, THREE.Mesh>; rig: AbilityRig } {
   const group = new THREE.Group()
-  const mat = new THREE.MeshStandardMaterial({ color: 0x9aa1ab, roughness: 0.85, metalness: 0 })
-  const face = new THREE.MeshStandardMaterial({ color: 0x6f7782, roughness: 0.85, metalness: 0 })
+  const mat = new THREE.MeshStandardMaterial({ color: srgbColor(0x9aa1ab), roughness: 0.85, metalness: 0 })
+  const face = new THREE.MeshStandardMaterial({ color: srgbColor(0x6f7782), roughness: 0.85, metalness: 0 })
   const parts = new Map<BodyPart, THREE.Mesh>()
   for (const p of partsFor(rig)) {
     if (p === 'HumanoidRootPart') continue
@@ -84,6 +85,8 @@ export class AbilityScene {
   private shake = { offset: [0, 0, 0] as number[], roll: 0, strength: 0 }
   // Reduced motion: the camera does not shake (the HUD still reports it).
   shakeEnabled = true
+  private stage: Stage
+  private output: LinearOutput
 
   constructor(canvas: HTMLCanvasElement, opts: { resolver?: TextureResolver; interactive?: boolean; background?: Background } = {}) {
     THREE.ColorManagement.enabled = false
@@ -95,8 +98,8 @@ export class AbilityScene {
     this.controls = opts.interactive === false ? null : new OrbitControls(this.camera, canvas)
     if (this.controls) this.controls.enableDamping = false
     this.setView('front')
-    this.setBackground(opts.background ?? 'dark')
-    addStage(this.scene)
+    this.output = new LinearOutput(this.renderer)
+    this.stage = new Stage(this.scene, opts.background ?? 'dark')
     this.scene.add(this.rig.group)
   }
 
@@ -110,7 +113,7 @@ export class AbilityScene {
   }
 
   setBackground(bg: Background): void {
-    this.scene.background = new THREE.Color(BG[bg] ?? BG.dark)
+    this.stage.set(bg)
   }
 
   resize(width: number, height: number): void {
@@ -197,7 +200,7 @@ export class AbilityScene {
     if (this.disposed) return
     const strength = this.shakeEnabled ? this.shake.strength : 0
     if (strength <= 1e-4) {
-      this.renderer.render(this.scene, this.camera)
+      this.output.render(this.scene, this.camera)
       return
     }
     // Shake in camera space on top of the orbit camera (the runner does camera.CFrame * offset), restored after the frame.
@@ -209,7 +212,7 @@ export class AbilityScene {
     this.camera.translateZ(z)
     this.camera.rotateZ(this.shake.roll)
     this.camera.updateMatrixWorld()
-    this.renderer.render(this.scene, this.camera)
+    this.output.render(this.scene, this.camera)
     this.camera.position.copy(pos)
     this.camera.quaternion.copy(quat)
     this.camera.updateMatrixWorld()
@@ -230,6 +233,8 @@ export class AbilityScene {
     this.slots = []
     this.controls?.dispose()
     this.textures.dispose()
+    this.stage.dispose()
+    this.output.dispose()
     this.renderer.dispose()
   }
 }

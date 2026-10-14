@@ -297,16 +297,41 @@ export function effectStats(effect: VfxEffect): VfxStats {
 
 // ------------------------------------------------------------------ layer roles
 
-export type LayerRole = 'core' | 'glow' | 'sparks' | 'smoke' | 'ring' | 'debris' | 'trail' | 'beam' | 'light' | 'mesh' | 'other'
+export type LayerRole = 'core' | 'glow' | 'sparks' | 'smoke' | 'ring' | 'debris' | 'trail' | 'beam' | 'light' | 'mesh' | 'slash' | 'crack' | 'flash' | 'other'
 
+// Words in layer names that say what a layer is (only when they match: purchased effects name
+// layers "1SP" or "1", so the properties below decide most of the time).
 const ROLE_WORDS: [LayerRole, RegExp][] = [
+  ['slash', /slash|blade|streak|swipe|crescent|swing/i],
+  ['crack', /crack|fissure|fractur/i],
+  ['flash', /flash|\bpop\b/i],
   ['sparks', /spark|ember|spec|glitter|star|flare/i],
   ['smoke', /smoke|dust|fog|mist|steam|cloud/i],
   ['glow', /glow|bloom|light|halo|aura/i],
-  ['ring', /ring|shock|wave|circle|crescent/i],
+  ['ring', /ring|shock|wave|circle/i],
   ['debris', /debris|rock|chunk|shard|bits/i],
   ['core', /core|main|base|fire|flame|center|centre|burst|blast/i]
 ]
+
+// Texture library kinds -> layer roles (for ids the library knows).
+const KIND_ROLE: Record<string, LayerRole> = { spark: 'sparks', star: 'sparks', smoke: 'smoke', ring: 'ring', shockwave: 'ring', crack: 'crack', slash: 'slash', debris: 'debris', glow: 'glow', wisp: 'glow', flare: 'flash' }
+
+export const ROLE_LABEL: Record<LayerRole, string> = {
+  core: 'core',
+  glow: 'glow',
+  sparks: 'ember sparks',
+  smoke: 'smoke',
+  ring: 'shockwave ring',
+  debris: 'debris',
+  trail: 'trail',
+  beam: 'beam',
+  light: 'light',
+  mesh: 'mesh',
+  slash: 'blade / slash streak',
+  crack: 'crack lines',
+  flash: 'core flash',
+  other: 'other'
+}
 
 export function luminance(c: Rgb): number {
   return 0.2126 * c[0] + 0.7152 * c[1] + 0.0722 * c[2]
@@ -318,27 +343,76 @@ function saturation(c: Rgb): number {
   return mx <= 0 ? 0 : (mx - mn) / mx
 }
 
-// What job an emitter does in a layered effect (name first, then its numbers).
-export function emitterRole(n: VfxNode): LayerRole {
-  for (const [role, re] of ROLE_WORDS) if (re.test(n.name)) return role
+export type TextureKindOf = (texture: string) => string | null | undefined
+
+// What job an emitter does in a layered effect, and what decided it: a name that says so, the
+// texture's kind (library textures), else its numbers (orientation, squash, speed, lifetime, size,
+// colour, blending).
+export function inferEmitterRole(n: VfxNode, kindOf?: TextureKindOf): { role: LayerRole; by: 'name' | 'texture' | 'properties' } {
+  for (const [role, re] of ROLE_WORDS) if (re.test(n.name)) return { role, by: 'name' }
+  const tex = typeof n.props.Texture === 'string' ? n.props.Texture : ''
+  const kind = tex && kindOf ? kindOf(tex) : null
+  if (kind && KIND_ROLE[kind]) return { role: KIND_ROLE[kind], by: 'texture' }
   const size = sequenceMax(prop<NumberSequence>(n, 'Size'))
   const speed = Math.max(...(prop<NumberRange>(n, 'Speed') ?? [0, 0]).map(Math.abs))
   const life = (prop<NumberRange>(n, 'Lifetime') ?? [1, 1])[1]
   const le = prop<number>(n, 'LightEmission')
   const mid = evalColorSequence(prop<ColorSequence>(n, 'Color'), 0.5)
-  if (prop<string>(n, 'Orientation') === 'VelocityParallel' || (size <= 0.6 && speed >= 8)) return 'sparks'
-  if (le < 0.3 && saturation(mid) < 0.35 && life >= 1) return 'smoke'
-  if (speed <= 2 && size >= 2 && le >= 0.5) return 'glow'
-  return 'core'
+  const orient = prop<string>(n, 'Orientation')
+  const squash = Math.max(0, ...(prop<NumberSequence>(n, 'Squash') ?? []).map((k) => Math.abs(k.v)))
+  const by = 'properties' as const
+  // Elongated, (nearly) still particles drawn along their emission direction: sharp blade shapes.
+  if ((orient === 'VelocityParallel' || squash >= 1) && speed <= 1.5 && size >= 0.8) return { role: 'slash', by }
+  // Dark, still, non-glowing streaks: cracks.
+  if (luminance(mid) < 0.12 && le < 0.5 && speed <= 1.5) return { role: 'crack', by }
+  if (orient === 'VelocityParallel' || (size <= 0.6 && speed >= 8)) return { role: 'sparks', by }
+  if (orient === 'VelocityPerpendicular' && curveShape(prop<NumberSequence>(n, 'Size')) !== 'shrink') return { role: 'ring', by }
+  if (life <= 0.25 && size >= 2 && le >= 0.5) return { role: 'flash', by }
+  if (le < 0.3 && saturation(mid) < 0.35 && life >= 1) return { role: 'smoke', by }
+  if (speed <= 2 && size >= 2 && le >= 0.5) return { role: 'glow', by }
+  return { role: 'core', by }
 }
 
-export function nodeRole(n: VfxNode): LayerRole {
-  if (n.className === 'ParticleEmitter') return emitterRole(n)
+export function emitterRole(n: VfxNode, kindOf?: TextureKindOf): LayerRole {
+  return inferEmitterRole(n, kindOf).role
+}
+
+export function nodeRole(n: VfxNode, kindOf?: TextureKindOf): LayerRole {
+  if (n.className === 'ParticleEmitter') return emitterRole(n, kindOf)
   if (n.className === 'Trail') return 'trail'
-  if (n.className === 'Beam') return 'beam'
+  if (n.className === 'Beam') {
+    // A beam named like a slash, or a curved wide one with a slash texture, is the blade.
+    const tex = typeof n.props.Texture === 'string' && kindOf ? kindOf(n.props.Texture) : null
+    if (tex === 'slash' || /slash|blade|swipe|crescent/i.test(n.name)) return 'slash'
+    return 'beam'
+  }
   if (/Light$/.test(n.className) || n.className === 'Highlight') return 'light'
   if (n.className === 'MeshPart' || n.className === 'SpecialMesh') return 'mesh'
   return 'other'
+}
+
+export interface LayerRoleRow {
+  id: string
+  name: string
+  className: string
+  role: LayerRole
+  label: string
+  by: 'name' | 'texture' | 'properties' | 'class'
+}
+
+// Every layer with the role the Lab gives it (shown in the detail panel: "1SP -> ember sparks").
+export function layerRoles(effect: VfxEffect, kindOf?: TextureKindOf): LayerRoleRow[] {
+  const out: LayerRoleRow[] = []
+  for (const n of allNodes(effect.roots)) {
+    if (n.className === 'ParticleEmitter') {
+      const r = inferEmitterRole(n, kindOf)
+      out.push({ id: n.id, name: n.name, className: n.className, role: r.role, label: ROLE_LABEL[r.role], by: r.by })
+    } else if (['Beam', 'Trail', 'MeshPart', 'SpecialMesh', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight'].includes(n.className)) {
+      const role = nodeRole(n, kindOf)
+      out.push({ id: n.id, name: n.name, className: n.className, role, label: ROLE_LABEL[role], by: 'class' })
+    }
+  }
+  return out
 }
 
 // ------------------------------------------------------------------ tags
@@ -416,6 +490,10 @@ export function autoTags(effect: VfxEffect, extra = ''): string[] {
   for (const [tag, re] of Object.entries(TAG_WORDS)) if (re.test(text)) tags.add(tag)
   const nodes = allNodes(effect.roots)
   const colors = effectColors(effect)
+  // What the layers do (from their properties when the names say nothing).
+  const roles = new Set(nodes.filter((n) => n.className === 'ParticleEmitter' || n.className === 'Beam').map((n) => nodeRole(n)))
+  if (roles.has('slash')) tags.add('slash')
+  if (roles.has('ring')) tags.add('shockwave')
   if (nodes.some((n) => n.className === 'Trail')) tags.add('trail')
   if (nodes.some((n) => n.className === 'Beam')) tags.add('beam')
   const emitters = nodes.filter((n) => n.className === 'ParticleEmitter')
@@ -434,7 +512,7 @@ export function describeEffect(effect: VfxEffect): string {
   const stats = effectStats(effect)
   const roles = allNodes(effect.roots)
     .filter((n) => n.className === 'ParticleEmitter')
-    .map((n) => `${n.name} (${emitterRole(n)})`)
+    .map((n) => `${n.name} (${ROLE_LABEL[emitterRole(n)]})`)
   const bits = [
     `${stats.emitters} emitter${stats.emitters === 1 ? '' : 's'}${roles.length ? `: ${roles.slice(0, 6).join(', ')}` : ''}`,
     stats.beams ? `${stats.beams} beam(s)` : '',

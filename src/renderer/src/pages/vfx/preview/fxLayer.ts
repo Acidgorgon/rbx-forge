@@ -14,6 +14,8 @@ import { flipbookGrid, prepareEffect, simulate, type PreparedEffect, type Prepar
 import { NORMALS } from '@shared/vfx/cframe'
 import type { Rgb, Vec3, VfxEffect, VfxNode } from '@shared/vfx/types'
 import type { PlaceholderKind } from './textures'
+// Roblox colours are sRGB; the preview blends in linear light (stage.ts, shared/vfx/light.ts).
+import { linearColor } from '@shared/vfx/light'
 import { sharedMeshes, type MeshFn, type MeshGeometry } from './meshes'
 
 export type TextureFn = (ref: string, kind: PlaceholderKind, grid: [number, number]) => Promise<THREE.Texture>
@@ -413,15 +415,15 @@ export class FxLayer {
     const opacity = (1 - prop<number>(m.node, 'Transparency')) * (m.shape === 'ellipsoid' && !real ? 0.85 : 1)
     let mat: THREE.Material
     if (glow && real) {
-      mat = blendMaterial(MESH_VS, MESH_FS, { color: { value: new THREE.Color(c[0], c[1], c[2]) }, opacity: { value: opacity }, mode: { value: material === 'ForceField' ? 2 : 1 }, hasMap: { value: map ? 1 : 0 }, map: { value: map } })
+      mat = blendMaterial(MESH_VS, MESH_FS, { color: { value: new THREE.Color(...linearColor(c)) }, opacity: { value: opacity }, mode: { value: material === 'ForceField' ? 2 : 1 }, hasMap: { value: map ? 1 : 0 }, map: { value: map } })
       if (geo.getAttribute('uv')) (mat as THREE.ShaderMaterial).defines = { USE_UV_ATTR: '' }
     } else if (glow) {
-      mat = blendMaterial(PART_VS, PART_FS, { color: { value: new THREE.Color(c[0], c[1], c[2]) }, opacity: { value: opacity }, rim: { value: material === 'ForceField' ? 1 : 0 } })
+      mat = blendMaterial(PART_VS, PART_FS, { color: { value: new THREE.Color(...linearColor(c)) }, opacity: { value: opacity }, rim: { value: material === 'ForceField' ? 1 : 0 } })
     } else {
       // A MeshPart's texture replaces its Color (Color shows where the texture is transparent:
       // approximated by tinting white); a SpecialMesh's texture is tinted by VertexColor.
       mat = new THREE.MeshStandardMaterial({
-        color: map ? new THREE.Color(1, 1, 1) : new THREE.Color(c[0], c[1], c[2]),
+        color: map ? new THREE.Color(1, 1, 1) : new THREE.Color(...linearColor(c)),
         map,
         transparent: true,
         alphaTest: map ? 0.02 : 0,
@@ -447,7 +449,7 @@ export class FxLayer {
       const q = new THREE.Quaternion().setFromUnitVectors(new THREE.Vector3(0, 0, 1), new THREE.Vector3(n[0], n[1], n[2]))
       plane.applyQuaternion(q)
       plane.translate(n[0] * 0.502, n[1] * 0.502, n[2] * 0.502)
-      const dm = new THREE.MeshBasicMaterial({ color: new THREE.Color(d.color[0], d.color[1], d.color[2]), transparent: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 })
+      const dm = new THREE.MeshBasicMaterial({ color: new THREE.Color(...linearColor(d.color)), transparent: true, depthWrite: false, side: THREE.DoubleSide, polygonOffset: true, polygonOffsetFactor: -2 })
       const dmesh = new THREE.Mesh(plane, dm)
       dmesh.renderOrder = 3
       faces.add(dmesh)
@@ -470,9 +472,9 @@ export class FxLayer {
       const outA = 1 - prop<number>(h, 'OutlineTransparency')
       const fill = prop<Rgb>(h, 'FillColor')
       const fillA = 1 - prop<number>(h, 'FillTransparency')
-      if (fillA > 0.01 && mat instanceof THREE.MeshStandardMaterial) mat.emissive = new THREE.Color(fill[0] * fillA, fill[1] * fillA, fill[2] * fillA)
+      if (fillA > 0.01 && mat instanceof THREE.MeshStandardMaterial) mat.emissive = new THREE.Color(...linearColor([fill[0] * fillA, fill[1] * fillA, fill[2] * fillA]))
       if (outA > 0.01) {
-        outline = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: new THREE.Color(out[0], out[1], out[2]), side: THREE.BackSide, transparent: true, opacity: outA, depthWrite: false }))
+        outline = new THREE.Mesh(geo, new THREE.MeshBasicMaterial({ color: new THREE.Color(...linearColor(out)), side: THREE.BackSide, transparent: true, opacity: outA, depthWrite: false }))
         outline.scale.setScalar(1.05)
         mesh.add(outline)
       }
@@ -577,7 +579,8 @@ export class FxLayer {
         A.iPos.setXYZ(i, p.pos[0], p.pos[1], p.pos[2])
         A.iSize.setXY(i, p.w, p.h)
         A.iRot.setX(i, p.rot)
-        A.iColor.setXYZW(i, p.color[0], p.color[1], p.color[2], p.alpha)
+        const lc = linearColor(p.color, p.bright)
+        A.iColor.setXYZW(i, lc[0], lc[1], lc[2], p.alpha)
         A.iFrame.setXYZ(i, p.frame, p.nextFrame, p.blend)
         A.iVel.setXYZ(i, p.vel[0], p.vel[1], p.vel[2])
       })
@@ -608,7 +611,7 @@ export class FxLayer {
         continue
       }
       light.position.set(l.pos[0], l.pos[1], l.pos[2])
-      light.color.setRGB(l.color[0], l.color[1], l.color[2])
+      light.color.setRGB(...linearColor(l.color))
       // Tuned by eye against Studio: Brightness 2-4 lights a character without blowing it out.
       light.intensity = l.brightness * 1.4
       light.distance = l.range
@@ -636,12 +639,12 @@ export class FxLayer {
       if (m.glow) {
         const u = (mat as THREE.ShaderMaterial).uniforms
         u.opacity.value = opacity
-        ;(u.color.value as THREE.Color).setRGB(look.color[0], look.color[1], look.color[2])
+        ;(u.color.value as THREE.Color).setRGB(...linearColor(look.color))
       } else {
         const sm = mat as THREE.MeshStandardMaterial
         sm.opacity = sm.map ? opacity : opacity
-        if (sm.map) sm.color.setRGB(vc ? vc[0] : 1, vc ? vc[1] : 1, vc ? vc[2] : 1)
-        else sm.color.setRGB(look.color[0], look.color[1], look.color[2])
+        if (sm.map) sm.color.setRGB(...linearColor(vc ?? [1, 1, 1]))
+        else sm.color.setRGB(...linearColor(look.color))
       }
       for (const d of m.decals) {
         const dop = (1 - Math.max(0, Math.min(1, d.decal.transparency(t)))) * opacity
@@ -657,7 +660,8 @@ export class FxLayer {
     return { particles, emitters: f.emitters.length, drawCalls: this.emitters.length + this.strips.length }
   }
 
-  private writeStrip(s: StripView, left: Vec3[], right: Vec3[], us: number[], colors: Rgb[], alphas: number[]): void {
+  private writeStrip(s: StripView, left: Vec3[], right: Vec3[], us: number[], srgb: Rgb[], alphas: number[], bright: number): void {
+    const colors = srgb.map((c) => linearColor(c, bright))
     const n = left.length
     const pos = new Float32Array(n * 2 * 3)
     const uv = new Float32Array(n * 2 * 2)
@@ -695,7 +699,7 @@ export class FxLayer {
       left.push([p[0] + side[0] * w, p[1] + side[1] * w, p[2] + side[2] * w])
       right.push([p[0] - side[0] * w, p[1] - side[1] * w, p[2] - side[2] * w])
     })
-    this.writeStrip(s, left, right, b.us, b.colors, b.alphas)
+    this.writeStrip(s, left, right, b.us, b.colors, b.alphas, b.bright)
   }
 
   private fillTrail(s: StripView, tr: NonNullable<SimFrame['trails'][number]>, cam: THREE.Vector3): void {
@@ -729,7 +733,7 @@ export class FxLayer {
         return acc / len
       })
     }
-    this.writeStrip(s, left, right, us, tr.colors, tr.alphas)
+    this.writeStrip(s, left, right, us, tr.colors, tr.alphas, tr.bright)
   }
 
   clear(): void {

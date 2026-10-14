@@ -1,10 +1,10 @@
 // Live 3D preview of an effect (three.js, preview/scene.ts) with transport controls: play / pause,
 // scrub (a timeline strip with stages and cues for scripted effects), loop, slow motion, "Emit burst",
-// front / side / wide camera, dark / grey background. An approximation of Roblox.
+// front / side / wide camera, Studio / dark / grey stage. An approximation of Roblox.
 import { useEffect, useRef, useState } from 'react'
 import type { VfxCue, VfxEffect } from '@shared/types'
 import { Icon } from '../../components/Icons'
-import { VfxScene, type Background, type View } from './preview/scene'
+import { BACKGROUNDS, VfxScene, type Background, type View } from './preview/scene'
 import { hasTimeline, TimelineStrip } from './TimelineStrip'
 import { prefersReducedMotion } from './motion'
 import { webglMessage } from '../../lib/webgl'
@@ -17,7 +17,9 @@ const autoTried = new Set<string>()
 
 const SPEEDS = [1, 0.5, 0.25, 0.1]
 
-export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEffect; onSnapshot?: (png: string) => void; autoSnapshot?: boolean }) {
+// background: the initial stage ('studio' for effects imported from Studio, so they look the way
+// they did there).
+export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dark' }: { effect: VfxEffect; onSnapshot?: (png: string) => void; autoSnapshot?: boolean; background?: Background }) {
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<VfxScene | null>(null)
@@ -26,7 +28,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEf
   const [playing, setPlaying] = useState(!prefersReducedMotion())
   const [loop, setLoop] = useState(true)
   const [speed, setSpeed] = useState(1)
-  const [bg, setBg] = useState<Background>('dark')
+  const [bg, setBg] = useState<Background>(background)
   const [view, setView] = useState<View>('front')
   const [t, setT] = useState(0)
   const [stats, setStats] = useState({ particles: 0 })
@@ -45,7 +47,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEf
     const canvas = canvasRef.current!
     let scene: VfxScene
     try {
-      scene = new VfxScene(canvas, { resolver: (ref) => window.harness.vfxResolveTexture(ref) })
+      scene = new VfxScene(canvas, { resolver: (ref) => window.harness.vfxResolveTexture(ref), background })
     } catch (e) {
       setError(webglMessage(e))
       return
@@ -213,7 +215,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot }: { effect: VfxEf
           ))}
         </div>
         <div className="seg" role="group" aria-label="Background">
-          {(['dark', 'grey'] as Background[]).map((b) => (
+          {BACKGROUNDS.map((b) => (
             <button key={b} className={bg === b ? 'on' : ''} onClick={() => setBg(b)} aria-pressed={bg === b}>
               {b}
             </button>

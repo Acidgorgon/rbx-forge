@@ -78,9 +78,9 @@ export function contrastCheck(effect: VfxEffect): PrincipleCheck | null {
   }
 }
 
-const PRIMARY = new Set<LayerRole>(['core', 'beam', 'mesh'])
+const PRIMARY = new Set<LayerRole>(['core', 'beam', 'mesh', 'slash', 'flash'])
 const SECONDARY = new Set<LayerRole>(['glow', 'ring', 'trail', 'light'])
-const TERTIARY = new Set<LayerRole>(['sparks', 'smoke', 'debris'])
+const TERTIARY = new Set<LayerRole>(['sparks', 'smoke', 'debris', 'crack'])
 
 export function layersCheck(effect: VfxEffect): PrincipleCheck | null {
   const nodes = allNodes(effect.roots).filter((n) => ['ParticleEmitter', 'Beam', 'Trail', 'MeshPart', 'SpecialMesh', 'PointLight', 'SpotLight', 'SurfaceLight'].includes(n.className))

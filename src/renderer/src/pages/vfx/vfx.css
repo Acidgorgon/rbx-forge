@@ -200,3 +200,5 @@
 /* Import notes on an imported model (what the preview does not reproduce). */
 .vfx-import-notes { margin: 0; padding-left: 14px; display: flex; flex-direction: column; gap: 2px; }
 .vfx-import-notes .note { font-size: 11px; margin: 0; }
+.vfx-roles { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
+.vfx-roles .mono { color: var(--text); }

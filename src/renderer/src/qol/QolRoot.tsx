@@ -217,6 +217,18 @@ function digestCard(card: ReactElement): ReactNode {
   return slot ? createPortal(card, slot) : card
 }
 
+// Forge put (or updated) the Forge Bridge plugin in Studio's plugins folder at startup.
+function usePluginAutoNotice(): void {
+  const { actions } = useStore()
+  useEffect(
+    () =>
+      window.harness.on('studio:pluginAuto', (e) =>
+        actions.toast({ text: e.action === 'updated' ? 'Forge Bridge plugin updated' : 'Forge Bridge plugin installed', detail: 'Restart Roblox Studio to load it. Allow HTTP requests to 127.0.0.1 when Studio asks.' })
+      ),
+    []
+  )
+}
+
 export function QolRoot() {
   const { actions } = useStore()
   const [bug, setBug] = useState<{ screenshot: boolean } | null>(null)
@@ -224,6 +236,7 @@ export function QolRoot() {
   actionsRef.current = actions
   useErrorCapture()
   useSessionRestore()
+  usePluginAutoNotice()
   const [digest, dismiss] = useDigest()
 
   useEffect(() => {

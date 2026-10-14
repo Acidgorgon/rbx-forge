@@ -195,6 +195,20 @@ export class StudioService {
     return s
   }
 
+  // At startup: put the bundled plugin in Studio's plugins folder when it is missing or older than
+  // this Forge, so Forge Sync and the Studio check work without a manual install. `studioPresent`
+  // tells whether Studio looks installed (its Roblox folder exists); nothing is written otherwise.
+  async ensurePlugin(studioPresent: (pluginsDir: string) => boolean): Promise<'installed' | 'updated' | null> {
+    const s = await this.status()
+    if (!s.plugin.dir || !studioPresent(s.plugin.dir)) return null
+    const stale = !s.plugin.installed || (s.plugin.version ?? 0) < PLUGIN_VERSION || !!s.plugin.outdated
+    if (!stale) return null
+    const was = s.plugin.installed
+    await this.installPlugin()
+    this.deps.log?.(`studio: ${was ? 'updated' : 'installed'} the Forge Bridge plugin (v${PLUGIN_VERSION}); restart Studio to load it`)
+    return was ? 'updated' : 'installed'
+  }
+
   async openPluginsFolder(): Promise<void> {
     const { dir } = this.pluginPath()
     if (dir && this.deps.plugin.open) await this.deps.plugin.open(dir)

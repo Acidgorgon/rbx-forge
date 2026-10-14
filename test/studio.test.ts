@@ -623,3 +623,22 @@ test('snapshot: a pre-v4 plugin (no snapshot jobs) gets no job; the window is gr
     await b.stop()
   }
 })
+
+test('service: ensurePlugin installs a missing or old plugin only where Studio is installed', async () => {
+  const b = await bridge(100)
+  const session = new FakeSession()
+  try {
+    const { svc, written } = service(b, session, {})
+    const file = `/Users/acid/Documents/Roblox/Plugins/${PLUGIN_FILE}`
+    assert.equal(await svc.ensurePlugin(() => false), null, 'no Studio: nothing written')
+    assert.equal(written.size, 0)
+    assert.equal(await svc.ensurePlugin(() => true), 'installed')
+    assert.ok(written.get(file)?.includes(`http://127.0.0.1:${b.port}/forge-bridge`))
+    assert.equal(await svc.ensurePlugin(() => true), null, 'current plugin: left alone')
+    written.set(file, written.get(file)!.replace(`forge-bridge-version: ${PLUGIN_VERSION}`, 'forge-bridge-version: 1'))
+    assert.equal(await svc.ensurePlugin(() => true), 'updated')
+    assert.equal((await svc.status()).plugin.version, PLUGIN_VERSION)
+  } finally {
+    await b.stop()
+  }
+})

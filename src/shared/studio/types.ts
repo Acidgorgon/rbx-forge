@@ -106,4 +106,6 @@ export interface StudioApi {
 export interface StudioEvents {
   'studio:bridge': StudioStatus
   'studio:progress': StudioProgress
+  // Startup put the bundled plugin into Studio's plugins folder (it was missing or older).
+  'studio:pluginAuto': { action: 'installed' | 'updated' }
 }

@@ -1,6 +1,6 @@
 import { app, BrowserWindow, dialog, ipcMain, safeStorage, session, shell, systemPreferences } from 'electron'
 import { existsSync, statSync } from 'node:fs'
-import { join, resolve } from 'node:path'
+import { dirname, join, resolve } from 'node:path'
 import {
   INVOKE_PREFIX,
   type BlinkModel,
@@ -849,6 +849,11 @@ app.whenReady().then(async () => {
   updater.start()
   brainSync.start()
   void studio.start()
+  // Studio's Roblox folder (the plugins folder's parent) exists only where Studio is installed.
+  void studio.service
+    .ensurePlugin((dir) => existsSync(dirname(dir)))
+    .then((done) => done && emit('studio:pluginAuto', { action: done }))
+    .catch((error) => harnessLog(`studio: could not install the Forge Bridge plugin: ${error}`, 'stderr'))
   const last = settings.lastProject()
   if (last && isProjectDir(last)) {
     await openProject(last).catch((error) => harnessLog(`reopen ${last}: ${error}`, 'stderr'))

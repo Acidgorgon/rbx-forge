@@ -1,7 +1,9 @@
 /* UI Preview: stories sidebar, toolbar, device canvas, console, controls/inspector. Terminal style
    tokens only; the stage itself draws the game UI (theme-independent, like a game viewport). */
 
-.uip-page { width: 100%; height: 100%; min-height: 0; min-width: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr) 300px; background: var(--bg-editor); color: var(--fg); font-size: 12px; }
+.uip-wrap { width: 100%; height: 100%; min-height: 0; min-width: 0; container-type: inline-size; container-name: uip; }
+.uip-page { width: 100%; height: 100%; min-height: 0; min-width: 0; display: grid; grid-template-columns: 220px minmax(0, 1fr) 300px; grid-template-rows: minmax(0, 1fr); background: var(--bg-editor); color: var(--fg); font-size: 12px; }
+.uip-narrow-tabs { display: none; }
 .uip-title { font: 500 11px var(--font-ui); color: var(--fg-muted); letter-spacing: var(--track); text-transform: uppercase; }
 
 /* stories */
@@ -49,7 +51,8 @@
 .uip-link { text-transform: none; color: var(--fg-faint); cursor: pointer; }
 .uip-link:hover { color: var(--fg); }
 .uip-console-body { flex: 1; min-height: 0; overflow: auto; padding: 0 10px 8px; font-size: 12px; line-height: 18px; user-select: text; }
-.uip-line { display: flex; gap: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.uip-line { display: flex; flex-wrap: wrap; column-gap: 10px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.uip-msg { flex: 1 1 24ch; min-width: 0; }
 .uip-line.l-warn .uip-msg { color: var(--warn); }
 .uip-line.l-error .uip-msg { color: var(--err); }
 .uip-loc { flex: none; color: var(--info); text-decoration: underline; text-underline-offset: 2px; font: inherit; }
@@ -121,11 +124,18 @@
 .uip-capture-doc, .uip-capture-doc body { margin: 0; background: #1c2026; overflow: hidden; }
 .uip-capture { position: fixed; left: 0; top: 0; }
 
-@container (max-width: 900px) {
-  .uip-page { grid-template-columns: 180px minmax(0, 1fr) 260px; }
+/* Narrower editor area: slimmer side panels; the stage keeps at least 320px. */
+@container uip (max-width: 1000px) {
+  .uip-page { grid-template-columns: 170px minmax(320px, 1fr) 240px; }
 }
-@media (max-width: 1100px) {
-  .uip-page { grid-template-columns: 180px minmax(0, 1fr) 260px; }
+/* Below 720px: the panels become tabs (Stories / Preview / Controls or Inspector), one at a time. */
+@container uip (max-width: 720px) {
+  .uip-page { grid-template-columns: minmax(0, 1fr); grid-template-rows: auto minmax(0, 1fr); }
+  .uip-narrow-tabs { display: flex; margin: 6px 8px; justify-self: start; }
+  .uip-narrow-tabs button.on { background: var(--bg-active); color: var(--fg); }
+  .uip-page > .uip-side, .uip-page > .uip-main, .uip-page > .uip-right { display: none; border: 0; }
+  .uip-page[data-pane='stories'] > .uip-side, .uip-page[data-pane='stage'] > .uip-main, .uip-page[data-pane='panel'] > .uip-right { display: flex; }
+  .uip-page[data-pane='panel'] > .uip-right > .uip-tabs { align-self: flex-start; }
 }
 @media (prefers-reduced-motion: reduce) {
   .uip-story { transition: none; }

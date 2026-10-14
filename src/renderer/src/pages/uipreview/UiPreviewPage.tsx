@@ -162,6 +162,8 @@ export function UiPreviewPage() {
   const [zoom, setZoom] = useState<number | 'fit'>(() => read<number | 'fit'>('uip.zoom', 'fit'))
   const [mode, setMode] = useState<StageMode>('interact')
   const [tab, setTab] = useState<'controls' | 'inspect'>('controls')
+  // Narrow editor area (below 720px, e.g. 900px window with the Assistant open): one pane at a time.
+  const [pane, setPane] = useState<'stories' | 'stage' | 'panel'>(() => (file ? 'stage' : 'stories'))
   const [hovered, setHovered] = useState<number | null>(null)
   const [selected, setSelected] = useState<number | null>(null)
   const [consoleOpen, setConsoleOpen] = useState(true)
@@ -220,6 +222,7 @@ export function UiPreviewPage() {
   }, [dims.width, dims.height])
 
   const pick = (s: UiStoryEntry) => {
+    setPane('stage')
     setSelected(null)
     setHovered(null)
     setHistory([])
@@ -422,162 +425,177 @@ export function UiPreviewPage() {
   }
 
   return (
-    <div className="uip-page">
-      <StoryList list={list} file={view.file ?? file} onPick={pick} onRefresh={() => void refresh()} />
-      <section className="uip-main">
-        <div className="uip-toolbar">
-          <span className="uip-story-name" title={view.file ?? ''}>
-            {storyTitle}
-            {statusText && <span className={`uip-status s-${view.status}`}>{statusText}</span>}
-          </span>
-          <div className="seg" role="group" aria-label="Mode">
-            <button className={mode === 'interact' ? 'on' : ''} onClick={() => (setMode('interact'), setSelected(null))} title="Click, hover and type into the story">
-              Interact
+    <div className="uip-wrap">
+      <div className="uip-page" data-pane={pane}>
+        <div className="seg uip-narrow-tabs" role="tablist" aria-label="UI Preview panes">
+          {(
+            [
+              ['stories', 'Stories'],
+              ['stage', 'Preview'],
+              ['panel', tab === 'inspect' ? 'Inspector' : 'Controls']
+            ] as const
+          ).map(([id, label]) => (
+            <button key={id} role="tab" aria-selected={pane === id} className={pane === id ? 'on' : ''} onClick={() => setPane(id)}>
+              {label}
             </button>
-            <button className={mode === 'edit' ? 'on' : ''} onClick={() => (setMode('edit'), setTab('inspect'))} title="Select elements and edit their properties">
-              Edit
-            </button>
-          </div>
-          <div className="seg" role="group" aria-label="Device">
-            {(Object.keys(DEVICES) as UiDevice[]).map((d) => (
-              <button key={d} className={device === d ? 'on' : ''} onClick={() => changeDevice(d)} title={DEVICES[d].note}>
-                {DEVICES[d].label}
-              </button>
-            ))}
-          </div>
-          <select className="input uip-zoom" value={String(zoom)} onChange={(e) => setZoom(e.target.value === 'fit' ? 'fit' : Number(e.target.value))} aria-label="Zoom">
-            <option value="fit">Fit {Math.round(fit * 100)}%</option>
-            {ZOOMS.map((z) => (
-              <option key={z} value={z}>
-                {z * 100}%
-              </option>
-            ))}
-          </select>
-          <span className="grow" />
-          <button className="icon-btn" onClick={reload} disabled={!view.file} title="Reload story (state resets)" aria-label="Reload story">
-            <Icon name="restart" size={14} />
-          </button>
-          <button className="icon-btn" onClick={() => void undo()} disabled={!history.length} title={history.length ? `Undo ${history[history.length - 1].label}` : 'Nothing to undo'} aria-label="Undo edit">
-            <Icon name="undo" size={14} />
-          </button>
-          <button
-            className="btn small ghost"
-            disabled={!view.file}
-            onClick={(e) =>
-              menu.openUnder(e.currentTarget, [
-                { header: 'Export frame' },
-                { label: 'SVG', sub: 'art/ui-exports/<story>.svg', icon: <Icon name="download" size={12} />, onSelect: () => void exportAs('svg') },
-                { label: 'Forge JSON (for Figma)', sub: 'art/ui-exports/<story>.forge-ui.json', icon: <Icon name="download" size={12} />, onSelect: () => void exportAs('json') },
-                { label: 'Copy Forge JSON', icon: <Icon name="copy" size={12} />, onSelect: () => void exportAs('copy') },
-                'separator',
-                { label: 'Import from Figma…', sub: 'JSON from the Forge Figma plugin', icon: <Icon name="upload" size={12} />, onSelect: () => fileInput.current?.click() },
-                { label: 'Paste from Figma', sub: 'Forge JSON on the clipboard', icon: <Icon name="upload" size={12} />, onSelect: () => void navigator.clipboard.readText().then(importText, () => actions.toast({ text: 'Clipboard is not available', kind: 'err' })) }
-              ])
-            }
-          >
-            <Icon name="board" size={12} /> Figma
-          </button>
-          <button className="btn small ghost" onClick={(e) => openStudioMenu(e.currentTarget)} disabled={!view.file}>
-            <Icon name="studio" size={12} /> Open in Studio
-          </button>
-          <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={(e) => {
-            const f = e.target.files?.[0]
-            e.target.value = ''
-            if (f) void f.text().then(importText)
-          }} />
+          ))}
         </div>
-        <div className="uip-canvas" ref={canvasRef}>
-          <div className={`uip-device d-${device}`} style={{ width: dims.width * scale, height: dims.height * scale }}>
-            <div className="uip-scaler" style={{ width: dims.width, height: dims.height, transform: `scale(${scale})` }}>
-              <Stage
-                tree={tree}
-                version={version}
-                width={dims.width}
-                height={dims.height}
-                images={images}
-                mode={mode}
-                selected={mode === 'edit' ? selected : null}
-                hovered={hovered}
-                fontsVersion={fontsVersion}
-                onInput={session.input}
-                onHover={setHovered}
-                onSelect={(id) => {
-                  setSelected(id)
-                  setTab('inspect')
-                }}
-                onLayout={(l) => (layoutRef.current = l)}
-              />
-              {device === 'phone' && <div className="uip-notch" aria-hidden />}
-              {device === 'console' && <div className="uip-safe" aria-hidden><span>TV safe area</span></div>}
-            </div>
-            {overlay}
-          </div>
-          <div className="uip-canvas-meta faint mono">
-            {dims.width}×{dims.height} · {Math.round(scale * 100)}%{view.reloads ? ` · hot reloads ${view.reloads}` : ''}
-          </div>
-        </div>
-        <div className={`uip-console${consoleOpen ? ' open' : ''}`}>
-          <button className="uip-console-head" onClick={() => setConsoleOpen(!consoleOpen)} aria-expanded={consoleOpen}>
-            <Icon name={consoleOpen ? 'chevDown' : 'chev'} size={11} /> Console
-            {errors > 0 && <span className="badge err">{errors}</span>}
-            <span className="grow" />
-            <span className="faint">{view.console.length} lines</span>
-            <span className="uip-link" role="button" tabIndex={0} onClick={(e) => (e.stopPropagation(), session.clearConsole())}>
-              clear
+        <StoryList list={list} file={view.file ?? file} onPick={pick} onRefresh={() => void refresh()} />
+        <section className="uip-main">
+          <div className="uip-toolbar">
+            <span className="uip-story-name" title={view.file ?? ''}>
+              {storyTitle}
+              {statusText && <span className={`uip-status s-${view.status}`}>{statusText}</span>}
             </span>
-          </button>
-          {consoleOpen && (
-            <div className="uip-console-body mono">
-              {!view.console.length && <div className="faint">print(), warn() and errors from the story show here, with file:line links.</div>}
-              {view.console.map((c, i) => (
-                <div key={i} className={`uip-line l-${c.level}`}>
-                  {c.file && (
-                    <button className="uip-loc" onClick={() => void actions.openFileAt(c.file!, c.line ?? 1)}>
-                      {c.file}:{c.line}
-                    </button>
-                  )}
-                  <span className="uip-msg">{c.text}</span>
-                </div>
+            <div className="seg" role="group" aria-label="Mode">
+              <button className={mode === 'interact' ? 'on' : ''} onClick={() => (setMode('interact'), setSelected(null))} title="Click, hover and type into the story">
+                Interact
+              </button>
+              <button className={mode === 'edit' ? 'on' : ''} onClick={() => (setMode('edit'), setTab('inspect'))} title="Select elements and edit their properties">
+                Edit
+              </button>
+            </div>
+            <div className="seg" role="group" aria-label="Device">
+              {(Object.keys(DEVICES) as UiDevice[]).map((d) => (
+                <button key={d} className={device === d ? 'on' : ''} onClick={() => changeDevice(d)} title={DEVICES[d].note}>
+                  {DEVICES[d].label}
+                </button>
               ))}
             </div>
-          )}
-        </div>
-      </section>
-      <aside className="uip-right" aria-label="Story panel">
-        <div className="seg uip-tabs" role="tablist">
-          <button role="tab" aria-selected={tab === 'controls'} className={tab === 'controls' ? 'on' : ''} onClick={() => setTab('controls')}>
-            Controls{view.controls.length ? ` ${view.controls.length}` : ''}
-          </button>
-          <button role="tab" aria-selected={tab === 'inspect'} className={tab === 'inspect' ? 'on' : ''} onClick={() => setTab('inspect')}>
-            Inspector
-          </button>
-        </div>
-        <div className="uip-right-body">
-          {figma && <FigmaPanel diff={figma.diff} busy={!!busy} onApply={(c) => void applyFigma(c)} onAsk={askFigma} onClose={() => setFigma(null)} />}
-          {tab === 'controls' ? (
-            <ControlsPanel controls={view.controls} values={view.values} onChange={onControl} onReset={resetControls} />
-          ) : (
-            <Inspector
-              tree={tree}
-              id={target}
-              box={target != null ? layoutRef.current?.boxes.get(target) : undefined}
-              pinned={mode === 'edit' && selected != null}
-              editMode={mode === 'edit'}
-              busy={busy}
-              revision={revision}
-              onEdit={(n, p, v) => void editProp(n, p, v)}
-              onJump={(n) => void jump(n)}
-              onAsk={(n) => ask(n)}
-              onSelect={setSelected}
-            />
-          )}
-        </div>
-        <details className="uip-fidelity">
-          <summary>Fidelity</summary>
-          <p className="note">{FIDELITY_NOTE}</p>
-        </details>
-      </aside>
-      {menu.node}
+            <select className="input uip-zoom" value={String(zoom)} onChange={(e) => setZoom(e.target.value === 'fit' ? 'fit' : Number(e.target.value))} aria-label="Zoom">
+              <option value="fit">Fit {Math.round(fit * 100)}%</option>
+              {ZOOMS.map((z) => (
+                <option key={z} value={z}>
+                  {z * 100}%
+                </option>
+              ))}
+            </select>
+            <span className="grow" />
+            <button className="icon-btn" onClick={reload} disabled={!view.file} title="Reload story (state resets)" aria-label="Reload story">
+              <Icon name="restart" size={14} />
+            </button>
+            <button className="icon-btn" onClick={() => void undo()} disabled={!history.length} title={history.length ? `Undo ${history[history.length - 1].label}` : 'Nothing to undo'} aria-label="Undo edit">
+              <Icon name="undo" size={14} />
+            </button>
+            <button
+              className="btn small ghost"
+              disabled={!view.file}
+              onClick={(e) =>
+                menu.openUnder(e.currentTarget, [
+                  { header: 'Export frame' },
+                  { label: 'SVG', sub: 'art/ui-exports/<story>.svg', icon: <Icon name="download" size={12} />, onSelect: () => void exportAs('svg') },
+                  { label: 'Forge JSON (for Figma)', sub: 'art/ui-exports/<story>.forge-ui.json', icon: <Icon name="download" size={12} />, onSelect: () => void exportAs('json') },
+                  { label: 'Copy Forge JSON', icon: <Icon name="copy" size={12} />, onSelect: () => void exportAs('copy') },
+                  'separator',
+                  { label: 'Import from Figma…', sub: 'JSON from the Forge Figma plugin', icon: <Icon name="upload" size={12} />, onSelect: () => fileInput.current?.click() },
+                  { label: 'Paste from Figma', sub: 'Forge JSON on the clipboard', icon: <Icon name="upload" size={12} />, onSelect: () => void navigator.clipboard.readText().then(importText, () => actions.toast({ text: 'Clipboard is not available', kind: 'err' })) }
+                ])
+              }
+            >
+              <Icon name="board" size={12} /> Figma
+            </button>
+            <button className="btn small ghost" onClick={(e) => openStudioMenu(e.currentTarget)} disabled={!view.file}>
+              <Icon name="studio" size={12} /> Open in Studio
+            </button>
+            <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={(e) => {
+              const f = e.target.files?.[0]
+              e.target.value = ''
+              if (f) void f.text().then(importText)
+            }} />
+          </div>
+          <div className="uip-canvas" ref={canvasRef}>
+            <div className={`uip-device d-${device}`} style={{ width: dims.width * scale, height: dims.height * scale }}>
+              <div className="uip-scaler" style={{ width: dims.width, height: dims.height, transform: `scale(${scale})` }}>
+                <Stage
+                  tree={tree}
+                  version={version}
+                  width={dims.width}
+                  height={dims.height}
+                  images={images}
+                  mode={mode}
+                  selected={mode === 'edit' ? selected : null}
+                  hovered={hovered}
+                  fontsVersion={fontsVersion}
+                  onInput={session.input}
+                  onHover={setHovered}
+                  onSelect={(id) => {
+                    setSelected(id)
+                    setTab('inspect')
+                  }}
+                  onLayout={(l) => (layoutRef.current = l)}
+                />
+                {device === 'phone' && <div className="uip-notch" aria-hidden />}
+                {device === 'console' && <div className="uip-safe" aria-hidden><span>TV safe area</span></div>}
+              </div>
+              {overlay}
+            </div>
+            <div className="uip-canvas-meta faint mono">
+              {dims.width}×{dims.height} · {Math.round(scale * 100)}%{view.reloads ? ` · hot reloads ${view.reloads}` : ''}
+            </div>
+          </div>
+          <div className={`uip-console${consoleOpen ? ' open' : ''}`}>
+            <button className="uip-console-head" onClick={() => setConsoleOpen(!consoleOpen)} aria-expanded={consoleOpen}>
+              <Icon name={consoleOpen ? 'chevDown' : 'chev'} size={11} /> Console
+              {errors > 0 && <span className="badge err">{errors}</span>}
+              <span className="grow" />
+              <span className="faint">{view.console.length} lines</span>
+              <span className="uip-link" role="button" tabIndex={0} onClick={(e) => (e.stopPropagation(), session.clearConsole())}>
+                clear
+              </span>
+            </button>
+            {consoleOpen && (
+              <div className="uip-console-body mono">
+                {!view.console.length && <div className="faint">print(), warn() and errors from the story show here, with file:line links.</div>}
+                {view.console.map((c, i) => (
+                  <div key={i} className={`uip-line l-${c.level}`}>
+                    {c.file && (
+                      <button className="uip-loc" onClick={() => void actions.openFileAt(c.file!, c.line ?? 1)}>
+                        {c.file}:{c.line}
+                      </button>
+                    )}
+                    <span className="uip-msg">{c.text}</span>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </section>
+        <aside className="uip-right" aria-label="Story panel">
+          <div className="seg uip-tabs" role="tablist">
+            <button role="tab" aria-selected={tab === 'controls'} className={tab === 'controls' ? 'on' : ''} onClick={() => setTab('controls')}>
+              Controls{view.controls.length ? ` ${view.controls.length}` : ''}
+            </button>
+            <button role="tab" aria-selected={tab === 'inspect'} className={tab === 'inspect' ? 'on' : ''} onClick={() => setTab('inspect')}>
+              Inspector
+            </button>
+          </div>
+          <div className="uip-right-body">
+            {figma && <FigmaPanel diff={figma.diff} busy={!!busy} onApply={(c) => void applyFigma(c)} onAsk={askFigma} onClose={() => setFigma(null)} />}
+            {tab === 'controls' ? (
+              <ControlsPanel controls={view.controls} values={view.values} onChange={onControl} onReset={resetControls} />
+            ) : (
+              <Inspector
+                tree={tree}
+                id={target}
+                box={target != null ? layoutRef.current?.boxes.get(target) : undefined}
+                pinned={mode === 'edit' && selected != null}
+                editMode={mode === 'edit'}
+                busy={busy}
+                revision={revision}
+                onEdit={(n, p, v) => void editProp(n, p, v)}
+                onJump={(n) => void jump(n)}
+                onAsk={(n) => ask(n)}
+                onSelect={setSelected}
+              />
+            )}
+          </div>
+          <details className="uip-fidelity">
+            <summary>Fidelity</summary>
+            <p className="note">{FIDELITY_NOTE}</p>
+          </details>
+        </aside>
+        {menu.node}
+      </div>
     </div>
   )
 }

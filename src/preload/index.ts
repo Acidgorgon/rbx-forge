@@ -81,6 +81,11 @@ const methods = [
   'forgeSyncSettings', 'setForgeSyncSettings',
   // Lab gating (decision log, decision models, cost per kept)
   'labGatingView', 'labGatingSet', 'labGatingRetrain', 'labGatingReset',
+  // Thumbnail Lab (references, style profiles, bases, variations, critic, CTR, upload)
+  'thumbStatus', 'thumbSetSettings', 'thumbRefs', 'thumbAddRefs', 'thumbChooseImages', 'thumbAnalyzeRef', 'thumbUpdateRef', 'thumbDeleteRef',
+  'thumbProfiles', 'thumbSaveProfile', 'thumbDeleteProfile', 'thumbBases', 'thumbAddBases', 'thumbCaptureStudio', 'thumbDeleteBase',
+  'thumbEstimate', 'thumbGenerate', 'thumbCritique', 'thumbRefine', 'thumbList', 'thumbRate', 'thumbShip', 'thumbNotes', 'thumbDelete',
+  'thumbAddCtr', 'thumbRemoveCtr', 'thumbUpload', 'thumbSetExperience', 'thumbTaste', 'thumbFile',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

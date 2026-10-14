@@ -322,7 +322,7 @@ async function projectContext(ctx: HarnessContext): Promise<string | undefined> 
 }
 
 function restateLab(v: unknown): RestateLab {
-  if (v === 'vfx' || v === 'anim' || v === 'ability') return v
+  if (v === 'vfx' || v === 'anim' || v === 'ability' || v === 'thumbs') return v
   throw new Error(`unknown lab ${String(v)}`)
 }
 

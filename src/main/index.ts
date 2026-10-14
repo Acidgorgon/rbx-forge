@@ -65,6 +65,8 @@ import { homedir } from 'node:os'
 import { studioElectronDeps } from './services/studio/electron.ts'
 import { withStudioTools } from './services/studio/tools.ts'
 import { defaultChatImage } from './services/art/wire.ts'
+import { createThumbsWiring } from './services/thumbs/wire.ts'
+import { thumbsElectronDeps } from './services/thumbs/electron.ts'
 
 // Name and data folder. The data folder stays "rbx-forge" (what development builds have always
 // used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
@@ -570,6 +572,34 @@ const ability = createAbilityWiring({
 })
 registerPackSection({ id: 'abilities', label: 'Ability library', dir: () => ability.service.userLibraryDir })
 
+// Thumbnail Lab (services/thumbs): reference thumbnails -> style profiles, base images from the game
+// (files or a Studio capture through the Forge Bridge), OpenAI variations through the Art page's key
+// and budget, the thumbnail critic, ratings / CTR that teach taste, and the Open Cloud upload.
+const thumbs = createThumbsWiring({
+  userDataDir: app.getPath('userData'),
+  root: () => project?.info.root ?? null,
+  gameName: () => project?.info.name,
+  settings,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[thumbs] ${text}` }),
+  memory,
+  principles: principles.service,
+  vision: (tier) => labModel(tier),
+  images: integrations.images,
+  openCloud: integrations.openCloud,
+  studio: {
+    snapshot: () => studio.service.snapshot(),
+    status: async () => {
+      const s = await studio.service.status()
+      return { connected: s.studio.connected, message: s.message }
+    }
+  },
+  // Image spend counts in the Labs cost-per-kept table (default tier: it is the "compose" step).
+  chargeImage: (usd) => void gating.service.charge('default', { input: 0, output: 0, costUsd: usd }),
+  ...thumbsElectronDeps()
+})
+registerPackSection({ id: 'thumbs', label: 'Thumbnail Lab library', dir: () => thumbs.service.userLibraryDir })
+
 const handlers: Record<string, (...args: any[]) => unknown> = {
   openProject: (root?: string) => openProject(root),
   getProject: () => ctx.project(),
@@ -636,7 +666,7 @@ for (const [name, handler] of Object.entries({ ...integrations.handlers, ...term
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries(gating.wrap('ability', ability.handlers))) {
+for (const [name, handler] of Object.entries({ ...gating.wrap('ability', ability.handlers), ...gating.wrap('thumbs', thumbs.handlers) })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }

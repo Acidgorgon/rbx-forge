@@ -2,7 +2,7 @@ import { contextBridge, ipcRenderer, webUtils } from 'electron'
 import { INVOKE_PREFIX, type HarnessApi, type HarnessEvents } from '@shared/types'
 
 const methods = [
-  'openProject', 'getProject', 'getTree', 'getScripts', 'readFile', 'writeFile',
+  'openProject', 'getProject', 'getTree', 'getScripts', 'readFile', 'writeFile', 'renamePath', 'trashPath',
   'getServices', 'startService', 'stopService', 'restartService', 'getLogs',
   'getGitStatus', 'syncNow', 'initGit', 'getSyncSettings', 'setSyncSettings',
   'getStudioConflicts', 'resolveStudioConflict',

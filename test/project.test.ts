@@ -118,6 +118,8 @@ test('prefers sourcemap.json when present', async () => {
       }]
     }]
   }))
+  // Sourcemap entries whose file is gone are dropped (a stale sourcemap after a delete), so it exists.
+  write(root, 'src/shared/Thing.luau', 'return {}\n')
   const project = await open(root)
   assert.equal(find(project.tree, ['ReplicatedStorage', 'Shared', 'Thing'])?.filePath, 'src/shared/Thing.luau')
   // Branches the sourcemap leaves out (Rojo skips folders with no scripts) come from the project file.

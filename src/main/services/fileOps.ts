@@ -1,0 +1,48 @@
+// Explorer rename / move-to-trash (SPEC §7.3). Paths are repo-relative, resolved inside the project
+// root only; project-file mount points and their parents are refused (shared/fileOps.ts). No electron
+// here: the caller passes the trash function (shell.trashItem in main/index.ts).
+import { lstat, readdir } from 'node:fs/promises'
+import { basename, dirname, relative, sep } from 'node:path'
+import { entryTarget, protectedReason, renamedPath, renameProblem, type PathChange } from '../../shared/fileOps.ts'
+import { resolveInside } from './project.ts'
+import { renameRetry } from './fs/renameRetry.ts'
+
+function toPosix(path: string): string {
+  return path.split(sep).join('/')
+}
+
+async function existing(root: string, mounts: string[], path: string, isDir: boolean) {
+  const target = entryTarget(String(path ?? ''), !!isDir)
+  const reason = protectedReason(target.path, mounts)
+  if (reason) throw new Error(reason)
+  const full = await resolveInside(root, target.path)
+  // Stay inside the root and refuse the root itself, whatever the input spelled.
+  const rel = toPosix(relative(root, full))
+  if (!rel || protectedReason(rel, mounts)) throw new Error(protectedReason(rel, mounts) ?? 'That is the project folder.')
+  const info = await lstat(full).catch(() => null)
+  if (!info) throw new Error(`${target.path} no longer exists.`)
+  return { target: { ...target, path: rel, isDir: info.isDirectory() }, full }
+}
+
+// Renames a script (keeping .server/.client/.luau) or a folder (an init script's folder).
+// `name` is the new stem: the instance name for scripts and folders, the file name otherwise.
+export async function renameEntry(root: string, mounts: string[], path: string, name: string, isDir = false): Promise<PathChange> {
+  const { target, full } = await existing(root, mounts, path, isDir)
+  const stem = String(name ?? '')
+  const dir = dirname(full)
+  const entries = await readdir(dir, { withFileTypes: true })
+  const problem = renameProblem(target, stem, entries.map((e) => ({ name: e.name, isDir: e.isDirectory() })))
+  if (problem) throw new Error(problem)
+  const to = renamedPath(target, stem)
+  const dest = await resolveInside(root, to)
+  if (dirname(dest) !== dir || basename(dest) !== basename(to)) throw new Error('Invalid name.')
+  await renameRetry(full, dest)
+  return { from: target.path, to, isDir: target.isDir }
+}
+
+// Moves a file or folder to the OS trash (recoverable). An init script's folder goes as a whole.
+export async function trashEntry(root: string, mounts: string[], path: string, trash: (full: string) => Promise<void>, isDir = false): Promise<PathChange> {
+  const { target, full } = await existing(root, mounts, path, isDir)
+  await trash(full)
+  return { from: target.path, to: null, isDir: target.isDir }
+}

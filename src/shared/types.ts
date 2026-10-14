@@ -1,6 +1,7 @@
 // Contract shared by the main process, the preload bridge and the renderer.
 // Every IPC channel the renderer can call is listed in HarnessApi.
 
+import type { PathChange } from './fileOps.ts'
 import type { IntegrationApi, IntegrationEvents, OrchestrateMode, UsageSummary } from './integrationTypes.ts'
 import type { TerminalApi, TerminalEvents } from './terminalTypes.ts'
 import type { ArtApi, ArtEvents } from './artTypes.ts'
@@ -180,6 +181,9 @@ export interface ProjectInfo {
   // Every *.project.json at the root (default.project.json first) and the active one's file.
   places?: PlaceInfo[]
   activePlace?: string
+  // Repo-relative folders/files every place's project file maps with $path (Explorer never renames
+  // or deletes these, nor the folders holding them).
+  mounts?: string[]
 }
 
 // One Rojo place: a *.project.json at the project root (main/services/project.ts).
@@ -541,6 +545,12 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   getScripts(): Promise<ScriptGroup[]>
   readFile(path: string): Promise<string>
   writeFile(path: string, contents: string): Promise<void>
+  // Explorer: renames a script (keeping its Rojo suffix) or folder; an init script's folder is
+  // renamed. `name` is the new instance name (file name for non-script files). Refuses collisions,
+  // names Windows rejects and project-file mount points.
+  renamePath(path: string, name: string, isDir?: boolean): Promise<PathChange>
+  // Explorer: moves a file or folder (an init script's folder) to the OS trash.
+  trashPath(path: string, isDir?: boolean): Promise<PathChange>
 
   // Services
   getServices(): Promise<ServiceStatus[]>

@@ -20,7 +20,8 @@ import { registerAgentIpc } from './agent/index.ts'
 import { DEFAULT_SYNC, emptyStatus, GitSync } from './services/gitSync.ts'
 import { LogBuffer } from './services/logs.ts'
 import { LspBridge } from './services/lspBridge.ts'
-import { Project } from './services/project.ts'
+import { Project, type ProjectChange } from './services/project.ts'
+import { renameEntry, trashEntry } from './services/fileOps.ts'
 import { Settings } from './services/settings.ts'
 import { StudioConflicts } from './services/studioConflicts.ts'
 import { Supervisor } from './services/supervisor.ts'
@@ -286,6 +287,24 @@ async function setActivePlace(file: string): Promise<PlaceInfo> {
   return opened.getActivePlace() as PlaceInfo
 }
 
+// The tree, scripts, places and git status after the project folder changed on disk.
+function projectChanged(opened: Project, change: ProjectChange): void {
+  if (change.info) emit('project:changed', opened.info)
+  if (change.tree) {
+    emit('tree:changed', opened.tree)
+    lsp.setDataModel(opened.tree)
+  }
+  if (change.scripts) {
+    emit('scripts:changed', opened.scripts)
+    integrations.onScriptsChanged()
+  }
+  if (change.places) {
+    applyPlace(opened)
+    forgeSync.onPlacesChanged()
+  }
+  void git?.refresh()
+}
+
 async function openProject(root?: string): Promise<ProjectInfo | null> {
   if (root === undefined) {
     const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
@@ -306,22 +325,7 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   // must not run against the previous project's last-seen state while sync and services start.
   await qol.service.onProjectOpen(full).catch(() => undefined)
 
-  opened.watch((change) => {
-    if (change.info) emit('project:changed', opened.info)
-    if (change.tree) {
-      emit('tree:changed', opened.tree)
-      lsp.setDataModel(opened.tree)
-    }
-    if (change.scripts) {
-      emit('scripts:changed', opened.scripts)
-      integrations.onScriptsChanged()
-    }
-    if (change.places) {
-      applyPlace(opened)
-      forgeSync.onPlacesChanged()
-    }
-    void git?.refresh()
-  })
+  opened.watch((change) => projectChanged(opened, change))
 
   // Forge Sync guard: a pull / branch switch first commits (or warns about) uncommitted Studio edits.
   git = forgeSync.guardGit(
@@ -709,6 +713,20 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   getScripts: () => ctx.scripts(),
   readFile: (path: string) => ctx.readFile(path),
   writeFile: (path: string, contents: string) => ctx.writeFile(path, contents),
+  // Explorer rename / delete: inside the project root, never a project-file mount point; the tree
+  // refreshes right away (a stale sourcemap.json drops the missing files) without waiting for the watcher.
+  renamePath: async (path: string, name: string, isDir?: boolean) => {
+    const opened = requireProject()
+    const change = await renameEntry(opened.root, opened.info.mounts ?? [], path, name, !!isDir)
+    projectChanged(opened, await opened.refresh())
+    return change
+  },
+  trashPath: async (path: string, isDir?: boolean) => {
+    const opened = requireProject()
+    const change = await trashEntry(opened.root, opened.info.mounts ?? [], path, (full) => shell.trashItem(full), !!isDir)
+    projectChanged(opened, await opened.refresh())
+    return change
+  },
 
   getServices: () => supervisor.statuses(),
   startService: (id: ServiceId) => supervisor.start(id),

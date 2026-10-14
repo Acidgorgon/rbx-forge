@@ -1,4 +1,4 @@
-// Toasts (bottom-right, 6s, hover pauses) and the app's modal dialogs: confirm, rename feature,
+// Toasts (bottom-right, 6s, hover pauses) and the app's modal dialogs: confirm, rename feature, rename file,
 // new Blink event, join project, feature branch, pull request.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { JoinProgress, JoinStepId } from '@shared/types'
@@ -8,6 +8,7 @@ import { featuresOf, scriptsFlat } from '../lib/roblox'
 import { errorText, keyHint } from '../lib/format'
 import { sparks } from '../lib/sparks'
 import { NewProjectDialog } from '../setup/NewProjectDialog'
+import { entryTarget, parentDir, renamedPath, renameProblem, siblingsOf } from '@shared/fileOps'
 
 // ---------------------------------------------------------------- toasts
 
@@ -202,6 +203,63 @@ function RenameFeatureDialog({ from, onClose }: { from?: string; onClose: () => 
       <div className="actions">
         <button className="btn ghost" onClick={onClose}>Cancel</button>
         <button className="btn primary" disabled={!!problem || busy || !features.length} onClick={() => void submit()}>
+          {busy && <span className="spinner" />} Rename
+        </button>
+      </div>
+    </Dialog>
+  )
+}
+
+// Explorer rename of a script, folder or file. Scripts keep their Rojo suffix (.server.luau...); an
+// init script renames its folder. Main re-checks everything (collisions, Windows names, mounts).
+function RenamePathDialog({ path, isDir, onClose }: { path: string; isDir: boolean; onClose: () => void }) {
+  const { state, actions } = useStore()
+  const target = entryTarget(path, isDir)
+  const [name, setName] = useState(target.stem)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState<string | null>(null)
+  const known = [...scriptsFlat(state.scripts).map((x) => x.path), ...(state.blink?.files?.map((m) => m.file) ?? [state.blink?.file]).filter((x): x is string => !!x)]
+  const problem = renameProblem(target, name, siblingsOf(parentDir(target.path), known))
+  const submit = async () => {
+    if (problem || busy) return
+    setBusy(true)
+    setError(null)
+    try {
+      const r = await actions.renamePath(target.path, name, target.isDir)
+      onClose()
+      actions.toast({ text: `Renamed to ${name}`, detail: `${r.from} → ${r.to}`, kind: 'ok', ms: 3500 })
+    } catch (e) {
+      setError(errorText(e))
+    } finally {
+      setBusy(false)
+    }
+  }
+  return (
+    <Dialog title={target.isDir ? 'Rename folder' : 'Rename'} onClose={onClose}>
+      <div className="col-form">
+        <label className="field">
+          <span>New name</span>
+          <div className="row" style={{ gap: 6 }}>
+            <input
+              className="input mono grow"
+              autoFocus
+              aria-label="New name"
+              value={name}
+              onFocus={(e) => e.currentTarget.select()}
+              onChange={(e) => setName(e.target.value)}
+              onKeyDown={(e) => e.key === 'Enter' && void submit()}
+              spellCheck={false}
+            />
+            {target.suffix && <span className="mono faint">{target.suffix}</span>}
+          </div>
+        </label>
+        {name !== target.stem && problem && <div className="err-text">{problem}</div>}
+        {!problem && <div className="note mono">{target.path} → {renamedPath(target, name)}</div>}
+        {error && <div className="err-text">{error}</div>}
+      </div>
+      <div className="actions">
+        <button className="btn ghost" onClick={onClose}>Cancel</button>
+        <button className="btn primary" disabled={!!problem || busy} onClick={() => void submit()}>
           {busy && <span className="spinner" />} Rename
         </button>
       </div>
@@ -510,6 +568,8 @@ export function Dialogs() {
       return <ConfirmDialog {...d} onClose={close} />
     case 'renameFeature':
       return <RenameFeatureDialog from={d.from} onClose={close} />
+    case 'renamePath':
+      return <RenamePathDialog path={d.path} isDir={d.isDir} onClose={close} />
     case 'blinkEvent':
       return <BlinkEventDialog onClose={close} />
     case 'joinProject':

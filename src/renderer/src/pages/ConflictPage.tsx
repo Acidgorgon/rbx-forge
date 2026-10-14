@@ -1,4 +1,6 @@
-// Studio conflict as an editor tab: repo vs Studio side by side, Keep repo / Use Studio.
+// Studio conflict as an editor tab: repo vs Studio side by side, Keep repo / Use Studio. Forge Sync
+// conflicts also carry the base (last version Studio and disk agreed on): a 3-way toggle compares
+// base -> disk (your change), base -> Studio (the teammate's) or disk vs Studio.
 import { useEffect, useRef, useState } from 'react'
 import { DiffEditor } from '@monaco-editor/react'
 import { monaco } from '../monaco'
@@ -12,8 +14,9 @@ export function ConflictPage({ path }: { path: string }) {
   const theme = useTheme()
   const c = state.studioConflicts.find((x) => x.path === path)
   const [busy, setBusy] = useState<null | 'studio' | 'repo'>(null)
-  const repoUri = `inmemory://conflict/repo/${path}`
-  const studioUri = `inmemory://conflict/studio/${path}`
+  const [view, setView] = useState<'disk-studio' | 'base-disk' | 'base-studio'>('disk-studio')
+  const repoUri = `inmemory://conflict/${view}/left/${path}`
+  const studioUri = `inmemory://conflict/${view}/right/${path}`
   // The diff wrapper keeps the models; dispose them once the widget is really gone. StrictMode runs
   // cleanup then the effect again on mount, so the timer checks that no remount happened.
   const mounted = useRef(0)
@@ -22,14 +25,16 @@ export function ConflictPage({ path }: { path: string }) {
     return () => {
       setTimeout(() => {
         if (mounted.current !== gen) return
-        for (const u of [repoUri, studioUri]) monaco.editor.getModel(monaco.Uri.parse(u))?.dispose()
+        for (const v of ['disk-studio', 'base-disk', 'base-studio']) {
+          for (const side of ['left', 'right']) monaco.editor.getModel(monaco.Uri.parse(`inmemory://conflict/${v}/${side}/${path}`))?.dispose()
+        }
       }, 0)
     }
-  }, [repoUri, studioUri])
+  }, [path])
   const resolve = async (take: 'studio' | 'repo') => {
     setBusy(take)
     try {
-      await window.harness.resolveStudioConflict(path, take)
+      await window.harness.resolveStudioConflict(path, take, c?.placeKey)
       actions.toast({ text: take === 'studio' ? 'Using the Studio version' : 'Kept the repo version', detail: path, kind: 'ok' })
       await actions.refreshSync()
       await actions.reloadFile(path)
@@ -51,22 +56,49 @@ export function ConflictPage({ path }: { path: string }) {
       </div>
     )
   }
+  const forge = !!c.placeKey
+  const base = c.base ?? ''
+  const hasBase = forge && c.base !== null && c.base !== undefined
+  const [left, right, leftLabel, rightLabel] =
+    hasBase && view === 'base-disk'
+      ? [base, c.repoSource, 'base (last agreed)', 'disk (your change)']
+      : hasBase && view === 'base-studio'
+        ? [base, c.studioSource, 'base (last agreed)', 'studio (teammate change)']
+        : [c.repoSource, c.studioSource, forge ? 'disk' : 'repo', 'studio']
   return (
     <div className="conflict">
       <div className="conflict-bar">
         <span className="badge-o warn">studio conflict</span>
         <span className="grow ellipsis mono" title={path}>{path}</span>
-        <button className="btn" disabled={!!busy} onClick={() => void resolve('repo')}>{busy === 'repo' ? 'Keeping…' : 'Keep repo'}</button>
-        <button className="btn primary" disabled={!!busy} onClick={() => void resolve('studio')}>{busy === 'studio' ? 'Applying…' : 'Use Studio'}</button>
+        {hasBase && (
+          <div className="seg" role="tablist" aria-label="Compare">
+            <button className={view === 'disk-studio' ? 'on' : ''} onClick={() => setView('disk-studio')}>disk ⇄ studio</button>
+            <button className={view === 'base-disk' ? 'on' : ''} onClick={() => setView('base-disk')}>base → disk</button>
+            <button className={view === 'base-studio' ? 'on' : ''} onClick={() => setView('base-studio')}>base → studio</button>
+          </div>
+        )}
+        <button className="btn" disabled={!!busy} onClick={() => void resolve('repo')}>{busy === 'repo' ? 'Keeping…' : forge ? 'Take disk' : 'Keep repo'}</button>
+        <button className="btn primary" disabled={!!busy} onClick={() => void resolve('studio')}>{busy === 'studio' ? 'Applying…' : forge ? 'Take Studio' : 'Use Studio'}</button>
       </div>
+      {forge && (
+        <div className="conflict-why">
+          {c.reason === 'first-run'
+            ? 'First sync for this place: Studio and disk differ and there is no shared version yet.'
+            : c.reason === 'deleted-vs-edited'
+              ? 'One side deleted this script while the other edited it.'
+              : 'Changed in Studio and on disk since they last agreed, and the edits overlap.'}
+          {' '}Rojo waits for this place until you pick a side.
+          {c.instancePath?.length ? <span className="mono"> · {c.instancePath.join('.')}</span> : null}
+        </div>
+      )}
       <div className="conflict-labels">
-        <span>repo</span>
-        <span>studio</span>
+        <span>{leftLabel}</span>
+        <span>{rightLabel}</span>
       </div>
       <div className="conflict-diff">
         <DiffEditor
-          original={c.repoSource}
-          modified={c.studioSource}
+          original={left}
+          modified={right}
           language="luau"
           originalModelPath={repoUri}
           modifiedModelPath={studioUri}

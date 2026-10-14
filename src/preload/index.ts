@@ -74,6 +74,9 @@ const methods = [
   'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
   // Principle priorities (learned from Labs ratings)
   'principlesView', 'principlesReset',
+  // Forge Sync (Studio -> disk, gates rojo serve)
+  'syncStatus', 'syncResolve', 'syncResolveAll', 'syncServeAnyway', 'syncCommitStudioEdits', 'syncDisableLegacyPlugin',
+  'forgeSyncSettings', 'setForgeSyncSettings',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]

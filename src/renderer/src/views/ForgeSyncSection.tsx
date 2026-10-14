@@ -1,0 +1,183 @@
+// Forge Sync in the Source control view: per place, whether Studio has been checked before Rojo
+// serves (gate), conflicts with a 3-way compare (opens the conflict tab), first-run bulk choice,
+// "Commit teammate edits", recent Studio -> disk activity and the legacy plugin banner.
+import { useEffect, useState } from 'react'
+import type { GateState, PlaceSyncStatus, SyncAction, SyncEntry, SyncStatus } from '@shared/types'
+import { useStore } from '../store'
+import { Icon } from '../components/Icons'
+import { ago, errorText } from '../lib/format'
+import { basename } from '../lib/roblox'
+import './forgesync.css'
+
+export function useForgeSync(): [SyncStatus | null, (s: SyncStatus) => void] {
+  const [status, setStatus] = useState<SyncStatus | null>(null)
+  useEffect(() => {
+    let live = true
+    void window.harness.syncStatus().then((s) => live && setStatus(s)).catch(() => undefined)
+    const off = window.harness.on('sync:status', (s) => setStatus(s))
+    return () => {
+      live = false
+      off()
+    }
+  }, [])
+  return [status, setStatus]
+}
+
+const GATE: Record<GateState, { cls: string; label: string; hint: string }> = {
+  idle: { cls: '', label: 'no studio', hint: 'No Studio session for this place yet: Rojo serves normally.' },
+  checking: { cls: 'info', label: 'checking', hint: 'Reading Studio first. Rojo waits so it cannot overwrite teammate edits.' },
+  clear: { cls: 'ok', label: 'clear', hint: 'Studio and disk agree. Rojo serves.' },
+  blocked: { cls: 'warn', label: 'held', hint: 'Conflicts held. Rojo waits until you pick a side (or serve anyway).' }
+}
+
+const ACTION: Partial<Record<SyncAction, { letter: string; cls: string; label: string }>> = {
+  pulled: { letter: 'P', cls: 'ok', label: 'pulled from Studio' },
+  merged: { letter: 'M', cls: 'ok', label: 'merged (both changed)' },
+  created: { letter: 'A', cls: 'ok', label: 'new in Studio' },
+  renamed: { letter: 'R', cls: 'info', label: 'renamed in Studio' },
+  trashed: { letter: 'D', cls: 'err', label: 'deleted in Studio (moved to .forge/sync/trash)' },
+  conflict: { letter: '!', cls: 'warn', label: 'conflict held' },
+  'disk-ahead': { letter: '↑', cls: '', label: 'disk ahead: Rojo will push it' }
+}
+
+const COUNT_ORDER: SyncAction[] = ['same', 'pulled', 'merged', 'created', 'renamed', 'trashed', 'disk-ahead', 'conflict']
+
+function countsText(p: PlaceSyncStatus): string {
+  const parts = COUNT_ORDER.filter((a) => p.counts[a]).map((a) => `${p.counts[a]} ${a === 'disk-ahead' ? 'disk ahead' : a}`)
+  return parts.join(' · ') || (p.connected ? 'waiting for the snapshot' : 'open the place in Studio')
+}
+
+export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | null; setStatus: (s: SyncStatus) => void }) {
+  const { state, actions } = useStore()
+  const [busy, setBusy] = useState<string | null>(null)
+  const [showPending, setShowPending] = useState(false)
+
+  if (!status || status.engine !== 'forge') return null
+  const conflicts = state.studioConflicts.filter((c) => c.placeKey)
+  const placeName = (p: PlaceSyncStatus) => p.place?.name || state.places.find((x) => x.file === p.projectFile)?.name || p.projectFile.replace(/\.project\.json$/, '')
+
+  const act = async (key: string, run: () => Promise<SyncStatus | void>, ok?: string) => {
+    setBusy(key)
+    try {
+      const next = await run()
+      if (next) setStatus(next)
+      if (ok) actions.toast({ text: ok, kind: 'ok', ms: 2500 })
+      await actions.refreshSync()
+    } catch (e) {
+      actions.toast({ text: 'Forge Sync', detail: errorText(e), kind: 'err' })
+    } finally {
+      setBusy(null)
+    }
+  }
+
+  const commit = () =>
+    act('commit', async () => {
+      const r = await window.harness.syncCommitStudioEdits()
+      if (r.error) throw new Error(r.error)
+      actions.toast({ text: `Committed ${r.committed.length} teammate edit${r.committed.length === 1 ? '' : 's'}`, detail: r.message, kind: 'ok' })
+      return window.harness.syncStatus()
+    })
+
+  const pending = status.pendingStudioEdits
+
+  return (
+    <section className="vsec fs">
+      <div className="vsec-head">
+        Studio sync
+        <span className="count">{status.places.filter((p) => p.connected).length}/{status.places.length}</span>
+        <span className="grow" />
+        <button className="link-btn" onClick={() => actions.openPage('settings')} title="Settings > Sync">settings</button>
+      </div>
+
+      {status.legacyPluginInstalled && (
+        <div className="callout warn fs-callout">
+          <div>
+            The old Studio sync plugin is still installed{status.legacyPlugins?.length ? ` (${status.legacyPlugins.join(', ')})` : ''}. It would sync the same scripts a second time.
+          </div>
+          <button className="mini-btn" disabled={busy === 'legacy'} onClick={() => void act('legacy', () => window.harness.syncDisableLegacyPlugin(), 'Old plugin disabled. Restart Studio to unload it.')}>
+            {busy === 'legacy' ? 'Disabling…' : 'Disable it'}
+          </button>
+        </div>
+      )}
+      {status.warning && <div className="callout warn fs-callout">{status.warning}</div>}
+
+      {status.places.map((p) => {
+        const g = GATE[p.gate]
+        const mine = conflicts.filter((c) => c.placeKey === p.placeKey)
+        const firstRun = mine.filter((c) => c.reason === 'first-run')
+        return (
+          <div key={p.placeKey + p.projectFile} className="fs-place">
+            <div className="lrow static" title={`${p.projectFile}${p.place?.placeId ? ` · place ${p.place.placeId}` : ''}\n${g.hint}`}>
+              <span className={`fs-dot${p.connected ? ' on' : ''}`} title={p.connected ? 'Studio connected' : 'Studio not connected'} />
+              <span className="grow ellipsis">{placeName(p)}</span>
+              <span className={`tag ${g.cls}`}>{p.gate === 'blocked' ? `${p.conflicts} held` : g.label}</span>
+            </div>
+            <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}</div>
+
+            {firstRun.length > 0 && (
+              <div className="callout info fs-callout">
+                <div>
+                  First sync for {placeName(p)}: {firstRun.length} file{firstRun.length === 1 ? '' : 's'} differ and there is no shared version yet. Which side is right?
+                </div>
+                <div className="row">
+                  <button className="mini-btn hot" disabled={!!busy} onClick={() => void act(`all:${p.placeKey}`, () => window.harness.syncResolveAll(p.placeKey, 'studio'), 'Studio versions written to disk')}>Studio wins</button>
+                  <button className="mini-btn" disabled={!!busy} onClick={() => void act(`all:${p.placeKey}`, () => window.harness.syncResolveAll(p.placeKey, 'disk'), 'Kept the disk versions')}>Disk wins</button>
+                </div>
+              </div>
+            )}
+
+            {mine.map((c) => (
+              <div key={c.path} className="lrow fs-conflict" onClick={() => actions.openConflict(c.path)} title={`Compare (3-way)\n${c.path}\n${c.instancePath?.join('.') ?? ''}\n${c.reason === 'first-run' ? 'first sync, no shared version yet' : c.reason === 'deleted-vs-edited' ? 'deleted on one side, edited on the other' : 'changed in Studio and on disk'}`}>
+                <Icon name="diff" size={14} style={{ color: 'var(--warn)' }} />
+                <span className="grow ellipsis">{basename(c.path)}</span>
+                <button className="mini-btn" disabled={!!busy} title="Write the Studio version to disk" onClick={(e) => (e.stopPropagation(), void act(`c:${c.path}`, () => window.harness.syncResolve(c.placeKey!, c.path, 'studio')))}>Studio</button>
+                <button className="mini-btn" disabled={!!busy} title="Keep the disk version (Rojo pushes it to Studio)" onClick={(e) => (e.stopPropagation(), void act(`c:${c.path}`, () => window.harness.syncResolve(c.placeKey!, c.path, 'disk')))}>Disk</button>
+              </div>
+            ))}
+
+            {p.gate === 'blocked' && (
+              <div className="row fs-actions">
+                <button className="mini-btn" disabled={!!busy} title="Rojo serves now; Studio edits in the held files may be overwritten" onClick={() => void act(`serve:${p.placeKey}`, () => window.harness.syncServeAnyway(p.placeKey))}>Serve anyway</button>
+              </div>
+            )}
+          </div>
+        )
+      })}
+
+      <div className="fs-commit">
+        <button className={`btn${pending.length ? ' primary' : ''}`} disabled={!pending.length || busy === 'commit'} onClick={() => void commit()} title="Commits only the files Forge wrote from Studio">
+          <Icon name="check" size={12} /> {busy === 'commit' ? 'Committing…' : `Commit teammate edits (${pending.length})`}
+        </button>
+        {pending.length > 0 && (
+          <button className="link-btn" onClick={() => setShowPending(!showPending)}>{showPending ? 'hide' : 'files'}</button>
+        )}
+      </div>
+      {showPending && pending.map((f) => (
+        <div key={f} className="lrow" style={{ paddingLeft: 22 }} onClick={() => void actions.openFile(f)} title={f}>
+          <span className="grow ellipsis">{f}</span>
+        </div>
+      ))}
+
+      {status.recent.length > 0 && (
+        <>
+          <div className="lrow static fs-recent-head">Recent from Studio</div>
+          {status.recent.slice(0, 12).map((e, i) => (
+            <RecentRow key={`${e.file}:${e.at}:${i}`} entry={e} onOpen={() => (e.action === 'conflict' ? actions.openConflict(e.file) : e.action !== 'trashed' && void actions.openFile(e.file))} />
+          ))}
+        </>
+      )}
+    </section>
+  )
+}
+
+function RecentRow({ entry, onOpen }: { entry: SyncEntry; onOpen: () => void }) {
+  const a = ACTION[entry.action] ?? { letter: '·', cls: '', label: entry.action }
+  return (
+    <div className="lrow fs-recent" onClick={onOpen} title={`${a.label}\n${entry.from ? `${entry.from} → ` : ''}${entry.file}\n${entry.instancePath.join('.')}`}>
+      <span className={`mono fs-letter ${a.cls}`}>{a.letter}</span>
+      <span className="ellipsis fs-name">{entry.instancePath.at(-1) ?? basename(entry.file)}</span>
+      <span className="grow ellipsis faint fs-parent">{entry.instancePath.slice(-3, -1).join('.')}</span>
+      <span className="sub">{ago(entry.at)}</span>
+    </div>
+  )
+}

@@ -55,6 +55,9 @@ import { abilityElectronDeps } from './services/ability/electron.ts'
 import { withAbilityTools } from './services/ability/tools.ts'
 import { createPrincipleWiring } from './services/principles/wire.ts'
 import { createStudioWiring } from './services/studio/wire.ts'
+import { createSync } from './services/sync/wire.ts'
+import { pluginsDir } from '../shared/studio/plugin.ts'
+import { homedir } from 'node:os'
 import { studioElectronDeps } from './services/studio/electron.ts'
 import { withStudioTools } from './services/studio/tools.ts'
 import { defaultChatImage } from './services/art/wire.ts'
@@ -212,6 +215,7 @@ async function closeProject(): Promise<void> {
   integrations.onProjectClose()
   project?.close()
   conflicts?.close()
+  forgeSync.onProjectClose()
   blink?.close()
   blink = null
   git?.dispose()
@@ -288,16 +292,23 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
       emit('scripts:changed', opened.scripts)
       integrations.onScriptsChanged()
     }
-    if (change.places) applyPlace(opened)
+    if (change.places) {
+      applyPlace(opened)
+      forgeSync.onPlacesChanged()
+    }
     void git?.refresh()
   })
 
-  git = new GitSync({
-    root: full,
-    settings: syncSettings,
-    onStatus: (status) => emit('git:status', status),
-    log: (text, stream = 'info') => logs.push({ service: 'git', stream, text })
-  })
+  // Forge Sync guard: a pull / branch switch first commits (or warns about) uncommitted Studio edits.
+  git = forgeSync.guardGit(
+    new GitSync({
+      root: full,
+      settings: syncSettings,
+      onStatus: (status) => emit('git:status', status),
+      log: (text, stream = 'info') => logs.push({ service: 'git', stream, text })
+    }),
+    () => syncSettings().autoCommit
+  )
   git.schedule()
   void git.refresh(true)
   remoteTimer = setInterval(() => void git?.refresh(true), 2 * 60 * 1000)
@@ -314,7 +325,10 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   void blink.start().catch((error) => harnessLog(`blink: ${error}`, 'stderr'))
 
   conflicts = new StudioConflicts(full)
-  conflicts.watch((list) => emit('studio:conflicts', list))
+  // The project's studio-sync.py conflicts; with Forge Sync on, Forge Sync reports conflicts instead.
+  conflicts.watch((list) => {
+    if (forgeSync.studioConflicts() === null) emit('studio:conflicts', list)
+  })
 
   emit('project:changed', opened.info)
   emit('tree:changed', opened.tree)
@@ -324,6 +338,7 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
 
   await supervisor.setRoot(full)
   applyPlace(opened, false)
+  await forgeSync.onProjectOpen(full)
   void lsp.setRoot(full).catch((error) => harnessLog(`luau-lsp: ${error}`, 'stderr'))
   void supervisor.startAll().catch((error) => harnessLog(`start services: ${error}`, 'stderr'))
   await integrations.onProjectOpen(full).catch((error) => harnessLog(`integrations: ${error}`, 'stderr'))
@@ -346,8 +361,9 @@ const ctx: HarnessContext = {
 
   gitStatus: async () => (git ? git.status() : emptyStatus('No project open')),
   syncNow: async () => (git ? git.syncNow() : emptyStatus('No project open')),
-  studioConflicts: async () => (conflicts ? conflicts.list() : []),
-  resolveStudioConflict: async (path, take) => {
+  studioConflicts: async () => forgeSync.studioConflicts() ?? (conflicts ? conflicts.list() : []),
+  resolveStudioConflict: async (path, take, placeKey?: string) => {
+    if (forgeSync.studioConflicts() !== null) return forgeSync.resolveStudioConflict(path, take, placeKey)
     if (!conflicts) throw new Error('No project open')
     await conflicts.resolve(path, take)
     emit('studio:conflicts', await conflicts.list())
@@ -376,7 +392,7 @@ const integrations = createIntegrations({
   projectName: () => project?.info.name,
   packages,
   git: () => git,
-  studioConflicts: async () => (conflicts ? conflicts.list() : []),
+  studioConflicts: async () => forgeSync.studioConflicts() ?? (conflicts ? conflicts.list() : []),
   pauseProjectWatch: () => project?.pause(),
   resumeProjectWatch: () => project?.resume(),
   services: () => supervisor.statuses(),
@@ -429,6 +445,22 @@ const studio = createStudioWiring({
   chatImage: defaultChatImage,
   ...studioElectronDeps(preloadPath())
 })
+
+// Forge Sync (services/sync): Studio -> disk through the Forge Bridge plugin, reconciled per place
+// before rojo serve may run for it (supervisor gate). Studio conflicts, git-pull guard, legacy plugin.
+const forgeSync = createSync({
+  settings,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[sync] ${text}` }),
+  supervisor,
+  pluginsDir: () => pluginsDir({ platform: process.platform, env: process.env, home: homedir() }),
+  studio: () => {
+    const info = studio.bridge.studio()
+    return info ? { placeId: info.placeId, connected: studio.bridge.connected() } : null
+  }
+  // TODO(merge): engine: (root) => new SyncEngine({ root }), mapping: { loadPlaces, placeFor } (services/sync/engine.ts, mapping.ts)
+})
+// TODO(merge): studio.bridge.setSyncHandler(forgeSync.handler)
 
 // Principle priorities (services/principles): per-principle weights learned from Labs ratings; the
 // VFX Lab, Animation Lab and Ability Composer critics weigh their principle scores by them.
@@ -543,7 +575,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     git?.schedule()
   },
   getStudioConflicts: () => ctx.studioConflicts(),
-  resolveStudioConflict: (path: string, take: 'studio' | 'repo') => ctx.resolveStudioConflict(path, take),
+  resolveStudioConflict: (path: string, take: 'studio' | 'repo', placeKey?: string) => ctx.resolveStudioConflict(path, take, placeKey),
 
   getBlink: () => blink?.model ?? EMPTY_BLINK,
   lspStart: () => lsp.start(),
@@ -580,7 +612,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 for (const [name, handler] of Object.entries(handlers)) {
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers, ...studio.handlers, ...refs.handlers, ...principles.handlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...vfx.handlers, ...anim.handlers, ...studio.handlers, ...refs.handlers, ...principles.handlers, ...forgeSync.handlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }

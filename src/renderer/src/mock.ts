@@ -34,6 +34,7 @@ import { animMock } from './mockAnim'
 import { refMock } from './mockRef'
 import { abilityMock } from './mockAbility'
 import { studioMock } from './mockStudio'
+import { forgeSyncMock } from './mockForgeSync'
 import { principlesMock } from './mockPrinciples'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
@@ -697,6 +698,24 @@ function runAgent(a: TestAgent, index: number): void {
 
 // ---------------------------------------------------------------- api
 
+// Forge Sync (mockForgeSync.ts): FSF-like match/menu places; ?forgesync=blocked|firstrun|clear|checking|project|off.
+const forgeSync = forgeSyncMock(emit, (text) => log('studioSync', text, 'info'))
+// With an explicit ?forgesync=, the service rows match it (rojo held by the gate, Forge Sync summary).
+{
+  const fs = new URLSearchParams(location.search).get('forgesync')
+  const sync = services.find((s) => s.id === 'studioSync')!
+  const rojo = services.find((s) => s.id === 'rojo')!
+  if (fs === 'blocked') {
+    Object.assign(sync, { label: 'Studio sync', state: 'running', pid: undefined, detail: 'Forge Sync: 1 conflict held' })
+    Object.assign(rojo, { state: 'starting', restarts: 0, detail: '1 conflict: resolve or serve anyway (default.project.json)' })
+  } else if (fs === 'checking') {
+    Object.assign(sync, { label: 'Studio sync', state: 'starting', pid: undefined, detail: 'Forge Sync: checking default' })
+    Object.assign(rojo, { state: 'starting', restarts: 0, detail: 'Waiting for Studio sync check (default.project.json)' })
+  } else if (fs === 'clear' || fs === 'firstrun') {
+    Object.assign(sync, { label: 'Studio sync', state: 'running', pid: undefined, detail: 'Forge Sync: 2 Studio sessions' })
+    Object.assign(rojo, { state: 'running', restarts: 0, pid: 48299, detail: 'rojo serve on :34872 + 1 more place' })
+  }
+}
 
 const api: HarnessApi = {
   async openProject() {
@@ -792,9 +811,10 @@ const api: HarnessApi = {
     settings = s
   },
   async getStudioConflicts() {
-    return studioConflicts
+    return forgeSync.studioConflicts() ?? studioConflicts
   },
-  async resolveStudioConflict(path, take) {
+  async resolveStudioConflict(path, take, placeKey) {
+    if (forgeSync.resolve(path, take, placeKey)) return
     const c = studioConflicts.find((x) => x.path === path)
     if (c && take === 'studio') files[path] = c.studioSource
     studioConflicts = studioConflicts.filter((x) => x.path !== path)
@@ -881,6 +901,7 @@ const api: HarnessApi = {
   ...studioMock(emit),
   // Principle priorities (mockPrinciples.ts): weights learned from a seeded rating log.
   ...principlesMock(emit),
+  ...forgeSync.api,
 
   on(event, handler) {
     let set = listeners.get(event)

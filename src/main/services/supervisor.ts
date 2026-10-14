@@ -1,7 +1,8 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
-import type { LogLine, PlaceInfo, ServiceId, ServiceStatus } from '@shared/types'
+import type { LogLine, PlaceInfo, ServiceId, ServiceState, ServiceStatus } from '@shared/types'
+import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState } from '../../shared/sync/types.ts'
 import { findBash, findPowerShell, findTool, run, spawnTool, toolEnv } from './tools.ts'
 
 const isWindows = process.platform === 'win32'
@@ -30,6 +31,8 @@ interface Proc {
   startedAt: number
   retry: ReturnType<typeof setTimeout> | null
   healthy: ReturnType<typeof setTimeout> | null
+  // rojo serve held by the Forge Sync gate (wanted, but not spawned until the gate clears).
+  held?: boolean
 }
 
 type Command = { file: string; args: string[] }
@@ -86,6 +89,17 @@ export function rojoJobs(places: PlaceInfo[], active: string | null, serveAll: b
   return { jobs, skipped }
 }
 
+// Forge Sync gate: rojo serve for a place waits while its Studio snapshot is being reconciled
+// ('checking') or conflicts are held ('blocked'). 'idle' (no Studio session) and 'clear' serve.
+export function gateHolds(gate: GateState | undefined): boolean {
+  return gate === 'checking' || gate === 'blocked'
+}
+
+export function syncEngineOf(getSetting: <T>(key: string, fallback: T) => T): 'forge' | 'project' | 'off' {
+  const engine = getSetting<string>(SYNC_ENGINE_SETTING, 'forge')
+  return engine === 'project' || engine === 'off' ? engine : 'forge'
+}
+
 export function isTemplateOrigin(url: string): boolean {
   return TEMPLATE_ORIGIN.test(url.trim())
 }
@@ -102,6 +116,8 @@ export class Supervisor {
   private extraCommands = new Map<string, Command>()
   private probeTimer: ReturnType<typeof setInterval> | null = null
   private lspPath: string | null = null
+  // Forge Sync gate per project file (set by the SyncService).
+  private gates = new Map<string, { gate: GateState; detail?: string }>()
 
   constructor(options: SupervisorOptions) {
     this.options = options
@@ -133,6 +149,7 @@ export class Supervisor {
     this.root = root
     this.places = []
     this.activePlace = null
+    this.gates.clear()
     for (const id of Object.keys(this.status) as ServiceId[]) {
       this.update(id, { state: 'stopped', restarts: 0, pid: undefined, detail: undefined })
     }
@@ -163,6 +180,8 @@ export class Supervisor {
     if (!this.root) throw new Error('No project open')
     if (id === 'lsp') return this.checkLsp()
     if (id === 'studioSync') {
+      // Forge Sync runs inside Forge (nothing to start); 'off' has nothing to start either.
+      if (this.syncEngine() !== 'project') return
       // studio-sync.py is started by the dev loop; starting it means making sure dev runs.
       if (!this.procs.dev?.wanted) await this.start('dev')
       this.startProbe()
@@ -208,6 +227,7 @@ export class Supervisor {
     if (proc.healthy) clearTimeout(proc.healthy)
     proc.retry = null
     proc.healthy = null
+    proc.held = false
     const child = proc.child
     if (child) await killTree(child)
     proc.child = null
@@ -234,6 +254,7 @@ export class Supervisor {
   }
 
   async restart(id: ServiceId): Promise<void> {
+    if (id === 'studioSync' && this.syncEngine() !== 'project') return
     if (id === 'studioSync') {
       await this.stop('dev')
       await this.start('dev')
@@ -263,6 +284,73 @@ export class Supervisor {
         // already gone
       }
     }
+  }
+
+  private syncEngine(): 'forge' | 'project' | 'off' {
+    return syncEngineOf(this.options.getSetting)
+  }
+
+  private gating(): boolean {
+    return this.syncEngine() === 'forge' && this.options.getSetting<boolean>(SYNC_GATE_SETTING, true) !== false
+  }
+
+  // The place a rojo serve proc serves ("rojo" = the active place, "rojo:<file>" = another place).
+  private servedPlace(key: string): string | null {
+    if (key === 'rojo') return this.rojoPlan().jobs[0]?.place ?? null
+    if (key.startsWith('rojo:')) return key.slice(5)
+    return null
+  }
+
+  private holdFor(key: string): { file: string; detail: string } | null {
+    if (!this.gating()) return null
+    const file = this.servedPlace(key)
+    const gate = file ? this.gates.get(file) : undefined
+    if (!file || !gate || !gateHolds(gate.gate)) return null
+    return { file, detail: gate.detail || (gate.gate === 'blocked' ? 'Studio sync conflicts: resolve or serve anyway' : 'Waiting for Studio sync check') }
+  }
+
+  gateOf(file: string): GateState {
+    return this.gates.get(file)?.gate ?? 'idle'
+  }
+
+  // Forge Sync gate for one place file. Holding stops a running serve of that place (a new Studio
+  // session: stop, reconcile, restart); clearing starts a held one.
+  setGate(file: string, gate: GateState, detail?: string): void {
+    this.gates.set(file, { gate, detail })
+    this.applyGates()
+  }
+
+  // Re-checks every rojo serve against the gates (also after the sync settings change).
+  applyGates(): void {
+    for (const [key, proc] of Object.entries(this.procs)) {
+      if (!proc || !proc.wanted || !this.servedPlace(key)) continue
+      const hold = this.holdFor(key)
+      if (hold && proc.child) {
+        this.info('rojo', `${hold.file}: ${hold.detail}; stopping rojo serve until Studio and disk agree`)
+        proc.held = true
+        if (proc.retry) clearTimeout(proc.retry)
+        proc.retry = null
+        const child = proc.child
+        proc.child = null
+        void killTree(child)
+        if (key === 'rojo') this.update('rojo', { state: 'starting', pid: undefined, detail: `${hold.detail} (${hold.file})` })
+      } else if (hold && !proc.child && key === 'rojo') {
+        this.update('rojo', { detail: `${hold.detail} (${hold.file})` })
+      } else if (!hold && proc.held) {
+        proc.held = false
+        this.info('rojo', `${this.servedPlace(key)}: Studio sync clear; starting rojo serve`)
+        void (async () => {
+          const command = key === 'rojo' ? await this.command('rojo') : this.extraCommands.get(key) ?? null
+          if (command && proc.wanted && !proc.child && !proc.held) this.spawnService(key, 'rojo', command)
+        })()
+      }
+    }
+  }
+
+  // Forge Sync's own summary on the "Studio sync" service row (the old studio-sync.py is not run).
+  setSyncSummary(state: ServiceState, detail: string): void {
+    if (this.syncEngine() !== 'forge') return
+    this.update('studioSync', { state, detail })
   }
 
   // Spawns `luau-lsp lsp <args>` over stdio for the editor bridge (lspBridge.ts). Not supervised;
@@ -339,13 +427,21 @@ export class Supervisor {
     const update = (patch: Partial<ServiceStatus>) => {
       if (primary) this.update(id, patch)
     }
+    const hold = id === 'rojo' ? this.holdFor(key) : null
+    if (hold) {
+      proc.held = true
+      update({ state: 'starting', pid: undefined, detail: `${hold.detail} (${hold.file})` })
+      this.info('rojo', `${hold.file}: ${hold.detail}; rojo serve waits`)
+      return
+    }
     update({ state: 'starting', detail: undefined, pid: undefined })
     this.info(id, `$ ${[command.file, ...command.args].join(' ')}`)
     let child: ChildProcess
     try {
       child = spawnTool(command.file, command.args, {
         cwd: this.root as string,
-        env: toolEnv(),
+        // FORGE_SYNC=1 tells the project's dev script to skip studio-sync.py and its plugin copy.
+        env: key === 'dev' && this.syncEngine() === 'forge' ? { ...toolEnv(), FORGE_SYNC: '1' } : toolEnv(),
         // Own process group on mac/linux so killTree can stop everything ./dev started.
         detached: !isWindows,
         stdio: ['ignore', 'pipe', 'pipe']
@@ -388,7 +484,7 @@ export class Supervisor {
       if (proc.healthy) clearTimeout(proc.healthy)
       proc.healthy = null
       if (proc.child === child) proc.child = null
-      if (!proc.wanted) return
+      if (!proc.wanted || proc.held) return
       const reason = error ? error.message : signal ? `killed by ${signal}` : `exited with code ${code}`
       if (Date.now() - proc.startedAt >= HEALTHY_MS) proc.failures = 0
       const delay = Math.min(1000 * 2 ** proc.failures, MAX_BACKOFF_MS)
@@ -440,6 +536,16 @@ export class Supervisor {
 
   private async probe(): Promise<void> {
     if (!this.root) return
+    const engine = this.syncEngine()
+    if (engine === 'off') {
+      this.update('studioSync', { state: 'stopped', detail: 'off (Settings > Sync)' })
+      return
+    }
+    // Forge Sync reports through setSyncSummary; studio-sync.py is not needed.
+    if (engine === 'forge') {
+      if (this.status.studioSync.state === 'stopped' && !this.status.studioSync.detail) this.update('studioSync', { state: 'running', detail: 'Forge Sync (built in)' })
+      return
+    }
     const port = this.studioSyncPort()
     let ok = false
     try {

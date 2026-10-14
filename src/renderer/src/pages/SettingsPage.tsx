@@ -10,6 +10,7 @@ import { errorText, fmtTokens, fmtUsd } from '../lib/format'
 import { ToolchainSection } from '../setup/Toolchain'
 import { DefaultEffortSetting } from '../assistant/EffortPicker'
 import { UpdatesSection } from '../updates/UpdatesSection'
+import { ForgeSyncSettings } from './ForgeSyncSettings'
 import { LabsSettings } from './LabsSettings'
 
 const BLURB: Record<ProviderId, string> = {
@@ -382,6 +383,7 @@ export function SettingsPage() {
 
         <section className="set-sec" id="set-sync">
           <h2>Sync</h2>
+          <ForgeSyncSettings />
           {sync ? (
             <>
               <Row title="Auto sync every" desc="Pull and push with your team on a timer. 0 = only when you press Sync.">

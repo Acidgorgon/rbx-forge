@@ -2,8 +2,8 @@
 // whether rojo serve waits for the Studio check.
 import { useEffect, useState } from 'react'
 import type { ForgeSyncSettings as Settings, SyncEngineChoice } from '@shared/types'
-import { useStore } from '../store'
-import { errorText } from '../lib/format'
+import { useStore } from '../../store'
+import { errorText } from '../../lib/format'
 
 const ENGINES: [SyncEngineChoice, string][] = [
   ['forge', 'Forge (recommended)'],

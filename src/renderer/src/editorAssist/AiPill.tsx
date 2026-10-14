@@ -5,7 +5,7 @@ import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { setEditorAssist, useEditorAssist } from './state'
 import { completionNote, onCompletionNote } from './inline'
-import { showSettingsSection } from '../pages/settingsNav'
+import { showSettingsSection } from '../pages/settings/settingsNav'
 
 export function AiCompletionsPill() {
   const { state, actions } = useStore()

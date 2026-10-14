@@ -6,7 +6,7 @@ import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { useRestartForUpdate, useUpdate } from './useUpdate'
-import { showSettingsSection } from '../pages/settingsNav'
+import { showSettingsSection } from '../pages/settings/settingsNav'
 import './updates.css'
 
 export function openUpdateSettings(openPage: (kind: 'settings') => void): void {

@@ -2,9 +2,9 @@
 // (stored in the settings store as labs.models). Empty = automatic. Style statistics never use a model.
 import { useEffect, useState } from 'react'
 import { LAB_TIERS, LAB_TIER_INFO, type LabModels, type LabTier } from '@shared/labModels'
-import { useStore } from '../store'
-import { errorText } from '../lib/format'
-import { GatingSettings } from './gating/LabGating'
+import { useStore } from '../../store'
+import { errorText } from '../../lib/format'
+import { GatingSettings } from '../gating/LabGating'
 
 export function LabsSettings() {
   const { actions } = useStore()

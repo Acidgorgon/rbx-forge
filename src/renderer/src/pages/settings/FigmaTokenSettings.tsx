@@ -3,8 +3,8 @@
 // back to the renderer: this page only learns whether one is set.
 import { useEffect, useState } from 'react'
 import type { FigmaTokenStatus } from '@shared/types'
-import { useStore } from '../store'
-import { errorText } from '../lib/format'
+import { useStore } from '../../store'
+import { errorText } from '../../lib/format'
 
 export function FigmaTokenSettings() {
   const h = window.harness

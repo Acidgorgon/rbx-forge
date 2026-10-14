@@ -5,7 +5,7 @@ import type { MenuEntry } from '../components/Menu'
 import { Icon } from '../components/Icons'
 import { openDoctor } from '../pages/qolc/events'
 import type { Actions } from '../store'
-import { showSettingsSection } from '../pages/settingsNav'
+import { showSettingsSection } from '../pages/settings/settingsNav'
 
 export function helpMenuItems(actions: Actions): MenuEntry[] {
   return [

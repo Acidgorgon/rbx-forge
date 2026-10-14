@@ -2,8 +2,8 @@
 // Ability Composer) each pick always / big tasks / never. Stored in main (agent/restate.ts).
 import { useEffect, useState } from 'react'
 import type { RestateMode, RestateScope, RestateSettings } from '@shared/types'
-import { useStore } from '../store'
-import { errorText } from '../lib/format'
+import { useStore } from '../../store'
+import { errorText } from '../../lib/format'
 
 const OPTIONS: [RestateMode, string][] = [
   ['always', 'Always'],

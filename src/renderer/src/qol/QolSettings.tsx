@@ -5,7 +5,7 @@ import type { NotifyCategory, NotifyMode, QolSettings as Settings, QolSettingsPa
 import { useStore } from '../store'
 import { errorText } from '../lib/format'
 import { Icon } from '../components/Icons'
-import { showSettingsSection } from '../pages/settingsNav'
+import { showSettingsSection } from '../pages/settings/settingsNav'
 import { requestBugReport } from './QolRoot'
 
 const MODES: [NotifyMode, string][] = [

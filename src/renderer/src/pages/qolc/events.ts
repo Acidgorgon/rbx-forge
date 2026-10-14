@@ -3,7 +3,7 @@
 // Other labs (UI Motion, Thumbnails) call openAddToGame('<their lab id>', id) once they register an
 // adapter in main (services/addToGame).
 import type { Actions } from '../../store'
-import { showSettingsSection } from '../settingsNav'
+import { showSettingsSection } from '../settings/settingsNav'
 
 export const DOCTOR_EVENT = 'forge:doctor'
 export const ADD_TO_GAME_EVENT = 'forge:add-to-game'

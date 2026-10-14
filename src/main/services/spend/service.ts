@@ -1,7 +1,7 @@
 // Spending cap service: holds the local spend book (userData/spend.json), records every AI charge,
 // refuses new calls at 100% of a cap and emits the state + threshold alerts. No electron imports.
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
 import { dirname } from 'node:path'
 import { alertText, clearOverride, emptyBook, newAlerts, normalizeBook, normalizeSettings, raiseToday, recordSpend, refusal, spendState, type SpendCharge } from '../../../shared/spend/cap.ts'
 import type { SpendAlert, SpendBook, SpendSettings, SpendSource, SpendState } from '../../../shared/spend/types.ts'
@@ -28,8 +28,15 @@ export function fileStore(file: string): SpendStore {
     save: async (data) => {
       await mkdir(dirname(file), { recursive: true })
       const tmp = `${file}.tmp`
-      await writeFile(tmp, JSON.stringify(data), 'utf8')
-      await rename(tmp, file)
+      const text = JSON.stringify(data)
+      await writeFile(tmp, text, 'utf8')
+      try {
+        await rename(tmp, file)
+      } catch {
+        // Windows can refuse to replace a file another process (antivirus, indexer) holds open.
+        await writeFile(file, text, 'utf8')
+        await rm(tmp, { force: true })
+      }
     }
   }
 }

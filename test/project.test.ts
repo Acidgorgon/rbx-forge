@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import type { TreeNode } from '../src/shared/types.ts'
-import { Project, mergeStudioTree, resolveInside, type HarnessTreeNode } from '../src/main/services/project.ts'
+import { Project, fillFromProject, mergeStudioTree, resolveInside, type HarnessTreeNode } from '../src/main/services/project.ts'
 import { makeProject, write } from './fixture.ts'
 
 const roots: string[] = []
@@ -120,8 +120,9 @@ test('prefers sourcemap.json when present', async () => {
   }))
   const project = await open(root)
   assert.equal(find(project.tree, ['ReplicatedStorage', 'Shared', 'Thing'])?.filePath, 'src/shared/Thing.luau')
-  assert.equal(find(project.tree, ['ServerScriptService']), undefined)
-  assert.equal(project.scripts[0].scripts[0].path, 'src/shared/Thing.luau')
+  // Branches the sourcemap leaves out (Rojo skips folders with no scripts) come from the project file.
+  assert.ok(find(project.tree, ['ServerScriptService']))
+  assert.ok(project.scripts.some((g) => g.scripts.some((s) => s.path === 'src/shared/Thing.luau')))
   project.close()
 })
 
@@ -218,4 +219,18 @@ test('refuses paths that leave the project root', async () => {
   const files = await project.listFiles('src/server')
   assert.ok(files.includes('src/server/Features/Inventory/InventoryService.luau'))
   project.close()
+})
+
+test('fillFromProject: branches the sourcemap left out (no scripts yet) come from the project file', () => {
+  const leaf = (name: string, className = 'Folder') => ({ name, className, children: [] as never[] })
+  const sourcemap = [{ name: 'ReplicatedStorage', className: 'ReplicatedStorage', children: [{ name: 'Shared', className: 'Folder', filePath: 'src/shared/init.luau', children: [] }] }]
+  const project = [
+    { name: 'ReplicatedStorage', className: 'ReplicatedStorage', children: [leaf('Shared'), leaf('Packages')] },
+    { name: 'ServerScriptService', className: 'ServerScriptService', children: [{ name: 'Server', className: 'Folder', children: [leaf('Data'), leaf('Features')] }] }
+  ]
+  const tree = fillFromProject(sourcemap, project)
+  assert.deepEqual(tree.map((n) => n.name), ['ReplicatedStorage', 'ServerScriptService'])
+  assert.equal(tree[0].children.find((n) => n.name === 'Shared')?.filePath, 'src/shared/init.luau', 'the sourcemap node wins')
+  assert.deepEqual(tree[0].children.map((n) => n.name).sort(), ['Packages', 'Shared'])
+  assert.deepEqual(tree[1].children[0].children.map((n) => n.name), ['Data', 'Features'])
 })

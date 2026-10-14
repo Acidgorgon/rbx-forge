@@ -190,6 +190,17 @@ export async function buildRepoTree(root: string, project: { tree?: Record<strin
   return top.className === 'DataModel' ? top.children : [top]
 }
 
+// Adds the nodes `extra` has that `base` lacks (matched by name per level); `base` wins otherwise.
+export function fillFromProject(base: TreeNode[], extra: TreeNode[]): TreeNode[] {
+  const out = base.map((node) => ({ ...node }))
+  for (const node of extra) {
+    const hit = out.find((n) => n.name === node.name)
+    if (!hit) out.push(node)
+    else if (node.children.length) hit.children = fillFromProject(hit.children, node.children)
+  }
+  return out.sort(byName)
+}
+
 export function treeFromSourcemap(root: string, sourcemap: SourcemapNode): TreeNode[] {
   const convert = (node: SourcemapNode): TreeNode => {
     const file = node.filePaths?.find((path) => /\.(luau|lua)$/.test(path))
@@ -520,7 +531,9 @@ export class Project {
     const sourcemap = await readJson<SourcemapNode>(join(this.root, sourcemapFor(activeFile)))
     let repoTree: TreeNode[]
     if (sourcemap && typeof sourcemap.name === 'string' && typeof sourcemap.className === 'string') {
-      repoTree = treeFromSourcemap(this.root, sourcemap)
+      // Rojo's sourcemap leaves out branches with no scripts yet (a new project's empty
+      // src/server), so the project file's own nodes fill those in.
+      repoTree = fillFromProject(treeFromSourcemap(this.root, sourcemap), await buildRepoTree(this.root, projectJson))
     } else {
       repoTree = await buildRepoTree(this.root, projectJson)
     }

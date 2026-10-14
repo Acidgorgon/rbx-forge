@@ -11,10 +11,11 @@
 // No electron; plain fs.
 
 import { createHash } from 'node:crypto'
-import { mkdir, readdir, rename, rm, rmdir, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, rm, rmdir, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 import { unsafeReason } from '../safety.ts'
 import { CONFLICT_SUFFIX, isText, readMaybe, safeJoin, updatedOf, walkFiles } from './files.ts'
+import { renameRetry } from '../../../services/fs/renameRetry.ts'
 
 export interface MirrorRoot {
   // Folder in the shared tree: "memory" or "extra/<id>".
@@ -64,7 +65,7 @@ async function put(base: string, rel: string, data: Buffer): Promise<void> {
   const tmp = `${target}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
   await writeFile(tmp, data)
   try {
-    await rename(tmp, target)
+    await renameRetry(tmp, target)
   } catch (e) {
     await rm(tmp, { force: true })
     throw e

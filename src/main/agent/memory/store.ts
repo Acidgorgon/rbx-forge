@@ -12,12 +12,13 @@
 //
 // The files are the source of truth: people (and git pulls) may edit them by hand. No electron.
 
-import { mkdir, readdir, readFile, rm, stat, writeFile, rename } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { formatFrontmatter, parseFrontmatter } from './frontmatter.ts'
 import { similarity } from './rank.ts'
 import { unsafeReason } from './safety.ts'
 import type { MemoryEntry, MemoryInput, MemoryKind, MemoryScope, MemoryType, SaveResult } from './types.ts'
+import { renameRetry } from '../../services/fs/renameRetry.ts'
 
 export const INDEX_FILE = 'MEMORY.md'
 export const SKILLS_DIR = 'skills'
@@ -299,7 +300,7 @@ async function atomicWrite(path: string, text: string): Promise<void> {
   const tmp = `${path}.${process.pid}.${Math.random().toString(36).slice(2)}.tmp`
   await writeFile(tmp, text, 'utf8')
   try {
-    await rename(tmp, path)
+    await renameRetry(tmp, path)
   } catch (e) {
     await rm(tmp, { force: true })
     throw e

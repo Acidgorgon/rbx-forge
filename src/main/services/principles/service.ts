@@ -5,11 +5,12 @@
 // priorities are also written to memory ("principle-priorities") so the assistant knows them.
 // No electron imports.
 
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { ALL_PRINCIPLES } from '../../../shared/principles/catalog.ts'
 import { emptyProfile, learnProfile, MAX_FEEDBACK, prioritiesText } from '../../../shared/principles/learn.ts'
 import type { PrincipleFeedback, PrincipleHooks, PrincipleProfile, PrincipleView, PrincipleWeights } from '../../../shared/principles/types.ts'
+import { renameRetry } from '../fs/renameRetry.ts'
 
 export interface PrincipleMemoryLike {
   remember(input: { scope: 'user' | 'project'; kind?: 'memory' | 'skill'; type?: 'user' | 'project' | 'feedback' | 'reference'; name: string; description: string; body: string }, source?: 'agent' | 'reflection' | 'style' | 'user'): Promise<unknown>
@@ -61,7 +62,7 @@ export class PrincipleService implements PrincipleHooks {
     await mkdir(this.deps.dir, { recursive: true })
     const tmp = join(this.deps.dir, `.${file}.tmp`)
     await writeFile(tmp, JSON.stringify(data, null, 1), 'utf8')
-    await rename(tmp, join(this.deps.dir, file))
+    await renameRetry(tmp, join(this.deps.dir, file))
   }
 
   async feedback(): Promise<PrincipleFeedback[]> {

@@ -11,7 +11,7 @@
 // Stored in userData/labs-gating as small JSON files. No electron imports.
 
 import { AsyncLocalStorage } from 'node:async_hooks'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chargeRun, costRows, markKept, type UsageCharge } from '../../../shared/gating/costs.ts'
 import { framesDiff, frameSig, type FrameSig } from '../../../shared/gating/frames.ts'
@@ -21,6 +21,7 @@ import { DECISION_TYPES, normalizeGatingSettings, type CostTier, type DecisionMo
 import { criticSkipFeatures, plateauFeatures, retryFeatures } from '../../../shared/decide/features.ts'
 import { isActive, parseModelFile, trainDecisionModel, yesNo, type DecisionModelFile, type Example } from '../../../shared/decide/model.ts'
 import { decodePng } from './png.ts'
+import { renameRetry } from '../fs/renameRetry.ts'
 
 export const MAX_DECISIONS = 600
 export const MAX_EXAMPLES = 2000
@@ -119,7 +120,7 @@ export class GatingService implements LabGate {
     await mkdir(this.deps.dir, { recursive: true })
     const tmp = join(this.deps.dir, `.${file}.tmp`)
     await writeFile(tmp, JSON.stringify(data), 'utf8')
-    await rename(tmp, join(this.deps.dir, file))
+    await renameRetry(tmp, join(this.deps.dir, file))
   }
 
   // Serialised writes so two quick decisions never lose each other.

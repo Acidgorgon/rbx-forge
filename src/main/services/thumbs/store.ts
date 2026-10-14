@@ -11,9 +11,10 @@
 // Files ending in ".conflict" (left by sync) are ignored. No electron imports.
 
 import { randomBytes } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, rm, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import type { ThumbScope } from '../../../shared/thumbs/types.ts'
+import { renameRetry } from '../fs/renameRetry.ts'
 
 export const PROJECT_THUMB_DIR = '.forge/thumbs'
 export const META = 'item.json'
@@ -99,7 +100,7 @@ export class ThumbStore {
       const out = { ...item, scope: this.scope }
       const tmp = join(dir, `${META}.${randomBytes(3).toString('hex')}.tmp`)
       await writeFile(tmp, JSON.stringify(out, null, 2) + '\n')
-      await rename(tmp, join(dir, META))
+      await renameRetry(tmp, join(dir, META))
       return out
     })
   }
@@ -125,3 +126,4 @@ export class ThumbStore {
     return true
   }
 }
+

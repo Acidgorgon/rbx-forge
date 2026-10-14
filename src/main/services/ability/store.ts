@@ -7,9 +7,10 @@
 // Files ending in ".conflict" (left by sync) are ignored. No electron imports.
 
 import { randomBytes } from 'node:crypto'
-import { mkdir, readdir, readFile, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { join, resolve, sep } from 'node:path'
 import type { AbilityEntry, AbilityScope } from '../../../shared/ability/types.ts'
+import { renameRetry } from '../fs/renameRetry.ts'
 
 export const PROJECT_ABILITY_DIR = '.forge/abilities'
 const ENTRY_FILE = 'entry.json'
@@ -84,7 +85,7 @@ export class AbilityStore {
       const e = { ...entry, scope: this.scope }
       const tmp = join(dir, `${ENTRY_FILE}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`)
       await writeFile(tmp, JSON.stringify(e, null, 1), 'utf8')
-      await rename(tmp, join(dir, ENTRY_FILE))
+      await renameRetry(tmp, join(dir, ENTRY_FILE))
       return e
     })
   }

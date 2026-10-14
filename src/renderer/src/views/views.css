@@ -24,8 +24,9 @@
 .trow:hover .row-lock { display: block; }
 .trow.add-row { color: var(--fg-faint); padding-left: 14px; }
 .trow.add-row:hover { color: var(--fg-2); }
-/* multi-select: the keyboard focus inside a selection, and the "N selected" chip in the header */
-.tree:focus-within .trow.sel.focus { box-shadow: inset 0 0 0 1px var(--line-strong); }
+/* multi-select: the keyboard cursor (outlined whenever it is not the one selected row, selected or
+   not: a Ctrl/Cmd-clicked-off row, the row after Esc), and the "N selected" chip in the header */
+.tree:focus-within .trow.focus { box-shadow: inset 0 0 0 1px var(--line-strong); }
 .sel-chip { display: inline-flex; align-items: center; gap: 3px; height: 18px; padding: 0 2px 0 7px; margin-right: 4px; border-radius: var(--r-md); border: 1px solid var(--line-strong); font: 10.5px/1 var(--font-mono); color: var(--fg-2); white-space: nowrap; flex: none; }
 .sel-chip-x { width: 14px; height: 14px; display: grid; place-items: center; border-radius: var(--r-sm); color: var(--fg-faint); }
 .sel-chip-x:hover { color: var(--fg); background: var(--bg-active); }

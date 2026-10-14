@@ -5,6 +5,7 @@
 import type { AnimStyleProfile, RigType } from './model.ts'
 import { KIT_GROUPS, KIT_POSES } from './kit.ts'
 import { promptTags } from './style.ts'
+import { setArchetype, setPromptTags, type MoveSetDef } from './movesets.ts'
 import { r6KitReferenceText } from './convert.ts'
 
 export const ANIM_API = `Animation timeline API (Luau). The script is \`return function(a) ... end\`; Forge records the calls into R15 keyframes (a KeyframeSequence).
@@ -67,9 +68,21 @@ export function timingFrom(profile?: AnimStyleProfile | null): DraftTiming {
 
 const n2 = (v: number) => (Math.round(v * 100) / 100).toString()
 
-export type Archetype = 'sign_push' | 'dash_punch' | 'punch' | 'kick' | 'hit' | 'cast' | 'dash' | 'idle' | 'block' | 'jump'
+// header / celebrate / save / slide / trap are the drafts for the Football and Movement & emotes move
+// sets (movesets.ts maps each tag to the closest archetype).
+export type Archetype = 'sign_push' | 'dash_punch' | 'punch' | 'kick' | 'hit' | 'cast' | 'dash' | 'idle' | 'block' | 'jump' | 'header' | 'celebrate' | 'save' | 'slide' | 'trap'
 
-export function archetypeFor(request: string): Archetype {
+// The archetype for a request. With a move set other than Combat, the set's tag decides (a "power
+// shot" drafts a kick, a "diving header" a header); Combat keeps the original rules, except that a
+// request only a custom move type matches uses that type's archetype.
+export function archetypeFor(request: string, set?: MoveSetDef | null): Archetype {
+  if (set && set.id !== 'combat') {
+    const a = setArchetype(request, set)
+    if (a) return a
+  } else if (set && !promptTags(request).length) {
+    const custom = set.tags.find((t) => t.custom && setPromptTags(request, { ...set, tags: [t] }).length)
+    if (custom) return custom.archetype
+  }
   const r = request.toLowerCase()
   const tags = promptTags(request)
   if (tags.includes('sign') || /gojo|hollow|purple|two[- ]finger/.test(r)) return 'sign_push'
@@ -207,14 +220,14 @@ end
 `
 }
 
-function kickScript(t: DraftTiming, name = 'FrontKick'): string {
+function kickScript(t: DraftTiming, name = 'FrontKick', amount?: number): string {
   return `${header(name)}\ta:beat("anticipation")
 \ta:pose("guard")
 \ta:wait(${n2(t.anticipation)})
 \ta:pose("kick_chamber", { ease = "CubicV2", dir = "In" })
 \ta:beat("action")
 \ta:wait(${n2(t.action + 0.04)})
-\ta:pose("kick_extend", { ease = "CubicV2", dir = "Out" })
+\ta:pose("kick_extend", { ${amount ? `amount = ${n2(amount)}, ` : ''}ease = "CubicV2", dir = "Out" })
 \ta:marker("hit")
 \ta:hold(${n2(t.hold)})
 \ta:beat("recovery")
@@ -325,6 +338,151 @@ function jumpScript(t: DraftTiming, name = 'JumpLand'): string {
 \ta:wait(${n2(t.recovery)})
 \ta:pose("idle")
 \ta:overlap("arms", { amount = 0.6 })
+end
+`
+}
+
+// Header: sink, jump with the back arched and the head back, then snap the neck and torso forward
+// through the ball (marker "hit" on the contact frame), land and recover.
+function headerScript(t: DraftTiming, name = 'Header'): string {
+  return `${header(name)}\ta:beat("anticipation")
+\ta:pose("idle")
+\ta:wait(0.06)
+\ta:pose("crouch", { amount = 0.55, ease = "CubicV2", dir = "In" })
+\ta:wait(${n2(t.anticipation)})
+\ta:beat("jump")
+\ta:pose("jump_tuck", { amount = 0.45, ease = "CubicV2", dir = "Out" })
+\ta:root(Vector3.new(0, 1.1, 0), Vector3.new(12, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:joint("Waist", Vector3.new(14, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:joint("Neck", Vector3.new(24, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:marker("takeoff")
+\ta:wait(0.2)
+\ta:beat("header")
+\ta:wait(${n2(t.action)})
+\ta:root(Vector3.new(0, 1.2, -0.25), Vector3.new(-14, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:joint("Waist", Vector3.new(-22, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:joint("Neck", Vector3.new(-28, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:marker("hit")
+\ta:hold(${n2(t.hold)})
+\ta:beat("land")
+\ta:wait(0.22)
+\ta:pose("land", { amount = 0.7 })
+\ta:marker("land")
+\ta:hold(0.06)
+\ta:beat("recovery")
+\ta:wait(${n2(t.recovery)})
+\ta:pose("idle")
+\ta:overlap("arms", { amount = 0.6 })
+\ta:overlap("spine", { delay = 0.05, amount = 0.4, freq = 3 })
+end
+`
+}
+
+// Celebration: dip, burst up with both arms overhead (held), then point to the crowd with the other
+// arm raised (held), settle.
+function celebrateScript(t: DraftTiming, name = 'Celebration'): string {
+  return `${header(name)}\ta:beat("anticipation")
+\ta:pose("idle")
+\ta:wait(0.08)
+\ta:pose("crouch", { amount = 0.4, ease = "CubicV2", dir = "In" })
+\ta:wait(${n2(t.anticipation)})
+\ta:beat("cheer")
+\ta:wait(${n2(Math.max(0.1, t.action))})
+\ta:pose("cast_raise", { amount = 1.1, ease = "CubicV2", dir = "Out" })
+\ta:marker("cheer")
+\ta:hold(0.35)
+\ta:beat("pose")
+\ta:wait(0.18)
+\ta:pose("point", { ease = "CubicV2", dir = "Out" })
+\ta:joint("LeftShoulder", Vector3.new(150, 0, -20), { ease = "CubicV2", dir = "Out" })
+\ta:joint("Waist", Vector3.new(8, 10, 0), { ease = "CubicV2", dir = "Out" })
+\ta:look(Vector3.new(0, 5, -6), { weight = 0.5 })
+\ta:marker("pose")
+\ta:hold(0.5)
+\ta:beat("recovery")
+\ta:wait(${n2(t.recovery)})
+\ta:pose("idle")
+\ta:overlap("arms", { delay = 0.04, amount = 0.6 })
+\ta:overlap("spine", { delay = 0.05, amount = 0.4, freq = 3 })
+end
+`
+}
+
+// Keeper save: ready crouch with the hands out, push off and dive to the right (arms reaching
+// overhead, body rolled), the catch, then land and get up.
+function saveScript(t: DraftTiming, name = 'KeeperSave'): string {
+  return `${header(name)}\ta:beat("ready")
+\ta:pose("crouch", { amount = 0.45 })
+\ta:joint("RightShoulder", Vector3.new(40, 0, 30))
+\ta:joint("LeftShoulder", Vector3.new(40, 0, -30))
+\ta:wait(${n2(Math.max(0.12, t.anticipation))})
+\ta:feet("free")
+\ta:beat("dive")
+\ta:wait(${n2(Math.max(0.12, t.action * 1.5))})
+\ta:pose("cast_raise", { only = "upper", ease = "CubicV2", dir = "Out" })
+\ta:pose("jump_tuck", { only = "legs", amount = 0.35, ease = "CubicV2", dir = "Out" })
+\ta:root(Vector3.new(1.6, 0.7, 0), Vector3.new(0, 0, -55), { ease = "CubicV2", dir = "Out" })
+\ta:marker("save")
+\ta:hold(${n2(Math.max(0.1, t.hold * 1.5))})
+\ta:beat("land")
+\ta:wait(0.25)
+\ta:pose("land", { amount = 0.8 })
+\ta:marker("land")
+\ta:hold(0.12)
+\ta:beat("recovery")
+\ta:wait(${n2(t.recovery)})
+\ta:pose("idle")
+\ta:overlap("arms", { amount = 0.6 })
+end
+`
+}
+
+// Slide tackle: drop low, slide forward on the left leg with the right leg reaching for the ball,
+// lean back, then get up.
+function slideScript(t: DraftTiming, name = 'SlideTackle'): string {
+  return `${header(name)}\ta:beat("anticipation")
+\ta:pose("idle")
+\ta:wait(0.05)
+\ta:pose("crouch", { amount = 0.5, ease = "CubicV2", dir = "In" })
+\ta:wait(${n2(t.anticipation)})
+\ta:feet("free")
+\ta:beat("slide")
+\ta:wait(${n2(Math.max(0.1, t.action))})
+\ta:pose("kick_extend", { only = "legs", ease = "CubicV2", dir = "Out" })
+\ta:joint("LeftKnee", Vector3.new(-80, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:root(Vector3.new(0, -1, -1.8), Vector3.new(25, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:joint("RightShoulder", Vector3.new(30, 0, 40))
+\ta:joint("LeftShoulder", Vector3.new(-20, 0, -30))
+\ta:marker("hit")
+\ta:hold(${n2(Math.max(0.18, t.hold * 2))})
+\ta:beat("recovery")
+\ta:wait(${n2(t.recovery)})
+\ta:pose("crouch", { amount = 0.6 })
+\ta:wait(0.25)
+\ta:pose("idle")
+\ta:overlap("arms", { amount = 0.6 })
+end
+`
+}
+
+// First touch: lift the right foot to meet the ball, cushion it down (soft hold), back to ready.
+function trapScript(t: DraftTiming, name = 'Trap'): string {
+  return `${header(name)}\ta:beat("ready")
+\ta:pose("idle")
+\ta:wait(${n2(Math.max(0.1, t.anticipation))})
+\ta:beat("touch")
+\ta:pose("kick_chamber", { amount = 0.45, ease = "CubicV2", dir = "Out" })
+\ta:joint("Waist", Vector3.new(-10, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:joint("Neck", Vector3.new(-25, 0, 0), { ease = "CubicV2", dir = "Out" })
+\ta:marker("touch")
+\ta:beat("cushion")
+\ta:wait(0.16)
+\ta:pose("kick_chamber", { amount = 0.25, ease = "CubicV2", dir = "InOut" })
+\ta:hold(${n2(Math.max(0.08, t.hold))})
+\ta:beat("recovery")
+\ta:wait(${n2(t.recovery)})
+\ta:pose("idle")
+\ta:overlap("arms", { amount = 0.5 })
 end
 `
 }
@@ -447,35 +605,51 @@ function asR6(script: string): string {
     .join('\n')
 }
 
-export function draftAnimScript(request: string, profile?: AnimStyleProfile | null, rig: RigType = 'R15'): string {
+const pascal = (tag: string) => tag.split(/[\s-]+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join('')
+
+// The built-in draft (no model). set: the active move set (default Combat, the original drafts);
+// under another set the clip is named after the move type ("Shot", "Header") and a pass is a lighter kick.
+export function draftAnimScript(request: string, profile?: AnimStyleProfile | null, rig: RigType = 'R15', set?: MoveSetDef | null): string {
   const t = timingFrom(profile)
-  const arch = archetypeFor(request)
+  const arch = archetypeFor(request, set)
+  const tag = set && set.id !== 'combat' ? setPromptTags(request, set).find((x) => set.tags.find((d) => d.tag === x)?.archetype === arch) : undefined
+  const name = tag ? pascal(tag) || undefined : undefined
   if (rig === 'R6') {
-    if (arch === 'sign_push') return signPushScriptR6(t)
-    if (arch === 'dash_punch') return dashPunchScriptR6(t)
-    if (arch === 'hit') return hitReactionScriptR6(t)
-    return asR6(draftAnimScript(request, profile, 'R15'))
+    if (arch === 'sign_push') return signPushScriptR6(t, name)
+    if (arch === 'dash_punch') return dashPunchScriptR6(t, name)
+    if (arch === 'hit') return hitReactionScriptR6(t, name)
+    return asR6(draftAnimScript(request, profile, 'R15', set))
   }
   switch (arch) {
     case 'sign_push':
-      return signPushScript(t)
+      return signPushScript(t, name)
     case 'dash_punch':
-      return dashPunchScript(t)
+      return dashPunchScript(t, name)
     case 'hit':
-      return hitReactionScript(t)
+      return hitReactionScript(t, name)
     case 'kick':
-      return kickScript(t)
+      return kickScript(t, name, tag === 'pass' ? 0.75 : tag === 'shot' ? 1.1 : undefined)
     case 'cast':
-      return castScript(t)
+      return castScript(t, name)
     case 'dash':
-      return dashScript(t)
+      return dashScript(t, name)
     case 'idle':
-      return idleScript()
+      return idleScript(name)
     case 'block':
-      return blockScript(t)
+      return blockScript(t, name)
     case 'jump':
-      return jumpScript(t)
+      return jumpScript(t, name)
+    case 'header':
+      return headerScript(t, name)
+    case 'celebrate':
+      return celebrateScript(t, name)
+    case 'save':
+      return saveScript(t, name)
+    case 'slide':
+      return slideScript(t, name)
+    case 'trap':
+      return trapScript(t, name)
     default:
-      return punchScript(t)
+      return punchScript(t, name)
   }
 }

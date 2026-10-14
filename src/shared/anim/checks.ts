@@ -11,6 +11,7 @@ import { jointWorld, PARTS, type R15Part } from './r15.ts'
 import { clipRig, sampleR6, sampleTrack } from './sample.ts'
 import { r15View } from './convert.ts'
 import { r6ForwardKinematics, r6LimbEnd, r6LowestFoot, r6Wording } from './r6.ts'
+import { measureParts, partMustFix, requestedParts } from './bodyparts.ts'
 
 // ------------------------------------------------------------------ joint limits
 
@@ -182,7 +183,26 @@ const score = (v: number) => Math.round(Math.max(0, Math.min(10, v)) * 10) / 10
 
 // R6 clips are checked on their R15 view (straight limbs on the R6 joints; no elbow / knee limits to
 // break) and the issues are worded with R6 names (Right Shoulder, Left Leg, Torso...).
-export function runChecks(clip: AnimClip, profile?: AnimStyleProfile | null): AnimCheckReport {
+// opts.request / opts.tags: the request and move-type tags; the body parts they name must move
+// (bodyparts.ts). A named part that barely moves is an error issue ("motion") and costs the overall
+// score 2 points per part.
+export function runChecks(clip: AnimClip, profile?: AnimStyleProfile | null, opts: { request?: string; tags?: string[] } = {}): AnimCheckReport {
+  const base = runChecksRig(clip, profile)
+  const parts = opts.request || opts.tags?.length ? requestedParts(opts.request ?? '', opts.tags ?? []) : []
+  if (!parts.length) return base
+  const motion = measureParts(clip, parts)
+  const issues = [...base.issues]
+  let missing = 0
+  for (const m of motion) {
+    if (!m.ok) {
+      missing++
+      issues.unshift({ check: 'motion', severity: 'error', message: `Must fix: ${partMustFix(m)}`, ...(m.joint ? { joint: m.joint } : {}) })
+    } else if (m.rangeDeg < m.warnDeg) issues.push({ check: 'motion', severity: 'warn', message: `the ${m.label} ("${m.source.replace(/^tag:/, '')}") moves only ${m.rangeDeg.toFixed(0)}°; push its key poses further`, ...(m.joint ? { joint: m.joint } : {}) })
+  }
+  return { ...base, issues, motion, overall: Math.max(0, Math.round((base.overall - missing * 2) * 10) / 10) }
+}
+
+function runChecksRig(clip: AnimClip, profile?: AnimStyleProfile | null): AnimCheckReport {
   if (clipRig(clip) === 'R6') {
     const r = runChecksR15(r15View(clip), profile, JOINT_LIMITS_R6)
     // Sliding is measured on the real R6 legs (their hip pivots sit at the Torso's outer edge, unlike

@@ -11,8 +11,9 @@ import { findKitPose, resolveKitPose } from '@shared/anim/kit'
 import { xfToCf } from '@shared/anim/math'
 import { measureClip } from '@shared/anim/measure'
 import { runChecks } from '@shared/anim/checks'
-import { autoTags, buildStyle, coverage, profileFor, promptTags } from '@shared/anim/style'
-import { animRefineLoop, beatFrameTimes, heuristicAnimCritique } from '@shared/anim/critique'
+import { autoTags, buildStyle, coverage, profileFor } from '@shared/anim/style'
+import { animRefineLoop, beatFrameTimes, heuristicAnimCritique, withMustFix } from '@shared/anim/critique'
+import { allKnownTags, coverageOptions, heuristicRetag, MOVE_SETS, moveSetDef, normalizeCustomTag, resolveMoveSet, setPromptTags, type MoveSetSettings } from '@shared/anim/movesets'
 import { clipRig, poseCFrames } from '@shared/anim/sample'
 import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
 import { clipSummary } from '@shared/anim/compile'
@@ -89,6 +90,7 @@ export function animMock(emit: Emit): AnimApi {
   }
   let seq = 0
   let rig: RigType = 'R15'
+  let moveSets: MoveSetSettings = { set: 'combat', custom: {} }
 
   async function refine(e: AnimEntry, max: number) {
     const ref = e.reference ? entries.find((x) => x.id === e.reference)?.clip : undefined
@@ -111,8 +113,8 @@ export function animMock(emit: Emit): AnimApi {
           emit('anim:progress', { entryId: e.id, iteration: base + n, phase: 'critique' })
           await delay(400)
           const p = profileFor(style, e.tags, clipRig(clip))
-          const checks = runChecks(clip, p)
-          return withAnimPrinciples(heuristicAnimCritique(clip, checks, p), clip, { request: e.origin.replace(/^Make: /, '') || e.description, weights: mockPrincipleWeights(), checks })
+          const checks = runChecks(clip, p, { request: e.kind === 'generated' ? e.origin : '', tags: e.tags })
+          return withMustFix(withAnimPrinciples(heuristicAnimCritique(clip, checks, p), clip, { request: e.origin.replace(/^Make: /, '') || e.description, weights: mockPrincipleWeights(), checks }))
         },
         onIteration: (it) => {
           const iteration: AnimIteration = { n: base + it.n, at: Date.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique }
@@ -197,22 +199,53 @@ export function animMock(emit: Emit): AnimApi {
       return e
     },
     async animLearn() {
-      style = buildStyle(entries, Date.now())
+      style = buildStyle(entries, Date.now(), allKnownTags(moveSets))
       return { style, saved: style.profiles.map((p) => `anim-style-${p.tag}`), errors: [] }
     },
     async animStyle() {
       return style
     },
     async animCoverage() {
-      return coverage(entries)
+      return coverage(entries, coverageOptions(resolveMoveSet(moveSets)))
+    },
+    async animMoveSets() {
+      return { active: resolveMoveSet(moveSets), sets: MOVE_SETS.map(({ id, name, description }) => ({ id, name, description })) }
+    },
+    async animSetMoveSet(id) {
+      moveSets = { ...moveSets, set: moveSetDef(id).id }
+      changed()
+      return resolveMoveSet(moveSets)
+    },
+    async animAddMoveTag(tag) {
+      const c = normalizeCustomTag(tag)
+      if (!c) throw new Error('Name the move type')
+      moveSets = { ...moveSets, custom: { ...moveSets.custom, [moveSets.set]: [...(moveSets.custom[moveSets.set] ?? []).filter((x) => x.tag !== c.tag), c] } }
+      changed()
+      return resolveMoveSet(moveSets)
+    },
+    async animRemoveMoveTag(tag) {
+      moveSets = { ...moveSets, custom: { ...moveSets.custom, [moveSets.set]: (moveSets.custom[moveSets.set] ?? []).filter((x) => x.tag !== tag) } }
+      changed()
+      return resolveMoveSet(moveSets)
+    },
+    async animRetag() {
+      const set = resolveMoveSet(moveSets)
+      const changes = heuristicRetag(entries, set)
+      for (const c of changes) {
+        const e = entries.find((x) => x.id === c.id)
+        if (e) e.tags = c.after
+      }
+      style = buildStyle(entries, Date.now(), allKnownTags(moveSets))
+      changed()
+      return { set: set.id, source: 'heuristic' as const, total: entries.length, changed: changes.length, changes }
     },
     async animCompose(request, opts) {
       await delay(500)
-      const arch = archetypeFor(request)
+      const arch = archetypeFor(request, resolveMoveSet(moveSets))
       const r6 = (opts?.rig ?? rig) === 'R6'
       const key = (arch === 'sign_push' || arch === 'cast' ? 'sign-push' : arch === 'hit' ? 'hit-reaction' : 'dash-punch') + (r6 ? '-r6' : '')
       const base = exampleEntry(key, `composed-${(seq++).toString(36)}`)
-      const e: AnimEntry = { ...base, ...(opts?.restatement ? { restatement: opts.restatement } : {}), origin: request, description: request, tags: [...new Set([...promptTags(request), ...base.tags.filter((t) => t !== 'example')])], createdAt: Date.now(), updatedAt: Date.now() }
+      const e: AnimEntry = { ...base, ...(opts?.restatement ? { restatement: opts.restatement } : {}), origin: request, description: request, tags: [...new Set([...setPromptTags(request, resolveMoveSet(moveSets)), ...base.tags.filter((t) => t !== 'example')])], createdAt: Date.now(), updatedAt: Date.now() }
       entries.push(e)
       changed()
       if (opts?.refine !== false) void refine(e, opts?.maxIterations ?? 2)

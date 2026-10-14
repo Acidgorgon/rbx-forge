@@ -7,6 +7,7 @@ import type { R6Joint } from './r6.ts'
 import type { VideoRef } from '../videoref/types.ts'
 import type { PrincipleScore } from '../principles/types.ts'
 import type { Restatement } from '../restate/types.ts'
+import type { PartMotion } from './bodyparts.ts'
 
 export type { R6Joint }
 
@@ -186,7 +187,8 @@ export interface AnimStyle {
 // ------------------------------------------------------------------ automatic checks
 
 export interface AnimCheckIssue {
-  check: 'sliding' | 'limits' | 'penetration' | 'readability' | 'timing'
+  // motion: a body part the request names barely moves (anim/bodyparts.ts).
+  check: 'sliding' | 'limits' | 'penetration' | 'readability' | 'timing' | 'motion'
   severity: 'info' | 'warn' | 'error'
   message: string
   joint?: string
@@ -203,6 +205,8 @@ export interface AnimCheckReport {
   worstLimitDeg: number
   penetrationStuds: number
   spread: number
+  // The body parts the request (and its move-type tags) name, and how far each moves.
+  motion?: PartMotion[]
 }
 
 // ------------------------------------------------------------------ critique and refine
@@ -233,6 +237,9 @@ export interface AnimCritique {
   principles?: PrincipleScore[]
   principleScore?: number
   focus?: string[]
+  // Requirements the clip fails outright (a named body part that barely moves); the score is capped
+  // while any is open.
+  mustFix?: string[]
 }
 
 export interface AnimIteration {

@@ -16,7 +16,7 @@ import type { AnimEntry, AnimScriptResult, RigType } from '../../../shared/anim/
 import { ANIM_API, ANIM_API_R6, ANIM_GUIDE, kitReferenceText } from '../../../shared/anim/draft.ts'
 import { clipRig } from '../../../shared/anim/sample.ts'
 import { ANIM_EXAMPLES } from '../../../shared/anim/examples.ts'
-import { profileFor, profileText, promptTags } from '../../../shared/anim/style.ts'
+import { profileFor, profileText } from '../../../shared/anim/style.ts'
 import { runChecks } from '../../../shared/anim/checks.ts'
 import { beatFrameTimes } from '../../../shared/anim/critique.ts'
 import type { AnimService } from './service.ts'
@@ -78,7 +78,7 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
         guard(async () => {
           const rig = args.rig ?? (await service.rig())
           const ex = args.example ? ANIM_EXAMPLES.find((e) => e.key === args.example || e.name.toLowerCase() === args.example!.toLowerCase()) : null
-          const profile = profileFor(await service.style(), promptTags(args.tags ?? ''), rig)
+          const profile = profileFor(await service.style(), await service.tagsFor(args.tags ?? ''), rig)
           return [
             `Rig: ${rig}${rig === 'R6' ? '' : ' (pass rig: "R6" for the R6 notes)'}`,
             ANIM_API,
@@ -102,7 +102,7 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
           const bad = (await service.search(args.query, { limit: 20, includeAvoid: true })).filter((e) => e.quality === 'avoid' || e.rating === 'down').slice(0, 3)
           const parts = hits.length ? hits.map(line) : ['(no library clips match; the user can import references on the Animation Lab page)']
           if (bad.length) parts.push('', 'Marked AVOID by the user (never copy):', ...bad.map(line))
-          const profile = profileFor(await service.style(), promptTags(args.query), args.rig ?? (await service.rig()))
+          const profile = profileFor(await service.style(), await service.tagsFor(args.query), args.rig ?? (await service.rig()))
           if (profile) parts.push('', profileText(profile))
           return parts.join('\n').slice(0, 12000)
         })
@@ -151,7 +151,7 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
             ].join('\n')
           }
           const entry = await service.get(args.id)
-          const checks = runChecks(entry.clip, profileFor(await service.style(), entry.tags, clipRig(entry.clip)))
+          const checks = await service.checks(entry.id)
           const times = beatFrameTimes(entry.clip, 6)
           const frames = service.canRender() ? await service.renderClip(entry.clip, times).catch(() => [] as Buffer[]) : []
           const c = await service.critique(entry, entry.clip, frames, times, (entry.iterations?.length ?? 0) + 1, null)

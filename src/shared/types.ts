@@ -76,6 +76,11 @@ export interface ServiceStatus {
   restarts: number
   // Short detail for the status bar, e.g. "rojo serve on :34872" or "rojo not found".
   detail?: string
+  // rojo: serve held by the Forge Sync gate for this place file ('blocked': conflicts to resolve or
+  // "serve anyway"; 'checking': waiting for the Studio snapshot).
+  hold?: { gate: 'checking' | 'blocked'; file: string }
+  // rojo: crashed several times in a row and is no longer restarted automatically (Restart button).
+  gaveUp?: boolean
 }
 
 export interface LogLine {

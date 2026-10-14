@@ -25,6 +25,8 @@ import { renameEntry, trashEntry } from './services/fileOps.ts'
 import { Settings } from './services/settings.ts'
 import { StudioConflicts } from './services/studioConflicts.ts'
 import { Supervisor } from './services/supervisor.ts'
+import { RojoPause } from './services/rojoRestart.ts'
+import { entryTarget } from '../shared/fileOps.ts'
 import { Packages } from './services/packages.ts'
 import { BLINK_ENTRY, BlinkWatcher } from './services/blink.ts'
 import { createIntegrations } from './integrations.ts'
@@ -129,6 +131,11 @@ const supervisor = new Supervisor({
   onStatus: (statuses) => emit('services:status', statuses),
   getSetting: (key, fallback) => settings.get(key, fallback)
 })
+// Stops rojo serve around Forge's own folder deletes / renames (rojo can panic on a folder that
+// vanishes while it serves) and starts it again once they settle.
+// Absolute path of the Explorer entry an operation touches (an init script's folder, not the script).
+const entryFull = (root: string, path: string, isDir?: boolean) => join(root, entryTarget(String(path ?? ''), !!isDir).path)
+const rojoPause = new RojoPause({ pause: (reason) => supervisor.pauseRojo(reason), resume: () => supervisor.resumeRojo(), log: (text) => logs.push({ service: 'rojo', stream: 'stderr', text }) })
 
 // Editor language server: luau-lsp over stdio, relayed to the renderer's Monaco client.
 const lsp = new LspBridge({
@@ -437,6 +444,7 @@ const integrations = createIntegrations({
   services: () => supervisor.statuses(),
   startService: (id) => supervisor.start(id),
   stopService: (id) => supervisor.stop(id),
+  withRojoPaused: (fn, reason) => rojoPause.run(fn, reason),
   openExternal: (url) => void shell.openExternal(url),
   summarize: (prompt) => agentIpc.summarize(prompt),
   art: artElectronDeps(),
@@ -745,13 +753,13 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   // refreshes right away (a stale sourcemap.json drops the missing files) without waiting for the watcher.
   renamePath: async (path: string, name: string, isDir?: boolean) => {
     const opened = requireProject()
-    const change = await renameEntry(opened.root, opened.info.mounts ?? [], path, name, !!isDir)
+    const change = await rojoPause.aroundPath(entryFull(opened.root, path, isDir), () => renameEntry(opened.root, opened.info.mounts ?? [], path, name, !!isDir), 'folder rename')
     projectChanged(opened, await opened.refresh())
     return change
   },
   trashPath: async (path: string, isDir?: boolean) => {
     const opened = requireProject()
-    const change = await trashEntry(opened.root, opened.info.mounts ?? [], path, (full) => shell.trashItem(full), !!isDir)
+    const change = await rojoPause.aroundPath(entryFull(opened.root, path, isDir), () => trashEntry(opened.root, opened.info.mounts ?? [], path, (full) => shell.trashItem(full), !!isDir), 'folder delete')
     projectChanged(opened, await opened.refresh())
     return change
   },

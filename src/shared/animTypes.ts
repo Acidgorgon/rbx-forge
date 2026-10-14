@@ -5,6 +5,24 @@ import type { AnimCheckReport, AnimClip, AnimEntry, AnimExportResult, AnimImport
 import type { LabModels } from './labModels.ts'
 import type { Restatement } from './restate/types.ts'
 import type { CustomMoveTag, ResolvedMoveSet } from './anim/movesets.ts'
+import type { RemixCandidate, RemixOp } from './anim/remix.ts'
+
+export type { RemixCandidate, RemixOp, RemixOrigin, RemixPart } from './anim/remix.ts'
+
+// Animate row mode: from scratch (the model writes keys) or remix the closest library clip (edit ops
+// on real motion). auto: remix when the library has a usable clip of the request's move type.
+export type AnimRemixMode = 'auto' | 'remix' | 'scratch'
+
+export interface AnimRemixOptions extends AnimRefineOptions {
+  // Library id of the clip to start from (default: the closest one for the request).
+  base?: string
+  // Ops to apply instead of planning them.
+  ops?: RemixOp[]
+  refine?: boolean
+  scope?: AnimScope
+  rig?: RigType
+  restatement?: Restatement
+}
 
 export type * from './anim/model.ts'
 export type { LabModels, LabTier } from './labModels.ts'
@@ -75,6 +93,15 @@ export interface AnimApi {
   // rig: R15 or R6 (default: the project's rig).
   // reference: a video reference id ("make it like this"; see RefApi).
   animCompose(request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType; reference?: string; restatement?: Restatement }): Promise<AnimScriptResult>
+  // Remix closest: library clips to start from for a request (best first) and the request's move types.
+  animRemixCandidates(prompt: string): Promise<{ candidates: RemixCandidate[]; tags: string[] }>
+  // Edits the closest (or the given) library clip with planned ops; saved as a generated clip.
+  animRemix(request: string, opts?: AnimRemixOptions): Promise<AnimScriptResult>
+  // Re-applies (edited) ops to a remixed clip's base, or to another base clip.
+  animRemixApply(id: string, ops: RemixOp[], opts?: { base?: string }): Promise<AnimEntry>
+  // From scratch / Remix closest, per project in .forge/anim/settings.json.
+  animRemixMode(): Promise<AnimRemixMode>
+  animSetRemixMode(mode: AnimRemixMode): Promise<AnimRemixMode>
   animRunScript(script: string, opts?: { id?: string; save?: boolean; prompt?: string; rig?: RigType }): Promise<AnimScriptResult>
   // The rig new clips use (project setting, .forge/anim/settings.json; app default without a project).
   animGetRig(): Promise<RigType>

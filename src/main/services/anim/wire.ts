@@ -6,7 +6,7 @@ import type { PrincipleHooks } from '../../../shared/principles/types.ts'
 import { join } from 'node:path'
 import { findRuntimeDir, luneStatus } from '../tests/lune.ts'
 import type { AnimClip, AnimEntry, AnimRefineOptions, AnimScope, RigType } from '../../../shared/anim/model.ts'
-import type { AnimImportOptions } from '../../../shared/animTypes.ts'
+import type { AnimImportOptions, AnimRemixOptions } from '../../../shared/animTypes.ts'
 import { LAB_MODELS_SETTING, normalizeLabModels, type LabModels, type LabTier } from '../../../shared/labModels.ts'
 import { AnimService, type AnimCaptureRequest, type MemoryLike, type ModelFn } from './service.ts'
 import { animTools, type AnimTool } from './tools.ts'
@@ -87,6 +87,14 @@ export function createAnimWiring(deps: AnimWireDeps): AnimWiring {
       const { refined: _refined, ...r } = await service.compose(String(request ?? ''), { ...(opts ?? {}), rig: rigOf(opts?.rig), wait: false })
       return r
     },
+    animRemixCandidates: (prompt: unknown) => service.remixCandidates(String(prompt ?? '')),
+    animRemix: async (request: string, opts?: AnimRemixOptions) => {
+      const { refined: _refined, ...r } = await service.remix(String(request ?? ''), { ...(opts ?? {}), base: opts?.base ? String(opts.base) : undefined, rig: rigOf(opts?.rig), wait: false })
+      return r
+    },
+    animRemixApply: (x: string, ops: unknown, opts?: { base?: string }) => service.remixApply(id(x), ops, { base: opts?.base ? String(opts.base) : undefined }),
+    animRemixMode: () => service.remixMode(),
+    animSetRemixMode: (mode: unknown) => service.setRemixMode(mode === 'remix' || mode === 'scratch' ? mode : 'auto'),
     animRunScript: (script: string, opts?: { id?: string; save?: boolean; prompt?: string; rig?: RigType }) =>
       service.runScript(String(script ?? ''), { id: opts?.id ? String(opts.id) : undefined, save: !!opts?.save, prompt: opts?.prompt ? String(opts.prompt) : undefined, rig: rigOf(opts?.rig) }),
     animGetRig: () => service.rig(),

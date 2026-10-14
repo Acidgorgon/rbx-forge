@@ -213,6 +213,9 @@ export interface AnimRefineDeps {
   // Lab gating (services/gating): true after a critique below the threshold with rounds left ends
   // the loop now (score plateau).
   shouldStop?(critique: AnimCritique, iteration: number, remaining: number): Promise<boolean>
+  // Replaces applying the critic's key changes: remixed clips re-plan their edit ops from the critique
+  // and re-apply them to the base clip (remix.ts). applied 0 ends the loop ("no-changes").
+  adjust?(clip: AnimClip, critique: AnimCritique, iteration: number): Promise<{ clip: AnimClip; applied: number; rejected?: { change: unknown; reason: string }[] }>
 }
 
 export type AnimStopReason = 'threshold' | 'max-iterations' | 'no-changes' | 'cancelled' | 'plateau'
@@ -244,6 +247,17 @@ export async function animRefineLoop(initial: AnimClip, deps: AnimRefineDeps, op
       await deps.onIteration?.(it)
       stop = 'plateau'
       break
+    }
+    if (deps.adjust) {
+      const a = await deps.adjust(clip, critique, n)
+      it.rejected = a.rejected ?? []
+      await deps.onIteration?.(it)
+      if (!a.applied) {
+        stop = 'no-changes'
+        break
+      }
+      clip = a.clip
+      continue
     }
     const r = applyAnimChanges(clip, critique.changes)
     it.rejected = r.rejected

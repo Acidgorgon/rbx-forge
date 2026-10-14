@@ -34,7 +34,7 @@ export const LAB_HANDLERS: Record<LabId, { runs: Record<string, number | 'result
     }
   },
   anim: {
-    runs: { animCompose: 'result', animRefine: 0 },
+    runs: { animCompose: 'result', animRemix: 'result', animRefine: 0 },
     kept: {
       animRate: (a) => (a[1] === 'up' ? { id: String(a[0]), kept: true } : a[1] === 'down' ? { id: String(a[0]), kept: false } : null),
       animExport: (a) => ({ id: String(a[0]), kept: true }),

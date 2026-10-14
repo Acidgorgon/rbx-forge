@@ -21,6 +21,8 @@ import { AssistantPanel } from './assistant/AssistantPanel'
 import { ToolchainGate } from './setup/Toolchain'
 import { terminalOwnsKey } from './terminal/session'
 import { QolRoot } from './qol/QolRoot'
+import { activeGroupOf } from '@shared/editorGroups'
+import { focusGroupAt } from './shell/groupActions'
 import './shell/workbench.css'
 import './views/views.css'
 import './pages/pages.css'
@@ -109,23 +111,35 @@ function useShortcuts() {
       }
       // Tabs.
       if (spec === 'ctrl+tab' || spec === 'mod+tab' || spec === 'ctrl+shift+tab' || spec === 'mod+shift+tab' || spec === 'alt+mod+arrowright' || spec === 'alt+mod+arrowleft') {
+        // Cycles the active editor group's tabs.
+        const group = activeGroupOf(s.editor)
         const back = spec.includes('shift') || spec.endsWith('arrowleft')
-        const i = s.tabs.findIndex((t) => t.id === s.activeTab)
-        const next = s.tabs[(i + (back ? -1 : 1) + s.tabs.length) % s.tabs.length]
+        const i = group.tabs.indexOf(s.activeTab)
+        const next = group.tabs[(i + (back ? -1 : 1) + group.tabs.length) % group.tabs.length]
         if (next) {
           e.preventDefault()
           e.stopPropagation()
-          a.activateTab(next.id)
+          a.activateTab(next, group.id)
         }
         return
       }
+      // ⌘1…⌘4 focus editor group 1-4 once the editor is split; otherwise (and ⌘5…⌘9) the nth tab
+      // of the active group.
       const digit = /^mod\+([1-9])$/.exec(spec)
       if (digit) {
-        const t = s.tabs[Number(digit[1]) - 1]
+        const n = Number(digit[1])
+        if (s.editor.groups.length > 1 && n <= 4) {
+          e.preventDefault()
+          e.stopPropagation()
+          if (n <= s.editor.groups.length) focusGroupAt(a, n - 1)
+          return
+        }
+        const group = activeGroupOf(s.editor)
+        const t = group.tabs[n - 1]
         if (t) {
           e.preventDefault()
           e.stopPropagation()
-          a.activateTab(t.id)
+          a.activateTab(t, group.id)
         }
         return
       }

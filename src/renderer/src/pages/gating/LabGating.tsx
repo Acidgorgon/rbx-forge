@@ -176,88 +176,91 @@ export function GatingSettings() {
           <Seg<ModelMode> label="Decision models" value={view.settings.models} options={[['off', 'Off'], ['shadow', 'Shadow'], ['on', 'On']]} onChange={(v) => void set({ models: v })} />
         </div>
       </div>
-      <ul className="gate-models" aria-label="Decision models">
-        {view.models.map((m) => (
-          <li key={m.type} className="gate-model">
-            <span className="gate-model-name">{DECISION_INFO[m.type].label}</span>
-            <span className="faint gate-model-q ellipsis" title={DECISION_INFO[m.type].question}>
-              {DECISION_INFO[m.type].question}
-            </span>
-            {m.state === 'active' ? (
-              <span className="tag ok" title={`Held-out accuracy on ${m.holdout} examples`}>
-                active, {Math.round((m.modelAcc ?? 0) * 100)}% vs heuristic {Math.round((m.heuristicAcc ?? 0) * 100)}%
+      <details className="set-more">
+        <summary>Model status, cost per kept result and latest decisions</summary>
+        <ul className="gate-models" aria-label="Decision models">
+          {view.models.map((m) => (
+            <li key={m.type} className="gate-model">
+              <span className="gate-model-name">{DECISION_INFO[m.type].label}</span>
+              <span className="faint gate-model-q ellipsis" title={DECISION_INFO[m.type].question}>
+                {DECISION_INFO[m.type].question}
               </span>
-            ) : m.state === 'not-better' ? (
-              <span className="tag warn" title="Enough examples, but it does not beat the code yet: the code decides">
-                {Math.round((m.modelAcc ?? 0) * 100)}% vs heuristic {Math.round((m.heuristicAcc ?? 0) * 100)}%
-              </span>
-            ) : (
-              <span className="tag">
-                learning ({Math.min(m.labelled, m.needed)}/{m.needed})
-              </span>
-            )}
-          </li>
-        ))}
-      </ul>
-      <div className="row gate-actions">
-        <button className="btn small" disabled={busy} onClick={() => void retrain()}>
-          {busy ? <span className="spinner" aria-hidden /> : null} Retrain
-        </button>
-        <span className="grow" />
-        <button
-          className="btn small ghost"
-          onClick={async () => {
-            await window.harness.labGatingReset()
-            await reload()
-          }}
-        >
-          Clear log and costs
-        </button>
-      </div>
-      <h3 className="set-sub">Cost per kept result</h3>
-      <div className="gate-tbl-wrap">
-        <table className="tbl gate-tbl">
-          <thead>
-            <tr>
-              <th>Lab</th>
-              <th>Kept / runs</th>
-              <th>Per kept</th>
-              {COST_TIERS.map((t) => (
-                <th key={t}>{t}</th>
-              ))}
-              <th title="Tokens the gates saved (on) or would have saved (shadow)">Saved</th>
-            </tr>
-          </thead>
-          <tbody>
-            {view.costs.map((r) => (
-              <tr key={r.lab}>
-                <td>{LAB_NAMES[r.lab]}</td>
-                <td>
-                  {r.kept} / {r.runs}
-                </td>
-                <td>{formatUsd(r.costPerKept)}</td>
+              {m.state === 'active' ? (
+                <span className="tag ok" title={`Held-out accuracy on ${m.holdout} examples`}>
+                  active, {Math.round((m.modelAcc ?? 0) * 100)}% vs heuristic {Math.round((m.heuristicAcc ?? 0) * 100)}%
+                </span>
+              ) : m.state === 'not-better' ? (
+                <span className="tag warn" title="Enough examples, but it does not beat the code yet: the code decides">
+                  {Math.round((m.modelAcc ?? 0) * 100)}% vs heuristic {Math.round((m.heuristicAcc ?? 0) * 100)}%
+                </span>
+              ) : (
+                <span className="tag">
+                  learning ({Math.min(m.labelled, m.needed)}/{m.needed})
+                </span>
+              )}
+            </li>
+          ))}
+        </ul>
+        <div className="row gate-actions">
+          <button className="btn small" disabled={busy} onClick={() => void retrain()}>
+            {busy ? <span className="spinner" aria-hidden /> : null} Retrain
+          </button>
+          <span className="grow" />
+          <button
+            className="btn small ghost"
+            onClick={async () => {
+              await window.harness.labGatingReset()
+              await reload()
+            }}
+          >
+            Clear log and costs
+          </button>
+        </div>
+        <h3 className="set-sub">Cost per kept result</h3>
+        <div className="gate-tbl-wrap">
+          <table className="tbl gate-tbl">
+            <thead>
+              <tr>
+                <th>Lab</th>
+                <th>Kept / runs</th>
+                <th>Per kept</th>
                 {COST_TIERS.map((t) => (
-                  <td key={t} title={r.tiers[t] ? `${r.tiers[t]!.calls} calls, ${formatUsd(r.tiers[t]!.costUsd)}, ${formatTokens(r.tiers[t]!.tokens)} tokens` : ''}>
-                    {r.tiers[t] ? formatUsd(r.tiers[t]!.costPerKept ?? r.tiers[t]!.costUsd) : '—'}
-                  </td>
+                  <th key={t}>{t}</th>
                 ))}
-                <td>{r.saved ? `${formatTokens(r.saved)}` : r.wouldSave ? <span className="faint">({formatTokens(r.wouldSave)})</span> : '—'}</td>
+                <th title="Tokens the gates saved (on) or would have saved (shadow)">Saved</th>
               </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-      <div className="note">Kept = rated up, saved or exported. Tier columns are spend per kept result (total spend while nothing is kept). Brackets: would be saved in shadow.</div>
-      {view.decisions.length > 0 && (
-        <>
-          <h3 className="set-sub">Latest decisions</h3>
-          <ul className="gate-dec-list">
-            {view.decisions.map((d) => (
-              <DecisionRow key={d.id} d={d} showLab />
-            ))}
-          </ul>
-        </>
-      )}
+            </thead>
+            <tbody>
+              {view.costs.map((r) => (
+                <tr key={r.lab}>
+                  <td>{LAB_NAMES[r.lab]}</td>
+                  <td>
+                    {r.kept} / {r.runs}
+                  </td>
+                  <td>{formatUsd(r.costPerKept)}</td>
+                  {COST_TIERS.map((t) => (
+                    <td key={t} title={r.tiers[t] ? `${r.tiers[t]!.calls} calls, ${formatUsd(r.tiers[t]!.costUsd)}, ${formatTokens(r.tiers[t]!.tokens)} tokens` : ''}>
+                      {r.tiers[t] ? formatUsd(r.tiers[t]!.costPerKept ?? r.tiers[t]!.costUsd) : '—'}
+                    </td>
+                  ))}
+                  <td>{r.saved ? `${formatTokens(r.saved)}` : r.wouldSave ? <span className="faint">({formatTokens(r.wouldSave)})</span> : '—'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+        <div className="note">Kept = rated up, saved or exported. Tier columns are spend per kept result (total spend while nothing is kept). Brackets: would be saved in shadow.</div>
+        {view.decisions.length > 0 && (
+          <>
+            <h3 className="set-sub">Latest decisions</h3>
+            <ul className="gate-dec-list">
+              {view.decisions.map((d) => (
+                <DecisionRow key={d.id} d={d} showLab />
+              ))}
+            </ul>
+          </>
+        )}
+      </details>
     </div>
   )
 }

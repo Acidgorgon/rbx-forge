@@ -4,7 +4,7 @@ import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { git, INVENTORY_SERVICE } from '../lib/project.ts'
 import { write } from '../../fixture.ts'
-import { bodyText, check, CENTER, dismissToasts, mod, openPage, showSide, SkipFlow, waitText } from '../lib/ui.ts'
+import { bodyText, check, CENTER, dismissToasts, mod, openPage, settingsSection, showSide, SkipFlow, waitText } from '../lib/ui.ts'
 import type { Flow } from './types.ts'
 
 const MARK = '-- forge-e2e edit'
@@ -211,6 +211,7 @@ export const coreFlows: Flow[] = [
       check((await dialog.count()) === 0, 'a delete asked again after "Don\'t ask again"')
       await filter.fill('')
       await openPage(page, 'Settings')
+      await settingsSection(page, 'Editor')
       const sw = page.locator('#set-editor').getByLabel('Confirm file deletes')
       await sw.waitFor({ state: 'visible', timeout: 10_000 })
       check(!(await sw.isChecked()), 'Settings > Editor: "Confirm file deletes" still on after "Don\'t ask again"')

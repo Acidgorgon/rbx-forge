@@ -147,6 +147,7 @@ try {
   assert.ok(!log.some((l) => /Cannot find module/.test(l)), log.join('\n'))
   pass(`the next launch runs ${v1} from userData/code and clears the boot marker`)
   await page.keyboard.press('Control+,')
+  await page.locator('nav.set-nav button', { hasText: 'Updates' }).first().click({ timeout: 15_000 })
   await page.waitForSelector('#set-updates', { timeout: 15_000 })
   await page.evaluate(() => document.getElementById('set-updates')?.scrollIntoView({ block: 'start' }))
   await sleep(500)

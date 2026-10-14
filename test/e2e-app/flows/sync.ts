@@ -14,7 +14,8 @@ import { check, CENTER, openPage, showSide, waitText } from '../lib/ui.ts'
 import type { Flow } from './types.ts'
 
 const BASE = `http://127.0.0.1:${BRIDGE_PORT}/forge-bridge`
-const PLACE_ID = 4242
+// Listed in the fixture's tools/studio-sync.json placeIds; an unlisted published place gets sync off.
+const PLACE_ID = 123
 // The plugin's node ids are short hashes.
 const short = (id: string) => createHash('sha1').update(id).digest('hex').slice(0, 16)
 const INVENTORY_PATH = ['ServerScriptService', 'Server', 'Features', 'Inventory', 'InventoryService']

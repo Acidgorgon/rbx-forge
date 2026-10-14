@@ -3,7 +3,7 @@
 // through Settings > Providers, and chat, restate-first and a lab compose run end to end.
 
 import { FAKE_MODEL } from '../lib/fakeProvider.ts'
-import { check, CENTER, mod, openPage, SkipFlow, waitText } from '../lib/ui.ts'
+import { check, CENTER, dismissDigest, mod, openPage, SkipFlow, waitText } from '../lib/ui.ts'
 import type { Page } from '../lib/app.ts'
 import type { Flow } from './types.ts'
 
@@ -73,6 +73,8 @@ export const aiFlows: Flow[] = [
       // The renderer reads the default model at start: reload it, then start a new chat on it.
       await page.reload()
       await page.locator('nav.activity').waitFor({ state: 'visible', timeout: 30_000 })
+      const digest = await dismissDigest(page)
+      if (digest) note(`away digest after reload: ${digest}`)
       await newChat(page)
       await waitText(page, FAKE_MODEL, { within: ASSISTANT }).catch(() => undefined)
       const before = fake.requests.length

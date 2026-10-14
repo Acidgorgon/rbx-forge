@@ -142,3 +142,15 @@ export async function dismissToasts(page: Page): Promise<void> {
     await page.waitForTimeout(250)
   }
 }
+
+// The "Since your last session" digest opens over the page 3.5 s after a project open or a renderer
+// reload; close it so it does not cover buttons. Returns its summary line when it was shown.
+export async function dismissDigest(page: Page, waitMs = 6000): Promise<string> {
+  const d = page.locator('[role="dialog"][aria-label="Since you were away"]')
+  const shown = await d.waitFor({ state: 'visible', timeout: waitMs }).then(() => true, () => false)
+  if (!shown) return ''
+  const sub = (await d.locator('.qol-digest-sub').innerText().catch(() => '')).replace(/\s+/g, ' ')
+  await d.getByRole('button', { name: 'Got it' }).click()
+  await d.waitFor({ state: 'hidden', timeout: 5000 })
+  return sub
+}

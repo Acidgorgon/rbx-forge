@@ -6,8 +6,9 @@ import { pageFlows } from './pages.ts'
 import { labFlows } from './labs.ts'
 import { studioFlows, syncFlows } from './sync.ts'
 import { aiFlows } from './ai.ts'
+import { providerQolFlows, qolFlows } from './qol.ts'
 import type { Flow } from './types.ts'
 
 export type { Flow, FlowCtx } from './types.ts'
 
-export const FLOWS: Flow[] = [...coreFlows, ...syncFlows, ...labFlows, ...studioFlows, ...pageFlows, ...aiFlows]
+export const FLOWS: Flow[] = [...coreFlows, ...syncFlows, ...labFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...aiFlows, ...providerQolFlows]

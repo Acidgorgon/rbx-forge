@@ -34,8 +34,10 @@ with `node --experimental-strip-types test/e2e-app/run.ts`).
   (`lib/project.ts`).
 - **Fake model provider** (`lib/fakeProvider.ts`): a local OpenAI-compatible server. The
   `fake-provider` flow points Settings > Providers > Custom at it, so chat, restate-first and lab
-  compose run end to end. Answers are chosen by rules (restate JSON, default text); add a rule for a
-  new flow. Flows before it run with **no provider** and check the "no key" states.
+  compose run end to end. Answers are chosen by rules (restate JSON, a `write_script` tool call for
+  messages with `E2E-WRITE`, default text); add a rule for a new flow. It can report a per-call
+  `usage.cost` (`fake.costUsd`) for the spend-cap flow. Flows before it run with **no provider** and
+  check the "no key" states; `providerQolFlows` (slash commands, Ask mode, spend cap) run after it.
 - **Forge Bridge**: the `forge-sync` flow plays the Studio plugin over HTTP against the app's bridge
   on `127.0.0.1:34877`. If that port is busy (another Forge running) those flows are reported as
   `skip`.

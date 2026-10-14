@@ -22,12 +22,14 @@ export const PAGES: PageSpec[] = [
   { label: 'VFX Lab', expect: /VFX/i, narrow: true },
   { label: 'Animation Lab', expect: /Animation/i, narrow: true },
   { label: 'Ability Composer', expect: /Ability/i, narrow: true },
+  { label: 'Thumbnail Lab', expect: /Thumbnail/i, narrow: true },
+  { label: 'UI Motion Lab', expect: /Motion/i, narrow: true },
   { label: 'UI Preview (stories)', expect: /stor/i, narrow: true },
   { label: 'Memory & skills', expect: /Memory/i, narrow: true },
   { label: 'Settings', expect: /Settings/i, narrow: true }
 ]
 
-export const SETTINGS_SECTIONS = ['Appearance', 'Default model', 'Chat', 'Providers', 'Budgets', 'Labs', 'Places', 'Sync', 'Toolchain', 'Updates']
+export const SETTINGS_SECTIONS = ['Appearance', 'Default model', 'Chat', 'Providers', 'Usage', 'Budgets', 'Labs', 'Integrations', 'Places', 'Sync', 'Toolchain', 'Notifications', 'Updates']
 
 export const pageFlows: Flow[] = [
   {

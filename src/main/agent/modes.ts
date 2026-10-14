@@ -78,7 +78,21 @@ export function classifyTool(mode: ChatMode, name: string, catalog: ToolCatalog)
 }
 
 export function denyMessage(mode: ChatMode, name: string): string {
-  return `${mode === 'plan' ? 'Plan' : 'Ask'} mode is read-only: ${splitToolName(name).bare} is not available. Read and search only${mode === 'plan' ? ', then present the plan' : ''}.`
+  const bare = splitToolName(name).bare
+  if (mode === 'plan') return `Writes are not allowed in Plan mode: ${bare} is not available. Read and search only, then present the plan.`
+  return `Writes are not allowed in Ask mode; switch to Edit or Auto to change files. (${bare} is not available.)`
+}
+
+// OpenAI-compatible loop: a read mode leaves write tools out of the request, but a model may still
+// call one. A known tool the mode removed (or a built-in edit) gets denyMessage instead of the bare
+// "unknown tool"; a name nobody knows stays unknown.
+export function refuseRemovedTool(mode: ChatMode, known: Iterable<string>): (name: string) => string | undefined {
+  if (!isReadOnlyMode(mode)) return () => undefined
+  const names = new Set(known)
+  return (name) => {
+    const { bare } = splitToolName(name)
+    return names.has(bare) || (EDIT_BUILTINS as readonly string[]).includes(bare) || bare === 'Bash' ? denyMessage(mode, bare) : undefined
+  }
 }
 
 // System prompt note per mode (appended after the rules block, so the cached prefix stays).

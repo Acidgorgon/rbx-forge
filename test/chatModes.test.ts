@@ -717,3 +717,29 @@ test('notes: .forge/AGENTS.md from /init joins the project rules block after the
   assert.ok(block.indexOf('AGENTS.md (project root)') < block.indexOf('Project notes (.forge/AGENTS.md'))
   assert.match(block, /Features in src\/shared\/Features/)
 })
+
+test('modes: a write the model attempts in Ask mode (OpenAI loop) gets a clear refusal, not "unknown tool"', async () => {
+  const bodies: any[] = []
+  const sse = (delta: object) => new Response(`data: ${JSON.stringify({ choices: [{ index: 0, delta }] })}\n\ndata: [DONE]\n\n`, { status: 200, headers: { 'content-type': 'text/event-stream' } })
+  const f = (async (url: string, init: RequestInit = {}) => {
+    if (String(url).includes('/models')) return new Response(JSON.stringify({ data: [] }), { status: 200 })
+    bodies.push(JSON.parse(String(init.body)))
+    if (bodies.length === 1) return sse({ tool_calls: [{ index: 0, id: 'c1', type: 'function', function: { name: 'write_script', arguments: '{"path":"src/shared/a.luau","contents":"x"}' } }] })
+    if (bodies.length === 2) return sse({ tool_calls: [{ index: 0, id: 'c2', type: 'function', function: { name: 'made_up_tool', arguments: '{}' } }] })
+    return sse({ content: 'done' })
+  }) as unknown as typeof fetch
+  const fake = withServices(fakeContext({ files: { 'src/shared/a.luau': 'return 1' } }))
+  const creds = new Credentials(fake.ctx, async () => null, {})
+  await creds.setKey('openai', 'key-openai')
+  const providers = new Providers(fake.ctx, creds, f)
+  const chats = new ChatManager(fake.ctx, { credentials: creds, providers, fetchFn: f, toolFs: fake.fs, checkpoints: null })
+  const c = chats.create({ provider: 'openai', model: 'gpt-6-astra' })
+  chats.setMode(c.id, 'ask')
+  await chats.send(c.id, 'change a.luau')
+  await until(() => !chats.busy(c.id) && bodies.length === 3)
+  const toolMsg = (b: any) => b.messages.filter((m: any) => m.role === 'tool').at(-1).content
+  assert.equal(toolMsg(bodies[1]), 'Error: Writes are not allowed in Ask mode; switch to Edit or Auto to change files. (write_script is not available.)')
+  assert.equal(toolMsg(bodies[2]), 'Error: unknown tool made_up_tool', 'a name nobody knows stays unknown')
+  assert.ok(!(bodies[0].tools ?? []).some((t: any) => (t.function?.name ?? t.name) === 'write_script'), 'write_script is still not offered')
+  assert.equal(fake.files.get('src/shared/a.luau'), 'return 1', 'the file is unchanged')
+})

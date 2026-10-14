@@ -55,7 +55,7 @@ import { formatRestatement, withRestatement } from '../../shared/restate/prompt.
 import { normalizeRestatement, type Restatement } from '../../shared/restate/types.ts'
 import { DEFAULT_CHAT_MODE, isChatMode, parsePlan as planCardFrom, isReadOnlyMode, modeLabel, planRunPrompt, type ChatMode, type CheckpointInfo, type RewindWhat, type RunMode } from '../../shared/chatModes.ts'
 import type { ChatCommandInfo, ChatCommandResult } from '../../shared/chatCommands.ts'
-import { ChatModes, gateOpenAiTools, modeNote, sdkModeOptions, todoTool, toolCatalog, type ModeChatFields, type ReviewDecision } from './modes.ts'
+import { ChatModes, gateOpenAiTools, modeNote, refuseRemovedTool, sdkModeOptions, todoTool, toolCatalog, type ModeChatFields, type ReviewDecision } from './modes.ts'
 import { ChatCommands, type CommandHost, type GatingCostRow } from './commands/index.ts'
 import { Checkpoints } from './checkpoints.ts'
 import { estimateTokens } from './budget/tokens.ts'
@@ -861,6 +861,7 @@ export class ChatManager {
       history,
       // Chat mode gating: Ask / Plan keep only read tools; Edit asks before every other tool.
       tools: gateOpenAiTools(mode, mt.all, toolCatalog(mt.read), (name, input) => this.modes.approveOpenAi(chat, name, input, abort.signal)),
+      refuseTool: refuseRemovedTool(mode, mt.all.map((t) => t.name)),
       maxTurns,
       signal: abort.signal,
       agentId: 'main',

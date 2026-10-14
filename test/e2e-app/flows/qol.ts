@@ -172,6 +172,7 @@ export const providerQolFlows: Flow[] = [
       check(first && !first.toolNames.some((t) => /write_script/.test(t)), 'write_script was offered to the model in Ask mode')
       const echoed = fake.requests.slice(n).find((r) => r.lastRole === 'tool')?.lastTool ?? ''
       check(echoed.length > 0, 'the app sent no tool result for the refused call')
+      check(/Writes are not allowed in Ask mode/.test(echoed), `the refusal is not the Ask-mode message: ${echoed.slice(0, 160)}`)
       note(`tool result: ${echoed.slice(0, 140)}`)
       await setMode(page, 'Edit with approval')
     }

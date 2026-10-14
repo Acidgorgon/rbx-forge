@@ -140,7 +140,7 @@ export async function runResponsesLoop(opts: LoopOptions): Promise<LoopResult> {
         let text: string
         let isError = false
         if (parseError) [text, isError] = [parseError, true]
-        else if (!t) [text, isError] = [`unknown tool ${name}`, true]
+        else if (!t) [text, isError] = [opts.refuseTool?.(name) ?? `unknown tool ${name}`, true]
         else {
           const r = await runTool(t, args)
           text = r.content.map((c) => c.text).join('\n')

@@ -61,6 +61,9 @@ export interface LoopOptions {
   onUsage?: (raw: unknown) => void
   // Loads the bytes of forge-image:// references in user messages (chatImages.ts).
   resolveImage?: ImageResolver
+  // A call to a tool that is not offered: the error text sent back to the model (e.g. a write tool in
+  // Ask mode), or undefined for the plain "unknown tool".
+  refuseTool?: (name: string) => string | undefined
 }
 
 export interface LoopResult {
@@ -134,7 +137,7 @@ export async function runOpenAiLoop(opts: LoopOptions): Promise<LoopResult> {
         let text: string
         let isError = false
         if (parseError) [text, isError] = [parseError, true]
-        else if (!t) [text, isError] = [`unknown tool ${name}`, true]
+        else if (!t) [text, isError] = [opts.refuseTool?.(name) ?? `unknown tool ${name}`, true]
         else {
           const r = await runTool(t, args)
           text = r.content.map((c) => c.text).join('\n')

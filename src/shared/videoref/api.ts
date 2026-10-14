@@ -3,9 +3,9 @@
 // notes, ratings and delete go through vfxUpdate / animUpdate, vfxRate / animRate, vfxDelete /
 // animDelete. "Make it like this" is vfxCompose / animCompose with { reference: id }.
 
-import type { RefEntry, RefLab, RefProgress, RefSaveInput } from './videoref/types.ts'
+import type { RefEntry, RefLab, RefProgress, RefSaveInput } from './types.ts'
 
-export type * from './videoref/types.ts'
+export type * from './types.ts'
 
 export interface RefApi {
   // Saves a clip the renderer decoded and analysed (pages/videoref): files, analysis, library entry.

@@ -11,7 +11,7 @@
 import { z } from 'zod'
 import type { BlinkEvent, WallyAddSpec, WallyDependency, WallyPackage, WallyRealm } from '@shared/types'
 import type { ServiceTool } from '../context.ts'
-import type { BlinkEventSpec } from '../../shared/blinkParser.ts'
+import type { BlinkEventSpec } from '../../shared/blink/parser.ts'
 
 type ToolResult = { content: { type: 'text'; text: string }[]; isError?: boolean }
 const ok = (text: string): ToolResult => ({ content: [{ type: 'text', text }] })

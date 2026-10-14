@@ -1,8 +1,8 @@
 // IPC types for "Restate first" (main/agent/restate.ts). HarnessApi extends RestateApi.
 
-import type { RestateKind, RestateLab, RestateSettings, Restatement } from './restate/types.ts'
+import type { RestateKind, RestateLab, RestateSettings, Restatement } from './types.ts'
 
-export type * from './restate/types.ts'
+export type * from './types.ts'
 
 export interface RestateBriefResult {
   // The card to show; absent when skipped.

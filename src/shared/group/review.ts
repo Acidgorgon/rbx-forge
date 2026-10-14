@@ -2,7 +2,7 @@
 // Prompt, reply parsing and reviewer choice. Pure.
 
 import type { ModelChoice, ProviderId } from '../types.ts'
-import type { ReviewData, ReviewFinding } from '../groupTypes.ts'
+import type { ReviewData, ReviewFinding } from './types.ts'
 
 export const REVIEW_DIFF_CHARS = 16_000
 

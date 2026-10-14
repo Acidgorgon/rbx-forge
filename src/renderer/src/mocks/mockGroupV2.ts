@@ -2,7 +2,7 @@
 // ending in a Conclusion card, a patch proposal and a cross-check review, a filled Board, and a
 // canned converging consult for "ask <model> ... and report back" / "check with X".
 import type { BoardItem, ChatMessage, ChatSession, ConclusionData, GroupParticipant, GroupSettings, HarnessApi, ModelChoice, Speaker } from '@shared/types'
-import { GROUP_SETTINGS_DEFAULTS } from '@shared/groupTypes'
+import { GROUP_SETTINGS_DEFAULTS } from '@shared/group/types'
 import { makeParticipant, resolveConsultModel, unconfiguredText } from '@shared/modelResolve'
 import { conclusionMarkdown, looksLikeModel, parseConsultTrigger } from '@shared/group/consult'
 import { boardFromConclusion, normalizeBoard } from '@shared/group/board'

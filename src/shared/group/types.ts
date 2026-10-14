@@ -2,7 +2,7 @@
 // reviews, the per-chat Board, consult limits, and the IPC methods for them.
 // Engine: src/main/agent/group/*; pure helpers: src/shared/group/*.
 
-import type { ProviderId } from './types.ts'
+import type { ProviderId } from '../types.ts'
 
 // Who said something (a participant's display name and model).
 export interface GroupVoice {

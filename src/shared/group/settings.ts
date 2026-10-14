@@ -1,7 +1,7 @@
 // Group chat settings (setting key "groupChat", shared with the older numeric knobs in
 // agent/groupChat.ts DEFAULTS). Pure.
 
-import { GROUP_SETTINGS_DEFAULTS, type GroupSettings } from '../groupTypes.ts'
+import { GROUP_SETTINGS_DEFAULTS, type GroupSettings } from './types.ts'
 
 const RANGES: Record<'consultTurns' | 'consultMaxTokens' | 'consultMaxUsd' | 'crossCheckMinFiles', [number, number]> = {
   consultTurns: [1, 6],

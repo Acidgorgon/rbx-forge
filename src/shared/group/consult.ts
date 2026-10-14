@@ -3,7 +3,7 @@
 // trigger parsing, each reply's stance line, the convergence rule, and parsing the host's
 // Conclusion into the card's fields.
 
-import type { ConclusionChecks, ConclusionData, ConclusionPoint, ConfidenceLevel, GroupVoice } from '../groupTypes.ts'
+import type { ConclusionChecks, ConclusionData, ConclusionPoint, ConfidenceLevel, GroupVoice } from './types.ts'
 import { consultPhrase, tokenize } from '../modelResolve.ts'
 
 export interface ConsultTrigger {

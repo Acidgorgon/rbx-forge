@@ -11,7 +11,7 @@
 //   scope Name { ...declarations... }
 //   comments: -- line, --[[ block ]], --[=[ block ]=]
 
-import type { BlinkEvent, BlinkTypeDecl } from './types'
+import type { BlinkEvent, BlinkTypeDecl } from '../types'
 
 export const BLINK_ENTRY = 'events.blink'
 

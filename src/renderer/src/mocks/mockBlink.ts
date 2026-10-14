@@ -1,7 +1,7 @@
 // Browser-preview data for the Blink Events tab: a realistic events.blink (checked with blink 0.18.1),
 // excerpts of what Blink generates from it, and a model built with the real parser.
 import type { BlinkDiagnostic, BlinkModel } from '@shared/types'
-import { parseBlink } from '@shared/blinkParser'
+import { parseBlink } from '@shared/blink/parser'
 
 export const BLINK_OUTPUTS = { client: 'src/shared/events/client.luau', server: 'src/server/events/server.luau' }
 

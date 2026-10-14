@@ -2,10 +2,10 @@
 // Animation Lab clips (listAnimClips / getAnimPose) are the Animation Lab's API; the composer only
 // reads them.
 
-import type { Restatement } from './restate/types.ts'
-import type { Ability, AbilityComposeResult, AbilityCritique, AbilityEntry, AbilityExportResult, AbilityScope, AbilityStatus } from './ability/types.ts'
+import type { Restatement } from '../restate/types.ts'
+import type { Ability, AbilityComposeResult, AbilityCritique, AbilityEntry, AbilityExportResult, AbilityScope, AbilityStatus } from './types.ts'
 
-export type * from './ability/types.ts'
+export type * from './types.ts'
 
 export interface AbilityApi {
   abilityStatus(): Promise<AbilityStatus>

@@ -1,7 +1,7 @@
 // Blink (github.com/1Axen/blink) support: a tolerant parser for events.blink and its imports,
 // a check that runs the real compiler into a throwaway folder, and parsing of Blink's error output.
 //
-// The parser itself is in shared/blinkParser.ts (grammar notes there).
+// The parser itself is in shared/blink/parser.ts (grammar notes there).
 //
 // Nothing here imports Electron, so it runs under node --test.
 
@@ -11,10 +11,10 @@ import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import type { BlinkDiagnostic, BlinkEvent, BlinkModel, BlinkTypeDecl, LogLine } from '@shared/types'
 import { findTool, run } from './tools.ts'
-import { appendDeclaration, BLINK_ENTRY, formatDeclaration, parseBlink, type BlinkEventSpec } from '../../shared/blinkParser.ts'
+import { appendDeclaration, BLINK_ENTRY, formatDeclaration, parseBlink, type BlinkEventSpec } from '../../shared/blink/parser.ts'
 
-export { appendDeclaration, BLINK_ENTRY, formatDeclaration, importScopeName, parseBlink, tokenize } from '../../shared/blinkParser.ts'
-export type { BlinkEventSpec, BlinkImport, ParsedBlinkFile } from '../../shared/blinkParser.ts'
+export { appendDeclaration, BLINK_ENTRY, formatDeclaration, importScopeName, parseBlink, tokenize } from '../../shared/blink/parser.ts'
+export type { BlinkEventSpec, BlinkImport, ParsedBlinkFile } from '../../shared/blink/parser.ts'
 
 // ---------------------------------------------------------------- model (entry + imports)
 
@@ -193,7 +193,7 @@ export async function loadBlinkModels(root: string, fs: BlinkFs = nodeFs): Promi
 }
 
 // Generated-API usage lives in shared/ so the renderer can use it too.
-export { blinkUsage, dataValues, type BlinkUsage } from '../../shared/blinkUsage.ts'
+export { blinkUsage, dataValues, type BlinkUsage } from '../../shared/blink/usage.ts'
 
 // ---------------------------------------------------------------- error output
 

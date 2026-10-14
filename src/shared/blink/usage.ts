@@ -1,7 +1,7 @@
 // Calls for an event/function in the Luau modules Blink generates, for "Copy usage".
 // Shared by main (AI tools) and the renderer (Events tab). Verified against Blink 0.18.1
 // src/Generator/init.luau and docs/pages/language/{5-events,6-functions}.mdx.
-import type { BlinkEvent, BlinkModel } from './types'
+import type { BlinkEvent, BlinkModel } from '../types'
 
 type Casing = 'Pascal' | 'Camel' | 'Snake'
 const METHOD_CASES: Record<string, [string, string, string]> = {

@@ -28,6 +28,7 @@ import { bundledClaudeExecutable } from '../services/sdkBinary.ts'
 import { findTool } from '../services/tools.ts'
 import { extractUrl, runCli, type CliRunOptions, type CliRunResult } from './cli.ts'
 import type { AccountProvider, SignInControl } from './registry.ts'
+import { classifyAuthError } from './authHealth.ts'
 
 export interface ClaudeCli {
   path: string
@@ -195,7 +196,9 @@ export function parseTestResult(r: CliRunResult): { ok: boolean; message: string
   }
   const text = typeof j?.result === 'string' ? j.result : `${r.stderr} ${r.stdout}`
   if (j && j.is_error === false && r.code === 0) return { ok: true, message: 'Connected', auth: false }
-  const auth = j?.api_error_status === 401 || /authenticat|not logged in|\/login|expired|invalid api key/i.test(text)
+  // A 403 that does not blame the credential (a model the account cannot use) is not a dead sign-in.
+  const kind = classifyAuthError(text, j?.api_error_status)
+  const auth = kind === 'auth' || (kind === null && /authenticat|not logged in|\/login|expired|invalid api key/i.test(text))
   return { ok: false, message: auth ? 'Sign-in expired or invalid. Sign in again.' : `Test failed: ${String(text).trim().slice(0, 200) || `exit ${r.code}`}`, auth }
 }
 

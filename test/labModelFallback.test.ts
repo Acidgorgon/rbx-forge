@@ -21,6 +21,7 @@ import { shortTitle } from '../src/shared/vfx/spec.ts'
 import { draftSpec } from '../src/shared/vfx/draft.ts'
 import { heuristicCritique } from '../src/shared/vfx/critique.ts'
 import { findLune, findRuntimeDir } from '../src/main/services/tests/lune.ts'
+import { AUTH_PROBE_SYSTEM } from '../src/main/accounts/authHealth.ts'
 
 const PLAN_REJECTS = 'API Error: 403 {"type":"error","error":{"type":"permission_error","message":"claude-opus-5-5 is not available on this account"}}'
 
@@ -28,9 +29,12 @@ const PLAN_REJECTS = 'API Error: 403 {"type":"error","error":{"type":"permission
 // result, as the Agent SDK reports a failed request).
 function subscriptionSdk(works: (model: string) => boolean, answer: (model: string, prompt: string) => string = () => 'ok') {
   const calls: { model: string; chat: boolean; env?: Record<string, string | undefined> }[] = []
+  // Sign-in checks after a per-model 403 (accounts/authHealth.ts), kept apart from the lab calls.
+  const probes: string[] = []
   const queryFn: QueryFn = ({ prompt, options }) => {
     const model = String(options.model)
-    calls.push({ model, chat: Array.isArray(options.tools) && options.tools.length > 0, env: options.env })
+    if (options.systemPrompt === AUTH_PROBE_SYSTEM) probes.push(model)
+    else calls.push({ model, chat: Array.isArray(options.tools) && options.tools.length > 0, env: options.env })
     return (async function* () {
       yield { type: 'system', subtype: 'init', session_id: 's' } as any
       if (!works(model)) {
@@ -42,7 +46,7 @@ function subscriptionSdk(works: (model: string) => boolean, answer: (model: stri
       yield { type: 'result', subtype: 'success', is_error: false, result: text, session_id: 's' } as any
     })()
   }
-  return { calls, queryFn }
+  return { calls, probes, queryFn }
 }
 
 // Signed in with Claude (claude auth login --claudeai): the login setting on, the CLI reports a
@@ -109,6 +113,11 @@ test('signed in with Claude, no API key: Labs calls use the model chat answers o
     assert.equal(await layer.visionShot('compose', 'write it', [], { tier: 'default' }), 'ok')
     assert.equal(await layer.visionShot('tag', 'tag it', [], { tier: 'cheap' }), 'ok')
     assert.deepEqual(sdk.calls.map((c) => c.model), ['claude-haiku-5-5', 'claude-haiku-5-5'])
+    // The per-model 403 did not mark the Claude login expired: a probe on Haiku answered.
+    await until(() => sdk.probes.length > 0)
+    assert.deepEqual(sdk.probes, ['claude-haiku-5-5'])
+    await new Promise((r) => setTimeout(r, 20))
+    assert.equal(credentials.health.failed('claudeLogin'), false)
   } finally {
     layer.dispose()
     resetLabModelFailures()

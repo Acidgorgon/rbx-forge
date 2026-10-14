@@ -265,6 +265,10 @@ export class SyncService {
     if (!this.active()) return off(this.settings().engine === 'forge' ? 'Forge Sync is not available in this build' : `Studio sync is set to "${this.settings().engine}"`)
     if (!this.maps.length) await this.reload()
     const placeId = Number(q.placeId) || 0
+    // Like Rojo's servePlaceIds: once the project lists its places, another published place (a test
+    // copy, an unrelated game) is not this project. Without this it fell back to default.project.json,
+    // wrote its Studio-only instances into the repo and held that place's rojo serve on its conflicts.
+    if (placeId && this.maps.some((m) => m.placeIds.length) && !this.maps.some((m) => m.placeIds.includes(placeId))) return off(`Place ${placeId} is not in any *.project.json servePlaceIds`)
     const map = this.deps.mapping!.placeFor(this.maps, placeId)
     if (!map) return off('No *.project.json maps this place')
     const place: SyncPlace = { placeId, ...(q.gameId ? { gameId: Number(q.gameId) } : {}), ...(q.place ? { name: String(q.place) } : {}) }

@@ -160,6 +160,12 @@ test('config hands out a session and the place roots, skipping Packages', async 
   const match = await service.handler.config({ placeId: 111 })
   assert.deepEqual(match.roots, [['ReplicatedStorage', 'Skills']])
   assert.deepEqual(match.skip, [['ReplicatedStorage', 'Packages']])
+  // A published place no project lists (a test copy, another game): not synced into this project.
+  const other = await service.handler.config({ placeId: 999 })
+  assert.equal(other.enabled, false)
+  assert.match(other.reason ?? '', /999/)
+  // An unpublished place (placeId 0) still maps to the default project.
+  assert.equal((await service.handler.config({ placeId: 0, place: 'Local' })).enabled, true)
 })
 
 test('config is off when the setting is not forge, or without an engine', async () => {

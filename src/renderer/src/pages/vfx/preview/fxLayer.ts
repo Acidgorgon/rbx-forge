@@ -209,6 +209,51 @@ interface StripView {
   mat: THREE.ShaderMaterial
 }
 
+// Material-ish shading for part proxies (roughness / metalness per Enum.Material family).
+const MATERIAL_LOOK: Record<string, { roughness: number; metalness: number }> = {
+  Plastic: { roughness: 0.6, metalness: 0 },
+  SmoothPlastic: { roughness: 0.35, metalness: 0 },
+  Glass: { roughness: 0.05, metalness: 0.1 },
+  Ice: { roughness: 0.15, metalness: 0.05 },
+  Metal: { roughness: 0.35, metalness: 0.85 },
+  DiamondPlate: { roughness: 0.4, metalness: 0.8 },
+  Foil: { roughness: 0.25, metalness: 0.9 },
+  CorrodedMetal: { roughness: 0.8, metalness: 0.6 },
+  Marble: { roughness: 0.3, metalness: 0 },
+  Wood: { roughness: 0.85, metalness: 0 },
+  WoodPlanks: { roughness: 0.85, metalness: 0 },
+  Concrete: { roughness: 0.95, metalness: 0 },
+  Slate: { roughness: 0.9, metalness: 0 },
+  Granite: { roughness: 0.9, metalness: 0 },
+  Brick: { roughness: 0.95, metalness: 0 },
+  Pebble: { roughness: 0.95, metalness: 0 },
+  Cobblestone: { roughness: 0.95, metalness: 0 },
+  Grass: { roughness: 1, metalness: 0 },
+  Sand: { roughness: 1, metalness: 0 },
+  Fabric: { roughness: 1, metalness: 0 }
+}
+
+// A unit wedge (Roblox WedgePart: full height at the back +Z, sloping to the bottom at the front -Z).
+function wedgeGeometry(): THREE.BufferGeometry {
+  const v = [
+    [-0.5, -0.5, -0.5], [0.5, -0.5, -0.5], [0.5, -0.5, 0.5], [-0.5, -0.5, 0.5],
+    [-0.5, 0.5, 0.5], [0.5, 0.5, 0.5]
+  ]
+  const faces = [
+    [0, 2, 1], [0, 3, 2], // bottom
+    [3, 4, 5], [3, 5, 2], // back
+    [0, 1, 5], [0, 5, 4], // slope
+    [0, 4, 3], // left
+    [1, 2, 5] // right
+  ]
+  const pos: number[] = []
+  for (const f of faces) for (const i of f) pos.push(...v[i])
+  const g = new THREE.BufferGeometry()
+  g.setAttribute('position', new THREE.Float32BufferAttribute(pos, 3))
+  g.computeVertexNormals()
+  return g
+}
+
 export class FxLayer {
   readonly group = new THREE.Group()
   private emitters: EmitterView[] = []
@@ -242,14 +287,16 @@ export class FxLayer {
     }
     for (const m of this.prepared.meshes) {
       const c = prop<Rgb>(m.node, 'Color')
-      const shape = prop<string>(m.node, 'Shape')
-      const material = prop<string>(m.node, 'Material')
-      // Unit geometry scaled by the (possibly tweened) size every frame. Roblox cylinders run along X.
-      const geo = shape === 'Ball' ? new THREE.SphereGeometry(0.5, 40, 24) : shape === 'Cylinder' ? new THREE.CylinderGeometry(0.5, 0.5, 1, 40).rotateZ(Math.PI / 2) : new THREE.BoxGeometry(1, 1, 1)
+      const material = m.material
+      // Unit geometry scaled by the (possibly tweened) size every frame. Roblox cylinders run along X;
+      // wedges slope down towards -Z (front) like WedgePart; meshes are ellipsoid proxies.
+      const geo = m.shape === 'ball' || m.shape === 'ellipsoid' ? new THREE.SphereGeometry(0.5, 40, 24) : m.shape === 'cylinder' ? new THREE.CylinderGeometry(0.5, 0.5, 1, 40).rotateZ(Math.PI / 2) : m.shape === 'wedge' ? wedgeGeometry() : new THREE.BoxGeometry(1, 1, 1)
       const glow = material === 'Neon' || material === 'ForceField'
+      const look = MATERIAL_LOOK[material] ?? MATERIAL_LOOK.Plastic
+      const opacity = (1 - prop<number>(m.node, 'Transparency')) * (m.shape === 'ellipsoid' ? 0.85 : 1)
       const mat = glow
-        ? blendMaterial(PART_VS, PART_FS, { color: { value: new THREE.Color(c[0], c[1], c[2]) }, opacity: { value: 1 - prop<number>(m.node, 'Transparency') }, rim: { value: material === 'ForceField' ? 1 : 0 } })
-        : new THREE.MeshStandardMaterial({ color: new THREE.Color(c[0], c[1], c[2]), transparent: true, opacity: 1 - prop<number>(m.node, 'Transparency'), depthWrite: false })
+        ? blendMaterial(PART_VS, PART_FS, { color: { value: new THREE.Color(c[0], c[1], c[2]) }, opacity: { value: opacity }, rim: { value: material === 'ForceField' ? 1 : 0 } })
+        : new THREE.MeshStandardMaterial({ color: new THREE.Color(c[0], c[1], c[2]), transparent: true, opacity: material === 'Glass' ? Math.min(opacity, 0.45) : opacity, depthWrite: opacity > 0.99, roughness: look.roughness, metalness: look.metalness, flatShading: m.shape === 'wedge', side: m.shape === 'wedge' ? THREE.DoubleSide : THREE.FrontSide })
       const mesh = new THREE.Mesh(geo, mat)
       mesh.renderOrder = glow ? 4 : 0
       this.meshes.push({ id: m.id, mesh, glow })

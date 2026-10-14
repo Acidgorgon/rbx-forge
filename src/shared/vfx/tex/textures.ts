@@ -30,7 +30,7 @@ export const TEX_SCHEME = 'forgetex://'
 export const TEX_ID_RE = /^[a-z0-9][a-z0-9-]{0,80}$/
 
 // What a texture is for (AI prompt presets and tags). Procedural types are a subset.
-export const TEXTURE_KINDS = ['glow', 'wisp', 'spark', 'smoke', 'ring', 'shockwave', 'crack', 'star', 'slash', 'flare', 'debris', 'other'] as const
+export const TEXTURE_KINDS = ['glow', 'wisp', 'spark', 'smoke', 'ring', 'shockwave', 'crack', 'star', 'slash', 'flare', 'debris', 'noise', 'trail', 'beam', 'other'] as const
 export type TextureKind = (typeof TEXTURE_KINDS)[number]
 
 export type TextureScope = 'user' | 'project'
@@ -45,6 +45,31 @@ export interface TextureUpload {
   operationId?: string
 }
 
+// Where an imported texture came from (bulk file import, a pasted asset id, or harvested from the
+// open place in Studio) and what image analysis found (shared/vfx/tex/analyze.ts).
+export interface TextureOrigin {
+  from: 'file' | 'asset' | 'studio'
+  // File name (no directory) for file imports.
+  file?: string
+  // Content hash of the decoded pixels (dedupe).
+  hash?: string
+  // Studio: where the id was used (instance paths, at most a few).
+  paths?: string[]
+  // Asset imports without a preview image (offline): the library shows a placeholder.
+  noPreview?: boolean
+  // A Decal id that could not be resolved to its Image id (may not render when set by a script).
+  decal?: boolean
+}
+
+export interface TextureAnalysisSummary {
+  // Alpha-weighted mean colour (hex) and its name (white, grey, red, orange, ...).
+  color: string
+  colorName: string
+  edge: 'soft' | 'hard'
+  // Share of the image with visible alpha (0..1).
+  coverage: number
+}
+
 export interface VfxTexture {
   id: string
   scope: TextureScope
@@ -52,7 +77,11 @@ export interface VfxTexture {
   kind: TextureKind
   description: string
   tags: string[]
-  source: 'procedural' | 'ai'
+  // imported: an image file brought in by the user (uploaded like the others); asset: an existing
+  // Roblox image asset id (no upload needed, roblox.uri is set from the start).
+  source: 'procedural' | 'ai' | 'imported' | 'asset'
+  origin?: TextureOrigin
+  analysis?: TextureAnalysisSummary
   // Procedural recipe (re-creatable exactly), or the AI prompt and model.
   procedural?: { type: ProceduralType; params: ProceduralParams; seed: number }
   prompt?: string
@@ -253,6 +282,9 @@ export const TEXTURE_PRESETS: TexturePreset[] = [
   { kind: 'slash', label: 'Slash arc', direction: 'A sword slash arc: a crescent blade trail, sharp bright leading edge, soft trailing edge that fades, thick in the middle and tapering to points at both ends.', procedural: 'slash', tint: 'white' },
   { kind: 'flare', label: 'Flare', direction: 'An anime-style impact flare: a burst of sharp radial spikes of varied length around a bright core.', procedural: 'star', tint: 'white' },
   { kind: 'debris', label: 'Debris chunk', direction: 'A single small rock debris chunk, angular, stylised, light grey with simple shading.', tint: 'grey' },
+  { kind: 'noise', label: 'Noise', direction: 'A seamless tileable noise texture: soft cloudy fractal blotches covering the whole frame edge to edge, no centred subject.', procedural: 'smoke', tint: 'grey' },
+  { kind: 'trail', label: 'Trail strip', direction: 'A horizontal trail texture strip: a bright streak running the full width, fading out towards the right end and towards the top and bottom edges.', tint: 'white' },
+  { kind: 'beam', label: 'Beam strip', direction: 'A horizontal tileable beam texture: an energy band running the full width that repeats seamlessly left to right, soft top and bottom edges.', tint: 'white' },
   { kind: 'other', label: 'Other', direction: '', tint: 'white' }
 ]
 
@@ -271,6 +303,9 @@ export function texturePrompt(kind: TextureKind, description: string, tint: Tint
 export function kindFromText(text: string): TextureKind {
   const t = text.toLowerCase()
   const rules: [TextureKind, RegExp][] = [
+    ['noise', /noise|perlin|voronoi|caustic|tileable|seamless/],
+    ['beam', /\bbeam|laser|\bray\b|\brays\b/],
+    ['trail', /\btrail|ribbon|swoosh/],
     ['shockwave', /shock ?wave|blast ring|impact ring/],
     ['ring', /\bring|circle|halo|portal/],
     ['slash', /slash|swipe|arc|crescent|blade/],
@@ -316,7 +351,8 @@ export function textureLine(t: VfxTexture): string {
   const fb = t.flipbook ? ` flipbook ${t.flipbook.layout}` : ''
   const up = t.roblox ? ` uploaded ${t.roblox.uri} (${t.roblox.moderation})` : ' local only'
   const rate = t.rating ? ` ${t.rating === 'up' ? 'liked' : 'disliked'}` : ''
-  return `${texRef(t.id)} [${t.scope} ${t.kind} ${t.source} ${t.tint}${fb}${rate}]${up}: ${t.name}${t.description ? ` - ${t.description.slice(0, 100)}` : ''}`
+  const look = t.analysis ? ` ${t.analysis.colorName} ${t.analysis.edge}` : ''
+  return `${texRef(t.id)} [${t.scope} ${t.kind} ${t.source} ${t.tint}${look}${fb}${rate}]${up}: ${t.name}${t.description ? ` - ${t.description.slice(0, 100)}` : ''}`
 }
 
 export const PROCEDURAL_GUIDE = `Custom textures: set Texture (or the kit's texture option) to "forgetex://<id>" for a library texture (vfx_texture_list), or ask for a free procedural one by shape with "forgetex://gen/<type>" (${PROCEDURAL_TYPES.map((t) => `${t}: ${PROCEDURAL_INFO[t].use}`).join('; ')}). Optional query params, e.g. "forgetex://gen/ring?thickness=0.05&seed=2", "forgetex://gen/smoke?frames=16" (a 4x4 flipbook: also set FlipbookLayout "Grid4x4" and FlipbookMode "OneShot"). Textures are white so Color tints them. Use built-in rbxasset textures when they already fit.`

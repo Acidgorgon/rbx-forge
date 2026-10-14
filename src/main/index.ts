@@ -569,7 +569,9 @@ const vfx = createVfxWiring({
   images: integrations.images,
   openCloud: integrations.openCloud,
   ...vfxElectron,
-  capture: studio.wrap.vfx(vfxElectron.capture)
+  capture: studio.wrap.vfx(vfxElectron.capture),
+  // Texture import "From Studio": Forge Sync's live tree and a read-only Forge Bridge job.
+  studioTextures: { liveTree: () => (project ? forgeSync.liveTree(project.activePlace) : null), bridge: studio.bridge }
 })
 // The user VFX library rides along in .forgepack export/import and device sync (one folder per entry).
 registerPackSection({ id: 'vfx', label: 'VFX library', dir: () => vfx.service.userLibraryDir })

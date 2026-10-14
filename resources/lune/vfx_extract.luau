@@ -110,6 +110,24 @@ local function extract(roots)
 				end
 			end
 		end
+		-- Instance attributes (EmitCount / EmitDelay / EmitDuration and friends): plain values only.
+		local okAttrs, attrs = pcall(function()
+			return inst:GetAttributes()
+		end)
+		if okAttrs and type(attrs) == "table" then
+			local plain = {}
+			local any = false
+			for k, v in attrs do
+				local t = typeof(v)
+				if t == "number" or t == "boolean" or t == "string" then
+					plain[k] = v
+					any = true
+				end
+			end
+			if any then
+				out.attrs = plain
+			end
+		end
 		if SCRIPTS[className] then
 			local src = read(inst, "Source")
 			if type(src) == "string" then

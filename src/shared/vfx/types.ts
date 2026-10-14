@@ -46,6 +46,9 @@ export interface VfxNode {
   source?: string
   // Made by a timeline script's fx:spawn (kit preset name); rebuilt each time the script runs.
   kit?: string
+  // Instance attributes (numbers, booleans, strings) from the imported model, e.g. the community
+  // EmitCount / EmitDelay / EmitDuration convention (analyze.ts cuesFromAttributes).
+  attrs?: Record<string, number | boolean | string>
 }
 
 // Roblox Enum.EasingStyle / Enum.EasingDirection item names (TweenInfo).
@@ -148,6 +151,9 @@ export interface VfxEntry {
   // Video references (kind 'media'): the analysed clip (shared/videoref).
   video?: VideoRef
   notes?: string
+  // Imported models: what the preview could not reproduce (scripts with logic it could not read,
+  // meshes drawn as proxies, ...).
+  importNotes?: string[]
   // Generated effects: the video reference pinned with "make it like this" (critic compares to it).
   refId?: string
   // "Restate first": the reading of the brief the user confirmed (compose prompt + critic judge against it).
@@ -233,6 +239,8 @@ export interface VfxRecipe {
 export interface VfxImportResult {
   added: VfxEntry[]
   skipped: { file: string; reason: string }[]
+  // Per imported file: what is not reproduced faithfully.
+  notes?: { file: string; notes: string[] }[]
 }
 
 export interface VfxLabStatus {

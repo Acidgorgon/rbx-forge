@@ -169,6 +169,97 @@ function readValue(el: XmlEl, className: string, propName: string): PropValue | 
   }
 }
 
+// ------------------------------------------------------------------ attributes
+
+function b64bytes(text: string): Uint8Array {
+  const clean = text.replace(/[^A-Za-z0-9+/]/g, '')
+  const map = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+  const out = new Uint8Array(Math.floor((clean.length * 3) / 4))
+  let o = 0
+  for (let i = 0; i + 1 < clean.length; i += 4) {
+    const a = map.indexOf(clean[i])
+    const b = map.indexOf(clean[i + 1])
+    const c = i + 2 < clean.length ? map.indexOf(clean[i + 2]) : -1
+    const d = i + 3 < clean.length ? map.indexOf(clean[i + 3]) : -1
+    out[o++] = (a << 2) | (b >> 4)
+    if (c >= 0 && o < out.length) out[o++] = ((b & 15) << 4) | (c >> 2)
+    if (d >= 0 && o < out.length) out[o++] = ((c & 3) << 6) | d
+  }
+  return out.subarray(0, o)
+}
+
+// Instance attributes as Roblox serialises them (AttributesSerialize, a BinaryString in .rbxmx):
+// u32 count, then per attribute a u32-length name, a type byte and the value. Numbers set from Luau
+// are Float64 (0x06); strings 0x02, booleans 0x03, Float32 0x05. Other types are skipped by size;
+// an unknown type ends the read (the attributes before it are kept). Little-endian throughout.
+// Format: rbx-dom docs/attributes.md.
+const ATTR_SIZES: Record<number, number> = { 0x04: 4, 0x09: 8, 0x0a: 16, 0x0e: 4, 0x0f: 12, 0x10: 8, 0x11: 12, 0x1b: 8, 0x1c: 16 }
+export function decodeAttributes(input: string | Uint8Array): Record<string, number | boolean | string> {
+  const bytes = typeof input === 'string' ? b64bytes(input) : input
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  const out: Record<string, number | boolean | string> = {}
+  let at = 0
+  const u32 = () => {
+    const v = view.getUint32(at, true)
+    at += 4
+    return v
+  }
+  const str = () => {
+    const n = u32()
+    if (at + n > bytes.length) throw new Error('truncated')
+    const v = new TextDecoder().decode(bytes.subarray(at, at + n))
+    at += n
+    return v
+  }
+  try {
+    if (bytes.length < 4) return out
+    const count = u32()
+    for (let i = 0; i < count && at < bytes.length; i++) {
+      const name = str()
+      const type = bytes[at++]
+      if (type === 0x02) out[name] = str()
+      else if (type === 0x03) out[name] = bytes[at++] !== 0
+      else if (type === 0x05) {
+        out[name] = Math.round(view.getFloat32(at, true) * 1e6) / 1e6
+        at += 4
+      } else if (type === 0x06) {
+        out[name] = view.getFloat64(at, true)
+        at += 8
+      } else if (ATTR_SIZES[type]) at += ATTR_SIZES[type]
+      else break
+    }
+  } catch {
+    // keep what was read
+  }
+  return out
+}
+
+export function encodeAttributes(attrs: Record<string, number | boolean | string>): string {
+  const parts: number[] = []
+  const u32 = (v: number) => parts.push(v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255)
+  const str = (s: string) => {
+    const b = new TextEncoder().encode(s)
+    u32(b.length)
+    parts.push(...b)
+  }
+  const entries = Object.entries(attrs)
+  u32(entries.length)
+  for (const [k, v] of entries) {
+    str(k)
+    if (typeof v === 'string') (parts.push(0x02), str(v))
+    else if (typeof v === 'boolean') parts.push(0x03, v ? 1 : 0)
+    else {
+      parts.push(0x06)
+      const f = new DataView(new ArrayBuffer(8))
+      f.setFloat64(0, v, true)
+      for (let i = 0; i < 8; i++) parts.push(f.getUint8(i))
+    }
+  }
+  let bin = ''
+  for (const b of parts) bin += String.fromCharCode(b)
+  return btoa(bin)
+}
+
 // Every Item of an .rbxmx as VfxNodes (all classes, all readable properties). Refs are node ids.
 export function readRbxmx(xml: string): VfxNode[] {
   const doc = parseXml(xml)
@@ -179,6 +270,7 @@ export function readRbxmx(xml: string): VfxNode[] {
     const props: Record<string, PropValue> = {}
     let name = className
     let source: string | undefined
+    let attrs: Record<string, number | boolean | string> | undefined
     const propsEl = child(item, 'Properties')
     for (const p of propsEl?.children ?? []) {
       let key = p.attrs.name ?? ''
@@ -191,6 +283,11 @@ export function readRbxmx(xml: string): VfxNode[] {
       }
       if (key === 'Source') {
         source = p.text
+        continue
+      }
+      if (key === 'AttributesSerialize') {
+        const a = decodeAttributes(p.text)
+        if (Object.keys(a).length) attrs = a
         continue
       }
       const v = readValue(p, className, key)
@@ -207,6 +304,7 @@ export function readRbxmx(xml: string): VfxNode[] {
     }
     const node: VfxNode = { id, className, name, props, children: item.children.filter((c) => c.name === 'Item').map(convert) }
     if (source !== undefined) node.source = source
+    if (attrs) node.attrs = attrs
     return node
   }
   return top.children.filter((c) => c.name === 'Item').map(convert)

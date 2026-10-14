@@ -11,6 +11,7 @@ import { FLIPBOOK_GRID } from '@shared/vfx/tex/image'
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
+import { TextureImport, TexturePolicyControl } from './TextureImport'
 import './textures.css'
 
 const TINTS: { id: TintMode; label: string; help: string }[] = [
@@ -66,7 +67,7 @@ function TexCard({ t, selected, onSelect }: { t: VfxTexture; selected: boolean; 
         {t.rating && <span className={`tag ${t.rating === 'up' ? 'ok' : 'err'}`}>{t.rating === 'up' ? '+1' : '−1'}</span>}
       </div>
       <div className="tex-badges">
-        <span className="faint mono">{t.source === 'ai' ? 'ai' : 'proc'}</span>
+        <span className="faint mono">{t.source === 'ai' ? 'ai' : t.source === 'imported' ? 'import' : t.source === 'asset' ? 'asset' : 'proc'}</span>
         {t.flipbook && <span className="faint mono">{t.flipbook.layout.replace('Grid', '')}</span>}
         <span className="faint mono">{t.scope}</span>
         <UploadBadge t={t} />
@@ -184,7 +185,7 @@ function TexDetail({ t, status, onClose }: { t: VfxTexture; status: TextureStatu
         </dd>
         <dt>made</dt>
         <dd className="mono">
-          {t.procedural ? `procedural ${t.procedural.type} seed ${t.procedural.seed} · ${Object.entries(t.procedural.params).map(([k, v]) => `${k} ${Math.round(v * 1000) / 1000}`).join(', ')}` : `${t.model ?? 'AI'}${t.costUsd ? ` · ${usd(t.costUsd)}` : ''}`}
+          {t.source === 'imported' ? `imported${t.origin?.file ? ` from ${t.origin.file}` : ''}` : t.source === 'asset' ? `existing Roblox asset${t.origin?.from === 'studio' ? ' (from Studio)' : ''}${t.origin?.paths?.length ? ` · used by ${t.origin.paths.join(', ')}` : ''}` : t.procedural ? `procedural ${t.procedural.type} seed ${t.procedural.seed} · ${Object.entries(t.procedural.params).map(([k, v]) => `${k} ${Math.round(v * 1000) / 1000}`).join(', ')}` : `${t.model ?? 'AI'}${t.costUsd ? ` · ${usd(t.costUsd)}` : ''}`}
         </dd>
         {t.description && (
           <>
@@ -428,6 +429,8 @@ export function TextureLab() {
 
   return (
     <div className="tex-lab">
+      <TexturePolicyControl status={status} onChange={() => void load()} />
+      <TextureImport status={status} onImported={(made) => (void load(), setSelected(made[0]?.id ?? null))} />
       <Generator status={status} onMade={(made) => (void load(), setSelected(made[0]?.id ?? null))} />
       <div className={`vfx-body${current ? ' has-detail' : ''}`}>
         <div className="vfx-lib">
@@ -449,7 +452,7 @@ export function TextureLab() {
           {!items.length && status && (
             <div className="empty">
               <Icon name="image" size={22} className="i" />
-              No custom textures yet. Shape one above (free), or describe one for the AI. Effects can also ask for a procedural texture by shape: forgetex://gen/ring.
+              No custom textures yet. Drop a folder of textures above (or paste asset ids, or read them from Studio), shape one (free), or describe one for the AI. Effects can also ask for a procedural texture by shape: forgetex://gen/ring.
             </div>
           )}
           <div className="tex-grid">

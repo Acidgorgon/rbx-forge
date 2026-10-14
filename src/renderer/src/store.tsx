@@ -257,6 +257,7 @@ type Action =
   | { type: 'chatMessage'; message: ChatMessage }
   | { type: 'busy'; sessionId: string; busy: boolean }
   | { type: 'openTab'; tab: Tab; preview?: boolean }
+  | { type: 'projectSwitched' }
   | { type: 'activate'; id: string }
   | { type: 'pin'; id: string }
   | { type: 'closeTab'; id: string }
@@ -302,6 +303,13 @@ function reducer(state: State, a: Action): State {
   switch (a.type) {
     case 'set':
       return { ...state, ...a.patch }
+    case 'projectSwitched': {
+      // File and conflict tabs hold repo-relative paths of the previous project: saving one would
+      // write into the new project. Close them with their buffers.
+      const tabs = state.tabs.filter((t) => t.kind !== 'file' && t.kind !== 'conflict')
+      const next = tabs.length ? tabs : [FORGE_TAB]
+      return withActive({ ...state, tabs: next, files: [] }, next.some((t) => t.id === state.activeTab) ? state.activeTab : next[0].id)
+    }
     case 'layout': {
       const layout = { ...state.layout, ...a.patch }
       saveLayout(layout)
@@ -531,6 +539,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       set: (patch) => dispatch({ type: 'set', patch }),
       setLayout: layout,
       async openProject() {
+        const unsaved = stateRef.current.files.filter((f) => f.current !== f.saved).length
+        if (unsaved && !window.confirm(`${unsaved} file${unsaved === 1 ? ' has' : 's have'} unsaved changes. Opening another project closes ${unsaved === 1 ? 'it' : 'them'} without saving. Continue?`)) return
         try {
           const project = await h.openProject()
           if (project) {
@@ -830,6 +840,12 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       h.on('services:status', (services) => set({ services })),
       h.on('log:line', (line) => dispatch({ type: 'log', line })),
       h.on('project:changed', (project) => {
+        const before = stateRef.current.project?.root ?? null
+        if (before && before !== (project?.root ?? null)) {
+          const unsaved = stateRef.current.files.filter((f) => f.current !== f.saved).map((f) => f.path)
+          dispatch({ type: 'projectSwitched' })
+          if (unsaved.length) actions.toast({ text: `Closed ${unsaved.length} unsaved file${unsaved.length === 1 ? '' : 's'} from the previous project`, detail: unsaved.join(', '), kind: 'err' })
+        }
         set({ project })
         if (project) void reloadTree()
         else set({ tree: [], scripts: [], places: [], activePlace: null })

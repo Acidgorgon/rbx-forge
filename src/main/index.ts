@@ -325,7 +325,10 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   // must not run against the previous project's last-seen state while sync and services start.
   await qol.service.onProjectOpen(full).catch(() => undefined)
 
-  opened.watch((change) => projectChanged(opened, change))
+  opened.watch(
+    (change) => projectChanged(opened, change),
+    (files) => emit('files:changed', files)
+  )
 
   // Forge Sync guard: a pull / branch switch first commits (or warns about) uncommitted Studio edits.
   git = forgeSync.guardGit(

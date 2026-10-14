@@ -25,9 +25,8 @@ import { renameEntry, trashEntry } from './services/fileOps.ts'
 import { Settings } from './services/settings.ts'
 import { StudioConflicts } from './services/studioConflicts.ts'
 import { Supervisor } from './services/supervisor.ts'
-import { pausingFs, RojoPause } from './services/rojoRestart.ts'
+import { RojoPause } from './services/rojoRestart.ts'
 import { entryTarget } from '../shared/fileOps.ts'
-import * as nodeFsPromises from 'node:fs/promises'
 import { Packages } from './services/packages.ts'
 import { BLINK_ENTRY, BlinkWatcher } from './services/blink.ts'
 import { createIntegrations } from './integrations.ts'
@@ -508,7 +507,7 @@ const forgeSync = createSync({
     const s = await studio.service.status()
     return s.plugin.dir ? { installed: s.plugin.installed, ...(s.plugin.version !== undefined ? { version: s.plugin.version } : {}) } : null
   },
-  engine: (root) => new SyncEngine({ root, fs: pausingFs(nodeFsPromises, rojoPause) }),
+  engine: (root) => new SyncEngine({ root }),
   mapping: { loadPlaces, placeFor },
   activePlace: () => project?.activePlace ?? null,
   onStudioTree: () => project?.studioChanged()

@@ -5,8 +5,11 @@
 //     its change processor when a watched folder vanishes mid-event (canonicalize NotFound) and can
 //     stay up half-dead, so the supervisor kills and restarts it.
 //   - gateAction: what the Forge Sync gate means for one rojo serve process.
-//   - RojoPause: stops rojo around Forge's own folder deletes / renames (the trigger of that panic)
-//     and starts it again once the file system has settled. Overlapping operations share one pause.
+//   - RojoPause: stops rojo around Forge's own user-initiated folder deletes / renames (Explorer,
+//     feature rename; the trigger of that panic) and starts it again once the file system has
+//     settled. Overlapping operations share one pause. Studio-driven deletes written by Forge Sync are
+//     deliberately not paused (they are frequent and a stop disconnects Studio's Rojo plugin); a rare
+//     crash there is covered by the auto-restart.
 import { lstat } from 'node:fs/promises'
 
 export const ROJO_BACKOFF_MS = [500, 1000, 2000, 5000]
@@ -138,16 +141,5 @@ export class RojoPause {
         await this.deps.resume().catch((error) => this.deps.log?.(`rojo resume: ${error}`))
       })()
     }, this.deps.settleMs ?? 400)
-  }
-}
-
-// A SyncFs-shaped wrapper (sync engine): directory removals and directory renames run under the pause.
-export function pausingFs<F extends { rename: Function; rmdir: Function; rm: Function; lstat: Function }>(fs: F, pause: RojoPause): F {
-  const isDir = async (path: unknown) => !!(await (fs.lstat as (p: unknown) => Promise<{ isDirectory(): boolean }>)(path).catch(() => null))?.isDirectory()
-  return {
-    ...fs,
-    rename: async (from: unknown, to: unknown) => pause.run(() => fs.rename(from, to), 'folder rename', await isDir(from)),
-    rmdir: (path: unknown, ...rest: unknown[]) => pause.run(() => fs.rmdir(path, ...rest), 'folder delete'),
-    rm: async (path: unknown, ...rest: unknown[]) => pause.run(() => fs.rm(path, ...rest), 'folder delete', await isDir(path))
   }
 }

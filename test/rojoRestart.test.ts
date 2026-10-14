@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
-import * as fsp from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { after, test } from 'node:test'
 import type { ServiceStatus } from '../src/shared/types.ts'
-import { gateAction, isRojoPanic, pausingFs, RestartPolicy, ROJO_BACKOFF_MS, RojoPause, secondsText } from '../src/main/services/rojoRestart.ts'
+import { gateAction, isRojoPanic, RestartPolicy, ROJO_BACKOFF_MS, RojoPause, secondsText } from '../src/main/services/rojoRestart.ts'
 import { gateHolds, Supervisor } from '../src/main/services/supervisor.ts'
 import { serveNotice, serveView } from '../src/shared/rojoView.ts'
 import { makeProject, write } from './fixture.ts'
@@ -198,24 +197,6 @@ test('RojoPause leaves a stopped rojo alone, skips non-folders, and resumes even
   }), /boom/)
   await waitFor(() => calls.includes('resume'))
   assert.deepEqual(calls, ['file', 'pause', 'folder', 'resume'])
-})
-
-test('pausingFs pauses for directory renames and removals only', async () => {
-  const dir = mkdtempSync(join(tmpdir(), 'rojo-fs-'))
-  temps.push(dir)
-  const reasons: string[] = []
-  const pause = new RojoPause({ pause: async (reason) => (reasons.push(reason), false), resume: async () => undefined, settleMs: 1 })
-  const fs = pausingFs(fsp, pause)
-  writeFileSync(join(dir, 'a.luau'), 'x')
-  await fs.rename(join(dir, 'a.luau'), join(dir, 'b.luau'))
-  assert.deepEqual(reasons, [])
-  mkdirSync(join(dir, 'Old'))
-  await fs.rename(join(dir, 'Old'), join(dir, 'New'))
-  await sleep(20) // past the settle time: the next op pauses again
-  await fs.rmdir(join(dir, 'New'))
-  assert.deepEqual(reasons, ['folder rename', 'folder delete'])
-  assert.ok(existsSync(join(dir, 'b.luau')))
-  assert.ok(!existsSync(join(dir, 'New')))
 })
 
 // ---- Supervisor: a rojo that panics is restarted ----

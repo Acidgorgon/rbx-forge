@@ -63,7 +63,16 @@ jobs:
           cache: npm
       - run: npm ci
       - run: npm run typecheck
-      - run: npm test
+      - name: Test
+        shell: bash
+        # Failing tests also go into one annotation, readable from the run page and the API.
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt || {
+            msg=$(grep -E -A14 '^not ok|^ +not ok' test-output.txt | head -300 | sed -e 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Failing tests::$msg"
+            exit 1
+          }
       - run: npm run build
 
   # Decides the version and tag. Tags and plain manual runs use package.json's version unchanged; a
@@ -150,7 +159,16 @@ jobs:
           node-version: 22
           cache: npm
       - run: npm ci
-      - run: npm test
+      - name: Test
+        shell: bash
+        # Failing tests also go into one annotation, readable from the run page and the API.
+        run: |
+          set -o pipefail
+          npm test 2>&1 | tee test-output.txt || {
+            msg=$(grep -E -A14 '^not ok|^ +not ok' test-output.txt | head -300 | sed -e 's/%/%25/g' | sed ':a;N;$!ba;s/\n/%0A/g')
+            echo "::error title=Failing tests::$msg"
+            exit 1
+          }
       - run: npm run typecheck
       - name: Fetch the Agent SDK CLI for ${{ matrix.platform }}-${{ matrix.arch }}
         run: node build/sdk-binaries.mjs --platform ${{ matrix.platform }} --arch ${{ matrix.arch }}

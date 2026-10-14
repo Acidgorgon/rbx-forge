@@ -283,7 +283,7 @@ export function vfxMock(emit: Emit): VfxApi {
       emit('vfx:progress', { entryId: 'pending', iteration: 0, phase: 'create' })
       await delay(600)
       const ex = /purple|gojo/i.test(request) ? 'hollow-purple' : /slash|sword/i.test(request) ? 'charge-slash' : 'ground-slam'
-      const e = add({ ...exampleEntry(ex), id: `composed-${(seq++).toString(36)}`, origin: request, description: request, rating: undefined })
+      const e = add({ ...exampleEntry(ex), id: `composed-${(seq++).toString(36)}`, origin: request, description: request, rating: undefined, ...(opts?.restatement ? { restatement: opts.restatement } : {}) })
       if (e.effect) e.effect = { ...e.effect, script: findExample(ex)!.script }
       changed()
       if (opts?.refine !== false) void refine(e, opts?.maxIterations ?? 2)

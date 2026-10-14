@@ -3,6 +3,7 @@
 import type { PerfWarning } from './vfx/analyze.ts'
 import type { VfxEffect, VfxEntry, VfxImportResult, VfxLabStatus, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from './vfx/types.ts'
 import type { VfxSpec } from './vfx/spec.ts'
+import type { Restatement } from './restate/types.ts'
 
 export type * from './vfx/types.ts'
 export type { PerfWarning, VfxSpec }
@@ -38,7 +39,7 @@ export interface VfxApi {
   // entry without id), compose a scripted multi-stage effect from a request, built-in examples.
   vfxRunScript(script: string, opts?: { id?: string; save?: boolean; prompt?: string }): Promise<VfxScriptResult>
   // reference: a video reference id ("make it like this"; see RefApi).
-  vfxCompose(request: string, opts?: VfxRefineOptions & { refine?: boolean; reference?: string }): Promise<VfxScriptResult>
+  vfxCompose(request: string, opts?: VfxRefineOptions & { refine?: boolean; reference?: string; restatement?: Restatement }): Promise<VfxScriptResult>
   vfxExamples(): Promise<{ key: string; name: string; description: string; tags: string[] }[]>
   vfxAddExample(key: string): Promise<VfxEntry>
   vfxTestInStudio(id: string): Promise<{ module: string; rojo: 'running' | 'started' | 'unavailable'; command: string; instancePath: string }>

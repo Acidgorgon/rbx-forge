@@ -3,6 +3,7 @@
 
 import type { TranscriptMessage } from './reflection.ts'
 import type { OneShot } from './service.ts'
+import type { MemoryInput } from './types.ts'
 
 export interface MemoryHooks {
   // Appended after the project rules block (after the stable, cacheable prefix).
@@ -10,6 +11,8 @@ export interface MemoryHooks {
   onChatIdle(sessionId: string, messages: () => TranscriptMessage[] | null): void
   onChatBusy(sessionId: string): void
   setModel(oneShot: OneShot | null): void
+  // Saves a memory note (MemoryService.remember); used by "Restate first" for goal corrections.
+  remember?(input: MemoryInput, source: 'agent' | 'reflection' | 'style' | 'user'): Promise<unknown>
 }
 
 // Composes the project-rules loader with the memory block: base prompt + rules + memory.

@@ -133,10 +133,11 @@ export function abilityMock(emit: Emit): AbilityApi {
       changed()
       return e
     },
-    async abilityCompose(request) {
+    async abilityCompose(request, opts) {
       await delay(700)
       const r = await compose(request)
       const entry = put(r.ability, { origin: request })
+      if (opts?.restatement) entry.restatement = opts.restatement
       changed()
       return { entry, vfx: r.vfx ? { id: r.vfx.id, name: r.vfx.name, source: 'library' as const } : null, animation: { id: r.clip.id, name: r.clip.name, source: 'placeholder' as const }, timing: 'draft' as const, notes: ['browser preview: no model, timings from the draft rules'] }
     },

@@ -6,6 +6,7 @@ import type { AnimMarker } from './types.ts'
 import type { R6Joint } from './r6.ts'
 import type { VideoRef } from '../videoref/types.ts'
 import type { PrincipleScore } from '../principles/types.ts'
+import type { Restatement } from '../restate/types.ts'
 
 export type { R6Joint }
 
@@ -118,6 +119,8 @@ export interface AnimEntry {
   video?: VideoRef
   // Generated clips: the video reference pinned with "make it like this" (critic compares to it).
   refId?: string
+  // "Restate first": the reading of the brief the user confirmed (compose prompt + critic judge against it).
+  restatement?: Restatement
 }
 
 // Timing and shape numbers of one clip (style.ts measureClip).

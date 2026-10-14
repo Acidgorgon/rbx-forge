@@ -39,6 +39,8 @@ export type * from './sync/api.ts'
 export type * from './sync/types.ts'
 import type { GatingApi, GatingEvents } from './gating/types.ts'
 export type * from './gating/types.ts'
+import type { RestateApi, RestateCard } from './restateTypes.ts'
+export type * from './restateTypes.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -207,7 +209,9 @@ export interface ChatMessage {
   // Group chats: the model that wrote it (host or guest). Unset on single-model chats.
   speaker?: Speaker
   // Group chats: 'plan' = the host's roundtable synthesis, 'checklist' = a plan turned into a task list.
-  card?: 'plan' | 'checklist'
+  // 'restate' = "Restate first": Forge's reading of a big request, waiting for a yes or an edit.
+  card?: 'plan' | 'checklist' | 'restate'
+  restate?: RestateCard
   // Attached (user) or produced (assistant/tool) images, as store references.
   images?: ChatImage[]
 }
@@ -490,7 +494,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

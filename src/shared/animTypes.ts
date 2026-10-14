@@ -3,6 +3,7 @@
 import type { AnimClipRef } from './anim/types.ts'
 import type { AnimCheckReport, AnimClip, AnimEntry, AnimExportResult, AnimImportResult, AnimLabStatus, AnimRefineOptions, AnimRefineProgress, AnimScope, AnimScriptResult, AnimStyle, AnimUploadResult, RigType } from './anim/model.ts'
 import type { LabModels } from './labModels.ts'
+import type { Restatement } from './restate/types.ts'
 
 export type * from './anim/model.ts'
 export type { LabModels, LabTier } from './labModels.ts'
@@ -50,7 +51,7 @@ export interface AnimApi {
   animCoverage(): Promise<AnimCoverage>
   // rig: R15 or R6 (default: the project's rig).
   // reference: a video reference id ("make it like this"; see RefApi).
-  animCompose(request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType; reference?: string }): Promise<AnimScriptResult>
+  animCompose(request: string, opts?: AnimRefineOptions & { refine?: boolean; scope?: AnimScope; rig?: RigType; reference?: string; restatement?: Restatement }): Promise<AnimScriptResult>
   animRunScript(script: string, opts?: { id?: string; save?: boolean; prompt?: string; rig?: RigType }): Promise<AnimScriptResult>
   // The rig new clips use (project setting, .forge/anim/settings.json; app default without a project).
   animGetRig(): Promise<RigType>

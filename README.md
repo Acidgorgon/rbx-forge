@@ -89,6 +89,17 @@ The assistant panel is a chat with project tools: overview, list/read/edit/write
 - **Keys.** Settings has a card per provider. A pasted key is encrypted with the OS keychain (Electron safeStorage) and never sent to the window. `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `OPENROUTER_API_KEY`, `GEMINI_API_KEY` and `OLLAMA_API_KEY` are used when nothing is stored. Model lists come from each provider's `GET /models`, and you can type any model id.
 - **Claude Code login.** An Anthropic API key is Anthropic's documented way to authenticate apps built on the Agent SDK, and it is the default. *Use my Claude Code login (personal use only)* in Settings lets Forge fall back to the Claude Code login on this machine (or `CLAUDE_CODE_OAUTH_TOKEN`) when no key is set. That is for your own personal use and draws from your Claude Pro/Max plan limits. It is off by default.
 
+### Restate first
+
+![The assistant restates a big request as goal, problem and assumptions, then waits](docs/screenshots/100-restate-chat-card-dark.png)
+
+Before a big task, Forge says back what it thinks you want and waits. The card has three parts: the **goal** (one or two lines), the **problem** it solves, and up to three **assumptions**. *Yes, go* starts the work. *Edit* turns the card into fields you can fix, and *Send back* starts the work with your version. The agent gets the reading you approved together with your message, and the card stays in the chat history.
+
+- **When.** A quick check in code decides, with no model call. It looks at length, how many actions and files the request names, listed steps, open-ended words ("rework", "make it better") and the chat's effort level. Short questions and small fixes skip the card. *Settings → Chat → Restate goals before big tasks* can be *Always*, *Big tasks* (the default) or *Never*. Type `/restate <request>` to get the card for any one message.
+- **Labs.** The VFX Lab (sequences), Animation Lab and Ability Composer show the same card for a brief before they compose: "What I think you want", "The problem" and "Assumptions". The confirmed version goes into the compose prompt and is saved with the entry (shown under *confirmed brief* in the info tab), and the critic scores against it later. It has its own setting under *Settings → Labs*. A one-word brief like "fireball" skips the card.
+- **Learning.** A plain yes or a small wording fix saves nothing extra. If an edit changes the meaning, Forge keeps the correction and writes one short memory note (`restate-corrections-chat` or `restate-corrections-labs`) through the memory system. Later restatements then match the way you describe goals.
+- **Cost.** Each restatement is one call on the Labs *cheap* tier. If that call fails, the request just runs as usual.
+
 ### Group chats with other models
 
 ![Group chat: Claude hosts, GPT and Gemini advise, and the host writes a plan](docs/screenshots/42-dark-group-room.png)

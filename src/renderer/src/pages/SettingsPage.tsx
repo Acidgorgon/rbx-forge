@@ -12,6 +12,7 @@ import { DefaultEffortSetting } from '../assistant/EffortPicker'
 import { UpdatesSection } from '../updates/UpdatesSection'
 import { ForgeSyncSettings } from './ForgeSyncSettings'
 import { LabsSettings } from './LabsSettings'
+import { RestateSettingRow } from './RestateSettings'
 
 const BLURB: Record<ProviderId, string> = {
   anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
@@ -27,6 +28,7 @@ const ENV_NAME: Partial<Record<ProviderId, string>> = { anthropic: 'ANTHROPIC_AP
 const SECTIONS = [
   ['appearance', 'Appearance'],
   ['model', 'Default model'],
+  ['chat', 'Chat'],
   ['providers', 'Providers'],
   ['budgets', 'Budgets'],
   ['labs', 'Labs'],
@@ -331,6 +333,11 @@ export function SettingsPage() {
           <DefaultEffortSetting />
         </section>
 
+        <section className="set-sec" id="set-chat">
+          <h2>Chat</h2>
+          <RestateSettingRow scope="chat" />
+        </section>
+
         <section className="set-sec" id="set-providers">
           <h2>Providers</h2>
           <p className="note">
@@ -355,6 +362,7 @@ export function SettingsPage() {
         <section className="set-sec" id="set-labs">
           <h2>Labs</h2>
           <LabsSettings />
+          <RestateSettingRow scope="labs" />
         </section>
 
         <section className="set-sec" id="set-places">

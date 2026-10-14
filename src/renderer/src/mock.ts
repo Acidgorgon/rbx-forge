@@ -40,6 +40,7 @@ import { gatingMock } from './mockGating'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
+import { restateMock } from './mockRestate'
 import { BLINK_OUTPUTS, eventsBlink, generatedClient, generatedServer, mockBlinkModel } from './mockBlink'
 
 type Handler = (payload: never) => void
@@ -565,6 +566,8 @@ const groupDeps = {
 seedGroupChat(groupDeps)
 const group = groupMock(groupDeps)
 const extras = chatExtrasMock({ emit, chats, messages: chatMessages, addGuest: (id, c) => group.api.addGuest(id, c) })
+// Restate first (mockRestate.ts): big requests get a restatement card before the reply.
+const restate = restateMock({ emit, messages: chatMessages, reply: (id, text) => streamReply(id, text), log: (text) => log('agent', text, 'info') })
 
 function chatReply(text: string): { tools: [string, string][]; answer: string } {
   const t = text.toLowerCase()
@@ -843,10 +846,11 @@ const api: HarnessApi = {
     const c = chats.find((x) => x.id === sessionId)
     if (c) extras.route(c, text)
     if (c && c.title === 'New chat') c.title = text.length > 42 ? text.slice(0, 40) + '…' : text
-    void group.handleSend(sessionId, text).then((handled) => (handled ? undefined : streamReply(sessionId, text)))
+    void (c?.guests?.length ? Promise.resolve(false) : restate.intercept(sessionId, text)).then((carded) => (carded ? undefined : group.handleSend(sessionId, text).then((handled) => (handled ? undefined : streamReply(sessionId, text)))))
   },
   ...group.api,
   ...extras.api,
+  ...restate.api,
   async stopChat(sessionId) {
     running.delete(sessionId)
     emit('chat:busy', { sessionId, busy: false })

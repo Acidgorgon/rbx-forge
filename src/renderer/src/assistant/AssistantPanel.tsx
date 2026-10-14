@@ -16,6 +16,7 @@ import { addImageFile, MAX_IMAGES_PER_MESSAGE, onAttachRequest } from './attachm
 import { AttachGlyph, ImageThumb, MessageImages } from './ChatImages'
 import { EffortPicker, RouteSummary, useVision } from './EffortPicker'
 import { acceptedImageType } from './imageScale'
+import { RestateMessage } from './RestateMessage'
 import './chatextras.css'
 
 type Item = { kind: 'msg'; m: ChatMessage } | { kind: 'tools'; ms: ChatMessage[]; id: string }
@@ -92,6 +93,7 @@ export function Message({ m }: { m: ChatMessage }) {
   if (m.role === 'system') return <div className="m-system selectable">{m.text}</div>
   if (m.card === 'plan') return <PlanCard m={m} />
   if (m.card === 'checklist') return <ChecklistCard m={m} />
+  if (m.card === 'restate' && m.restate) return <RestateMessage m={m} />
   const fromAgent = m.agentId && m.agentId !== 'main'
   const host = !!chat && !!m.speaker && m.speaker.provider === chat.provider && m.speaker.model === chat.model
   return (
@@ -180,6 +182,7 @@ const MODES: { id: OrchestrateMode; label: string; hint: string }[] = [
 const SLASH: { cmd: string; desc: string }[] = [
   { cmd: '/new', desc: 'new thread' },
   { cmd: '/team', desc: 'run the request as a team (orchestrator)' },
+  { cmd: '/restate', desc: 'restate the goal first, then wait for a yes' },
   { cmd: '/roundtable', desc: 'group chat: models take turns on a topic' },
   { cmd: '/agents', desc: 'play-test in Studio with test agents' },
   { cmd: '/tests', desc: 'run the Lune tests' },

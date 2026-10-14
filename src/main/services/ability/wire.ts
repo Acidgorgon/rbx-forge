@@ -8,6 +8,7 @@ import type { Ability, AbilityScope } from '../../../shared/ability/types.ts'
 import type { AnimClipRef } from '../../../shared/anim/types.ts'
 import { AbilityService, type AbilityCaptureRequest, type LabTier, type MemoryLike, type ModelFn, type RegistryTool, type VfxLabLike } from './service.ts'
 import { abilityTools, type AbilityTool } from './tools.ts'
+import type { Restatement } from '../../../shared/restate/types.ts'
 
 export interface AbilityWireDeps {
   // Principle priorities (services/principles): weights for the critics, ratings feed them.
@@ -58,7 +59,8 @@ export function createAbilityWiring(deps: AbilityWireDeps): AbilityWiring {
     abilitySave: (ability: Ability, opts?: { id?: string; origin?: string; scope?: AbilityScope }) => service.save(ability, { id: opts?.id ? String(opts.id) : undefined, origin: opts?.origin ? String(opts.origin) : undefined, scope: scope(opts?.scope) }),
     abilityDelete: (id: string) => service.remove(String(id ?? '')),
     abilityRate: (id: string, r: unknown) => service.rate(String(id ?? ''), r === 'up' || r === 'down' ? r : null),
-    abilityCompose: (request: string) => service.compose(String(request ?? '')),
+    // restatement is normalised by the service (Restate first).
+    abilityCompose: (request: string, opts?: { restatement?: Restatement }) => service.compose(String(request ?? ''), { restatement: opts?.restatement }),
     abilityCritique: (id: string, opts?: { vision?: boolean; apply?: boolean }) => service.critique(String(id ?? ''), { vision: opts?.vision, apply: !!opts?.apply }),
     abilityExport: (id: string) => service.export(String(id ?? '')),
     abilityExamples: async () => service.examples(),

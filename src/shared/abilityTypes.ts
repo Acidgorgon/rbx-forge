@@ -2,6 +2,7 @@
 // Animation Lab clips (listAnimClips / getAnimPose) are the Animation Lab's API; the composer only
 // reads them.
 
+import type { Restatement } from './restate/types.ts'
 import type { Ability, AbilityComposeResult, AbilityCritique, AbilityEntry, AbilityExportResult, AbilityScope, AbilityStatus } from './ability/types.ts'
 
 export type * from './ability/types.ts'
@@ -15,7 +16,8 @@ export interface AbilityApi {
   abilityDelete(id: string): Promise<boolean>
   // Thumbs up saves the move as an example (memory skill ability-example-<Name>); down as "avoid".
   abilityRate(id: string, rating: 'up' | 'down' | null): Promise<AbilityEntry>
-  abilityCompose(request: string): Promise<AbilityComposeResult>
+  // restatement: the reading of the brief the user confirmed ("Restate first").
+  abilityCompose(request: string, opts?: { restatement?: Restatement }): Promise<AbilityComposeResult>
   // Timing rules (+ vision critic on frames at the key beats when available); apply: fix the timings.
   abilityCritique(id: string, opts?: { vision?: boolean; apply?: boolean }): Promise<{ entry: AbilityEntry; critique: AbilityCritique; applied: string[] }>
   abilityExport(id: string): Promise<AbilityExportResult>

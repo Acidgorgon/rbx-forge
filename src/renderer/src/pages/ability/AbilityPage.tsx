@@ -18,6 +18,8 @@ import '../vfx/vfx.css'
 import './ability.css'
 import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
+import { useRestateGate } from '../../components/useRestateGate'
+import { RestatedBrief } from '../../components/RestateCard'
 
 const SUGGESTIONS = ['charged palm blast that knocks me back', 'dash punch', 'ground slam shockwave', 'rising uppercut with sparks', 'quick sword slash']
 const EXAMPLES = [{ key: 'hollow-purple', label: 'Hollow Purple' }]
@@ -364,6 +366,14 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
           <dl className="vfx-meta">
             <dt>made from</dt>
             <dd className="mono">{entry.origin}</dd>
+            {entry.restatement && (
+              <>
+                <dt>confirmed brief</dt>
+                <dd>
+                  <RestatedBrief r={entry.restatement} />
+                </dd>
+              </>
+            )}
             <dt>tags</dt>
             <dd className="mono">{entry.tags.join(', ') || '—'}</dd>
             <dt>animation</dt>
@@ -430,12 +440,16 @@ export function AbilityPage() {
   }, [entries, query])
   const current = entries.find((e) => e.id === selected) ?? null
 
+  const restate = useRestateGate('ability')
   const make = async () => {
     const what = prompt.trim()
     if (!what || making) return
     setMaking(true)
     try {
-      const r = await h.abilityCompose(what)
+      // Restate first: the confirmed reading of the brief goes into compose (null = cancelled).
+      const g = await restate.gate(what)
+      if (!g) return
+      const r = await h.abilityCompose(what, g.restatement ? { restatement: g.restatement } : undefined)
       await Promise.all([load(), loadVfx()])
       setSelected(r.entry.id)
       setPrompt('')
@@ -512,9 +526,10 @@ export function AbilityPage() {
             <input className="input grow" value={prompt} onChange={(e) => setPrompt(e.target.value)} placeholder="charged palm blast that knocks me back" aria-label="Move to make" spellCheck />
             <span className="vfx-make-lead mono">move</span>
             <button className="btn primary" disabled={!prompt.trim() || making}>
-              {making ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
+              {making && !restate.waiting ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
             </button>
           </form>
+          {restate.node}
           <div className="vfx-make-opts">
             <span className="vfx-sugg">
               {SUGGESTIONS.map((s) => (

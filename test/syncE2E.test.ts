@@ -24,6 +24,9 @@ async function setup() {
   const root = makeFsfProject()
   roots.push(root)
   execFileSync('git', ['init', '-q'], { cwd: root })
+  // CI runners have no global git identity; the service's commit needs one.
+  execFileSync('git', ['config', 'user.email', 't@t'], { cwd: root })
+  execFileSync('git', ['config', 'user.name', 't'], { cwd: root })
   execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'add', '-A'], { cwd: root })
   execFileSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', 'commit', '-qm', 'init'], { cwd: root })
   const gates: [string, GateState][] = []

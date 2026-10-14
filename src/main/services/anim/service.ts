@@ -45,6 +45,8 @@ import { principlePlan } from '../../../shared/principles/select.ts'
 import type { PrincipleHooks, PrincipleWeights } from '../../../shared/principles/types.ts'
 import { criticBrief, restatementBlock } from '../../../shared/restate/prompt.ts'
 import { normalizeRestatement, type Restatement } from '../../../shared/restate/types.ts'
+import { adjustRemixOps, applyRemix, describeRemixOp, dominantSide, heuristicRemixPlan, libraryScore, normalizeRemixPlan, parseRemixPlan, remixCandidates, remixPlanPrompt, REMIX_SYSTEM, type RemixCandidate, type RemixOp, type RemixOrigin } from '../../../shared/anim/remix.ts'
+import type { AnimRemixMode, AnimRemixOptions } from '../../../shared/animTypes.ts'
 
 export interface ImagePayload {
   mime: string
@@ -438,19 +440,7 @@ export class AnimService {
     const words = query.toLowerCase().split(/[^a-z0-9-]+/).filter((w) => w.length > 1)
     if (!words.length && !tags.size) return all.slice(0, opts.limit ?? 50)
     const scored = all
-      .map((e) => {
-        let s = 0
-        for (const t of e.tags) if (tags.has(t)) s += 6
-        const name = e.name.toLowerCase()
-        for (const w of words) {
-          if (e.tags.includes(w)) s += 3
-          if (name.includes(w)) s += 3
-          if (e.description.toLowerCase().includes(w)) s += 1
-          if (e.notes.toLowerCase().includes(w)) s += 1
-        }
-        if (e.rating === 'up' || e.quality === 'good' || e.quality === 'reference') s *= 1.3
-        return { e, s }
-      })
+      .map((e) => ({ e, s: libraryScore(e, words, tags) }))
       .filter((x) => x.s > 0)
       .sort((a, b) => b.s - a.s || b.e.updatedAt - a.e.updatedAt)
     return scored.slice(0, opts.limit ?? 50).map((x) => x.e)
@@ -887,7 +877,7 @@ export class AnimService {
   }
 
   // Saves a clip as a generated entry (new, or replacing an entry's clip) and writes it into the project.
-  async saveClip(clip: AnimClip, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; scope?: AnimScope; refId?: string; restatement?: Restatement } = {}): Promise<AnimEntry> {
+  async saveClip(clip: AnimClip, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; scope?: AnimScope; refId?: string; restatement?: Restatement; remix?: RemixOrigin } = {}): Promise<AnimEntry> {
     const prev = opts.id ? await this.find(opts.id) : null
     const store = prev?.store ?? this.store(opts.scope ?? 'user')
     const now = this.now()
@@ -908,7 +898,8 @@ export class AnimService {
       thumbs: prev?.entry.thumbs ?? [],
       stats,
       ...(opts.refId ? { refId: opts.refId } : {}),
-      ...(opts.restatement ? { restatement: opts.restatement } : {})
+      ...(opts.restatement ? { restatement: opts.restatement } : {}),
+      ...(opts.remix ? { remix: opts.remix } : {})
     }
     let saved = await store.save(entry)
     if (saved.written) saved = await this.writeProjectFiles(saved).catch(() => saved)
@@ -1030,6 +1021,139 @@ export class AnimService {
     return out
   }
 
+  // ------------------------------------------------------------ remix (start from the closest clip)
+
+  // "From scratch" / "Remix closest" for the Animate row, with the move set in settings.json.
+  // auto: remix when the library has a usable clip of the request's move type.
+  async remixMode(): Promise<AnimRemixMode> {
+    const v = ((await this.readSettings()).remix as { mode?: unknown } | undefined)?.mode
+    return v === 'remix' || v === 'scratch' ? v : 'auto'
+  }
+
+  async setRemixMode(mode: AnimRemixMode): Promise<AnimRemixMode> {
+    const m: AnimRemixMode = mode === 'remix' || mode === 'scratch' ? mode : 'auto'
+    const f = this.settingsFile()
+    const prev = await this.readSettings()
+    await mkdir(join(f, '..'), { recursive: true })
+    await writeFile(f, JSON.stringify({ ...prev, remix: { ...((prev.remix as object) ?? {}), mode: m } }, null, 2) + '\n', 'utf8')
+    return m
+  }
+
+  // Library clips to start from for a request, best first (reference scoring; no avoid, no video refs).
+  async remixCandidates(prompt: string, opts: { rig?: RigType; limit?: number; exclude?: string } = {}): Promise<{ candidates: RemixCandidate[]; tags: string[] }> {
+    const set = await this.moveSet()
+    const rig = await this.rigFor(opts.rig)
+    return { candidates: remixCandidates(await this.list(), String(prompt ?? ''), set, { rig, limit: opts.limit ?? 8, exclude: opts.exclude }), tags: setPromptTags(String(prompt ?? ''), set) }
+  }
+
+  private async clipLookup(): Promise<(id: string) => AnimClip | null> {
+    const all = await this.list()
+    return (id) => {
+      const e = all.find((x) => x.id === id)
+      return e && isClip(e) ? e.clip : null
+    }
+  }
+
+  // Plans the edit ops for a request on a base clip: the default tier (validated JSON plan), else the
+  // keyword heuristic. With current ops and a critique it re-plans the params (refinement).
+  async planRemix(request: string, base: AnimEntry, others: AnimEntry[], ctx: { current?: RemixOp[]; critique?: AnimCritique | null } = {}): Promise<{ ops: RemixOp[]; source: 'model' | 'heuristic'; rejected: { op: unknown; reason: string }[] }> {
+    const writer = this.model('default')
+    const ids = others.map((o) => o.id)
+    if (writer) {
+      try {
+        const prompt = remixPlanPrompt({
+          request,
+          base: { id: base.id, name: base.name, tags: base.tags, description: base.description, clip: base.clip },
+          others: others.map((o) => ({ id: o.id, name: o.name, tags: o.tags, description: o.description, duration: o.clip.duration })),
+          side: dominantSide(base.clip),
+          ...(ctx.current ? { current: ctx.current } : {}),
+          ...(ctx.critique ? { critique: ctx.critique } : {})
+        })
+        const plan = parseRemixPlan(await writer(REMIX_SYSTEM, prompt, []), { clips: ids })
+        if (plan.rejected.length) this.deps.log?.(`anim: remix plan: dropped ${plan.rejected.map((r) => r.reason).join('; ')}`, 'stderr')
+        return { ops: plan.ops, source: 'model', rejected: plan.rejected }
+      } catch (e) {
+        this.deps.log?.(`anim: remix plan unusable (${(e as Error).message}); using the keyword heuristic`, 'stderr')
+      }
+    }
+    if (ctx.current && ctx.critique) return { ops: adjustRemixOps(ctx.current, ctx.critique, base.clip) ?? ctx.current, source: 'heuristic', rejected: [] }
+    return { ops: heuristicRemixPlan(request, base.clip), source: 'heuristic', rejected: [] }
+  }
+
+  // Request -> a clip edited from the closest library clip (or opts.base): plan ops (model or
+  // heuristic), apply them, save as a generated entry (tags from the base + request) with its origin
+  // (base id + ops), then refine like compose (the critic tunes op params, not keys).
+  async remix(request: string, opts: AnimRemixOptions & { wait?: boolean } = {}): Promise<AnimScriptResult & { refined?: Promise<unknown> }> {
+    const restatement = normalizeRestatement(opts.restatement) ?? undefined
+    const text = String(request ?? '').trim()
+    const rig = await this.rigFor(opts.rig)
+    const set = await this.moveSet()
+    const all = await this.list()
+    let base: AnimEntry | undefined
+    if (opts.base) {
+      base = all.find((e) => e.id === opts.base)
+      if (!base) throw new AnimError(`no animation "${opts.base}" to remix`)
+      needClip(base)
+    } else {
+      const top = remixCandidates(all, text, set, { rig, limit: 1 })[0]
+      if (!top) throw new AnimError(`No usable library clip matches "${text}". Import a reference clip of this move type, pick a base clip, or switch to From scratch.`)
+      base = all.find((e) => e.id === top.id)!
+    }
+    if (text.length < 2 && !opts.ops) throw new AnimError('Describe the change, e.g. "faster, with the left foot".')
+    const others = remixCandidates(all, `${text} ${base.tags.join(' ')}`, set, { rig, limit: 5, exclude: base.id })
+      .map((c) => all.find((e) => e.id === c.id)!)
+      .filter(Boolean)
+    const planned = opts.ops ? { ...normalizeRemixPlan(opts.ops, {}), source: 'user' as const } : await this.planRemix(text, base, others)
+    const lookup = await this.clipLookup()
+    const r = applyRemix(base.clip, planned.ops, lookup)
+    const ops = r.applied
+    const named = animScriptName('', text || `${base.name} remix`)
+    const clip: AnimClip = { ...(clipRig(r.clip) === rig ? r.clip : convertClip(r.clip, rig)), name: named === 'Animation' ? `${base.clip.name}Remix`.slice(0, 40) : named }
+    const names: Record<string, string> = {}
+    for (const o of ops) if (o.op === 'blend' || o.op === 'transplant') names[o.clip] = all.find((e) => e.id === o.clip)?.name ?? o.clip
+    const origin: RemixOrigin = { base: base.id, baseName: base.name, ops, source: planned.source, ...(Object.keys(names).length ? { clips: names } : {}) }
+    const tags = [...new Set([...base.tags.filter((t) => t !== 'example' && t !== 'video'), ...setPromptTags(text, set)])]
+    const description = `${text || 'Remix'}. Remix of "${base.name}"${ops.length ? `: ${ops.map((o) => describeRemixOp(o, names)).join('; ')}` : ' (unchanged)'}. ${describeClip(clip)}`.slice(0, 600)
+    const entry = await this.saveClip(clip, { prompt: text || `remix of ${base.name}`, description, tags, scope: opts.scope, remix: origin, ...(restatement ? { restatement } : {}) })
+    const tagsFor = entry.tags
+    const checks = runChecks(clip, profileFor(await this.style(), tagsFor, clipRig(clip)), { request: text, tags: tagsFor })
+    const warnings = [...planned.rejected.map((x) => `plan: ${x.reason}`), ...r.skipped.map((x) => `${x.op.op}: ${x.reason}`)]
+    const out: AnimScriptResult & { refined?: Promise<unknown> } = { ok: true, prints: [], warnings, summary: clipSummary(clip), clip, checks, entry, source: 'remix' }
+    if (opts.refine !== false && this.deps.capture) {
+      const refined = this.refine(entry.id, opts).catch((e) => this.deps.log?.(`anim: refine failed: ${(e as Error).message}`, 'stderr'))
+      if (opts.wait) await refined
+      out.refined = refined
+    }
+    return out
+  }
+
+  // Re-applies (edited) ops to a remixed entry's base clip, or to a different base clip.
+  async remixApply(id: string, ops: unknown, opts: { base?: string } = {}): Promise<AnimEntry> {
+    const hit = await this.find(id)
+    if (!hit) throw new AnimError(`no animation "${id}"`)
+    needClip(hit.entry)
+    if (this.running.has(id)) throw new AnimError('this clip is being refined; cancel the refinement first')
+    const baseId = opts.base ?? hit.entry.remix?.base
+    if (!baseId) throw new AnimError(`"${hit.entry.name}" is not a remix; pick a base clip to start from`)
+    if (baseId === id) throw new AnimError('a clip cannot be its own base')
+    const all = await this.list()
+    const base = all.find((e) => e.id === baseId)
+    if (!base) throw new AnimError(`the base clip "${hit.entry.remix?.baseName ?? baseId}" is no longer in the library`)
+    needClip(base)
+    const plan = normalizeRemixPlan(Array.isArray(ops) ? ops : [], { clips: all.filter((e) => isClip(e) && e.id !== id).map((e) => e.id) })
+    if (plan.rejected.length) throw new AnimError(`invalid op: ${plan.rejected[0].reason}`)
+    const r = applyRemix(base.clip, plan.ops, await this.clipLookup())
+    const rig = clipRig(hit.entry.clip)
+    const clip: AnimClip = { ...(clipRig(r.clip) === rig ? r.clip : convertClip(r.clip, rig)), name: hit.entry.clip.name }
+    const names: Record<string, string> = {}
+    for (const o of r.applied) if (o.op === 'blend' || o.op === 'transplant') names[o.clip] = all.find((e) => e.id === o.clip)?.name ?? o.clip
+    const remix: RemixOrigin = { base: base.id, baseName: base.name, ops: r.applied, source: 'user', ...(Object.keys(names).length ? { clips: names } : {}) }
+    let saved = await hit.store.save({ ...hit.entry, clip, stats: measureClip(clip), remix, updatedAt: this.now() })
+    if (saved.written && this.deps.projectRoot()) saved = await this.writeProjectFiles(saved).catch(() => saved)
+    this.changed()
+    return saved
+  }
+
   private guideSaved = false
   private async ensureGuideSkill(): Promise<void> {
     if (this.guideSaved || !this.deps.memory) return
@@ -1136,6 +1260,33 @@ export class AnimService {
     this.deps.emit?.('anim:progress', p)
   }
 
+  // Remixed entries refine by re-planning their op params from each critique and re-applying them to
+  // the base clip (never by editing keys). Null when the entry is not a remix or its base is gone.
+  private async remixAdjuster(entry: AnimEntry): Promise<{ adjust: (clip: AnimClip, critique: AnimCritique) => Promise<{ clip: AnimClip; applied: number }>; opsOf: (clip: AnimClip) => RemixOp[] | undefined } | null> {
+    if (!entry.remix) return null
+    const all = await this.list()
+    const base = all.find((e) => e.id === entry.remix!.base && isClip(e))
+    if (!base) return null
+    const lookup = await this.clipLookup()
+    const others = all.filter((e) => isClip(e) && usable(e) && e.id !== entry.id && e.id !== base.id && e.tags.some((t) => base.tags.includes(t))).slice(0, 5)
+    const rig = clipRig(entry.clip)
+    const ops = new WeakMap<AnimClip, RemixOp[]>()
+    ops.set(entry.clip, entry.remix.ops)
+    const request = entry.origin
+    return {
+      opsOf: (clip) => ops.get(clip),
+      adjust: async (clip, critique) => {
+        const current = ops.get(clip) ?? entry.remix!.ops
+        const plan = await this.planRemix(request, base, others, { current, critique })
+        if (JSON.stringify(plan.ops) === JSON.stringify(current)) return { clip, applied: 0 }
+        const r = applyRemix(base.clip, plan.ops, lookup)
+        const next: AnimClip = { ...(clipRig(r.clip) === rig ? r.clip : convertClip(r.clip, rig)), name: clip.name }
+        ops.set(next, r.applied)
+        return { clip: next, applied: Math.max(1, r.applied.length) }
+      }
+    }
+  }
+
   // Render the key beats -> critique (critic tier, or the numbers) -> apply changes, until the score
   // passes the threshold. Without a renderer the numbers-only critic still runs (no frames).
   async refine(id: string, opts: AnimRefineOptions = {}): Promise<{ entry: AnimEntry; stop: string; score: number }> {
@@ -1151,6 +1302,7 @@ export class AnimService {
     const threshold = opts.threshold ?? ANIM_DEFAULT_THRESHOLD
     const maxIt = Math.max(1, Math.min(10, Math.floor(opts.maxIterations ?? ANIM_DEFAULT_MAX_ITERATIONS)))
     const stopAfter = new Map<number, boolean>()
+    const remixer = await this.remixAdjuster(hit.entry)
     try {
       const result = await animRefineLoop(
         hit.entry.clip,
@@ -1180,9 +1332,11 @@ export class AnimService {
             return c
           },
           shouldStop: async (_c, n) => stopAfter.get(n) ?? false,
+          ...(remixer ? { adjust: remixer.adjust } : {}),
           onIteration: async (it) => {
             const current = (await hit.store.read(id)) ?? hit.entry
-            const iteration: AnimIteration = { n: base + it.n, at: this.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique }
+            const ops = remixer?.opsOf(it.clip)
+            const iteration: AnimIteration = { n: base + it.n, at: this.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique, ...(ops ? { ops } : {}) }
             await hit.store.save({ ...current, iterations: [...(current.iterations ?? []), iteration].slice(-8), updatedAt: this.now() })
             this.progress({ entryId: id, iteration: base + it.n, phase: 'adjust', score: it.critique.overall, message: it.critique.summary })
             this.changed()
@@ -1193,8 +1347,10 @@ export class AnimService {
       )
       const current = (await hit.store.read(id)) ?? hit.entry
       const bestFrames = result.best.frames
+      const bestOps = remixer?.opsOf(result.best.clip)
       let entry = await hit.store.save({
         ...current,
+        ...(bestOps && current.remix ? { remix: { ...current.remix, ops: bestOps, source: JSON.stringify(bestOps) === JSON.stringify(current.remix.ops) ? current.remix.source : 'critic' } } : {}),
         clip: result.best.clip,
         stats: measureClip(result.best.clip),
         thumbs: bestFrames.length ? [bestFrames[Math.min(bestFrames.length - 1, 2)], ...current.thumbs.filter((t) => !t.startsWith('frames/'))].slice(0, 6) : current.thumbs,

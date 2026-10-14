@@ -8,6 +8,7 @@ import type { VideoRef } from '../videoref/types.ts'
 import type { PrincipleScore } from '../principles/types.ts'
 import type { Restatement } from '../restate/types.ts'
 import type { PartMotion } from './bodyparts.ts'
+import type { RemixOp, RemixOrigin } from './remix.ts'
 
 export type { R6Joint }
 
@@ -122,6 +123,9 @@ export interface AnimEntry {
   refId?: string
   // "Restate first": the reading of the brief the user confirmed (compose prompt + critic judge against it).
   restatement?: Restatement
+  // Remixed clips ("Remix closest"): the library clip it started from and the edit ops (remix.ts),
+  // so the clip is reproducible and its ops editable.
+  remix?: RemixOrigin
 }
 
 // Timing and shape numbers of one clip (style.ts measureClip).
@@ -249,6 +253,8 @@ export interface AnimIteration {
   frames: string[]
   times: number[]
   critique?: AnimCritique
+  // Remixed clips: the ops that produced this iteration's clip.
+  ops?: RemixOp[]
 }
 
 export interface AnimRefineOptions {
@@ -274,7 +280,7 @@ export interface AnimScriptResult {
   clip?: AnimClip
   checks?: AnimCheckReport
   entry?: AnimEntry
-  source?: 'model' | 'draft' | 'example'
+  source?: 'model' | 'draft' | 'example' | 'remix'
 }
 
 export interface AnimImportResult {

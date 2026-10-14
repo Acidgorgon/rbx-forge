@@ -21,6 +21,8 @@ import { normalizeLabModels } from '@shared/labModels'
 import { figureDataUrl } from './pages/anim/figure'
 import { withAnimPrinciples } from '@shared/principles/attach'
 import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
+import { applyRemix, describeRemixOp, heuristicRemixPlan, normalizeRemixPlan, remixCandidates, type RemixOrigin } from '@shared/anim/remix'
+import type { AnimRemixMode } from '@shared/animTypes'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -91,6 +93,7 @@ export function animMock(emit: Emit): AnimApi {
   let seq = 0
   let rig: RigType = 'R15'
   let moveSets: MoveSetSettings = { set: 'combat', custom: {} }
+  let remixMode: AnimRemixMode = 'auto'
 
   async function refine(e: AnimEntry, max: number) {
     const ref = e.reference ? entries.find((x) => x.id === e.reference)?.clip : undefined
@@ -250,6 +253,43 @@ export function animMock(emit: Emit): AnimApi {
       changed()
       if (opts?.refine !== false) void refine(e, opts?.maxIterations ?? 2)
       return { ok: true, entry: e, clip: e.clip, prints: [], warnings: [], summary: clipSummary(e.clip), checks: runChecks(e.clip), source: 'model' }
+    },
+    async animRemixCandidates(prompt) {
+      const set = resolveMoveSet(moveSets)
+      return { candidates: remixCandidates(entries, prompt, set, { rig }), tags: setPromptTags(prompt, set) }
+    },
+    async animRemix(request, opts) {
+      await delay(300)
+      const set = resolveMoveSet(moveSets)
+      const base = opts?.base ? find(opts.base) : entries.find((e) => e.id === remixCandidates(entries, request, set, { rig, limit: 1 })[0]?.id)
+      if (!base) throw new Error(`No usable library clip matches "${request}".`)
+      const ops = opts?.ops ? normalizeRemixPlan(opts.ops).ops : heuristicRemixPlan(request, base.clip)
+      const r = applyRemix(base.clip, ops, (id) => entries.find((e) => e.id === id)?.clip)
+      const remix: RemixOrigin = { base: base.id, baseName: base.name, ops: r.applied, source: opts?.ops ? 'user' : 'heuristic' }
+      const clip = { ...r.clip, name: `${base.clip.name}Remix` }
+      const e: AnimEntry = { ...entry(clip, { id: `remix-${(seq++).toString(36)}` }), kind: 'generated', origin: request, description: `${request}. Remix of "${base.name}": ${r.applied.map((o) => describeRemixOp(o)).join('; ') || 'unchanged'}.`, tags: [...new Set([...base.tags.filter((t) => t !== 'example'), ...setPromptTags(request, set)])], remix, createdAt: Date.now(), updatedAt: Date.now() }
+      entries.push(e)
+      changed()
+      if (opts?.refine !== false) void refine(e, opts?.maxIterations ?? 2)
+      return { ok: true, entry: e, clip: e.clip, prints: [], warnings: [], summary: clipSummary(e.clip), checks: runChecks(e.clip), source: 'remix' }
+    },
+    async animRemixApply(id, ops, opts) {
+      const e = find(id)
+      const base = find(opts?.base ?? e.remix?.base ?? '')
+      const r = applyRemix(base.clip, normalizeRemixPlan(ops).ops, (x) => entries.find((y) => y.id === x)?.clip)
+      e.clip = { ...r.clip, name: e.clip.name }
+      e.stats = measureClip(e.clip)
+      e.remix = { base: base.id, baseName: base.name, ops: r.applied, source: 'user' }
+      e.updatedAt = Date.now()
+      changed()
+      return e
+    },
+    async animRemixMode() {
+      return remixMode
+    },
+    async animSetRemixMode(mode) {
+      remixMode = mode
+      return mode
     },
     async animRunScript(script, opts) {
       const ex = ANIM_EXAMPLES.find((x) => x.script.trim() === script.trim())

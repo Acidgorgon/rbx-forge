@@ -37,7 +37,9 @@ import { anthropicPrompt, contentText, type ImagePayload, type ImageResolver, us
 import {
   allowServer,
   model,
+  AUTH_HELP,
   executableOption,
+  isAuthError,
   OPENAI_TOOLS_NOTE,
   sdkQuery,
   studioMcp,
@@ -857,7 +859,9 @@ export class ChatManager {
       }
     } catch (e) {
       if (abort.signal.aborted) this.push(chat, systemMessage('main', 'Stopped.'))
-      else this.push(chat, systemMessage('main', `Error: ${(e as Error).message}`))
+      else if (isAuthError((e as Error).message)) {
+        if (!chat.messages.slice(-3).some((x) => x.text === AUTH_HELP)) this.push(chat, systemMessage('main', AUTH_HELP))
+      } else this.push(chat, systemMessage('main', `Error: ${(e as Error).message}`))
     } finally {
       if (meter) {
         meter.ledger.recordAll(tracker.finish(), { chatId: chat.id })

@@ -133,16 +133,24 @@ export function toChatMessages(m: SDKMessage, agentId: string): ChatMessage[] {
   }
   if (m.type === 'result' && (m.is_error || m.subtype !== 'success')) {
     const detail = m.subtype === 'success' ? m.result : m.errors?.join('; ') || m.subtype
+    // The assistant message already carried a friendly auth error; don't repeat the raw one.
+    if (isAuthError(String(detail ?? ''))) return []
     return [msg(agentId, 'system', `Error: ${detail}`)]
   }
   if (m.type === 'auth_status' && m.error) return [msg(agentId, 'system', `Auth: ${m.error}`)]
   return []
 }
 
+export const AUTH_HELP = 'Claude sign-in failed or expired. Open a terminal, run `claude` and type /login, then send again. Or add an Anthropic API key in Settings.'
+
+export function isAuthError(text: string): boolean {
+  return /Failed to authenticate|OAuth session|authentication_failed|invalid x-api-key/i.test(text)
+}
+
 function errorText(code: string): string {
   switch (code) {
     case 'authentication_failed':
-      return 'Authentication failed: set an Anthropic API key or log in with Claude Code.'
+      return AUTH_HELP
     case 'billing_error':
       return 'Billing error on the Anthropic account.'
     case 'rate_limit':

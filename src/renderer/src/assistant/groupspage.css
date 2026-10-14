@@ -44,7 +44,10 @@
 .gp-psub { font-size: 10.5px; color: var(--fg-faint); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .gp-premove { width: 20px; height: 20px; opacity: .6; }
 .gp-pcard:hover .gp-premove { opacity: 1; }
-.gp-rail .mpick { align-self: flex-start; }
+.gp-rail .mpick { align-self: stretch; }
+/* The model list fits the rail so opening it never scrolls the rail sideways. */
+.gp-rail .mpick-pop { width: 100%; }
+.gp-rail, .gp-side { overflow-x: hidden; }
 .gp-rail .mpick-btn { border-style: dashed; }
 .gp-rail-foot { margin-top: auto; font-size: 10.5px; line-height: 1.5; }
 

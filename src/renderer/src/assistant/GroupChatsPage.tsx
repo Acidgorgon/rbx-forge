@@ -369,7 +369,7 @@ function Conversation({ chat }: { chat: ChatSession }) {
         }}
       >
         <div className="gp-thread">
-          {!messages.length && <div className="as-empty">@ to ask a guest · ⌘↵ to send · start a roundtable on the right</div>}
+          {!messages.length && <div className="as-empty">@ to ask a guest · enter to send · start a roundtable on the right</div>}
           {items.map((it, i) => (it.kind === 'msg' ? <Message key={it.m.id} m={it.m} /> : <ToolGroup key={it.id} ms={it.ms} last={i === items.length - 1} busy={busy} />))}
           {thinking && (
             <div className="thinking" aria-label="Working">

@@ -411,9 +411,10 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
         else choose(Math.min(pick, options.length - 1))
         return
       }
-      if (e.key === 'Enter' && !e.shiftKey && !(e.metaKey || e.ctrlKey) && mq && options.length) {
+      if (e.key === 'Enter' && !e.shiftKey && !(e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
         e.preventDefault()
-        choose(Math.min(pick, options.length - 1))
+        if (slash.length) insertAt(0, `/${slash[Math.min(pick, slash.length - 1)].name} `)
+        else choose(Math.min(pick, options.length - 1))
         return
       }
       if (e.key === 'Escape' && mq) {
@@ -429,8 +430,8 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
       cycleMode(chatMode.mode, chatMode.setMode)
       return
     }
-    // ⌘↵ sends; Enter is a newline (it is a code tool).
-    if (e.key === 'Enter' && (e.metaKey || e.ctrlKey) && !e.nativeEvent.isComposing) {
+    // Enter (or ⌘↵) sends; Shift+Enter is a newline.
+    if (e.key === 'Enter' && !e.shiftKey && !e.nativeEvent.isComposing) {
       e.preventDefault()
       submit()
     }
@@ -548,7 +549,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
               <Icon name="stop" size={14} />
             </button>
           ) : (
-            <button className="cmp-send" onClick={submit} disabled={(!text.trim() && !images.length) || adding > 0} title={`Send (${keyHint('mod+enter')})`}>
+            <button className="cmp-send" onClick={submit} disabled={(!text.trim() && !images.length) || adding > 0} title="Send (Enter) · Shift+Enter for a new line">
               <Icon name="upload" size={15} />
             </button>
           )}
@@ -561,7 +562,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
             <span className="kc">Shift</span>+<span className="kc">Tab</span>
           </span>
         </span>
-        <span className="kc cmp-send-kc" title="Send">{keyHint('mod+enter')}</span>
+        <span className="kc cmp-send-kc" title="Send · Shift+Enter for a new line">↵</span>
       </div>
       {slashRunner.node}
     </div>
@@ -701,7 +702,7 @@ export function AssistantPanel() {
             <div className="as-empty">
               <div>context: {state.activeFile ? basename(state.activeFile) : 'no file'}{problems.length ? ` · ${problems.length} problems` : ''}</div>
               <div>@ to add files{isGroup(chat) ? ' or models' : ''} · / for commands</div>
-              <div>{keyHint('mod+enter')} to send · shift+tab to change mode</div>
+              <div>enter to send · shift+enter for a new line · shift+tab to change mode</div>
               {!chat && <div style={{ marginTop: 10 }}><ParticipantsBar compact /></div>}
             </div>
           )}

@@ -33,7 +33,7 @@ import { groupReadTools, guardReadOnly, type GroupIo } from './group/readTools.t
 import { runOpenAiLoop, type FetchFn } from './openaiLoop.ts'
 import { extraBody, type Providers } from './providers.ts'
 import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
-import { allowServer, executableOption, sdkQuery, toChatMessages, type QueryFn } from './sdk.ts'
+import { allowServer, AUTH_HELP, executableOption, isAuthError, sdkQuery, toChatMessages, type QueryFn } from './sdk.ts'
 import { chatImageStore, hasChatImageStore } from './chatImages.ts'
 import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './imageParts.ts'
 import { supportsVision } from '../../shared/modelCaps.ts'
@@ -417,6 +417,7 @@ export class GroupChat {
       const onAbort = () => abort.abort()
       room.signal.addEventListener('abort', onAbort)
       const root = this.ctx.project()?.root ?? noProjectDir()
+      let authShown = false
       try {
         const queryFn = this.deps.queryFn ?? sdkQuery
         for await (const m of queryFn({
@@ -440,11 +441,19 @@ export class GroupChat {
             persistSession: false
           }
         })) {
-          for (const cm of toChatMessages(m, 'main')) emit(cm)
+          for (const cm of toChatMessages(m, 'main')) {
+            if (cm.text === AUTH_HELP) authShown = true
+            emit(cm)
+          }
           if (m.type === 'result') usage(fromAnthropicUsage(m.usage as any))
         }
       } catch (e) {
-        if (!room.signal.aborted) emit({ id: randomUUID(), role: 'system', text: `${p.label}: ${(e as Error).message}`, at: Date.now(), agentId: 'main' })
+        const text = (e as Error).message
+        if (room.signal.aborted) {
+          // stopped
+        } else if (isAuthError(text)) {
+          if (!authShown) emit({ id: randomUUID(), role: 'system', text: AUTH_HELP, at: Date.now(), agentId: 'main' })
+        } else emit({ id: randomUUID(), role: 'system', text: `${p.label}: ${text}`, at: Date.now(), agentId: 'main' })
       } finally {
         room.signal.removeEventListener('abort', onAbort)
       }

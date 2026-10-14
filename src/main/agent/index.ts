@@ -26,6 +26,7 @@ import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './im
 import { executableOption, OPENAI_TOOLS_NOTE, sdkQuery, type QueryFn } from './sdk.ts'
 import { SERVICE_WRITE_TOOLS } from './serviceTools.ts'
 import { TestAgentRunner } from './testAgents.ts'
+import { defaultGroupIo } from './group/io.ts'
 import { Restater } from './restate.ts'
 import { normalizeRestatement, type RestateLab } from '../../shared/restate/types.ts'
 import { gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type ToolFs } from './tools.ts'
@@ -105,7 +106,7 @@ export function createAgentLayer(
   })
   // Background reflection: a chat that goes idle is reviewed by the memory layer (debounced there).
   const chatCtx = opts.memory ? tapChatBusy(ctx, opts.memory, (id) => chats.messages(id) ?? null) : ctx
-  chats = new ChatManager(chatCtx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team, restater })
+  chats = new ChatManager(chatCtx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter, team, restater, groupIo: defaultGroupIo() })
   const agents = new TestAgentRunner(ctx, { queryFn: opts.queryFn, credentials, providers, fetchFn: opts.fetchFn, toolFs: opts.toolFs, rules, meter })
   layer = {
     chats,
@@ -403,6 +404,13 @@ export function registerAgentIpc(
     planToChecklist: async (id: string, messageId: unknown) => {
       chats.planToChecklist(id, String(messageId ?? ''))
     },
+    // Group chat v2 (agent/group/*).
+    getGroupSettings: () => chats.getGroupSettings(),
+    setGroupSettings: (next: unknown) => chats.setGroupSettings(next && typeof next === 'object' ? (next as Record<string, never>) : {}),
+    applyPatchProposal: (id: unknown, messageId: unknown) => chats.applyPatchProposal(String(id ?? ''), String(messageId ?? '')),
+    mergePatchProposal: (id: unknown, messageId: unknown) => chats.mergePatchProposal(String(id ?? ''), String(messageId ?? '')),
+    dismissPatchProposal: async (id: unknown, messageId: unknown) => chats.dismissPatchProposal(String(id ?? ''), String(messageId ?? '')),
+    saveBoard: async (id: unknown, items: unknown) => chats.saveBoard(String(id ?? ''), items),
     hasApiKey: () => credentials.hasApiKey(),
     setApiKey: async (key: string) => {
       await credentials.setKey('anthropic', String(key ?? ''))

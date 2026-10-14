@@ -3,6 +3,7 @@
 // "Make this a task list".
 import type { ChatMessage, ChatSession, GroupParticipant, GroupUsage, HarnessApi, HarnessEvents, ModelChoice, ProviderId, Speaker } from '@shared/types'
 import { consultPhrase, makeParticipant, parseMentions, resolveModel, sameModel } from '@shared/modelResolve'
+import { groupV2Mock, seedConsultChat } from './mockGroupV2'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 
@@ -12,6 +13,8 @@ interface Deps {
   messages: Record<string, ChatMessage[]>
   // Every model the preview knows (ready or not).
   models: () => Promise<ModelChoice[]>
+  // Models of ready providers (group chat v2: "not set up" notices).
+  readyModels?: () => Promise<ModelChoice[]>
 }
 
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -86,6 +89,7 @@ export function seedGroupChat(d: Deps): void {
     m('assistant', DEMO_PLAN, 11, { speaker: h, card: 'plan' })
   ]
   d.chats.unshift(chat)
+  seedConsultChat(d)
 }
 
 export function groupMock(d: Deps) {
@@ -141,6 +145,7 @@ export function groupMock(d: Deps) {
   const reply = (p: Speaker, about: string) =>
     `**${p.label}** here. On "${about.slice(0, 60)}": I'd keep the server authoritative, change one thing at a time, and add a test agent run for the edge case before shipping.`
   const busy = (id: string, on: boolean) => d.emit('chat:busy', { sessionId: id, busy: on })
+  const v2 = groupV2Mock({ chat, host, invite, push, sys, say, busy, updated, messages: d.messages, models: d.models, ready: d.readyModels ?? d.models })
 
   // Returns true when the message was a group-chat message (handled here).
   async function handleSend(id: string, text: string): Promise<boolean> {
@@ -170,6 +175,7 @@ export function groupMock(d: Deps) {
       busy(id, false)
       return true
     }
+    if (await v2.handle(id, text)) return true
     const phrase = consultPhrase(text)
     const r = phrase ? resolveModel(phrase, all) : null
     if (!r || r.kind === 'none') return false
@@ -190,7 +196,8 @@ export function groupMock(d: Deps) {
     return true
   }
 
-  const api: Pick<HarnessApi, 'addGuest' | 'removeGuest' | 'setGuestTools' | 'startRoundtable' | 'planToChecklist'> = {
+  const api: Pick<HarnessApi, 'addGuest' | 'removeGuest' | 'setGuestTools' | 'startRoundtable' | 'planToChecklist' | keyof typeof v2.api> = {
+    ...v2.api,
     async addGuest(id, choice) {
       const c = chat(id)
       invite(c, choice)

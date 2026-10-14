@@ -17,6 +17,7 @@ import { AttachGlyph, ImageThumb, MessageImages } from './ChatImages'
 import { EffortPicker, RouteSummary, useVision } from './EffortPicker'
 import { acceptedImageType } from './imageScale'
 import { RestateMessage } from './RestateMessage'
+import { ConclusionCard, PatchCard, ReviewCard, SettingsNotice, splitStance, StancePill } from './GroupCards'
 import './chatextras.css'
 
 type Item = { kind: 'msg'; m: ChatMessage } | { kind: 'tools'; ms: ChatMessage[]; id: string }
@@ -90,17 +91,22 @@ export function Message({ m }: { m: ChatMessage }) {
       </div>
     )
   }
-  if (m.role === 'system') return <div className="m-system selectable">{m.text}</div>
+  if (m.role === 'system') return m.settingsLink ? <SettingsNotice m={m} /> : <div className="m-system selectable">{m.text}</div>
   if (m.card === 'plan') return <PlanCard m={m} />
   if (m.card === 'checklist') return <ChecklistCard m={m} />
   if (m.card === 'restate' && m.restate) return <RestateMessage m={m} />
+  if (m.card === 'conclusion' && m.conclusion) return <ConclusionCard m={m} />
+  if (m.card === 'patch' && m.patch) return <PatchCard m={m} />
+  if (m.card === 'review' && m.review) return <ReviewCard m={m} />
   const fromAgent = m.agentId && m.agentId !== 'main'
   const host = !!chat && !!m.speaker && m.speaker.provider === chat.provider && m.speaker.model === chat.model
+  const st = m.speaker && isGroup(chat) ? splitStance(m.text) : { text: m.text, stance: null }
   return (
     <div className="m-assistant selectable">
       {fromAgent && <AgentTag id={m.agentId} />}
       {m.speaker && isGroup(chat) && <SpeakerHead s={m.speaker} host={host} chat={chat} />}
-      {m.text && <Markdown text={m.text} />}
+      {st.text && <Markdown text={st.text} />}
+      {st.stance && <StancePill stance={st.stance} />}
       {m.images?.length ? <MessageImages images={m.images} /> : null}
     </div>
   )

@@ -7,10 +7,10 @@
 import { randomUUID } from 'node:crypto'
 import { isAbsolute, relative, resolve, sep } from 'node:path'
 import type { CanUseTool, McpServerConfig, Options } from '@anthropic-ai/claude-agent-sdk'
-import type { ChatImage, ChatMessage, ChatSession, EffortChoice, GroupParticipant, ModelChoice, NewChatOptions, ProviderId, Speaker } from '@shared/types'
+import type { BoardItem, ChatImage, ChatMessage, ChatSession, EffortChoice, GroupParticipant, GroupSettings, ModelChoice, NewChatOptions, ProviderId, Speaker } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import type { Credentials } from './credentials.ts'
-import { fromAnthropicUsage, fromOpenAiUsage, SdkUsageTracker, type Usage } from './budget/usage.ts'
+import { estimateCost, fromAnthropicUsage, fromOpenAiUsage, SdkUsageTracker, type Usage } from './budget/usage.ts'
 import { routeModel, type Route } from './budget/budget.ts'
 import { compactHistory, needsCompaction, SUMMARY_INSTRUCTIONS } from './budget/compact.ts'
 import { shouldOrchestrate, type OrchestrateMode } from './orchestrator/heuristic.ts'
@@ -18,7 +18,14 @@ import type { Meter } from './meter.ts'
 import { toSummary } from './meter.ts'
 import { withRules } from './projectRules.ts'
 import { GroupChat, planChecklist, type Room } from './groupChat.ts'
-import { consultPhrase, makeParticipant, modelLabel, parseMentions, sameModel } from '../../shared/modelResolve.ts'
+import { makeParticipant, modelLabel, parseMentions, sameModel, unconfiguredText } from '../../shared/modelResolve.ts'
+import { looksLikeModel, parseConsultTrigger } from '../../shared/group/consult.ts'
+import { boardPack, normalizeBoard } from '../../shared/group/board.ts'
+import { blockingFindings, editedFiles, fixPrompt, pickReviewer } from '../../shared/group/review.ts'
+import { mergeGroupSettings } from '../../shared/group/settings.ts'
+import { applyPatch } from './group/patches.ts'
+import { buildDiff } from './group/crossCheck.ts'
+import type { GroupIo } from './group/readTools.ts'
 import { runOpenAiLoop, trimHistory, type FetchFn, type OaiMessage } from './openaiLoop.ts'
 import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
 import { extraBody, isProviderId, PROVIDERS, sdkEffortOptions, type Providers } from './providers.ts'
@@ -63,6 +70,9 @@ interface StoredChat extends Omit<ChatSession, 'provider' | 'model'> {
   messages: ChatMessage[]
   // Group chat: what guests said outside the host's turns, prepended to its next prompt.
   groupNotes?: string[]
+  // Group chat v2: the Board, and the review card whose blocking findings the host is fixing.
+  board?: BoardItem[]
+  crossCheckFix?: string
   // Model actually used by the last turn (routing never downgrades mid-chat).
   lastModel?: string
   // The person picked this chat's model explicitly: no automatic routing.
@@ -83,7 +93,7 @@ export type TeamRunner = (req: { chatId: string; text: string; choice: ModelChoi
   detail?: string
 }>
 
-type GroupRoute = { kind: 'host'; hint?: string } | { kind: 'direct'; guests: GroupParticipant[] } | { kind: 'asked' }
+type GroupRoute = { kind: 'host'; hint?: string } | { kind: 'direct'; guests: GroupParticipant[] } | { kind: 'asked' } | { kind: 'consult'; guest: GroupParticipant }
 
 export interface ChatDeps {
   queryFn?: QueryFn
@@ -103,6 +113,8 @@ export interface ChatDeps {
   team?: TeamRunner
   // "Restate first" (agent/restate.ts); without it big requests run straight away.
   restater?: Restater
+  // Group chats: git + lint for the read-only git_diff / read_diagnostics tools and cross-checks.
+  groupIo?: GroupIo
 }
 
 // OpenAI-compatible chats: compact the history at 80% of this window, down to 40%.
@@ -235,6 +247,7 @@ export class ChatManager {
     if (c.guests?.length) s.guests = c.guests
     if (c.guestTools === false) s.guestTools = false
     if (c.usage?.length) s.usage = c.usage
+    if (c.board?.length) s.board = c.board
     if (this.deps.meter) {
       const t = this.deps.meter.ledger.chat(c.id)
       if (t.requests) s.meter = toSummary(t)
@@ -276,12 +289,16 @@ export class ChatManager {
     }
     // A new message answers any card still waiting.
     this.dismissRestateCards(chat)
+    // A user message ends any cross-check fix that did not finish.
+    chat.crossCheckFix = undefined
     if (cmd.forced && !text) {
       this.push(chat, systemMessage('main', 'Add the request after /restate, e.g. /restate add a daily reward system.'))
       return
     }
     const restater = this.deps.restater
-    if (restater && !chat.guests?.length) {
+    // Group chats skip restating, except a converging consult ("ask X ... and report back"), which
+    // gets the card when it is big enough per the restate setting.
+    if (restater && (!chat.guests?.length || parseConsultTrigger(text)?.converge)) {
       const d = restater.decide('chat', text, { effort: chat.effort, force: cmd.forced })
       if (d.restate) return this.restateFirst(chat, text, user, d.reason, images)
     }
@@ -389,6 +406,14 @@ export class ChatManager {
     // tells the host to consult it.
     const route = await this.routeGroup(chat, text)
     if (route.kind === 'asked') return
+    if (route.kind === 'consult') {
+      const room = this.room(chat, abort.signal)
+      this.runExclusive(chat, abort, async () => {
+        await this.group.consult(room, route.guest, text)
+        if (abort.signal.aborted) this.push(chat, systemMessage('main', 'Stopped.'))
+      })
+      return
+    }
     if (route.kind === 'direct') {
       const room = this.room(chat, abort.signal)
       this.runExclusive(chat, abort, async () => {
@@ -401,7 +426,7 @@ export class ChatManager {
       return
     }
     // Team mode: big multi-part requests go to the orchestrator (lead + specialists).
-    if (this.deps.team && !route.hint && !chat.guests?.length) {
+    if (this.deps.team && !route.hint && !chat.guests?.length && !chat.crossCheckFix) {
       const mode = chat.orchestrate ?? 'auto'
       const scriptCount = this.ctx.scripts().reduce((n, g) => n + g.scripts.length, 0)
       const decision = shouldOrchestrate(text, { scriptCount }, mode)
@@ -446,15 +471,27 @@ export class ChatManager {
 
     this.running.set(id, abort)
     this.ctx.emit('chat:busy', { sessionId: id, busy: true })
-    void start().finally(() => {
-      chat.lastProvider = provider
-      chat.lastModel = modelId
-      this.deps.meter?.setLive(chat.id, null)
-      this.rooms.delete(id)
-      this.running.delete(id)
-      this.ctx.emit('chat:busy', { sessionId: id, busy: false })
-      this.save()
-    })
+    const turnStart = chat.messages.length
+    let fix: string | null = null
+    void start()
+      .then(async () => {
+        // Cross-check: a model from another provider reviews a multi-file edit.
+        if (!abort.signal.aborted) fix = await this.crossCheck(chat, turnStart, text, abort.signal).catch((e) => {
+          this.ctx.log({ service: 'agent', stream: 'stderr', text: `cross-check skipped: ${(e as Error).message}` })
+          return null
+        })
+      })
+      .finally(() => {
+        chat.lastProvider = provider
+        chat.lastModel = modelId
+        this.deps.meter?.setLive(chat.id, null)
+        this.rooms.delete(id)
+        this.running.delete(id)
+        this.ctx.emit('chat:busy', { sessionId: id, busy: false })
+        this.save()
+        // Blocking findings: the host addresses them in a follow-up turn (not reviewed again).
+        if (fix && !abort.signal.aborted) void this.turn(chat, fix, [])
+      })
   }
 
   stop(id: string): void {
@@ -703,7 +740,18 @@ export class ChatManager {
         chat.guests = [...(chat.guests ?? []).filter((g) => !sameModel(g, p)), p]
         this.updated(chat)
       },
-      recordUsage: (speaker, u) => this.recordUsage(chat, speaker, u),
+      recordUsage: (speaker, u) => {
+        this.recordUsage(chat, speaker, u)
+        // Guest calls (and the host's consult calls) are not in the turn's own meter: add them.
+        this.deps.meter?.ledger.record({ at: Date.now(), provider: speaker.provider, model: speaker.model, chatId: chat.id, input: u.input, output: u.output, cacheRead: 0, cacheWrite: 0, ...(u.costUsd !== undefined ? { costUsd: u.costUsd } : {}), costSource: u.costUsd !== undefined ? 'estimate' : 'unknown' })
+      },
+      get board() {
+        return chat.board ?? []
+      },
+      setBoard: (items) => {
+        chat.board = normalizeBoard(items)
+        this.updated(chat)
+      },
       // Images of the latest user message, for guests that read images.
       get images() {
         for (let i = chat.messages.length - 1; i >= 0; i--) {
@@ -725,7 +773,7 @@ export class ChatManager {
     this.save()
   }
 
-  private recordUsage(chat: StoredChat, speaker: Speaker, u: { input: number; output: number; cacheRead?: number; cacheWrite?: number }): void {
+  private recordUsage(chat: StoredChat, speaker: Speaker, u: { input: number; output: number; cacheRead?: number; cacheWrite?: number; costUsd?: number }): void {
     const input = u.input + (u.cacheRead ?? 0) + (u.cacheWrite ?? 0)
     if (!input && !u.output) return
     const list = (chat.usage ??= [])
@@ -734,17 +782,26 @@ export class ChatManager {
     row.input += input
     row.output += u.output
     row.calls++
+    const cost = u.costUsd ?? estimateCost(speaker.model, { input: u.input, output: u.output, cacheRead: u.cacheRead ?? 0, cacheWrite: u.cacheWrite ?? 0 }, { provider: speaker.provider })
+    if (cost !== undefined) row.costUsd = Math.round(((row.costUsd ?? 0) + cost) * 1e6) / 1e6
     this.updated(chat)
   }
 
   // Decides who answers a user message in a group chat.
   private async routeGroup(chat: StoredChat, text: string): Promise<GroupRoute> {
+    // The cross-check fix turn goes to the host as is.
+    if (chat.crossCheckFix) return { kind: 'host' }
     const mentions = parseMentions(text)
-    const phrase = mentions.length ? null : consultPhrase(text)
-    if (!mentions.length && !phrase) return { kind: 'host' }
+    const trigger = mentions.length ? null : parseConsultTrigger(text)
+    if (!mentions.length && !trigger) return { kind: 'host' }
     const room = this.room(chat, new AbortController().signal)
     const askWhich = (name: string, options: ModelChoice[]) => {
       this.push(chat, systemMessage('main', `Which model did you mean by “${name}”? ${options.map((o) => `${o.provider}/${o.model}`).join(', ')}. Reply with an @mention or the full id.`))
+      return { kind: 'asked' } as const
+    }
+    // A model that exists but whose provider is not set up: say so, with the Settings link.
+    const notSetUp = (choice: ModelChoice) => {
+      this.push(chat, { ...systemMessage('main', unconfiguredText(choice)), settingsLink: choice.provider })
       return { kind: 'asked' } as const
     }
     if (mentions.length) {
@@ -753,6 +810,7 @@ export class ChatManager {
       for (const name of mentions) {
         const r = await this.group.resolve(name, room)
         if (r.kind === 'ambiguous') return askWhich(`@${name}`, r.options)
+        if (r.kind === 'unconfigured') return notSetUp(r.choice)
         if (r.kind !== 'ok') continue
         const p = this.group.ensureGuest(room, r.choice)
         if (p.role === 'host') hostMentioned = true
@@ -762,15 +820,133 @@ export class ChatManager {
       if (!hostMentioned) return { kind: 'direct', guests }
       return { kind: 'host', hint: `The user mentioned ${guests.map((g) => `@${g.alias} (${g.label})`).join(', ')}: use the consult_model tool to talk to them.` }
     }
-    const r = await this.group.resolve(phrase!, room)
-    if (r.kind === 'ambiguous') return askWhich(phrase!, r.options)
-    if (r.kind !== 'ok') return { kind: 'host' }
+    const phrase = trigger!.phrase
+    const r = await this.group.resolve(phrase, room)
+    if (r.kind === 'ambiguous') return askWhich(phrase, r.options)
+    if (r.kind === 'unconfigured') return notSetUp(r.choice)
+    if (r.kind !== 'ok') {
+      // "ask gpt 9 and report back" with no such model: say so instead of a silent host turn.
+      if (trigger!.converge && looksLikeModel(phrase)) {
+        const ready = (await this.group.available()).map((c) => modelLabel(c.model))
+        this.push(chat, { ...systemMessage('main', `No model called “${phrase}” is set up. ${ready.length ? `Ready: ${[...new Set(ready)].slice(0, 8).join(', ')}.` : 'No provider is set up yet.'} Add providers in Settings → Providers.`), settingsLink: 'openai' })
+        return { kind: 'asked' }
+      }
+      return { kind: 'host' }
+    }
     const p = this.group.ensureGuest(room, r.choice)
     if (p.role === 'host') return { kind: 'host' }
+    if (trigger!.converge) return { kind: 'consult', guest: p }
     return {
       kind: 'host',
-      hint: `The user wants you to work with ${p.label}. Call the consult_model tool with model "${p.alias}" (mode "debate" to have it challenge your proposal; call again to go back and forth), then give the user the combined result.`
+      hint: `The user wants you to work with ${p.label}. Call the consult_model tool with model "${p.alias}" (mode "debate" to have it challenge your proposal; call again to go back and forth), or consult_until_agreed for a checked conclusion, then give the user the combined result.`
     }
+  }
+
+  // ---- group chat v2: cross-check, patch proposals, board, settings ----
+
+  getGroupSettings(): GroupSettings {
+    return this.group.groupSettings()
+  }
+
+  setGroupSettings(next: Partial<GroupSettings>): GroupSettings {
+    this.ctx.setSetting('groupChat', mergeGroupSettings(this.ctx.getSetting<unknown>('groupChat', {}), next ?? {}))
+    return this.group.groupSettings()
+  }
+
+  // After a host turn: when it edited enough files and cross-check is on, a model from another
+  // provider reviews the diff. Returns the fix prompt when there are blocking findings.
+  private async crossCheck(chat: StoredChat, from: number, request: string, signal: AbortSignal): Promise<string | null> {
+    if (chat.crossCheckFix) {
+      // This was the fix turn: mark the review addressed; never review the fix again.
+      const card = chat.messages.find((m) => m.id === chat.crossCheckFix)
+      chat.crossCheckFix = undefined
+      if (card?.review) this.push(chat, { ...card, review: { ...card.review, state: 'addressed' } })
+      return null
+    }
+    const s = this.group.groupSettings()
+    if (!s.crossCheck) return null
+    const tools = chat.messages
+      .slice(from)
+      .filter((m) => m.role === 'tool' && m.tool && m.agentId === 'main' && (!m.speaker || sameModel(m.speaker, this.choice(chat))))
+      .map((m) => m.tool!)
+    const files = editedFiles(tools).filter((f) => !f.endsWith('...'))
+    if (files.length < s.crossCheckMinFiles) return null
+    const host = this.choice(chat)
+    const pick = pickReviewer(host, s.crossCheckModel, chat.guests ?? [], await this.group.available())
+    if (!pick) {
+      this.push(chat, { ...systemMessage('main', 'Cross-check is on, but no model from another provider is set up to review. Add one in Settings → Providers.'), settingsLink: host.provider === 'openai' ? 'anthropic' : 'openai' })
+      return null
+    }
+    const root = this.ctx.project()?.root
+    if (!root) return null
+    const read = (p: string) => this.ctx.readFile(p).catch(() => null)
+    const diff = await buildDiff(root, files, this.deps.groupIo, read)
+    if (!diff.trim()) return null
+    const room = this.room(chat, signal)
+    const reviewer = (chat.guests ?? []).find((g) => sameModel(g, pick)) ?? makeParticipant(pick, 'guest', [room.host.alias, ...(chat.guests ?? []).map((g) => g.alias)])
+    this.ctx.emit('chat:busy', { sessionId: chat.id, busy: true })
+    const card = await this.group.review(room, reviewer, request.slice(0, 2000), files, diff)
+    const blocking = card.review ? blockingFindings(card.review) : []
+    if (!blocking.length || signal.aborted) return null
+    chat.crossCheckFix = card.id
+    this.push(chat, systemMessage('main', `Cross-check: ${room.host.label} is addressing ${blocking.length} blocking finding${blocking.length === 1 ? '' : 's'} from ${reviewer.label}.`))
+    return fixPrompt(reviewer.label, blocking)
+  }
+
+  private patchCard(id: string, messageId: string): { chat: StoredChat; card: ChatMessage & { patch: NonNullable<ChatMessage['patch']> } } {
+    const chat = this.find(id)
+    if (!chat) throw new Error(`unknown chat ${id}`)
+    const card = chat.messages.find((m) => m.id === messageId)
+    if (!card?.patch) throw new Error('no patch proposal')
+    return { chat, card: card as ChatMessage & { patch: NonNullable<ChatMessage['patch']> } }
+  }
+
+  // Applies a guest's proposal through the host's write_script (src/ and events.blink only).
+  async applyPatchProposal(id: string, messageId: string): Promise<void> {
+    const { chat, card } = this.patchCard(id, messageId)
+    if (this.running.has(id)) throw new Error('chat is busy')
+    if (card.patch.state === 'applied') throw new Error('already applied')
+    const write = gentreeTools(this.ctx, this.deps.toolFs ? { fs: this.deps.toolFs } : {}).find((t) => t.name === 'write_script')
+    if (!write) throw new Error('the host cannot write here')
+    try {
+      const r = await applyPatch(card.patch.diff, {
+        read: (p) => this.ctx.readFile(p).catch(() => null),
+        write: async (path, contents) => {
+          const res = await write.handler({ path, contents }, undefined)
+          return res.isError ? res.content.map((c) => c.text).join('') : null
+        }
+      })
+      this.push(chat, { ...card, patch: { ...card.patch, state: 'applied', detail: `applied by ${this.hostSpeaker(chat).label}: ${r.written.join(', ')}` } })
+      ;(chat.groupNotes ??= []).push(`The user applied ${card.patch.by.label}'s patch (${r.written.join(', ')}).`)
+    } catch (e) {
+      this.push(chat, { ...card, patch: { ...card.patch, state: 'failed', detail: (e as Error).message } })
+    }
+  }
+
+  // Hands the proposal to the host: it merges it in its own turn (and may adapt it).
+  async mergePatchProposal(id: string, messageId: string): Promise<void> {
+    const { chat, card } = this.patchCard(id, messageId)
+    this.push(chat, { ...card, patch: { ...card.patch, state: 'merging' } })
+    await this.send(id, `Merge ${card.patch.by.label}'s proposed patch (${card.patch.files.map((f) => f.path).join(', ')}). Check it against the current files first and adapt it where needed:\n\`\`\`diff\n${card.patch.diff.slice(0, 12_000)}\n\`\`\``)
+  }
+
+  dismissPatchProposal(id: string, messageId: string): void {
+    const { chat, card } = this.patchCard(id, messageId)
+    this.push(chat, { ...card, patch: { ...card.patch, state: 'dismissed' } })
+  }
+
+  // The user's edit of the board (add, edit, tick off, remove).
+  saveBoard(id: string, items: unknown): BoardItem[] {
+    const chat = this.find(id)
+    if (!chat) throw new Error(`unknown chat ${id}`)
+    chat.board = normalizeBoard(items)
+    this.updated(chat)
+    return chat.board
+  }
+
+  // The board as guests see it (tests, debugging).
+  boardPack(id: string): string {
+    return boardPack(this.find(id)?.board)
   }
 
   // The host's prompt: group notes since its last turn, the user's text, and a routing hint.

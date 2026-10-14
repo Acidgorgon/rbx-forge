@@ -291,3 +291,21 @@ test('codegen: the motion modules type-check under luau-lsp with Roblox definiti
   const r = spawnSync(luauLsp!, ['analyze', `--defs=${defs}`, '--platform', 'roblox', dir], { encoding: 'utf8' })
   assert.equal(r.status, 0, `${r.stdout}\n${r.stderr}`)
 })
+
+test('codegen: hover / click shines wait for their event in Luau (only idle shines run on a timer, as in engine.ts)', () => {
+  const src = compileMotionModule(normalizeSpec({ name: 'Shiny', targets: [{ path: '', effects: [{ kind: 'shine', trigger: 'hover' }] }] }))
+  assert.match(src, /shineNext = if fx\.shine and fx\.shine\.trigger == "idle" then 0\.6 else math\.huge/)
+  // The TS engine never starts a hover shine without a hover.
+  const tl = simulate(normalizeSpec({ name: 'Shiny', targets: [{ path: '', effects: [{ kind: 'shine', trigger: 'hover' }] }] }), '', [], { duration: 2 })
+  assert.ok(tl.samples.every((s) => s.values.shine === null))
+})
+
+test('codegen: Figma names with line breaks stay inside comments; fallback requires quote odd folder names', () => {
+  const m = mapFigmaNode(nodes.nodes['12:34'].document, { name: 'PlayButton' })
+  const report = { ...m.report, notes: [{ level: 'approx' as const, what: 'per-side stroke', node: 'Line one\nreturn nil', detail: 'x\r\ny' }] }
+  const src = componentModule(m.root, { from: 'Figma plugin: My\nFile / Frame', report })
+  for (const line of src.split('\n')) assert.ok(!/^(return nil|File \/ Frame|y)/.test(line), line)
+  assert.match(src, /-- PlayButton: imported from Figma by RBX Forge \(Figma plugin: My File \/ Frame\)\./)
+  assert.equal(requireBetween(null, null, { from: 'src/ui-kit/Stories/X.story.luau', to: 'src/ui-kit/Components/My Button.luau' }), 'script.Parent.Parent.Components["My Button"]')
+  assert.equal(requireBetween(null, null, { from: 'src/ui/Stories/X.story.luau', to: 'src/ui/Components/Btn.luau' }), 'script.Parent.Parent.Components.Btn')
+})

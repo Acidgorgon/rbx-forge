@@ -275,7 +275,7 @@ async function service(extra: Partial<ConstructorParameters<typeof VfxService>[0
   return { svc, root, memory }
 }
 
-test('examples go into the library and the project with Timeline.luau and the runtime', async () => {
+test('examples go into the library only; Export / Add to game writes them with Timeline.luau and the runtime', async () => {
   const { svc, root } = await service()
   assert.equal(svc.examples().length, 3)
   const e = await svc.addExample('hollow-purple')
@@ -283,6 +283,12 @@ test('examples go into the library and the project with Timeline.luau and the ru
   assert.ok(e.tags.includes('sequence'))
   assert.equal((await svc.addExample('Hollow Purple')).id, e.id) // reused
   const dir = join(root, 'src', 'shared', 'VFX', 'HollowPurple')
+  assert.ok(!existsSync(join(root, 'src', 'shared', 'VFX')), 'adding an example writes nothing into the project')
+  assert.equal(e.written, undefined)
+  // A later save of the example (e.g. a param edit) still leaves the project alone.
+  await svc.saveEffect(e.effect!, { id: e.id })
+  assert.ok(!existsSync(join(root, 'src', 'shared', 'VFX')))
+  await svc.writeProjectFiles(await svc.get(e.id))
   assert.ok(existsSync(join(dir, 'init.luau')))
   assert.match(await readFile(join(dir, 'Timeline.luau'), 'utf8'), /fx:stage\("converge"\)/)
   assert.ok(isOwnRuntime(await readFile(join(root, 'src', 'shared', 'VFX', 'ForgeFX.luau'), 'utf8')))

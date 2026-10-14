@@ -566,7 +566,9 @@ export class VfxService {
   }
 
   // Saves an effect as a generated entry (new, or replacing `id`) and writes it into the project.
-  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string; restatement?: Restatement } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+  // Writes src/shared/VFX/<Name> too, except for built-in examples (writeProject: false, and later
+  // saves of an example not written yet): those reach the project only through Export / Add to game.
+  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string; restatement?: Restatement; writeProject?: boolean } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
     const spec = { name: raw.name, description: opts.description, tags: opts.tags }
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new VfxError(`no VFX entry "${opts.id}"`)
@@ -590,7 +592,8 @@ export class VfxService {
       ...(opts.restatement ? { restatement: opts.restatement } : {})
     } as VfxEntry
     let saved = await store.save(entry)
-    if (this.deps.projectRoot()) saved = await this.writeProjectFiles(saved)
+    const unwrittenExample = !!prev && !prev.entry.written && String(prev.entry.origin ?? '').startsWith('example:')
+    if (this.deps.projectRoot() && opts.writeProject !== false && !unwrittenExample) saved = await this.writeProjectFiles(saved)
     this.changed()
     return { entry: saved, warnings: perfWarnings(effect) }
   }
@@ -838,7 +841,7 @@ export class VfxService {
         thumbs: [bestFrames[Math.min(bestFrames.length - 1, 1)] ?? bestFrames[0], ...current.thumbs.filter((t) => !t.startsWith('frames/'))].filter(Boolean).slice(0, 6),
         updatedAt: this.now()
       })
-      if (entry.written || this.deps.projectRoot()) entry = await this.writeProjectFiles(entry)
+      if (entry.written || (this.deps.projectRoot() && !String(entry.origin ?? '').startsWith('example:'))) entry = await this.writeProjectFiles(entry)
       this.progress({ entryId: id, iteration: base + result.iterations.length, phase: 'done', score: result.best.critique.overall, message: `stopped: ${result.stop}` })
       this.changed()
       return { ...result, entry }
@@ -1022,7 +1025,7 @@ export class VfxService {
   }
 
   // Adds a built-in example to the library (from its recorded timeline; no Lune needed). Reuses the
-  // entry when it was added before.
+  // entry when it was added before. Library only: no files in the project until Export / Add to game.
   async addExample(key: string): Promise<VfxEntry> {
     const ex = findExample(key)
     if (!ex) throw new VfxError(`no built-in example "${key}" (examples: ${VFX_EXAMPLES.map((e) => e.key).join(', ')})`)
@@ -1030,7 +1033,7 @@ export class VfxService {
     const prev = (await this.list()).find((e) => e.origin === origin && e.kind === 'generated')
     if (prev) return prev
     const { effect } = compileTimeline(EMPTY_BASE(ex.name), RECORDED[ex.key] ?? [], ex.script)
-    const { entry } = await this.saveEffect(effect, { prompt: origin, description: ex.description, tags: [...ex.tags, 'sequence', 'example'] })
+    const { entry } = await this.saveEffect(effect, { prompt: origin, description: ex.description, tags: [...ex.tags, 'sequence', 'example'], writeProject: false })
     return entry
   }
 

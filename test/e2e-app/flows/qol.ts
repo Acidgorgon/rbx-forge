@@ -98,7 +98,7 @@ export const qolFlows: Flow[] = [
   },
   {
     name: 'add-to-game',
-    title: 'Add to game lists the VFX preset files with a diff',
+    title: 'VFX example stays in the library; Add to game writes it, then shows a local change as a diff',
     timeoutMs: 60_000,
     async run({ page, root, note }) {
       await openPage(page, 'VFX Lab')
@@ -108,18 +108,31 @@ export const qolFlows: Flow[] = [
         await page.locator(`${CENTER} .vfx-card`, { hasText: /HollowPurple|Hollow Purple/ }).first().click()
         await detail.waitFor({ state: 'visible', timeout: 10_000 })
       }
-      // A local change to one of the preset's project files, so the plan shows a diff.
+      // Adding the example put it in the library only: nothing in the project yet.
       const dir = join(root, 'src', 'shared', 'VFX', 'HollowPurple')
-      if (existsSync(dir)) {
-        const f = readdirSync(dir).find((x) => x.endsWith('.luau'))
-        if (f) writeFileSync(join(dir, f), `${readFileSync(join(dir, f), 'utf8')}\n-- local change (forge e2e)\n`)
+      check(!existsSync(dir), 'adding the VFX example already wrote src/shared/VFX/HollowPurple')
+      const a2g = page.locator('[role="dialog"]', { has: page.locator('.a2g-files, .a2g-error') }).first()
+      const open = async () => {
+        await detail.getByRole('button', { name: /Add to game/ }).first().click()
+        await a2g.waitFor({ state: 'visible', timeout: 15_000 })
+        await a2g.locator('.a2g-file').first().waitFor({ timeout: 15_000 })
+        await page.waitForFunction(() => !document.querySelector('.a2g-files.stale'), undefined, { timeout: 15_000 })
       }
-      await detail.getByRole('button', { name: /Add to game/ }).first().click()
-      const dialog = page.locator('[role="dialog"]', { has: page.locator('.a2g-files, .a2g-error') }).first()
-      await dialog.waitFor({ state: 'visible', timeout: 15_000 })
-      await dialog.locator('.a2g-file').first().waitFor({ timeout: 15_000 })
-      const files = await dialog.locator('.a2g-file .a2g-path').allInnerTexts()
+      // First time: every file is new; write them.
+      await open()
+      const files = await a2g.locator('.a2g-file .a2g-path').allInnerTexts()
       check(files.length > 0, 'Add to game lists no files')
+      check((await a2g.locator('.a2g-file.new').count()) > 0, 'no file is listed as new for an unwritten example')
+      await a2g.getByRole('button', { name: /^\s*Write \d+ files?/ }).click()
+      await page.locator('.a2g-result').waitFor({ timeout: 20_000 })
+      await a2g.getByRole('button', { name: 'Done' }).click()
+      check(existsSync(dir), 'Write did not create src/shared/VFX/HollowPurple')
+      // A local change to one of the written files: the next plan shows it as changed, with a diff.
+      const f = readdirSync(dir).find((x) => x.endsWith('.luau'))
+      check(f, `no .luau in ${dir}`)
+      writeFileSync(join(dir, f!), `${readFileSync(join(dir, f!), 'utf8')}\n-- local change (forge e2e)\n`)
+      await open()
+      const dialog = a2g
       const diffBtn = dialog.getByRole('button', { name: /Diff/ }).first()
       check(await diffBtn.count(), `no changed file with a Diff button (files: ${files.join(', ')})`)
       await diffBtn.click()

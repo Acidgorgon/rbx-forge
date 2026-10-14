@@ -646,7 +646,12 @@ ipcMain.on('forge:titlebarTheme', (event, theme: unknown) => {
   if (process.platform === 'darwin') return
   const win = BrowserWindow.fromWebContents(event.sender)
   const light = theme === 'light'
-  win?.setTitleBarOverlay?.({ color: light ? '#e4e7eb' : '#0c0e11', symbolColor: light ? '#3c434d' : '#b0b7c2', height: 38 })
+  try {
+    win?.setTitleBarOverlay?.({ color: light ? '#e4e7eb' : '#0c0e11', symbolColor: light ? '#3c434d' : '#b0b7c2', height: 38 })
+  } catch {
+    // "Titlebar overlay is not enabled" (Linux without window-controls overlay, e.g. no compositor):
+    // nothing to recolour, and an uncaught throw here would surface as a main-process error.
+  }
   win?.setBackgroundColor(light ? '#e4e7eb' : '#0c0e11')
 })
 const agentIpc = registerAgentIpc(ctx, ipcMain, { memory, userDataDir: app.getPath('userData') })

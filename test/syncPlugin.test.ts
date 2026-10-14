@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync, existsSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { after, test } from 'node:test'
@@ -16,6 +16,7 @@ import { SyncService } from '../src/main/services/sync/service.ts'
 import { deleteInStudio, deleteJob } from '../src/main/services/studio/deleteInstance.ts'
 import { findLune } from '../src/main/services/tests/lune.ts'
 import { pluginSource } from '../src/shared/studio/plugin.ts'
+import { linkPlaces } from './syncFixture.ts'
 import type { SyncStatus } from '../src/shared/sync/types.ts'
 
 const lune = process.env.LUNE_PATH || findLune()
@@ -60,8 +61,13 @@ interface During {
   trees: string[][]
 }
 
-async function runStudio(scenario: string, during?: (env: During) => Promise<void>): Promise<{ root: string; out: string; status: SyncStatus; trees: string[][]; final: string[] }> {
+// The link id an already linked place keeps in ServerStorage.ForgeSyncLink.
+const LINK = 'link-0001-place1'
+
+async function runStudio(scenario: string, during?: (env: During) => Promise<void>, opts: { linked?: boolean } = {}): Promise<{ root: string; out: string; status: SyncStatus; trees: string[][]; final: string[] }> {
   const root = gentree()
+  const linked = opts.linked !== false
+  if (linked) linkPlaces(root, { [`local:${LINK}`]: 'default.project.json' })
   const service = new SyncService({
     root,
     engine: new SyncEngine({ root }),
@@ -92,7 +98,7 @@ async function runStudio(scenario: string, during?: (env: During) => Promise<voi
     writeFileSync(join(dir, 'ForgeBridge.luau'), pluginSource(template, { port: bridge.port }))
     const harness = resolve(import.meta.dirname, 'fixtures', 'forgeBridgeStudio.luau')
     const run = new Promise<string>((res, rej) =>
-      execFile(lune!, ['run', harness, join(dir, 'ForgeBridge.luau'), scenario], { cwd: dir, timeout: 60_000 }, (err, stdout, stderr) => (err ? rej(new Error(`${err.message}\n${stdout}\n${stderr}`)) : res(stdout + stderr)))
+      execFile(lune!, ['run', harness, join(dir, 'ForgeBridge.luau'), scenario, linked ? LINK : ''], { cwd: dir, timeout: 60_000 }, (err, stdout, stderr) => (err ? rej(new Error(`${err.message}\n${stdout}\n${stderr}`)) : res(stdout + stderr)))
     )
     const [out] = await Promise.all([run, during?.({ bridge, service, trees })])
     assert.match(out, /SCENARIO DONE/, out)
@@ -112,7 +118,7 @@ test('plugin: mapped folders Rojo builds after the bridge started are synced (fr
   // A script created in Studio under a mapped folder became a file.
   assert.ok(existsSync(join(root, 'src/client/Client/Controllers/Shop.luau')), out)
   assert.equal(readFileSync(join(root, 'src/client/Client/Controllers/Shop.luau'), 'utf8'), 'return {}\n')
-  const place = status.places.find((p) => p.placeKey === 'unpublished:Place1')
+  const place = status.places.find((p) => p.placeKey === `local:${LINK}`)
   assert.ok(place, JSON.stringify(status.places))
   assert.equal(place.gate, 'clear')
 })
@@ -180,4 +186,73 @@ test('plugin: Delete in Studio removes a Studio-only instance undoably and refus
   // The Game tab dropped it (and its child) right away.
   assert.ok(!final.some((p) => p.startsWith('StarterPlayer.StarterPlayerScripts.LocalScript')), JSON.stringify(final))
   assert.ok(final.includes('ReplicatedStorage.Dup'), JSON.stringify(final))
+})
+
+// Every file under the project (but Forge's own .forge/ state) with its content.
+function diskState(root: string): Record<string, string> {
+  const out: Record<string, string> = {}
+  const walk = (rel: string) => {
+    for (const e of readdirSync(join(root, rel), { withFileTypes: true })) {
+      const child = rel ? `${rel}/${e.name}` : e.name
+      if (child === '.forge') continue
+      if (e.isDirectory()) walk(child)
+      else out[child] = readFileSync(join(root, child), 'utf8')
+    }
+  }
+  walk('')
+  return out
+}
+
+async function until<T>(what: string, fn: () => Promise<T | undefined | null | false>, ms = 20_000): Promise<T> {
+  const end = Date.now() + ms
+  for (;;) {
+    const v = await fn()
+    if (v) return v
+    if (Date.now() > end) throw new Error(`timed out waiting for ${what}`)
+    await new Promise((r) => setTimeout(r, 100))
+  }
+}
+
+test('plugin: an unlinked place writes nothing and holds nothing; once linked, its first sync waits for a side', { skip }, async () => {
+  let before: Record<string, string> = {}
+  let checked = false
+  const { root, out } = await runStudio(
+    'unlinked',
+    async ({ service }) => {
+      before = diskState(join(service.root))
+      // The plugin connects and asks for sync: not linked, so it is listed, nothing else.
+      const unlinked = await until('the unlinked place', async () => (await service.status()).unlinked?.[0])
+      assert.equal(unlinked.name, 'Place1')
+      assert.equal(unlinked.canLink, true)
+      await new Promise((r) => setTimeout(r, 1500))
+      let status = await service.status()
+      assert.ok(status.places.every((p) => p.gate === 'idle' && !p.conflicts && !p.lastSnapshot), JSON.stringify(status.places))
+      assert.equal(service.gateFor('default.project.json').gate, 'idle')
+      assert.deepEqual(service.conflicts(), [])
+      assert.deepEqual(diskState(service.root), before)
+      // No base state for any place either.
+      const index = join(service.root, '.forge', 'sync', 'index.json')
+      assert.deepEqual(existsSync(index) ? JSON.parse(readFileSync(index, 'utf8')).places : {}, {})
+      // Link it: the plugin stores the link id in the place and starts the first sync.
+      await service.linkPlace(unlinked.id)
+      const place = await until('the linked place held for the first-sync choice', async () => (await service.status()).places.find((p) => p.placeKey.startsWith('local:') && p.gate === 'blocked'))
+      const first = service.conflicts().filter((c) => c.placeKey === place.placeKey)
+      assert.ok(first.length >= 2 && first.every((c) => c.reason === 'first-run'), JSON.stringify(first.map((c) => [c.file, c.reason])))
+      assert.ok(first.some((c) => c.file === 'src/client/Client/Controllers/Shop.luau'), 'a Studio-only script waits too')
+      // Still nothing written or trashed before the decision.
+      assert.deepEqual(diskState(service.root), before)
+      await service.resolveAll(place.placeKey, 'studio', 'first-run')
+      assert.equal(readFileSync(join(service.root, 'src/client/Client/Controllers/Shop.luau'), 'utf8'), 'return { vfx = true }\n')
+      assert.equal(readFileSync(join(service.root, 'src/client/Client/init.client.luau'), 'utf8'), 'print("vfx place")\n')
+      status = await service.status()
+      assert.equal(status.places.find((p) => p.placeKey === place.placeKey)?.gate, 'clear')
+      checked = true
+    },
+    { linked: false }
+  )
+  assert.ok(checked, out)
+  assert.match(out, /SET ATTRIBUTE ServerStorage\.ForgeSyncLink = /, out)
+  assert.match(out, /now linked to the Forge project/, out)
+  const links = JSON.parse(readFileSync(join(root, '.forge', 'sync', 'links.json'), 'utf8'))
+  assert.deepEqual(Object.values(links.links).map((l: any) => l.projectFile), ['default.project.json'])
 })

@@ -51,6 +51,7 @@ export class StudioBridge {
   private boundPort = 0
   private error: string | undefined
   private info: StudioInfo | null = null
+  private pollers = new Map<string, StudioInfo>()
   private active: Active | null = null
   private waiters = new Set<(job: BridgeJob | null) => void>()
   private now: () => number
@@ -81,6 +82,14 @@ export class StudioBridge {
 
   studio(): StudioInfo | null {
     return this.info
+  }
+
+  // Every Studio window that polled within CONNECTED_MS (several places can be open at once; studio()
+  // is only the last one).
+  studios(): StudioInfo[] {
+    const now = this.now()
+    for (const [k, v] of this.pollers) if (now - v.lastSeen >= CONNECTED_MS) this.pollers.delete(k)
+    return [...this.pollers.values()]
   }
 
   connected(): boolean {
@@ -195,6 +204,8 @@ export class StudioBridge {
       ...(Number.isFinite(placeId) && placeId > 0 ? { placeId } : {}),
       ...(Number.isFinite(v) && v > 0 ? { pluginVersion: v } : {})
     }
+    this.pollers.set(`${this.info.placeId ?? 0}|${this.info.place ?? ''}`, this.info)
+    if (this.pollers.size > 32) this.pollers.delete(this.pollers.keys().next().value!)
     if (first) this.onChange?.()
   }
 

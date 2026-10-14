@@ -164,8 +164,10 @@ test('config hands out a session and the place roots, skipping Packages', async 
   const other = await service.handler.config({ placeId: 999 })
   assert.equal(other.enabled, false)
   assert.match(other.reason ?? '', /999/)
-  // An unpublished place (placeId 0) still maps to the default project.
-  assert.equal((await service.handler.config({ placeId: 0, place: 'Local' })).enabled, true)
+  // An unpublished place (placeId 0) is not linked: it no longer falls back to the default project.
+  const local = await service.handler.config({ placeId: 0, place: 'Local' })
+  assert.equal(local.enabled, false)
+  assert.match(local.reason ?? '', /not linked/)
 })
 
 test('config is off when the setting is not forge, or without an engine', async () => {

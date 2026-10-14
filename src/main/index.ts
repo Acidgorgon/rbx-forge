@@ -505,6 +505,7 @@ const forgeSync = createSync({
     const info = studio.bridge.studio()
     return info ? { placeId: info.placeId, place: info.place, pluginVersion: info.pluginVersion, connected: studio.bridge.connected() } : null
   },
+  studios: () => studio.bridge.studios(),
   plugin: async () => {
     const s = await studio.service.status()
     return s.plugin.dir ? { installed: s.plugin.installed, ...(s.plugin.version !== undefined ? { version: s.plugin.version } : {}) } : null

@@ -10,7 +10,7 @@ import type { CanUseTool, McpServerConfig, Options } from '@anthropic-ai/claude-
 import type { BoardItem, ChatImage, ChatMessage, ChatSession, EffortChoice, GroupParticipant, GroupSettings, ModelChoice, NewChatOptions, ProviderId, Speaker } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import type { Credentials } from './credentials.ts'
-import { estimateCost, fromAnthropicUsage, fromOpenAiUsage, SdkUsageTracker, type Usage } from './budget/usage.ts'
+import { addUsage, emptyUsage, estimateCost, fromAnthropicUsage, fromOpenAiUsage, SdkUsageTracker, type Usage } from './budget/usage.ts'
 import { routeModel, type Route } from './budget/budget.ts'
 import { compactHistory, needsCompaction, SUMMARY_INSTRUCTIONS } from './budget/compact.ts'
 import { shouldOrchestrate, type OrchestrateMode } from './orchestrator/heuristic.ts'
@@ -46,6 +46,7 @@ import {
   STUDIO_SERVER,
   SYSTEM_PROMPT,
   systemMessage,
+  SubagentChips,
   toChatMessages,
   userMessage,
   type QueryFn
@@ -804,14 +805,18 @@ export class ChatManager {
       studio: !!studio,
       bounds: chatPermissions(this.ctx),
       approve: (name, input, signal) => this.modes.approveSdk(chat, name, input, signal),
-      onPlan: (plan) => this.modes.capturePlan(chat.id, plan)
+      onPlan: (plan) => this.modes.capturePlan(chat.id, plan),
+      rules
     })
     return {
       cwd: root,
       model: modelId,
       ...sdkEffortOptions(modelId, effort),
       systemPrompt: withRules(SYSTEM_PROMPT, rules) + modeNote(mode, true),
-      ...(env ? { env } : {}),
+      // Subagents (and Bash) run in the foreground: the turn waits for them, Stop ends them and
+      // their usage is in this turn's result. The CLI's own Explore / Plan agents are replaced by
+      // the chat's named subagents (modes.ts chatSubagents).
+      env: { ...(env ?? process.env), CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS: '1' },
       ...(this.deps.meter?.guard.sdkOptions('chat') ?? {}),
       ...executableOption(),
       abortController: abort,
@@ -860,16 +865,23 @@ export class ChatManager {
     }
     // Ledger: per-model deltas of the SDK's cumulative modelUsage (baseline per SDK session).
     const tracker = new SdkUsageTracker(modelId, chat.sdkSessionId && meter ? meter.ledger.sdkBaseline(chat.sdkSessionId) : {})
+    const subs = new SubagentChips()
     try {
       // Images: the SDK's streaming input with image content blocks.
       const payloads = await this.payloads(images)
       const input = payloads.length ? anthropicPrompt(prompt, payloads) : prompt
       for await (const m of queryFn({ prompt: input, options: this.buildOptions(chat, root, abort, modelId, env, rules, effort) })) {
         if ('session_id' in m && m.session_id && chat.sdkSessionId !== m.session_id) chat.sdkSessionId = m.session_id
-        for (const cm of toChatMessages(m, 'main')) this.push(chat, cm)
-        if (m.type === 'result' && m.usage) this.recordUsage(chat, this.hostSpeaker(chat), fromAnthropicUsage(m.usage as any))
+        for (const cm of toChatMessages(m, 'main', subs)) this.push(chat, cm)
+        const records = tracker.onMessage(m)
+        // Per-model usage of the chat: the result's modelUsage delta (main loop + subagents) when
+        // the meter keeps the session baseline, else the main loop's usage.
+        if (m.type === 'result') {
+          const u = meter && records.length ? records.reduce<Usage>((a, r) => addUsage(a, r), emptyUsage()) : m.usage ? fromAnthropicUsage(m.usage as any) : null
+          if (u) this.recordUsage(chat, this.hostSpeaker(chat), u)
+        }
         if (meter) {
-          meter.ledger.recordAll(tracker.onMessage(m), { chatId: chat.id })
+          meter.ledger.recordAll(records, { chatId: chat.id })
           if (m.type === 'result' && chat.sdkSessionId) meter.ledger.setSdkBaseline(chat.sdkSessionId, tracker.snapshot())
           if (m.type === 'assistant') {
             meter.setLive(chat.id, tracker.live())

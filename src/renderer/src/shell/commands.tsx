@@ -13,6 +13,8 @@ import { openDoctor, openUsageSettings } from '../pages/qolc/events'
 import { monaco } from '../monaco'
 import { formatDocumentIn } from '../editorAssist/format'
 import { editorAssistStatus, setEditorAssist } from '../editorAssist/state'
+import { groupOrder, joinAll } from '@shared/editorGroups'
+import { focusGroupAt, moveToOtherGroup, splitTab } from './groupActions'
 
 export interface Command {
   id: string
@@ -183,7 +185,17 @@ export function buildCommands(state: State, actions: Actions): Command[] {
     const on = assist.effective.aiCompletions
     add('File', 'ai.completions', on ? 'Turn off AI completions' : 'Turn on AI completions', () => void setEditorAssist({ aiCompletions: !on }), { icon: <Icon name="bolt" />, detail: assist.completions.detail })
   }
-  add('File', 'tab.close', 'Close tab', () => actions.closeTab(state.activeTab), { keys: 'mod+w', icon: <Icon name="x" /> })
+  add('File', 'tab.close', 'Close tab', () => actions.closeTab(state.activeTab, state.editor.activeGroup), { keys: 'mod+w', icon: <Icon name="x" /> })
+
+  // Split editor (editor groups)
+  const group = state.editor.activeGroup
+  add('View', 'editor.splitRight', 'Split editor right', () => splitTab(state, actions, state.activeTab, group, 'right'), { keys: 'mod+backslash', icon: <Icon name="split" /> })
+  add('View', 'editor.splitDown', 'Split editor down', () => splitTab(state, actions, state.activeTab, group, 'bottom'), { icon: <Icon name="split" /> })
+  if (state.editor.groups.length > 1) {
+    add('View', 'editor.moveToOther', 'Move tab to other group', () => moveToOtherGroup(state, actions, state.activeTab, group), { icon: <Icon name="arrowRight" /> })
+    add('View', 'editor.join', 'Join all editor groups', () => actions.editorGroups(joinAll), { icon: <Icon name="split" /> })
+    groupOrder(state.editor).forEach((_, i) => add('View', `editor.focus${i + 1}`, `Focus editor group ${i + 1}`, () => focusGroupAt(actions, i), { keys: `mod+${i + 1}`, icon: <Icon name="split" /> }))
+  }
   return cmds
 }
 

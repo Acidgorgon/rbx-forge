@@ -1,5 +1,7 @@
-// Monaco host for file tabs. One editor instance stays mounted while any file is open (hidden behind
-// page tabs), so luau-lsp starts once and models keep their undo stacks and view state.
+// Monaco host for file tabs. Each editor group (split editor) keeps one editor instance mounted while
+// it has a file open (hidden behind page tabs). Models are shared by path, so the same file in two
+// groups is one buffer (edits show in both) with its own scroll / cursor per group. App-wide pieces
+// (markers -> Problems, model disposal, save hooks) live in useEditorServices, mounted once.
 import { useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { useStore, type ProblemItem } from '../store'
@@ -13,6 +15,7 @@ import { registerInlineCompletions } from '../editorAssist/inline'
 import { setBeforeSave } from '../editorAssist/saveHooks'
 import { setAssistToast } from '../editorAssist/state'
 import { useAutoSave } from '../editorAssist/autosave'
+import { focusGroup } from '@shared/editorGroups'
 
 const pathOf = (model: monaco.editor.ITextModel) => model.uri.path.replace(/^\/+/, '')
 
@@ -22,45 +25,16 @@ function severityOf(s: monaco.MarkerSeverity): ProblemItem['severity'] {
   return 'info'
 }
 
-export function CodeEditor({ path, readOnlyReason, visible }: { path: string; readOnlyReason: string | null; visible: boolean }) {
+// Last view state (scroll, cursor, folds) per path from any group: a file opened in a second group
+// starts where the first one was.
+const lastViewState = new Map<string, monaco.editor.ICodeEditorViewState>()
+
+// App-wide editor wiring, mounted once (EditorArea) however many editors there are.
+export function useEditorServices(): void {
   const { state, actions } = useStore()
   const appearance = useAppearance()
-  const file = state.files.find((f) => f.path === path)
-  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
-  const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
   const actionsRef = useRef(actions)
   actionsRef.current = actions
-  const pathRef = useRef(path)
-  pathRef.current = path
-  const pendingReveal = useRef<{ path: string; position: { lineNumber: number; column: number } } | null>(null)
-  const stateReveal = useRef(state.reveal)
-  stateReveal.current = state.reveal
-  const smooth = appearance.motion === 'full' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
-  const revealPending = () => {
-    const pending = pendingReveal.current
-    const editor = editorRef.current
-    const model = editor?.getModel()
-    if (!pending || !editor || !model || pathOf(model) !== pending.path) return
-    pendingReveal.current = null
-    editor.setPosition(pending.position)
-    editor.revealPositionInCenter(pending.position)
-    editor.focus()
-  }
-
-  const publishCursor = () => {
-    const editor = editorRef.current
-    const model = editor?.getModel()
-    const pos = editor?.getPosition()
-    if (!editor || !model || !pos) return setCursor(null)
-    rememberCursor(pathOf(model), { line: pos.lineNumber, column: pos.column })
-    const opts = model.getOptions()
-    const sel = editor.getSelection()
-    setCursor({ line: pos.lineNumber, column: pos.column, tabSize: opts.tabSize, insertSpaces: opts.insertSpaces, selected: sel && !sel.isEmpty() ? model.getValueLengthInRange(sel) : 0 })
-  }
-
-  // Autosave (Settings > Editor; default: on focus change).
-  useAutoSave(editorInstance, path)
 
   // StyLua (Format Document, format on save) and AI ghost text; toasts go to the app.
   useEffect(() => {
@@ -72,80 +46,35 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
     }
   }, [])
 
-  const onMount: OnMount = (editor) => {
-    editorRef.current = editor
-    setEditorInstance(editor)
-    registerStyluaFormatter(monaco)
-    registerInlineCompletions(monaco)
-    editor.onDidChangeCursorSelection(publishCursor)
-    // A file's first showing this session goes back to its saved cursor (unless a reveal is pending).
-    const restoreCursor = () => {
-      const model = editor.getModel()
-      if (!model) return
-      const p = pathOf(model)
-      if (pendingReveal.current?.path === p || stateReveal.current?.path === p) return markCursorUsed(p)
-      const pos = takeCursor(p)
-      if (pos && pos.line <= model.getLineCount()) {
-        editor.setPosition({ lineNumber: pos.line, column: pos.column })
-        editor.revealPositionInCenter({ lineNumber: pos.line, column: pos.column })
-      }
-    }
-    editor.onDidChangeModel(() => setTimeout(() => (restoreCursor(), publishCursor())))
-    restoreCursor()
-    publishCursor()
-    startLuauLsp(monaco, {
-      openPath: (p, position) => {
-        if (position) pendingReveal.current = { path: p, position }
-        void actionsRef.current.openFile(p).then(() => setTimeout(revealPending))
-      },
-      onStatus: (s, detail) => actionsRef.current.set({ lsp: { state: s, detail } })
-    })
-    revealPending()
-  }
-
   // Theme follows the app.
   useEffect(() => {
     monaco.editor.setTheme(appearance.resolved === 'dark' ? 'forge-dark' : 'forge-light')
   }, [appearance.resolved])
 
-  useEffect(() => {
-    const t = setTimeout(revealPending)
-    return () => clearTimeout(t)
-  }, [path, file?.loading])
-
-  useEffect(() => {
-    if (visible) setTimeout(() => editorRef.current?.layout())
-    else setCursor(null)
-  }, [visible])
-
-  // openFileAt / palette ":" — reveal once the file shows.
-  useEffect(() => {
-    const reveal = state.reveal
-    if (!reveal || reveal.path !== path || file?.loading) return
-    pendingReveal.current = { path: reveal.path, position: { lineNumber: reveal.line, column: reveal.column } }
-    actions.set({ reveal: null })
-    const t = setTimeout(revealPending)
-    return () => clearTimeout(t)
-  }, [state.reveal, path, file?.loading])
-
-  // Dispose models of files that were closed (the editor keeps models between tab switches).
+  // Dispose models of files that were closed (editors keep models between tab switches). With no
+  // file open at all this drops every model, so a file with the same path in the next project does
+  // not reopen the old project's text (Monaco reuses a model by path).
   const openPaths = state.files.map((f) => f.path).join('\n')
   useEffect(() => {
-    const open = new Set(openPaths.split('\n'))
+    const open = new Set(openPaths ? openPaths.split('\n') : [])
     for (const m of monaco.editor.getModels()) {
-      if (m.uri.scheme === 'file' && !open.has(pathOf(m)) && !m.isAttachedToEditor()) m.dispose()
+      if (m.uri.scheme === 'file' && !open.has(pathOf(m)) && !m.isAttachedToEditor()) {
+        lastViewState.delete(pathOf(m))
+        m.dispose()
+      }
     }
   }, [openPaths])
-
-  // When the editor goes away (every file tab closed at once, e.g. on a project switch) the effect
-  // above does not run again: drop the remaining models, or a file with the same path in the next
-  // project would reopen the old project's text (Monaco reuses a model by path).
   useEffect(
     () => () => {
       for (const m of monaco.editor.getModels()) if (m.uri.scheme === 'file' && !m.isAttachedToEditor()) m.dispose()
     },
     []
   )
+
+  // Nothing shows a file: no cursor in the status bar.
+  useEffect(() => {
+    if (!state.activeFile) setCursor(null)
+  }, [state.activeFile])
 
   // Markers (luau-lsp, Blink) feed the Problems panel and status bar.
   useEffect(() => {
@@ -204,6 +133,138 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
     const sub = monaco.editor.onDidCreateModel(apply)
     return () => sub.dispose()
   }, [state.blink])
+}
+
+export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: { path: string; readOnlyReason: string | null; visible: boolean; active: boolean; groupId: string }) {
+  const { state, actions } = useStore()
+  const appearance = useAppearance()
+  const file = state.files.find((f) => f.path === path)
+  const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
+  const actionsRef = useRef(actions)
+  actionsRef.current = actions
+  const activeRef = useRef(active)
+  activeRef.current = active
+  const pendingReveal = useRef<{ path: string; position: { lineNumber: number; column: number } } | null>(null)
+  const stateReveal = useRef(state.reveal)
+  stateReveal.current = state.reveal
+  // This editor's own view state per path (the same file in another group scrolls on its own).
+  const viewStates = useRef(new Map<string, monaco.editor.ICodeEditorViewState>())
+  // The path the view state events belong to (Monaco fires scroll events mid model swap).
+  const shownPath = useRef<string | null>(null)
+  const smooth = appearance.motion === 'full' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+  const revealPending = () => {
+    const pending = pendingReveal.current
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    if (!pending || !editor || !model || pathOf(model) !== pending.path) return
+    pendingReveal.current = null
+    editor.setPosition(pending.position)
+    editor.revealPositionInCenter(pending.position)
+    editor.focus()
+  }
+
+  // The status bar shows the cursor of the active group's editor.
+  const publishCursor = () => {
+    if (!activeRef.current) return
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    const pos = editor?.getPosition()
+    if (!editor || !model || !pos) return setCursor(null)
+    rememberCursor(pathOf(model), { line: pos.lineNumber, column: pos.column })
+    const opts = model.getOptions()
+    const sel = editor.getSelection()
+    setCursor({ line: pos.lineNumber, column: pos.column, tabSize: opts.tabSize, insertSpaces: opts.insertSpaces, selected: sel && !sel.isEmpty() ? model.getValueLengthInRange(sel) : 0 })
+  }
+
+  const saveView = () => {
+    const editor = editorRef.current
+    const model = editor?.getModel()
+    if (!editor || !model || pathOf(model) !== shownPath.current) return
+    const v = editor.saveViewState()
+    if (!v) return
+    viewStates.current.set(shownPath.current, v)
+    lastViewState.set(shownPath.current, v)
+  }
+
+  // Autosave (Settings > Editor; default: on focus change).
+  useAutoSave(editorInstance, path)
+
+  const onMount: OnMount = (editor) => {
+    editorRef.current = editor
+    setEditorInstance(editor)
+    registerStyluaFormatter(monaco)
+    registerInlineCompletions(monaco)
+    editor.onDidChangeCursorSelection(() => {
+      saveView()
+      publishCursor()
+    })
+    editor.onDidScrollChange(saveView)
+    // Typing or clicking into an editor makes its group the active one.
+    editor.onDidFocusEditorText(() => actionsRef.current.editorGroups((gs) => focusGroup(gs, groupId)))
+    // Showing a file: this editor's last view of it, else another group's, else (first showing this
+    // session) its saved cursor. A pending reveal wins over all of them.
+    const showModel = () => {
+      const model = editor.getModel()
+      if (!model) return
+      const p = pathOf(model)
+      shownPath.current = p
+      if (pendingReveal.current?.path === p || stateReveal.current?.path === p) return markCursorUsed(p)
+      const view = viewStates.current.get(p) ?? lastViewState.get(p)
+      if (view) {
+        markCursorUsed(p)
+        editor.restoreViewState(view)
+        return
+      }
+      const pos = takeCursor(p)
+      if (pos && pos.line <= model.getLineCount()) {
+        editor.setPosition({ lineNumber: pos.line, column: pos.column })
+        editor.revealPositionInCenter({ lineNumber: pos.line, column: pos.column })
+      }
+    }
+    editor.onDidChangeModel(() => {
+      showModel()
+      setTimeout(publishCursor)
+    })
+    showModel()
+    publishCursor()
+    // Once for the app (a no-op when already started). Go to definition in another file opens it in
+    // the active group and reveals the position there.
+    startLuauLsp(monaco, {
+      openPath: (p, position) => {
+        if (position) void actionsRef.current.openFileAt(p, position.lineNumber, position.column)
+        else void actionsRef.current.openFile(p)
+      },
+      onStatus: (s, detail) => actionsRef.current.set({ lsp: { state: s, detail } })
+    })
+    revealPending()
+  }
+
+  useEffect(() => {
+    const t = setTimeout(revealPending)
+    return () => clearTimeout(t)
+  }, [path, file?.loading])
+
+  useEffect(() => {
+    if (visible) setTimeout(() => editorRef.current?.layout())
+  }, [visible])
+
+  useEffect(() => {
+    if (!active) return
+    if (visible) publishCursor()
+    else setCursor(null)
+  }, [active, visible])
+
+  // openFileAt / palette ":" — the active group reveals once the file shows.
+  useEffect(() => {
+    const reveal = state.reveal
+    if (!active || !reveal || reveal.path !== path || file?.loading) return
+    pendingReveal.current = { path: reveal.path, position: { lineNumber: reveal.line, column: reveal.column } }
+    actions.set({ reveal: null })
+    const t = setTimeout(revealPending)
+    return () => clearTimeout(t)
+  }, [state.reveal, path, file?.loading, active])
 
   if (!file || file.loading) return <div className="editor-loading"><span className="spinner" /></div>
 
@@ -211,6 +272,7 @@ export function CodeEditor({ path, readOnlyReason, visible }: { path: string; re
     <Editor
       path={file.path}
       keepCurrentModel
+      saveViewState={false}
       language={languageForPath(file.path)}
       theme={appearance.resolved === 'dark' ? 'forge-dark' : 'forge-light'}
       value={file.current}

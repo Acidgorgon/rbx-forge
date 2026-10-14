@@ -3,6 +3,7 @@
 // the configured fake provider). Keep no-key flows before 'fake-provider'.
 import { coreFlows } from './core.ts'
 import { editorAssistFlows } from './editorAssist.ts'
+import { editorGroupFlows } from './editorGroups.ts'
 import { pageFlows } from './pages.ts'
 import { labFlows } from './labs.ts'
 import { studioFlows, syncFlows } from './sync.ts'
@@ -12,4 +13,4 @@ import type { Flow } from './types.ts'
 
 export type { Flow, FlowCtx } from './types.ts'
 
-export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...syncFlows, ...labFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...aiFlows, ...providerQolFlows, ...webglOffFlows]
+export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...editorGroupFlows, ...syncFlows, ...labFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...aiFlows, ...providerQolFlows, ...webglOffFlows]

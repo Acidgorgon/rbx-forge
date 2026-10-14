@@ -1,0 +1,47 @@
+/* Split editor (EditorArea): groups as absolutely placed boxes, sashes between them, drag preview. */
+
+.eg-grid { flex: 1; min-height: 0; min-width: 0; position: relative; }
+.eg-cell { position: absolute; display: flex; min-width: 0; min-height: 0; transition: left var(--dur-panel) var(--ease-out), top var(--dur-panel) var(--ease-out), width var(--dur-panel) var(--ease-out), height var(--dur-panel) var(--ease-out); }
+.eg-cell.edge-l { border-left: 1px solid var(--line); }
+.eg-cell.edge-t { border-top: 1px solid var(--line); }
+body.resizing .eg-cell { transition: none; }
+.eg-group { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; animation: rf-fade-in var(--dur-slow) var(--ease-out); }
+/* No transform on groups (or their cells): it would make them the containing block of fixed menus
+   and Monaco's overflow widgets. */
+.eg-empty { align-items: center; justify-content: center; color: var(--fg-faint); font: 11px/1 var(--font-mono); letter-spacing: .04em; }
+
+/* Active group: its open tab carries a thin coral line; other groups' open tabs read quieter. */
+.editor-area.multi .eg-group.active .tab.on::before { content: ''; position: absolute; left: 0; right: 0; top: 0; height: 1px; background: var(--ember); animation: rf-fade-in var(--dur-base) var(--ease-out); }
+.editor-area.multi .eg-group:not(.active) .tab.on { color: var(--fg-muted); }
+.editor-area.multi .eg-group:not(.active) .crumbs { opacity: .72; }
+
+/* sashes: a 6px hit area centred on the 1px line between two groups */
+.eg-sash { position: absolute; z-index: 6; }
+.eg-sash.row { width: 7px; margin-left: -3px; cursor: col-resize; }
+.eg-sash.col { height: 7px; margin-top: -3px; cursor: row-resize; }
+.eg-sash::after { content: ''; position: absolute; background: transparent; transition: background var(--dur-fast) var(--ease-out) 0ms; }
+.eg-sash.row::after { top: 0; bottom: 0; left: 3px; width: 1px; }
+.eg-sash.col::after { left: 0; right: 0; top: 3px; height: 1px; }
+.eg-sash:hover::after, .eg-sash.dragging::after { background: var(--fg-faint); transition-delay: 300ms; }
+.eg-sash.dragging::after { transition-delay: 0ms; }
+
+/* tab drag */
+body.eg-dragging, body.eg-dragging * { cursor: grabbing !important; user-select: none !important; }
+.tab.drag-src { opacity: .45; }
+.eg-drop { position: fixed; z-index: 70; pointer-events: none; display: grid; place-items: center; border-radius: var(--r-md); background: var(--ember-soft); border: 1px solid var(--ember-lo); opacity: 0; transition: left var(--dur-base) var(--ease-out), top var(--dur-base) var(--ease-out), width var(--dur-base) var(--ease-out), height var(--dur-base) var(--ease-out), opacity var(--dur-fast) var(--ease-out); }
+.eg-drop.on { opacity: 1; }
+.eg-drop .lbl { font: 500 10.5px/1 var(--font-mono); letter-spacing: .04em; color: var(--ember-text); background: var(--bg-overlay); border: 1px solid var(--line-strong); padding: 5px 9px; border-radius: var(--r-pill); box-shadow: var(--sh-2); white-space: nowrap; animation: rf-fade-in var(--dur-fast) var(--ease-out); }
+.eg-insert { position: fixed; z-index: 71; width: 2px; border-radius: 1px; background: var(--ember); pointer-events: none; transition: left var(--dur-fast) var(--ease-out); }
+.eg-ghost { position: fixed; left: 0; top: 0; z-index: 72; pointer-events: none; display: inline-flex; align-items: center; gap: 6px; height: 24px; padding: 0 10px; border-radius: var(--r-md); background: var(--bg-overlay); border: 1px solid var(--line-strong); box-shadow: var(--sh-2); font-size: 12px; color: var(--fg); white-space: nowrap; }
+.eg-ghost .plus { font: 600 11px/1 var(--font-mono); color: var(--ember-text); }
+
+/* Narrow groups: the breadcrumb trail keeps its room; secondary buttons go (Ctrl+S, the tab menu).
+   The container is the crumbs bar itself (containment makes it a containing block for fixed
+   elements, so its sibling menu renders outside it). */
+.eg-group .crumbs { container: crumbs / inline-size; }
+@container crumbs (max-width: 560px) {
+  .crumbs .right-meta .crumb-opt { display: none; }
+}
+@container crumbs (max-width: 380px) {
+  .crumbs .right-meta .crumb-lang { display: none; }
+}

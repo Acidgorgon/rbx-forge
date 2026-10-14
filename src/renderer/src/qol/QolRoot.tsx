@@ -4,6 +4,7 @@ import { useEffect, useRef, useState, type ReactElement, type ReactNode } from '
 import { createPortal } from 'react-dom'
 import type { Digest } from '@shared/types'
 import { restorePlan } from '@shared/qol/session'
+import { serializeGroups } from '@shared/editorGroups'
 import { useStore, type Layout, type PageKind } from '../store'
 import { BugReportDialog } from './BugReportDialog'
 import { AwayDigest } from './AwayDigest'
@@ -94,6 +95,8 @@ function useSessionRestore(): void {
           else actions.openPage(t.kind as PageKind)
         }
         if (plan.tabs.length && !plan.tabs.some((t) => t.id === 'forge')) actions.closeTab('forge')
+        // Split editor groups come back over the reopened tabs (tabs that did not survive drop out).
+        if (ps.groups) actions.restoreGroups(ps.groups)
         actions.activateTab(plan.activeTab)
       } catch {
         // A broken state file never blocks startup.
@@ -127,8 +130,8 @@ function useSessionRestore(): void {
 
   useEffect(() => {
     if (!ready) return
-    updateProject({ tabs: state.tabs.map((t) => ({ id: t.id, kind: t.kind, title: t.title, ...(t.path ? { path: t.path } : {}), ...(t.agentId ? { agentId: t.agentId } : {}) })), activeTab: state.activeTab })
-  }, [state.tabs, state.activeTab, ready])
+    updateProject({ tabs: state.tabs.map((t) => ({ id: t.id, kind: t.kind, title: t.title, ...(t.path ? { path: t.path } : {}), ...(t.agentId ? { agentId: t.agentId } : {}) })), activeTab: state.activeTab, groups: serializeGroups(state.editor) })
+  }, [state.tabs, state.activeTab, state.editor, ready])
 
   useEffect(() => {
     if (!ready) return

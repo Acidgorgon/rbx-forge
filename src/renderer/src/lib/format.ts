@@ -83,6 +83,9 @@ export function plural(n: number, word: string, many = `${word}s`): string {
   return `${n} ${n === 1 ? word : many}`
 }
 
+// An error's message for a toast or a line of UI. Errors thrown in main reach the renderer as
+// "Error invoking remote method 'harness:x': VfxError: msg"; only "msg" is useful to the user.
 export function errorText(e: unknown): string {
-  return e instanceof Error ? e.message : String(e)
+  const text = e instanceof Error ? e.message : String(e)
+  return text.replace(/^Error invoking remote method '[^']+':\s*/, '').replace(/^(\w*Error):\s*/, '')
 }

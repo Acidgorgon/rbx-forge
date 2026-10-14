@@ -23,6 +23,8 @@ export interface SyncWireDeps {
   }
   pluginsDir: () => string | null
   studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
+  // Every Studio window polling the bridge right now.
+  studios?: () => { placeId?: number; place?: string }[]
   plugin?: () => Promise<{ installed: boolean; version?: number } | null>
   // The engine worker's SyncEngine and mapping.ts (loadPlaces / placeFor). Absent: Forge Sync stays
   // off for the plugin and every place serves normally.
@@ -131,6 +133,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     syncResolveAll: (placeKey: string, take: 'studio' | 'disk', reason?: string) =>
       need().resolveAll(String(placeKey), take, reason === 'first-run' || reason === 'both-changed' || reason === 'deleted-vs-edited' ? reason : undefined),
     syncServeAnyway: (placeKey: string) => need().serveAnyway(String(placeKey)),
+    syncLinkPlace: (id: string, projectFile?: string) => need().linkPlace(String(id), typeof projectFile === 'string' && projectFile ? projectFile : undefined),
     syncCommitStudioEdits: (message?: string): Promise<SyncCommitResult> => need().commitStudioEdits(message),
     syncDisableLegacyPlugin: () => need().disableLegacyPlugin(),
     syncSaveTarget: async (instancePath: unknown) => (current ? current.saveTarget(deps.activePlace?.() ?? 'default.project.json', cleanPath(instancePath)) : { reason: 'No project open' }),
@@ -170,6 +173,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
         git: (args) => git(root, args),
         pluginsDir: deps.pluginsDir,
         studio: deps.studio,
+        studios: deps.studios,
         plugin: deps.plugin,
         onGate: (file, gate, detail) => deps.supervisor.setGate(file, gate, detail),
         emit,

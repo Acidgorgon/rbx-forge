@@ -4,7 +4,7 @@
 -- Roblox does it: an empty table is []) and ScriptEditorService to drive the plugin's Forge Sync
 -- against Forge's real bridge.
 --
--- lune run forgeBridgeStudio.luau <plugin.luau> <scenario>
+-- lune run forgeBridgeStudio.luau <plugin.luau> <scenario> [link id kept in the place]
 
 local fs = require("@lune/fs")
 local luau = require("@lune/luau")
@@ -13,7 +13,7 @@ local process = require("@lune/process")
 local serde = require("@lune/serde")
 local task = require("@lune/task")
 
-local pluginFile, scenario = process.args[1], process.args[2]
+local pluginFile, scenario, presetLink = process.args[1], process.args[2], process.args[3]
 
 -- ---------------------------------------------------------------- signals
 
@@ -110,6 +110,15 @@ end
 
 function methods.GetAttributes(self)
 	return table.clone(data[self].attrs)
+end
+
+function methods.GetAttribute(self, name)
+	return data[self].attrs[name]
+end
+
+function methods.SetAttribute(self, name, value)
+	data[self].attrs[name] = value
+	print("SET ATTRIBUTE " .. tostring(data[self].props.Name) .. "." .. name .. " = " .. tostring(value))
 end
 
 function methods.GetPropertyChangedSignal(self, name)
@@ -230,6 +239,19 @@ function HttpService:UrlEncode(s)
 		return string.format("%%%02X", string.byte(c))
 	end))
 end
+function HttpService:GenerateGUID(_wrap)
+	local hex = "0123456789ABCDEF"
+	local out = {}
+	for i = 1, 32 do
+		local k = math.random(1, 16)
+		table.insert(out, string.sub(hex, k, k))
+		if i == 8 or i == 12 or i == 16 or i == 20 then
+			table.insert(out, "-")
+		end
+	end
+	return table.concat(out)
+end
+
 function HttpService:RequestAsync(req)
 	local res = net.request({ url = req.Url, method = req.Method, body = req.Body, headers = req.Headers })
 	return { Success = res.ok, StatusCode = res.statusCode, Body = res.body }
@@ -290,6 +312,10 @@ for _, name in { "ReplicatedStorage", "ServerScriptService", "ServerStorage", "S
 	new(name, name, game)
 end
 local starterPlayerScripts = new("StarterPlayerScripts", "StarterPlayerScripts", methods.FindFirstChild(game, "StarterPlayer"))
+if presetLink and presetLink ~= "" then
+	-- The place was linked in Forge earlier (and saved): the plugin finds the link in ServerStorage.
+	data[methods.FindFirstChild(game, "ServerStorage")].attrs.ForgeSyncLink = presetLink
+end
 
 -- ---------------------------------------------------------------- plugin
 
@@ -387,6 +413,19 @@ elseif scenario == "outline-removal" then
 	task.wait(14)
 	typing = false
 	task.wait(0.5)
+elseif scenario == "unlinked" then
+	-- An unrelated place (a VFX scratch place): Studio has scripts the repo does not. Forge must not
+	-- write anything until the user links it, and the first sync after linking waits for a decision.
+	local _, script = rojoBuildsClient()
+	script.Source = "print(\"vfx place\")"
+	new("ModuleScript", "Shop", methods.FindFirstChild(script, "Controllers"), "return { vfx = true }")
+	local waited = 0
+	while waited < 40 and not methods.GetAttribute(methods.FindFirstChild(game, "ServerStorage"), "ForgeSyncLink") do
+		task.wait(0.25)
+		waited += 0.25
+	end
+	task.wait(8)
+	print("LINK ATTRIBUTE " .. tostring(methods.GetAttribute(methods.FindFirstChild(game, "ServerStorage"), "ForgeSyncLink")))
 elseif scenario == "studio-delete" then
 	-- Forge's Game tab deletes a Studio-only LocalScript; the test also sends delete jobs the plugin
 	-- must refuse (synced root, its holder, default container, same-name siblings, stale class).

@@ -50,6 +50,9 @@ export interface SyncPlace {
   placeId: number
   gameId?: number
   name?: string
+  // Plugin v8, unpublished places only: the link id stored in the place (ServerStorage attribute
+  // ForgeSyncLink) once the user linked it to a project in Forge. Absent: not linked (or older plugin).
+  linkId?: string
 }
 
 export type StudioChange =
@@ -118,7 +121,7 @@ export type GateState =
   | 'blocked' // conflicts held: Rojo held until resolved or "serve anyway"
 
 export interface PlaceSyncStatus {
-  placeKey: string // `${placeId}` or `unpublished:<name>`
+  placeKey: string // `${placeId}` (published) or `local:<linkId>` (unpublished, linked in Forge)
   projectFile: string // e.g. default.project.json
   place?: SyncPlace
   gate: GateState
@@ -159,6 +162,24 @@ export interface SyncStatus {
   unsyncedRefs?: SyncRef[]
   unsyncedRefsTotal?: number
   notice?: SyncNotice
+  // Studio places the Forge Bridge plugin reported that are NOT linked to this project: nothing from
+  // them is applied, written, trashed or held. The Source Control view lists them collapsed with Link.
+  unlinked?: UnlinkedPlace[]
+  // One-time: Forge dropped sync state of places that were never linked (shown once as a toast).
+  discarded?: { id: string; text: string }
+}
+
+// A Studio place talking to Forge that this project does not sync (not in servePlaceIds /
+// tools/studio-sync.json placeIds and not linked in Forge).
+export interface UnlinkedPlace {
+  // Opaque handle for syncLinkPlace (per Studio session for unpublished places).
+  id: string
+  name: string
+  placeId: number
+  lastSeen: number
+  // false: cannot be linked from here (why says what to do, e.g. restart Studio for plugin v8).
+  canLink: boolean
+  why: string
 }
 
 export const UNSYNCED_REFS_MAX = 100

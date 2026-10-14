@@ -9,7 +9,7 @@
 // Roblox Studio does not run on Linux, so there is no folder there.
 
 export const PLUGIN_FILE = 'ForgeBridge.rbxmx'
-export const PLUGIN_VERSION = 7 // 2: Forge Sync (snapshot + change stream); 3: unsynced Instance-reference report; 4: viewport snapshot job (Thumbnail Lab); 5: Game-tab outline of the mapped services (Studio-only instances); 6: sync picks up mapped roots created after it started (Rojo connecting later) and Script Editor text in unpublished places; 7: the Game-tab outline keeps up with deletes, and Delete in Studio (the one, user-confirmed write; Ctrl+Z restores)
+export const PLUGIN_VERSION = 8 // 2: Forge Sync (snapshot + change stream); 3: unsynced Instance-reference report; 4: viewport snapshot job (Thumbnail Lab); 5: Game-tab outline of the mapped services (Studio-only instances); 6: sync picks up mapped roots created after it started (Rojo connecting later) and Script Editor text in unpublished places; 7: the Game-tab outline keeps up with deletes, and Delete in Studio (the one, user-confirmed write; Ctrl+Z restores); 8: place linking (probe id per run, ForgeSyncLink attribute for unpublished places linked in Forge)
 const VERSION_RE = /--\s*forge-bridge-version:\s*(\d+)/
 // The template's own version line (resources/studio/ForgeBridge.luau). Templates from before v7 have
 // none; they are v6 or older.

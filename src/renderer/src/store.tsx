@@ -969,7 +969,22 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         }
       }
     }
+    // Forge Sync dropped the session of a place that was never linked (one-time, per project).
+    const syncDiscarded = (status: { discarded?: { id: string; text: string } } | null | undefined) => {
+      const d = status?.discarded
+      if (!d) return
+      let seen = false
+      try {
+        seen = localStorage.getItem(`forge.sync.discarded:${d.id}`) === '1'
+        localStorage.setItem(`forge.sync.discarded:${d.id}`, '1')
+      } catch {
+        // storage unavailable: show it anyway
+      }
+      if (!seen) actions.toast({ text: 'Forge Sync: unlinked place discarded', detail: d.text, kind: 'info', ms: 20_000 })
+    }
+    void h.syncStatus?.().then(syncDiscarded, () => undefined)
     const offs = [
+      h.on('sync:status', (status) => syncDiscarded(status)),
       h.on('files:changed', (files) => void refreshOpen(files)),
       h.on('sync:entry', (entries) => void refreshOpen(entries.flatMap((e) => (e.from ? [e.file, e.from] : [e.file])))),
       h.on('services:status', (services) => set({ services })),

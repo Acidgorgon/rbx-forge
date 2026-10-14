@@ -41,6 +41,9 @@ export interface SyncApi {
   // which Ctrl+Z in Studio undoes.
   syncDeleteCheck(instancePath: string[]): Promise<{ ok: true } | { reason: string }>
   syncDeleteInStudio(instancePath: string[], className?: string): Promise<void>
+  // Links a Studio place (an UnlinkedPlace id from SyncStatus.unlinked) to one of the project's place
+  // files, persisted in .forge/sync/links.json. Its first sync waits for a "which side" decision.
+  syncLinkPlace(id: string, projectFile?: string): Promise<SyncStatus>
   forgeSyncSettings(): Promise<ForgeSyncSettings>
   setForgeSyncSettings(patch: Partial<ForgeSyncSettings>): Promise<ForgeSyncSettings>
 }

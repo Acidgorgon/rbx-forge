@@ -45,6 +45,9 @@ interface IndexFile {
   version: 1
   places: Record<string, Record<string, string>>
   legacyMigrated?: boolean
+  // Places whose first sync is still undecided: nothing is written or trashed for them until the user
+  // picks a side (Studio wins / Disk wins / per file).
+  firstSync?: string[]
 }
 
 export class BaseStore {
@@ -155,6 +158,33 @@ export class BaseStore {
   async placeKeys(): Promise<string[]> {
     await this.ready()
     return Object.keys(this.index.places)
+  }
+
+  // Any base at all for the place (a place with none has never been reconciled here).
+  async hasPlace(placeKey: string): Promise<boolean> {
+    await this.ready()
+    return Object.keys(this.index.places[placeKey] ?? {}).length > 0
+  }
+
+  isFirstSync(placeKey: string): boolean {
+    return (this.index.firstSync ?? []).includes(placeKey)
+  }
+
+  setFirstSync(placeKey: string, on: boolean): void {
+    const list = this.index.firstSync ?? []
+    if (on === list.includes(placeKey)) return
+    this.index.firstSync = on ? [...list, placeKey] : list.filter((k) => k !== placeKey)
+    this.dirty = true
+  }
+
+  // Forgets every base of a place (sync state of a place that is not linked to the project).
+  async dropPlace(placeKey: string): Promise<void> {
+    await this.ready()
+    if (placeKey in this.index.places) {
+      delete this.index.places[placeKey]
+      this.dirty = true
+    }
+    this.setFirstSync(placeKey, false)
   }
 
   markLegacyMigrated(): void {

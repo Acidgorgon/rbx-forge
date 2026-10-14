@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 7
+-- forge-bridge-template: 8
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -24,6 +24,11 @@
 -- the place: "Delete in Studio" from the Game tab, which the user confirms in Forge. It removes one
 -- Studio-only instance (never a service, a Rojo-mapped root or anything Forge Sync streams to files)
 -- inside a ChangeHistoryService recording, so Ctrl+Z in Studio brings it back.
+-- Version 8: place linking. Forge only syncs a place linked to the open project (its PlaceId in the
+-- project's servePlaceIds, or linked in Forge's Source Control). The config request carries a random
+-- id per plugin run (probe) and, for an unpublished place, the ServerStorage attribute ForgeSyncLink.
+-- When the user links an unpublished place in Forge, the config answer carries stampLink: the plugin
+-- sets that attribute (saved with the place) and asks again. Nothing else is written.
 --
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
@@ -474,7 +479,10 @@ local SYNC_MAX_SOURCE = 2 * 1024 * 1024
 local SYNC_MAX_NODES = 50000
 local SYNC_MAX_CHANGE_BYTES = 4 * 1024 * 1024
 local SYNC_YIELD_EVERY = 300
-local SYNC_RECHECK_OFF = 20
+local SYNC_RECHECK_OFF = 5
+-- Place linking (v8): the attribute an unpublished place keeps its Forge link id in, and this run's id.
+local LINK_ATTRIBUTE = "ForgeSyncLink"
+local SYNC_PROBE = HttpService:GenerateGUID(false)
 local SYNC_RECHECK_OLD = 120
 local SYNC_ROOT_RECHECK = 2
 -- Wally packages and the bridge's own job instances never sync.
@@ -850,7 +858,9 @@ local function buildNode(inst: Instance, path: { string }): any
 	end
 	local attributes = {}
 	for name, value in inst:GetAttributes() do
-		attributes[name] = encodeValue(value)
+		if name ~= LINK_ATTRIBUTE then
+			attributes[name] = encodeValue(value)
+		end
 	end
 	if next(attributes) then
 		node.attributes = attributes
@@ -1072,6 +1082,17 @@ local function startSync(): string
 		.. tostring(game.GameId)
 		.. "&place="
 		.. HttpService:UrlEncode(game.Name)
+		.. "&probe="
+		.. SYNC_PROBE
+	local link = nil
+	if game.PlaceId == 0 then
+		pcall(function()
+			link = ServerStorage:GetAttribute(LINK_ATTRIBUTE)
+		end)
+	end
+	if type(link) == "string" and link ~= "" then
+		query ..= "&link=" .. HttpService:UrlEncode(link)
+	end
 	local ok, config = request("GET", query)
 	if not ok then
 		if type(config) == "number" then
@@ -1082,6 +1103,18 @@ local function startSync(): string
 		end
 		sync.waitingForForge = true
 		return "waiting"
+	end
+	if type(config) == "table" and not config.enabled and type(config.stampLink) == "string" and game.PlaceId == 0 then
+		-- The user linked this unpublished place to the open Forge project: keep the link in the place.
+		local stamped = pcall(function()
+			ServerStorage:SetAttribute(LINK_ATTRIBUTE, config.stampLink)
+		end)
+		if stamped then
+			print("[Forge Bridge] Forge Sync: this place is now linked to the Forge project (save the place to keep the link)")
+			sync.retryAt = 0
+			sync.wanted = true
+			return "off"
+		end
 	end
 	if type(config) ~= "table" or not config.enabled then
 		sync.retryAt = os.clock() + SYNC_RECHECK_OFF

@@ -119,7 +119,8 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
     pendingStudioEdits: settings.engine === 'forge' ? pending : [],
     legacyPluginInstalled: legacy,
     ...(legacy ? { legacyPlugins: ['FSFStudioSync.lua'] } : {}),
-    ...(settings.engine === 'forge' && mode !== 'checking' ? { unsyncedRefs: MOCK_REFS, unsyncedRefsTotal: MOCK_REFS.length } : {})
+    ...(settings.engine === 'forge' && mode !== 'checking' ? { unsyncedRefs: MOCK_REFS, unsyncedRefsTotal: MOCK_REFS.length } : {}),
+    ...(settings.engine === 'forge' ? { unlinked: [{ id: 'probe:mock', name: 'DoubleFireSlashVFX', placeId: 0, lastSeen: t, canLink: true, why: 'Unpublished place, not linked to this project' }] } : {})
   })
 
   const studioConflicts = (): StudioConflict[] | null =>
@@ -173,6 +174,11 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
     async syncResolveAll(placeKey, take, reason) {
       await delay(300)
       for (const c of conflicts.filter((x) => x.placeKey === placeKey && (!reason || x.reason === reason))) resolveOne(placeKey, c.file, take)
+      changed()
+      return status()
+    },
+    async syncLinkPlace(id) {
+      log(`linked ${id}`)
       changed()
       return status()
     },

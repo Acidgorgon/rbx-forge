@@ -4,6 +4,7 @@
 // $ignoreUnknownInstances. Plays the Forge Bridge plugin over HTTP.
 
 import assert from 'node:assert/strict'
+import { linkPlaces } from './syncFixture.ts'
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
@@ -82,6 +83,7 @@ const OUTLINE = [
 
 async function setup() {
   const root = gentree()
+  linkPlaces(root, { 'place:555': 'default.project.json' })
   const trees: number[] = []
   const entries: SyncEntry[][] = []
   const logs: string[] = []

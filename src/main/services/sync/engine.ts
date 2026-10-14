@@ -89,6 +89,12 @@ interface Session {
   version: number
   // Studio-only children of $ignoreUnknownInstances roots that the last pass left in Studio.
   leftInStudio: string[][]
+  // The place file this place is linked to (the service decides; placeFor's fallback is never used
+  // when it is set).
+  projectFile?: string
+  // First sync, undecided: nothing is written or trashed; every difference waits as a 'first-run'
+  // conflict for the user's "which side" choice.
+  firstSync: boolean
 }
 
 // Why plan() leaves a Studio-only instance of an $ignoreUnknownInstances root alone.
@@ -132,6 +138,7 @@ export class SyncEngine {
   private maps: PlaceMap[] = []
   private loaded: Promise<void> | null = null
   private readonly sessions = new Map<string, Session>()
+  private readonly projectFiles = new Map<string, string>()
   private readonly recentEntries: SyncEntry[] = []
   private readonly listeners = new Set<(placeKey: string) => void>()
   private queue: Promise<unknown> = Promise.resolve()
@@ -156,7 +163,7 @@ export class SyncEngine {
     return this.serial(async () => {
       this.loaded = null
       await this.ensureLoaded()
-      for (const s of this.sessions.values()) s.map = placeFor(this.maps, s.place.placeId) ?? s.map
+      for (const s of this.sessions.values()) s.map = this.mapFor(s.place, s.projectFile) ?? s.map
     })
   }
 
@@ -173,7 +180,10 @@ export class SyncEngine {
     return { projectFile: map.projectFile, roots: map.roots.map((r) => r.instance), skip: map.skipped.map((s) => s.instance) }
   }
 
-  beginSnapshot(placeKey: string, place: SyncPlace): void {
+  // projectFile: the place file the place is linked to (service.ts matches places; required for a
+  // place linked in Forge, which is not in any servePlaceIds).
+  beginSnapshot(placeKey: string, place: SyncPlace, projectFile?: string): void {
+    if (projectFile) this.projectFiles.set(placeKey, projectFile)
     const s = this.session(placeKey, place)
     s.buffer = []
     s.connected = true
@@ -192,7 +202,10 @@ export class SyncEngine {
       await this.ensureLoaded()
       const s = this.sessions.get(placeKey)
       if (!s || !s.buffer) throw new SyncResendError('finishSnapshot without beginSnapshot')
-      s.map = placeFor(this.maps, s.place.placeId) ?? s.map
+      s.map = this.mapFor(s.place, s.projectFile) ?? s.map
+      // A place with no shared version yet (newly linked): its first sync waits for a decision.
+      if (!(await this.store.hasPlace(placeKey))) this.store.setFirstSync(placeKey, true)
+      s.firstSync = this.store.isFirstSync(placeKey)
       const tree = new Map<string, StudioNode>()
       for (const node of s.buffer) if (node && typeof node.id === 'string' && Array.isArray(node.path)) tree.set(node.id, node)
       s.buffer = null
@@ -201,6 +214,7 @@ export class SyncEngine {
       s.protect.clear()
       s.conflicts.clear()
       const entries = await this.reconcile(s, null)
+      this.settleFirstSync(s, entries)
       s.lastSnapshot = this.now()
       this.updateGate(s)
       return this.finish(s, entries)
@@ -235,6 +249,7 @@ export class SyncEngine {
         }
       }
       if (scope.length) entries.push(...(await this.reconcile(s, scope)))
+      this.settleFirstSync(s, entries)
       this.updateGate(s)
       return this.finish(s, entries)
     })
@@ -362,6 +377,7 @@ export class SyncEngine {
       const held = s?.conflicts.get(file)
       if (!s || !held) throw new Error(`no conflict for ${file} in ${placeKey}`)
       await this.resolveOne(s, held, take, text)
+      this.settleFirstSync(s, 'decided')
       await this.store.save()
       this.updateGate(s)
       this.emit(placeKey)
@@ -376,6 +392,7 @@ export class SyncEngine {
       if (!s) return 0
       const held = [...s.conflicts.values()].filter((c) => !reason || c.info.reason === reason)
       for (const c of held) await this.resolveOne(s, c, take)
+      this.settleFirstSync(s, 'decided')
       await this.store.save()
       this.updateGate(s)
       this.emit(placeKey)
@@ -408,13 +425,33 @@ export class SyncEngine {
     return loading
   }
 
+  // The place's map: the place file it is linked to, else (older callers) by PlaceId.
+  private mapFor(place: SyncPlace, projectFile?: string): PlaceMap | null {
+    if (projectFile) return this.maps.find((m) => m.projectFile === projectFile) ?? null
+    return placeFor(this.maps, place.placeId)
+  }
+
+  // The first sync is decided once a pass compared files and nothing waits for the first-run choice
+  // (all equal, or the user picked a side for every difference).
+  private settleFirstSync(s: Session, entries: SyncEntry[] | 'decided'): void {
+    if (!s.firstSync) return
+    if ([...s.conflicts.values()].some((c) => c.info.reason === 'first-run')) return
+    if (entries !== 'decided' && !entries.some((e) => e.action === 'same' || e.action === 'conflict')) return
+    s.firstSync = false
+    this.store.setFirstSync(s.placeKey, false)
+  }
+
   private session(placeKey: string, place: SyncPlace): Session {
     let s = this.sessions.get(placeKey)
-    const map = placeFor(this.maps, place.placeId) ?? { projectFile: 'default.project.json', name: '', root: this.root, placeIds: [], emitLegacyScripts: true, roots: [], skipped: [], virtual: [], skipGlobs: [] }
+    const projectFile = this.projectFiles.get(placeKey)
+    const map = this.mapFor(place, projectFile) ?? { projectFile: 'default.project.json', name: '', root: this.root, placeIds: [], emitLegacyScripts: true, roots: [], skipped: [], virtual: [], skipGlobs: [] }
     if (!s) {
-      s = { placeKey, place, map, gate: 'idle', connected: false, buffer: null, tree: null, counts: {}, conflicts: new Map(), protect: new Set(), version: 0, leftInStudio: [] }
+      s = { placeKey, place, map, gate: 'idle', connected: false, buffer: null, tree: null, counts: {}, conflicts: new Map(), protect: new Set(), version: 0, leftInStudio: [], projectFile, firstSync: false }
       this.sessions.set(placeKey, s)
-    } else s.place = place
+    } else {
+      s.place = place
+      s.projectFile = projectFile
+    }
     if (this.maps.length) s.map = map
     return s
   }
@@ -713,7 +750,8 @@ export class SyncEngine {
           continue
         }
         if (u.kind === 'folder') {
-          if (!disk.dirs.has(u.file)) {
+          // First sync undecided: no folder is created (its files wait for the decision).
+          if (!disk.dirs.has(u.file) && !s.firstSync) {
             await this.guard(map, u.file + '/x')
             // Present under another case (case-insensitive disk): not a new folder.
             const existed = await this.fs.lstat(this.abs(u.file)).then((i) => i.isDirectory(), () => false)
@@ -741,7 +779,7 @@ export class SyncEngine {
     for (const file of [...disk.files].sort()) {
       if (claimed.has(file) || plan.keep.has(file) || s.protect.has(file)) continue
       const twin = claimedLower.get(file.toLowerCase())
-      if (twin && (await this.sameFile(file, twin))) {
+      if (twin && !s.firstSync && (await this.sameFile(file, twin))) {
         try {
           entries.push(await this.fixCase(s, file, twin, caseFixed))
         } catch (err) {
@@ -774,7 +812,7 @@ export class SyncEngine {
 
     // After trashing (which prunes directories left empty): keep empty Studio folders on disk.
     for (const u of plan.units) {
-      if (u.kind !== 'folder' || !inScope(u.instancePath)) continue
+      if (s.firstSync || u.kind !== 'folder' || !inScope(u.instancePath)) continue
       try {
         const e = await this.keepFolder(s, u, stamp)
         if (e) entries.push(e)
@@ -883,6 +921,10 @@ export class SyncEngine {
       return this.entry(u.file, 'conflict', u.instancePath, { note: mountConflict })
     }
     if (diskText === null) {
+      if (s.firstSync) {
+        this.hold(s, u, studioText, cS, '', base?.text ?? null, 'first-run', { diskDeleted: true })
+        return this.entry(u.file, 'conflict', u.instancePath, { note: 'first sync: only in Studio, waits for your choice' })
+      }
       if (!base) {
         await this.writeFile(map, u.file, toFileText(studioText))
         await this.store.set(s.placeKey, u.file, cS)
@@ -897,7 +939,7 @@ export class SyncEngine {
       await this.store.set(s.placeKey, u.file, cS)
       return this.entry(u.file, 'same', u.instancePath)
     }
-    if (!base) {
+    if (!base || s.firstSync) {
       this.hold(s, u, studioText, cS, diskText, null, 'first-run')
       return this.entry(u.file, 'conflict', u.instancePath, { note: 'first run: Studio and disk differ' })
     }
@@ -954,7 +996,8 @@ export class SyncEngine {
   private async diskOnly(s: Session, file: string, kind: UnitKind, inst: string[], stamp: string): Promise<SyncEntry> {
     s.conflicts.delete(file)
     const base = await this.store.get(s.placeKey, file)
-    if (!base) return this.entry(file, 'disk-ahead', inst)
+    // First sync undecided: nothing is trashed.
+    if (!base || s.firstSync) return this.entry(file, 'disk-ahead', inst)
     const text = (await this.read(file)) ?? ''
     if (hashText(canon(kind, text)) === base.hash) {
       await this.trash(s.map, file, stamp)
@@ -1017,7 +1060,8 @@ export class SyncEngine {
     tree.delete(change.id)
     if (!twin) for (const n of tree.values()) if (n.path.length > from.length && startsWith(n.path, from)) n.path = [...to, ...n.path.slice(from.length)]
     tree.set(change.id, change.node)
-    if (!before) return []
+    // First sync undecided: no file moves; the new path is held like any other difference.
+    if (!before || s.firstSync) return []
     const after = this.plan(s, probe).units.find((u) => u.primary && pkey(u.instancePath) === pkey(to))
     if (!after) {
       // Renamed to something Forge cannot write (unsafe name, unmapped place): keep the old files.

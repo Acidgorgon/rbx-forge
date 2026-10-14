@@ -16,6 +16,7 @@
 // said outside its own turns through short notes prepended to its next prompt.
 
 import { randomUUID } from 'node:crypto'
+import { noProjectDir } from './noProjectDir.ts'
 import { z } from 'zod'
 import type { BoardItem, ChatImage, ChatMessage, GroupParticipant, GroupSettings, GroupUsage, ModelChoice, ProviderId, Speaker } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
@@ -415,7 +416,7 @@ export class GroupChat {
       const abort = new AbortController()
       const onAbort = () => abort.abort()
       room.signal.addEventListener('abort', onAbort)
-      const root = this.ctx.project()?.root ?? process.cwd()
+      const root = this.ctx.project()?.root ?? noProjectDir()
       try {
         const queryFn = this.deps.queryFn ?? sdkQuery
         for await (const m of queryFn({

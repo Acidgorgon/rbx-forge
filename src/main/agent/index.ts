@@ -6,6 +6,7 @@ import { INVOKE_PREFIX } from '../../shared/types.ts'
 import type { NewChatOptions } from '@shared/types'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
+import { noProjectDir } from './noProjectDir.ts'
 import { isEffortChoice } from '../../shared/modelCaps.ts'
 import { ChatImageStore, chatImageStore, setChatImageStore } from './chatImages.ts'
 import type { HarnessContext } from '../context.ts'
@@ -193,7 +194,7 @@ async function oneShot(
     for await (const m of (w.queryFn ?? sdkQuery)({
       prompt: images.length ? anthropicPrompt(prompt, images) : prompt,
       options: {
-        cwd: ctx.project()?.root ?? process.cwd(),
+        cwd: ctx.project()?.root ?? noProjectDir(),
         model,
         systemPrompt: system,
         ...(auth.env ? { env: auth.env } : {}),
@@ -277,7 +278,7 @@ function createOrchestrator(ctx: HarnessContext, w: OrchestratorWiring): Orchest
           yield { type: 'error' as const, message: auth.error ?? 'Anthropic is not set up.' }
           return
         }
-        const root = ctx.project()?.root ?? process.cwd()
+        const root = ctx.project()?.root ?? noProjectDir()
         yield* sdkRunAgent({
           query: w.queryFn ?? sdkQuery,
           makeServer: (tools) => wrapInSdkServer(tools as any),

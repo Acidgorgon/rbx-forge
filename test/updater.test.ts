@@ -204,7 +204,7 @@ test('schedule: first check after a short delay, then every 4 hours; auto-check 
 
   controller.setSettings({ autoCheck: false })
   assert.ok(timers.every((t) => t.cleared))
-  assert.deepEqual(store.get('updates'), { autoCheck: false, channel: 'stable' })
+  assert.deepEqual(store.get('updates'), { autoCheck: false, channel: 'stable', quick: true })
   assert.equal(controller.current.autoCheck, false)
 })
 
@@ -234,7 +234,7 @@ test('channel: beta sets allowPrerelease, is saved, and re-checks', async () => 
   const state = controller.setSettings({ channel: 'beta' })
   assert.equal(state.channel, 'beta')
   assert.equal(updater.allowPrerelease, true)
-  assert.deepEqual(store.get('updates'), { autoCheck: true, channel: 'beta' })
+  assert.deepEqual(store.get('updates'), { autoCheck: true, channel: 'beta', quick: true })
   await new Promise((r) => setImmediate(r))
   assert.equal(updater.checks, 1)
 

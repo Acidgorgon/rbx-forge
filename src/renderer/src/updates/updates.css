@@ -15,3 +15,5 @@
 .upd-notes-head .set-title { margin: 0; }
 .upd-mode-note { padding: 10px 0 2px; border-top: 1px solid var(--line); }
 .upd-feed { padding-top: 10px; }
+.upd-quick-status { margin-top: 4px; color: var(--fg-2); }
+.upd-running { padding: 2px 0 10px; }

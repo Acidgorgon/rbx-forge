@@ -13,8 +13,10 @@ import { execFile } from 'node:child_process'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 import { autoUpdater } from 'electron-updater'
-import type { UpdateMode, UpdateSettings, UpdateState } from '../../../shared/updateTypes.ts'
+import type { QuickUpdateState, UpdateMode, UpdateSettings, UpdateState } from '../../../shared/updateTypes.ts'
 import { UpdateController } from './controller.ts'
+import { createQuickUpdater } from '../quick/electron.ts'
+import type { QuickUpdater } from '../quick/updater.ts'
 import { macSignatureKind, parseFeedConfig, type FeedConfig } from './util.ts'
 
 export interface UpdaterWiringDeps {
@@ -50,8 +52,7 @@ export interface UpdaterWiring {
   dispose(): void
 }
 
-async function createController(deps: UpdaterWiringDeps): Promise<UpdateController> {
-  const feed = deps.isPackaged ? readFeed(deps.resourcesPath) : null
+async function createController(deps: UpdaterWiringDeps, feed: FeedConfig | null): Promise<UpdateController> {
   let mode: UpdateMode = 'install'
   let modeNote: string | undefined
   let disabledReason: string | undefined
@@ -89,25 +90,80 @@ async function createController(deps: UpdaterWiringDeps): Promise<UpdateControll
   })
 }
 
+// Full updates (UpdateController over electron-updater) and quick updates (services/quick) share
+// Settings > Updates: one state object, where `quick` is the quick updater's part.
 export function wireUpdater(deps: UpdaterWiringDeps): UpdaterWiring {
+  const feed = deps.isPackaged ? readFeed(deps.resourcesPath) : null
+  let latest: UpdateState | null = null
+  let quickState: QuickUpdateState | null = null
+  const send = (): void => {
+    if (latest) deps.emit({ ...latest, ...(quickState ? { quick: quickState } : {}) })
+  }
+  const withQuick = (state: UpdateState): UpdateState => ({ ...state, ...(quickState ? { quick: quickState } : {}) })
+  const controllerDeps: UpdaterWiringDeps = {
+    ...deps,
+    emit: (state) => {
+      latest = state
+      send()
+    }
+  }
   // Created on first use (after app ready): electron-updater's autoUpdater reads the app on access.
   let created: Promise<UpdateController> | null = null
-  const controller = (): Promise<UpdateController> => (created ??= createController(deps))
+  const controller = (): Promise<UpdateController> =>
+    (created ??= createController(controllerDeps, feed).then((c) => {
+      latest = c.current
+      return c
+    }))
+  let quickCreated: QuickUpdater | null = null
+  const quick = (): QuickUpdater => {
+    if (!quickCreated) {
+      quickCreated = createQuickUpdater({
+        isPackaged: deps.isPackaged,
+        feed,
+        settings: deps.settings,
+        emit: (state) => {
+          quickState = state
+          send()
+        },
+        log: deps.log
+      })
+      quickState = quickCreated.current
+    }
+    return quickCreated
+  }
   let disposed = false
   return {
     handlers: {
-      updateGetState: async () => (await controller()).current,
-      updateCheck: async () => (await controller()).check(true),
-      updateSetSettings: async (patch: Partial<UpdateSettings>) => (await controller()).setSettings(patch ?? {}),
+      updateGetState: async () => {
+        quick()
+        return withQuick((await controller()).current)
+      },
+      updateCheck: async () => {
+        const c = await controller()
+        await Promise.all([c.check(true), quick().check(true)])
+        return withQuick(c.current)
+      },
+      updateSetSettings: async (patch: Partial<UpdateSettings>) => {
+        const state = (await controller()).setSettings(patch ?? {})
+        quick().settingsChanged()
+        return withQuick(state)
+      },
       updateInstall: async () => (await controller()).install(),
-      updateOpenRelease: async () => (await controller()).openRelease()
+      updateOpenRelease: async () => (await controller()).openRelease(),
+      updateQuickRestart: async () => quick().restart()
     },
     start() {
       void controller().then((c) => !disposed && c.start()).catch((error) => deps.log(`updater: ${error}`, 'stderr'))
+      try {
+        quick().start()
+      } catch (error) {
+        deps.log(`quick update: ${error}`, 'stderr')
+      }
     },
     dispose() {
       disposed = true
       void created?.then((c) => c.dispose()).catch(() => undefined)
+      quickCreated?.dispose()
     }
   }
 }

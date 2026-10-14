@@ -39,6 +39,7 @@ import { memoryHandlers } from './agent/memory/ipc.ts'
 import { memoryTools, withMemoryTools } from './agent/serviceTools.ts'
 import { wireBrainSync } from './agent/memory/sync/electron.ts'
 import { wireUpdater } from './services/updater/electron.ts'
+import { watchBoot } from './services/quick/electron.ts'
 import { registerPackSection } from './agent/memory/sync/sections.ts'
 import { createVfxWiring } from './services/vfx/wire.ts'
 import { vfxElectronDeps } from './services/vfx/electron.ts'
@@ -839,7 +840,8 @@ function createWindow(): BrowserWindow {
 app.whenReady().then(async () => {
   installCsp()
   if (process.platform === 'darwin' && !app.isPackaged) app.dock?.setIcon(iconPath)
-  createWindow()
+  // A quick update (src/main/bootstrap.ts) counts as started once this window shows the app.
+  watchBoot(createWindow(), (text, stream = 'info') => logs.push({ service: 'harness', stream, text }))
   // Finder-launched apps miss the login shell's PATH (Homebrew, nvm, ~/.rokit/bin from .zprofile).
   // Read it before starting any tools; bounded by a 3 s timeout.
   if (process.platform === 'darwin') await loadLoginShellPath().catch(() => null)

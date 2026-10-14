@@ -1,5 +1,6 @@
 // Browser-preview mock of self-update (UpdateApi). mock.ts spreads it into its api object.
-// ?update=ready | downloading | available (macOS manual mode) | private | disabled picks the
+// ?update=ready | downloading | available (macOS manual mode) | private | disabled | quick (a quick
+// update is ready) | quick-running (this launch runs one) | quick-full (needs a full update) picks the
 // starting state; the default is "up to date" so other previews show no update pill.
 import type { HarnessApi, HarnessEvents, UpdateState } from '@shared/types'
 
@@ -17,7 +18,7 @@ Fixes
 
 const OFFER = { version: '0.2.1', releaseName: 'v0.2.1', notes: NOTES, releaseDate: '2026-10-12T18:00:00.000Z', url: 'https://github.com/Acidgorgon/rbx-forge/releases/tag/v0.2.1' }
 
-export function updatesMock(emit: Emit, log: (text: string) => void): Pick<HarnessApi, 'updateGetState' | 'updateCheck' | 'updateSetSettings' | 'updateInstall' | 'updateOpenRelease'> {
+export function updatesMock(emit: Emit, log: (text: string) => void): Pick<HarnessApi, 'updateGetState' | 'updateCheck' | 'updateSetSettings' | 'updateInstall' | 'updateOpenRelease' | 'updateQuickRestart'> {
   const query = new URLSearchParams(typeof location === 'undefined' ? '' : location.search).get('update')
   const base: UpdateState = {
     phase: 'none',
@@ -26,7 +27,13 @@ export function updatesMock(emit: Emit, log: (text: string) => void): Pick<Harne
     channel: 'stable',
     autoCheck: true,
     feed: 'Acidgorgon/rbx-forge',
-    lastCheck: Date.now() - 42 * 60 * 1000
+    lastCheck: Date.now() - 42 * 60 * 1000,
+    quick: {
+      phase: 'none',
+      enabled: true,
+      running: query === 'quick-running' ? { source: 'quick', version: '0.2.0-quick.14', appVersion: '0.2.0' } : { source: 'bundled', version: '0.2.0', appVersion: '0.2.0' },
+      lastCheck: Date.now() - 42 * 60 * 1000
+    }
   }
   let state: UpdateState = { ...base }
   if (query === 'available') state = { ...state, phase: 'available', offer: OFFER, note: 'macOS only installs updates into apps signed with an Apple Developer ID, and this build is ad-hoc signed. Forge tells you about new versions and opens the download page.' }
@@ -39,6 +46,11 @@ export function updatesMock(emit: Emit, log: (text: string) => void): Pick<Harne
     detail: 'HttpError: 404 Not Found'
   }
   if (query === 'private') state = { ...state, phase: 'error', error: privateError }
+  if (query === 'quick') state = { ...state, quick: { ...state.quick!, phase: 'ready', version: '0.2.0-quick.15', commit: '4aa6a4f', createdAt: '2026-10-14T09:30:00.000Z' } }
+  if (query === 'quick-full') {
+    const message = 'Quick update 0.2.0-quick.16 needs a newer installed app (Electron 44.7.0 -> 44.8.0). Install the next full update.'
+    state = { ...state, quick: { ...state.quick!, phase: 'needsFull', version: '0.2.0-quick.16', message } }
+  }
 
   const set = (patch: Partial<UpdateState>) => {
     state = { ...state, ...patch }
@@ -74,8 +86,12 @@ export function updatesMock(emit: Emit, log: (text: string) => void): Pick<Harne
       return { ...state }
     },
     async updateSetSettings(patch) {
-      set({ ...(typeof patch.autoCheck === 'boolean' ? { autoCheck: patch.autoCheck } : {}), ...(patch.channel ? { channel: patch.channel } : {}) })
+      const quick = typeof patch.quick === 'boolean' && state.quick ? { quick: { ...state.quick, enabled: patch.quick, phase: patch.quick ? ('none' as const) : ('off' as const) } } : {}
+      set({ ...(typeof patch.autoCheck === 'boolean' ? { autoCheck: patch.autoCheck } : {}), ...(patch.channel ? { channel: patch.channel } : {}), ...quick })
       return { ...state }
+    },
+    async updateQuickRestart() {
+      log(`restart into quick update ${state.quick?.version ?? ''} (preview: nothing happens)`)
     },
     async updateInstall() {
       log('restart into 0.2.1 (preview: nothing happens)')

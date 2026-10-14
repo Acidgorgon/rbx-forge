@@ -36,24 +36,29 @@ export function setUpdateState(next: UpdateState): void {
   publish(next)
 }
 
-// Restart into a downloaded update; asks first when that would interrupt work.
-export function useRestartForUpdate(): () => void {
+// Restart into a downloaded update; asks first when that would interrupt work. kind 'quick' restarts
+// into a downloaded quick update (new app code, no installer); a full update wins when both are ready.
+export function useRestartForUpdate(kind: 'full' | 'quick' = 'full'): () => void {
   const { state, actions } = useStore()
   return useCallback(() => {
-    const version = current?.offer?.version ?? 'the update'
+    const quick = kind === 'quick'
+    const version = (quick ? current?.quick?.version : current?.offer?.version) ?? 'the update'
     const go = () => {
       actions.toast({ text: `Restarting into ${version}...`, kind: 'info', ms: 4000 })
-      void window.harness.updateInstall().catch((e) => actions.toast({ text: 'Could not install the update', detail: errorText(e), kind: 'err' }))
+      const run = quick ? window.harness.updateQuickRestart() : window.harness.updateInstall()
+      void run.catch((e) => actions.toast({ text: 'Could not install the update', detail: errorText(e), kind: 'err' }))
     }
     const blockers = restartBlockers({ files: state.files, busy: state.busy, agents: state.agents, boards: state.boards, testsRunning: state.tests.running })
     if (!blockers.length) return go()
     actions.openDialog({
       kind: 'confirm',
       title: `Restart into ${version} now?`,
-      body: `${blockers.join('; ')}. Restarting stops running work and drops unsaved edits. You can also keep working: the update installs the next time you quit Forge.`,
+      body: quick
+        ? `${blockers.join('; ')}. Restarting stops running work and drops unsaved edits. You can also keep working: the quick update applies the next time you start Forge.`
+        : `${blockers.join('; ')}. Restarting stops running work and drops unsaved edits. You can also keep working: the update installs the next time you quit Forge.`,
       confirm: 'Restart anyway',
       danger: true,
       run: go
     })
-  }, [state.files, state.busy, state.agents, state.boards, state.tests.running, actions])
+  }, [kind, state.files, state.busy, state.agents, state.boards, state.tests.running, actions])
 }

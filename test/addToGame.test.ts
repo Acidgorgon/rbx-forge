@@ -281,3 +281,17 @@ test('IPC handlers validate their input', async () => {
   assert.equal(plan.files.length, 2)
   await assert.rejects(Promise.resolve().then(() => wiring.handlers.addToGamePreview('vfx', entry.id, null)), AddToGameError)
 })
+
+test('VFX: a name that cannot be a folder on Windows ("Con") is refused, not written through the fallback', async () => {
+  const root = await copyProject('template')
+  await mkdir(join(root, 'src', 'shared'), { recursive: true })
+  const userDir = await mkdtemp(join(tmpdir(), 'a2g-user-'))
+  let labRoot: string | null = null
+  const vfx = new VfxService({ userDir, projectRoot: () => labRoot, lune: async () => ({ error: 'no' }), runtimeDir: () => null })
+  const { entry } = await vfx.saveEffect(effectFromSpec({ ...SLASH, name: 'con' }))
+  assert.equal(entry.effect!.name, 'Con')
+  labRoot = root
+  const { service } = createAddToGameWiring({ root: () => root, settings: settingsStore(), vfx })
+  const opts = await service.options('vfx', entry.id)
+  await assert.rejects(service.preview('vfx', entry.id, opts.suggested!), (e: Error) => e instanceof AddToGameError && /"Con" cannot be a folder name/.test(e.message))
+})

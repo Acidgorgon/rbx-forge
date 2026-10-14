@@ -8,7 +8,8 @@ import { animModuleName } from '../../../shared/anim/luau.ts'
 import { TEX_SCHEME } from '../../../shared/vfx/tex/textures.ts'
 import type { VfxEffect, VfxEntry } from '../../../shared/vfx/types.ts'
 import { requireExpression } from '../blink.ts'
-import type { AdapterCtx, AdapterFile, AddToGameAdapter } from './service.ts'
+import { unsafeName } from '../sync/mapping.ts'
+import { AddToGameError, type AdapterCtx, type AdapterFile, type AddToGameAdapter } from './service.ts'
 
 type Files = { path: string; content: string; role: string; owned?: (current: string) => boolean; onlyIfExists?: boolean }[]
 
@@ -40,7 +41,12 @@ const parentDir = (file: string) => (file.includes('/') ? file.slice(0, file.las
 export function itemDir(ctx: AdapterCtx, inst: string[]): string {
   const file = ctx.toDisk(inst, 'ModuleScript', true)
   if (file && /\/init(\.\w+)?\.luau?$/.test(file)) return parentDir(file)
-  return `${ctx.dir}/${inst[inst.length - 1]}`
+  // toDisk refuses names that cannot be a folder (Windows reserved names like "Con", "init", ...):
+  // never write them through the fallback either.
+  const leaf = inst[inst.length - 1]
+  const bad = unsafeName(leaf)
+  if (bad) throw new AddToGameError(`"${leaf}" cannot be a folder name (${bad}): rename it in the lab first.`)
+  return `${ctx.dir}/${leaf}`
 }
 
 function movedNote(current: string | null | undefined, next: string): string[] {

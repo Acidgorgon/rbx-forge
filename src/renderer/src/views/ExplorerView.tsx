@@ -8,7 +8,7 @@ import { Icon } from '../components/Icons'
 import { ClassIcon, FileGlyph } from '../components/ClassIcon'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { basename, featuresOf, initSuffix, realmOfFile, realmOfInstance, requireExpression, roots, scriptsFlat, findNode, instancePathOfFile } from '../lib/roblox'
-import { createHint, createItem, defaultTarget, dirForInstance, realmOfDir, type NewKind } from '../lib/templates'
+import { createHint, createItem, defaultTarget, dirForInstance, instanceForDir, realmOfDir, type NewKind } from '../lib/templates'
 import { validateName } from '../shell/Overlays'
 import { errorText, isMac, keyHint } from '../lib/format'
 import { entryTarget, isUnder, protectedReason } from '@shared/fileOps'
@@ -374,6 +374,11 @@ export function ExplorerView() {
     const targetIp = ip && r.filePath && !initSuffix(r.filePath) ? ip.slice(0, -1) : ip
     const targetDir = r.filePath && !initSuffix(r.filePath) ? (targetIp ? dirForInstance(state.tree, targetIp) : null) : dir
     if (mode === 'tree') items.push({ label: 'New', icon: <Icon name="plus" />, submenu: newSubmenu(targetIp, targetDir) })
+    else if (r.dir) {
+      // Files tab folder: create inside the instance this folder maps to.
+      const dirIp = instanceForDir(state.tree, r.dir)
+      items.push({ label: 'New', icon: <Icon name="plus" />, submenu: newSubmenu(dirIp, dirIp ? r.dir : null) })
+    }
     if (r.filePath) {
       items.push({ label: 'Open', icon: <Icon name="file" />, hint: '↵', onSelect: () => void actions.openFile(r.filePath!) })
     }

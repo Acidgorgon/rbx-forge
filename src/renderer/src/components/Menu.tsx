@@ -22,6 +22,17 @@ export interface MenuItem {
 
 export type MenuEntry = MenuItem | 'separator' | { header: string; mono?: boolean }
 
+// Drops leading, trailing and doubled separators.
+export function tidySeparators(items: MenuEntry[]): MenuEntry[] {
+  const out: MenuEntry[] = []
+  for (const it of items) {
+    if (it === 'separator' && (!out.length || out[out.length - 1] === 'separator')) continue
+    out.push(it)
+  }
+  while (out[out.length - 1] === 'separator') out.pop()
+  return out
+}
+
 export interface MenuProps {
   x: number
   y: number
@@ -227,7 +238,10 @@ export function useMenu() {
     open: (m: Omit<MenuProps, 'onClose'>) => setMenu(m),
     openAt: (e: { clientX: number; clientY: number; preventDefault?: () => void }, items: MenuEntry[], extra?: Partial<MenuProps>) => {
       e.preventDefault?.()
-      setMenu({ x: e.clientX, y: e.clientY, items, ...extra })
+      const clean = tidySeparators(items)
+      // Nothing to show: no empty frame.
+      if (!clean.length) return
+      setMenu({ x: e.clientX, y: e.clientY, items: clean, ...extra })
     },
     openUnder: (el: HTMLElement, items: MenuEntry[], extra?: Partial<MenuProps>) => {
       const r = el.getBoundingClientRect()

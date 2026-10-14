@@ -42,6 +42,21 @@ function strip(dir: string, n: number): string {
   return d
 }
 
+// Instance a repo directory maps to (the inverse of dirForInstance), or null when it maps to none.
+export function instanceForDir(tree: TreeNode[], dir: string): string[] | null {
+  const walk = (nodes: TreeNode[], parent: string[]): string[] | null => {
+    for (const n of nodes) {
+      if (n.origin === 'studio' || (!n.children.length && n.filePath && !isInit(n.filePath))) continue
+      const ip = [...parent, n.name]
+      if (dirForInstance(tree, ip) === dir) return ip
+      const hit = walk(n.children, ip)
+      if (hit) return hit
+    }
+    return null
+  }
+  return walk(tree, [])
+}
+
 // Repo directory that maps to an instance, inferred from the files under it (Rojo maps folder
 // names to instance names). null when it cannot hold new files (Studio-only, Wally, plain file).
 export function dirForInstance(tree: TreeNode[], instancePath: string[]): string | null {

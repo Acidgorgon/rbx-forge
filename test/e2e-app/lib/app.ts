@@ -98,9 +98,18 @@ export interface Launched {
   currentFlow: { name?: string }
   // How many renderer / main errors earlier flows already accounted for.
   seen: { errors: number; main: number }
+  // false when launched with WebGL turned off (the webgl-off flow).
+  webgl: boolean
 }
 
-export async function launchApp(sandbox: Sandbox, opts: { width?: number; height?: number } = {}): Promise<Launched> {
+export interface LaunchOptions {
+  width?: number
+  height?: number
+  // false: Chromium without WebGL (--disable-3d-apis), to check the previews' fallback message.
+  webgl?: boolean
+}
+
+export async function launchApp(sandbox: Sandbox, opts: LaunchOptions = {}): Promise<Launched> {
   const { _electron } = await loadPlaywright()
   const executablePath = join(REPO, 'node_modules', 'electron', 'dist', process.platform === 'win32' ? 'electron.exe' : 'electron')
   const errors: AppError[] = []
@@ -113,7 +122,7 @@ export async function launchApp(sandbox: Sandbox, opts: { width?: number; height
   const app = await _electron.launch({
     executablePath,
     // Software WebGL (SwiftShader) so the labs' three.js previews render under Xvfb.
-    args: [REPO, '--no-sandbox', '--disable-gpu-sandbox', '--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'],
+    args: [REPO, '--no-sandbox', '--disable-gpu-sandbox', ...(opts.webgl === false ? ['--disable-3d-apis'] : ['--use-gl=angle', '--use-angle=swiftshader', '--enable-unsafe-swiftshader', '--ignore-gpu-blocklist'])],
     cwd: REPO,
     env: appEnv(sandbox.home),
     timeout: 60_000
@@ -142,7 +151,7 @@ export async function launchApp(sandbox: Sandbox, opts: { width?: number; height
   page.on('pageerror', (e: Error) => push('pageerror', `${e.message}\n${e.stack ?? ''}`))
   await page.waitForLoadState('domcontentloaded')
   if (opts.width || opts.height) await setWindowSize(app, opts.width ?? 1400, opts.height ?? 900)
-  return { app, page, errors, mainLog, currentFlow, seen: { errors: 0, main: 0 } }
+  return { app, page, errors, mainLog, currentFlow, seen: { errors: 0, main: 0 }, webgl: opts.webgl !== false }
 }
 
 export async function mainErrors(app: ElectronApp): Promise<string[]> {

@@ -164,6 +164,9 @@ export const labFlows: Flow[] = [
     timeoutMs: 90_000,
     async run({ page, note }) {
       await openPage(page, 'UI Preview (stories)')
+      // A narrow editor area shows one pane at a time: pick the Stories tab.
+      const tabs = page.locator(`${CENTER} .uip-narrow-tabs`)
+      if (await tabs.isVisible().catch(() => false)) await tabs.getByRole('tab', { name: 'Stories' }).click()
       const story = page.locator(`${CENTER} .uip-story`, { hasText: 'Counter' }).first()
       await story.waitFor({ state: 'visible', timeout: 15_000 })
       if (await page.locator(`${CENTER} .uip-hint`).isVisible().catch(() => false)) {

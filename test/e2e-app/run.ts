@@ -70,10 +70,16 @@ async function main(): Promise<void> {
 
   let launched: Launched | null = null
   const ensureApp = async (): Promise<Launched> => {
-    if (launched && !launched.page.isClosed()) return launched
+    const cur = launched as Launched | null
+    if (cur && !cur.page.isClosed() && cur.webgl) return cur
+    if (cur) {
+      cur.mainLog.length && mainLogs.push(...cur.mainLog)
+      await cur.app.close().catch(() => undefined)
+    }
     launched = await launchApp(sandbox, { width: 1400, height: 900 })
     return launched
   }
+  const mainLogs: string[] = []
 
   const results: Result[] = []
   for (const flow of flows) {
@@ -92,8 +98,8 @@ async function main(): Promise<void> {
       l = await ensureApp()
       l.currentFlow.name = flow.name
       // Errors since the previous flow ended (startup errors land on the first flow, 'launch').
-      const errorsBefore = l.seen.errors
-      const mainBefore = l.seen.main
+      let errorsBefore = l.seen.errors
+      let mainBefore = l.seen.main
       const ctx: FlowCtx = {
         app: l.app,
         page: l.page,
@@ -106,6 +112,16 @@ async function main(): Promise<void> {
           const path = join(OUT, 'shots', `${flow.name}-${name}.png`)
           await l!.page.screenshot({ path })
           return path
+        },
+        relaunch: async (opts) => {
+          const old = l!
+          mainLogs.push(...old.mainLog)
+          await old.app.close().catch(() => undefined)
+          l = launched = await launchApp(sandbox, { width: 1400, height: 900, ...opts })
+          l.currentFlow.name = flow.name
+          errorsBefore = 0
+          mainBefore = 0
+          return l
         }
       }
       await withTimeout(flow.run(ctx), flow.timeoutMs ?? 60_000, flow.name)
@@ -152,7 +168,7 @@ async function main(): Promise<void> {
 
   const final = launched as Launched | null
   if (final) {
-    writeFileSync(join(OUT, 'main.log'), final.mainLog.join('\n'))
+    writeFileSync(join(OUT, 'main.log'), [...mainLogs, ...final.mainLog].join('\n'))
     // The app's own log panel (services, harness, agent), for spotting noisy services.
     const logs = await final.page.evaluate(() => window.harness.getLogs()).catch(() => [])
     writeFileSync(join(OUT, 'app-logs.json'), JSON.stringify(logs, null, 1))

@@ -1,4 +1,4 @@
-import type { ElectronApp, Launched, Page, Sandbox } from '../lib/app.ts'
+import type { ElectronApp, Launched, LaunchOptions, Page, Sandbox } from '../lib/app.ts'
 import type { FakeProvider } from '../lib/fakeProvider.ts'
 
 export interface FlowCtx {
@@ -13,6 +13,9 @@ export interface FlowCtx {
   note(message: string): void
   // Saves out/shots/<flow>-<name>.png and returns its path.
   shot(name: string): Promise<string>
+  // Closes the app and starts it again with these options (errors are then checked on the new app;
+  // the next flow gets a normal app again). Use the returned page from then on.
+  relaunch(opts: LaunchOptions): Promise<Launched>
 }
 
 export interface Flow {

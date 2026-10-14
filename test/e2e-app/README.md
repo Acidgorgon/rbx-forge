@@ -42,7 +42,8 @@ with `node --experimental-strip-types test/e2e-app/run.ts`).
   on `127.0.0.1:34877`. If that port is busy (another Forge running) those flows are reported as
   `skip`.
 - **WebGL**: Chromium runs with SwiftShader (`--use-angle=swiftshader`) so the lab previews render
-  under Xvfb.
+  under Xvfb. The last flow, `webgl-off`, relaunches the app with `--disable-3d-apis` (via
+  `ctx.relaunch({ webgl: false })`) and checks each 3D preview says "3D preview needs WebGL".
 
 ## Output
 
@@ -50,7 +51,8 @@ with `node --experimental-strip-types test/e2e-app/run.ts`).
 
 - `summary.json` / `summary.md`: flow → pass / fail / skip, notes, collected errors
 - `fail-<flow>.png`: screenshot when a flow fails; `shots/`: screenshots flows take on purpose
-- `main.log`: the app's stdout/stderr; `fake-provider-requests.json`: what the fake model was asked
+- `main.log`: the app's stdout/stderr; `app-logs.json`: the app's log panel at the end (of the last
+  launch); `fake-provider-requests.json`: what the fake model was asked
 
 Each flow fails on its own assertions **and** on any renderer `console.error`, uncaught page error,
 or main-process uncaught exception / unhandled rejection that happened while it ran (startup errors
@@ -65,4 +67,5 @@ Flows live in `flows/*.ts` as `{ name, title, run(ctx) }` and are listed in run 
 VFX preset, the configured fake provider). Pages are table-driven: add a new activity-bar page to
 `PAGES` in `flows/pages.ts` and it is opened, screenshotted and checked at 900px wide. Helpers for
 common gestures are in `lib/ui.ts` (`openPage`, `showSide`, `canvasInk`, `horizontalOverflow`,
-`closeBottom`, `setTheme`).
+`closeBottom`, `setTheme`, `dismissDigest`). A flow that needs a differently started app calls
+`ctx.relaunch(options)` and uses the page it returns; the next flow gets a normal app again.

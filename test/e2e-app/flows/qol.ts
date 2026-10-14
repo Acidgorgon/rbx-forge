@@ -5,7 +5,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { WRITE_MARKER } from '../lib/fakeProvider.ts'
 import { INVENTORY_SERVICE } from '../lib/project.ts'
-import { check, CENTER, closeBottom, dismissToasts, mod, openPage, waitText } from '../lib/ui.ts'
+import { check, CENTER, closeBottom, dismissDigest, dismissToasts, mod, openPage, waitText } from '../lib/ui.ts'
 import type { Page } from '../lib/app.ts'
 import type { Flow } from './types.ts'
 
@@ -225,6 +225,40 @@ export const providerQolFlows: Flow[] = [
         fake.costUsd = 0
         await page.evaluate(() => window.harness.spendSetSettings({ dailyUsd: null }))
       }
+    }
+  }
+]
+
+// Last: the app again without WebGL. Each 3D preview must say so in place (not only in the console).
+export const webglOffFlows: Flow[] = [
+  {
+    name: 'webgl-off',
+    title: 'Without WebGL, the VFX / Animation / Ability previews show "3D preview needs WebGL"',
+    timeoutMs: 120_000,
+    // three.js logs the failed context itself; the in-preview message is what this flow checks.
+    allowErrors: [/WebGL|THREE\.WebGLRenderer|webgl/i],
+    async run({ relaunch, note }) {
+      const { page } = await relaunch({ webgl: false })
+      await page.locator('nav.activity').waitFor({ state: 'visible', timeout: 30_000 })
+      check(!(await page.evaluate(() => !!document.createElement('canvas').getContext('webgl2'))), 'WebGL is still available with --disable-3d-apis')
+      await dismissDigest(page, 4000)
+      const seen: string[] = []
+      for (const [label, example, detail] of [
+        ['VFX Lab', 'Hollow Purple', '.vfx-detail'],
+        ['Animation Lab', 'Dash punch', '.vfx-detail'],
+        ['Ability Composer', 'Hollow Purple', '.ab-detail']
+      ] as const) {
+        await openPage(page, label)
+        await page.locator(`${CENTER} .vfx-examples button, ${CENTER} button.badge-o`, { hasText: example }).first().click()
+        const msg = page.locator(`${CENTER} ${detail} .vfx-canvas-err`).first()
+        await msg.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {
+          throw new Error(`${label}: no in-preview WebGL message`)
+        })
+        const text = (await msg.innerText()).replace(/\s+/g, ' ')
+        check(/3D preview needs WebGL/.test(text), `${label}: preview message is "${text.slice(0, 120)}"`)
+        seen.push(`${label}: ${text.slice(0, 70)}`)
+      }
+      note(seen.join(' | '))
     }
   }
 ]

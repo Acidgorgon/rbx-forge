@@ -73,8 +73,9 @@ export const aiFlows: Flow[] = [
       // The renderer reads the default model at start: reload it, then start a new chat on it.
       await page.reload()
       await page.locator('nav.activity').waitFor({ state: 'visible', timeout: 30_000 })
+      // The automatic digest is once per project open: a renderer reload must not bring it back.
       const digest = await dismissDigest(page)
-      if (digest) note(`away digest after reload: ${digest}`)
+      check(!digest, `the away digest came back after a renderer reload (${digest})`)
       await newChat(page)
       await waitText(page, FAKE_MODEL, { within: ASSISTANT }).catch(() => undefined)
       const before = fake.requests.length

@@ -8,6 +8,7 @@
 //   <id>/thumbs/*.png    preview thumbnails
 //   <id>/frames/*.png    rendered frames of refine iterations
 //   <id>/media/*         reference images / gifs / videos, and the original .rbxm(x)
+//   .trash/<batch>/<id>  deleted entries until the next start (Undo restores them)
 //
 // Files ending in ".conflict" (left by sync) are ignored. No electron imports.
 
@@ -124,6 +125,64 @@ export class VfxStore {
     )
   }
 
+  // Moves entries to the trash (one batch per delete action); returns the ids moved.
+  trash(ids: string[], batch: string): Promise<string[]> {
+    if (!BATCH_RE.test(batch)) throw new VfxLibraryError('bad trash batch')
+    return this.serial(async () => {
+      const moved: string[] = []
+      const to = join(this.dir, TRASH_DIR, batch)
+      for (const id of ids) {
+        let dir: string
+        try {
+          dir = this.entryDir(id)
+        } catch {
+          continue
+        }
+        const ok = await stat(dir).then(
+          (st) => st.isDirectory(),
+          () => false
+        )
+        if (!ok) continue
+        await mkdir(to, { recursive: true })
+        await renameRetry(dir, join(to, id))
+        moved.push(id)
+      }
+      this.cache = null
+      return moved
+    })
+  }
+
+  // Moves a trash batch back (entries whose id was taken again meanwhile stay in the trash).
+  restore(batch: string): Promise<string[]> {
+    if (!BATCH_RE.test(batch)) throw new VfxLibraryError('bad trash batch')
+    return this.serial(async () => {
+      const from = join(this.dir, TRASH_DIR, batch)
+      const names = await readdir(from).catch(() => [] as string[])
+      const back: string[] = []
+      for (const id of names) {
+        if (!ID_RE.test(id)) continue
+        const dest = join(this.dir, id)
+        const taken = await stat(dest).then(
+          () => true,
+          () => false
+        )
+        if (taken) continue
+        await renameRetry(join(from, id), dest)
+        back.push(id)
+      }
+      await rm(from, { recursive: true, force: true }).catch(() => undefined)
+      this.cache = null
+      return back
+    })
+  }
+
+  // Empties the trash (at start: deletes are final once Forge restarts).
+  purgeTrash(): Promise<void> {
+    return this.serial(async () => {
+      await rm(join(this.dir, TRASH_DIR), { recursive: true, force: true }).catch(() => undefined)
+    })
+  }
+
   remove(id: string): Promise<boolean> {
     return this.serial(async () => {
       const dir = this.entryDir(id)
@@ -137,6 +196,10 @@ export class VfxStore {
     })
   }
 }
+
+// Deleted entries wait in <library>/.trash/<batch>/<id> until the next start (Undo moves them back).
+export const TRASH_DIR = '.trash'
+const BATCH_RE = /^[a-z0-9-]{1,64}$/
 
 export function safeFileName(name: string): string {
   return basename(name).replace(/[^\w.-]+/g, '_').slice(-80) || 'file'

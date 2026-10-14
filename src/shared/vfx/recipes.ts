@@ -9,6 +9,7 @@ import { curveShape, sequenceMax } from './sequence.ts'
 import { flipbookFrames } from './simulate.ts'
 import type { NumberRange, NumberSequence, VfxEntry, VfxRecipe } from './types.ts'
 import { videoHintNote, videoHints } from '../videoref/prompt.ts'
+import { tagGroupsOf } from './tags.ts'
 
 export const RECIPE_PREFIX = 'vfx-recipe-'
 // Tags that are colours or too generic to make a recipe of their own.
@@ -26,16 +27,38 @@ function r(x: number): number {
   return Math.round(x * 100) / 100
 }
 
+// Recipes are learned per KIND ("slash"), per KIND+ELEMENT pair ("slash+fire") and per custom tag
+// ("goal"); pairs and custom tags need PAIR_MIN examples. Elements and timings alone are not
+// effect types (a fire slash and a fire aura share little).
+export const PAIR_MIN = 2
 export function recipeTags(entries: VfxEntry[]): string[] {
   const counts = new Map<string, number>()
-  for (const e of entries) if (e.effect && e.quality !== 'avoid') for (const t of e.tags) if (!NON_TYPE_TAGS.has(t)) counts.set(t, (counts.get(t) ?? 0) + 1)
-  return [...counts.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).map(([t]) => t)
+  const bump = (k: string) => counts.set(k, (counts.get(k) ?? 0) + 1)
+  for (const e of entries) {
+    if (!e.effect || e.quality === 'avoid') continue
+    const g = tagGroupsOf(e)
+    for (const k of g.kind) bump(k)
+    for (const k of g.kind) for (const el of g.element) bump(`${k}+${el}`)
+    for (const t of g.custom) if (!NON_TYPE_TAGS.has(t)) bump(t)
+  }
+  return [...counts.entries()]
+    .filter(([t, n]) => n >= (t.includes('+') || !tagGroupsOf({ tags: [t] }).kind.length ? PAIR_MIN : 1))
+    .sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]))
+    .map(([t]) => t)
+}
+
+// Entries a recipe key covers: "slash+fire" = kind slash and element fire; "slash" = the tag.
+export function recipeMatches(e: VfxEntry, key: string): boolean {
+  if (!key.includes('+')) return e.tags.includes(key) || tagGroupsOf(e).kind.includes(key) || tagGroupsOf(e).custom.includes(key)
+  const [kind, element] = key.split('+')
+  const g = tagGroupsOf(e)
+  return g.kind.includes(kind) && g.element.includes(element)
 }
 
 // One recipe from the entries tagged `tag` (references and liked results; "avoid" entries only
 // contribute notes).
 export function extractRecipe(tag: string, entries: VfxEntry[]): VfxRecipe | null {
-  const tagged = entries.filter((e) => e.tags.includes(tag) && e.effect)
+  const tagged = entries.filter((e) => recipeMatches(e, tag) && e.effect)
   const good = tagged.filter((e) => e.quality !== 'avoid')
   if (!good.length) return null
   const samples: Record<string, number[]> = {}
@@ -174,7 +197,7 @@ export function recipeSkill(recipe: VfxRecipe, examples: string[] = []): { name:
     .filter((l, i, a) => l !== '' || a[i - 1] !== '')
     .join('\n')
   const description = `Roblox ${recipe.tag} VFX: layer roles and parameter ranges from ${recipe.samples} reference${recipe.samples === 1 ? '' : 's'}; use when making a ${recipe.tag} effect`
-  return { name: `${RECIPE_PREFIX}${recipe.tag}`, description: description.slice(0, 200), body: body.slice(0, 7900) }
+  return { name: `${RECIPE_PREFIX}${recipe.tag.replace(/[^a-z0-9-]+/gi, '-').toLowerCase()}`, description: description.slice(0, 200), body: body.slice(0, 7900) }
 }
 
 // Built-in scripted recipes (multi-stage timeline examples: Hollow Purple, charge-and-slash,

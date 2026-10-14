@@ -143,6 +143,13 @@ export interface VfxEntry {
   // Preview thumbnails (PNG file names inside the entry folder).
   thumbs: string[]
   rating?: 'up' | 'down'
+  // Tags by group (tags.ts): kind / element / timing / custom. `tags` is their flat union. Older
+  // entries have flat tags only (read with tagGroupsOf).
+  tagGroups?: { kind: string[]; element: string[]; timing: string[]; custom: string[] }
+  // Groups the user edited (re-tag keeps them).
+  userTagGroups?: ('kind' | 'element' | 'timing' | 'custom')[]
+  // Why the auto-tags were given (shown on hover).
+  autoTagInfo?: { group: 'kind' | 'element' | 'timing'; tag: string; confidence: number; why: string }[]
   // Learned: a liked result (good) or a disliked one kept as an "avoid" example.
   quality?: 'reference' | 'good' | 'avoid'
   // Generated effects: where they were written in the project.
@@ -244,10 +251,74 @@ export interface VfxImportResult {
   skipped: { file: string; reason: string }[]
   // Per imported file: what is not reproduced faithfully.
   notes?: { file: string; notes: string[] }[]
+  // Effects not imported because the same effect (same content hash) is already in the library or
+  // earlier in this import (`of` names it). Import with force to add them anyway.
+  duplicates?: { file: string; name: string; of: string }[]
+  // Studio imports: mesh files read for the preview after the import.
+  meshes?: { total: number; loaded: number; failed: number }
+}
+
+// Bulk import with a review step (files dropped on the VFX Lab, or a Studio selection / VFX folder
+// read through the Forge Bridge): scan -> rows -> commit.
+export interface VfxImportRow {
+  key: string
+  name: string
+  // File name, or the Studio path (Workspace.VFX.Slash).
+  origin: string
+  source: 'file' | 'studio'
+  stats: Pick<VfxStats, 'emitters' | 'beams' | 'trails' | 'lights' | 'meshes' | 'scripts'> & { parts: number }
+  notes: string[]
+  // Content hash (shared/vfx/fingerprint.ts) and library entries with the same hash, per scope.
+  hash: string
+  duplicates: { scope: VfxScope; id: string; name: string }[]
+  // The key of an identical row earlier in this scan.
+  sameAs?: string
+}
+
+// A Studio folder that looks like a VFX pack (offered when nothing is selected).
+export interface VfxStudioPack {
+  key: string
+  // From the service down: name and 1-based child index (names can repeat).
+  path: { name: string; index: number }[]
+  fullName: string
+  className: string
+  effects: number
+  children: number
+}
+
+export interface VfxImportScan {
+  scanId: string
+  source: 'files' | 'studio'
+  rows: VfxImportRow[]
+  // Studio with nothing selected: folders to choose from (rows is empty).
+  packs?: VfxStudioPack[]
+  // Reference images / videos in the dropped files (imported with the rows).
+  media: string[]
+  skipped: { file: string; reason: string }[]
+  notes: string[]
+}
+
+export interface VfxImportCommit {
+  scanId: string
+  scope: VfxScope
+  // Rows to import (renamed as given).
+  rows: { key: string; name: string }[]
+  // Also import the scan's media files (default true).
+  media?: boolean
+}
+
+export interface VfxImportProgress {
+  scanId?: string
+  phase: 'reading' | 'receiving' | 'importing' | 'meshes' | 'done'
+  done: number
+  total: number
+  label?: string
 }
 
 export interface VfxLabStatus {
   projectRoot: string | null
+  // Roblox Studio connected through the Forge Bridge plugin (Import from Studio).
+  studio?: boolean
   lune: { available: boolean; version?: string; hint?: string }
   vision: boolean
   rojo: boolean

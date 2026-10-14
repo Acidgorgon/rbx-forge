@@ -12,9 +12,10 @@ import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
 import { composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
-import { allNodes, autoTags, describeEffect, effectFromNodes, effectStats, emitAttributes, importNotes, IMPORT_VERSION, perfWarnings, pruneToVfx, type PerfWarning } from '../../../shared/vfx/analyze.ts'
-import { revealedByCues, tweenCuesFromScripts } from '../../../shared/vfx/scriptTweens.ts'
-import { PART_CLASSES } from '../../../shared/vfx/schema.ts'
+import { allNodes, describeEffect, effectFromNodes, effectStats, emitAttributes, importNotes, IMPORT_VERSION, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
+import { findVfxPacks, splitEffects, type EffectGroup } from '../../../shared/vfx/split.ts'
+import { autoTagGroups, changedGroups, flatTags, groupsFromTags, normalizeGroups, retagGroups, tagGroupsOf, TAG_GROUP_ORDER, type TagGroup, type TagGroups } from '../../../shared/vfx/tags.ts'
+import { effectHash } from '../../../shared/vfx/fingerprint.ts'
 import { CRITIC_SYSTEM, critiquePrompt, DEFAULT_MAX_ITERATIONS, DEFAULT_THRESHOLD, heuristicCritique, parseCritique, refineLoop, stageFrameTimes, type RefineResult } from '../../../shared/vfx/critique.ts'
 import { CHOREOGRAPHY_GUIDE, draftScript, kitReference, TIMELINE_API } from '../../../shared/vfx/choreo.ts'
 import { compileTimeline, finishRun } from '../../../shared/vfx/compile.ts'
@@ -25,7 +26,7 @@ import { timelineSummary } from '../../../shared/vfx/timeline.ts'
 import { draftSpec, libraryTextures, promptTags } from '../../../shared/vfx/draft.ts'
 import { luauModule, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
 import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
-import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeSkill } from '../../../shared/vfx/recipes.ts'
+import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeMatches, recipeSkill } from '../../../shared/vfx/recipes.ts'
 import { compactEffect, effectFromSpec, safeName, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
 import type { VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
 import { studioFramesNote } from '../../../shared/studio/frames.ts'
@@ -84,6 +85,10 @@ export interface VfxServiceDeps {
   principles?: PrincipleHooks
   // Lab gating (services/gating): skip the critic, early stop, retry routes. Optional.
   gate?: LabGate
+  // Roblox Studio connected through the Forge Bridge (status for Import from Studio).
+  studioConnected?: () => boolean
+  // Each refine iteration's effect as it is rendered (and again with its score): Live in Studio.
+  onDraft?: (entryId: string, iteration: number, effect: VfxEffect, score?: number) => void
 }
 
 export interface VfxTextureHooks {
@@ -95,14 +100,30 @@ export interface VfxTextureHooks {
   roleTextures?(): Promise<Record<string, string>>
 }
 
-const MODEL_EXT = new Set(['.rbxm', '.rbxmx'])
+// Place files (.rbxl / .rbxlx): the VFX packs in Workspace / ReplicatedStorage / ServerStorage.
+const PLACE_EXT = new Set(['.rbxl', '.rbxlx'])
+const MODEL_EXT = new Set(['.rbxm', '.rbxmx', ...PLACE_EXT])
 const MEDIA_MIME: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.webp': 'image/webp', '.gif': 'image/gif', '.mp4': 'video/mp4', '.webm': 'video/webm', '.mov': 'video/quicktime' }
 const MAX_IMPORT_FILES = 400
 const MAX_FILE_BYTES = 60 * 1024 * 1024
+const MAX_PLACE_BYTES = 400 * 1024 * 1024
+// Model files up to this size are kept with the entry (re-import); place files never are.
+const KEEP_FILE_BYTES = 20 * 1024 * 1024
 export const VFX_SRC_DIR = 'src/shared/VFX'
 const FRAME_SIZE = { width: 512, height: 384 }
 
 export class VfxError extends Error {}
+
+// Tag fields of an entry from its effect: auto groups (with evidence), merged with tags given by
+// the caller (spec / compose), and with the groups the user edited on `prev` kept as they are.
+export function tagFields(effect: VfxEffect, hint: string, given: string[] = [], prev?: Pick<VfxEntry, 'tags' | 'tagGroups' | 'userTagGroups'> | null): Pick<VfxEntry, 'tags' | 'tagGroups' | 'autoTagInfo' | 'userTagGroups'> {
+  const { groups: auto, auto: info } = autoTagGroups(effect, hint)
+  const g = groupsFromTags(given)
+  const merged: TagGroups = { kind: [...new Set([...g.kind, ...auto.kind])], element: [...new Set([...g.element, ...auto.element])], timing: g.timing.length ? g.timing : auto.timing, custom: g.custom }
+  const user = prev?.userTagGroups ?? []
+  const final = prev && user.length ? retagGroups(tagGroupsOf(prev), merged, user) : merged
+  return { tags: flatTags(final), tagGroups: final, autoTagInfo: info, ...(user.length ? { userTagGroups: user } : {}) }
+}
 
 export function frameTimes(duration: number, n: number): number[] {
   // Denser early on: bursts peak in the first third of a play.
@@ -184,6 +205,10 @@ export class VfxService {
     this.deps.emit?.('vfx:changed', { at: this.now() })
   }
 
+  notifyChanged(): void {
+    this.changed()
+  }
+
   // ------------------------------------------------------------ library
 
   async list(): Promise<VfxEntry[]> {
@@ -213,6 +238,7 @@ export class VfxService {
       projectRoot: this.deps.projectRoot(),
       lune: 'error' in lune ? { available: false, hint: lune.error } : { available: true, ...(lune.version ? { version: lune.version } : {}) },
       vision: !!this.deps.vision?.(),
+      studio: this.deps.studioConnected?.() ?? false,
       rojo: this.deps.rojo?.running() ?? false,
       entries: { user: (await this.user.list()).length, project: p ? (await p.list()).length : 0 },
       recipes: (await this.recipes()).length
@@ -244,13 +270,21 @@ export class VfxService {
     return scored.slice(0, opts.limit ?? 50).map((x) => x.e)
   }
 
-  async update(id: string, patch: { name?: string; description?: string; tags?: string[]; notes?: string; effect?: VfxEffect }): Promise<VfxEntry> {
+  async update(id: string, patch: { name?: string; description?: string; tags?: string[]; tagGroups?: Partial<Record<TagGroup, string[]>>; notes?: string; effect?: VfxEffect }): Promise<VfxEntry> {
     const hit = await this.find(id)
     if (!hit) throw new VfxError(`no VFX entry "${id}"`)
     const e: VfxEntry = { ...hit.entry, updatedAt: this.now() }
     if (typeof patch.name === 'string' && patch.name.trim()) e.name = patch.name.trim().slice(0, 80)
     if (typeof patch.description === 'string') e.description = patch.description.slice(0, 2000)
-    if (Array.isArray(patch.tags)) e.tags = [...new Set(patch.tags.map((t) => String(t).toLowerCase().trim()).filter(Boolean))].slice(0, 16)
+    // Tag edits are the user's: the groups they change are kept on re-tag.
+    if (Array.isArray(patch.tags) || (patch.tagGroups && typeof patch.tagGroups === 'object')) {
+      const before = tagGroupsOf(e)
+      const after = patch.tagGroups && typeof patch.tagGroups === 'object' ? normalizeGroups({ ...before, ...patch.tagGroups }) : groupsFromTags((patch.tags ?? []).map(String))
+      const changed = changedGroups(before, after)
+      e.tagGroups = after
+      e.tags = flatTags(after)
+      if (changed.length) e.userTagGroups = [...new Set([...(e.userTagGroups ?? []), ...changed])].filter((k) => TAG_GROUP_ORDER.includes(k))
+    }
     if (typeof patch.notes === 'string') e.notes = patch.notes.slice(0, 2000)
     if (patch.effect) {
       e.effect = await this.prepareTextures(patch.effect, hit.store.scope)
@@ -299,7 +333,7 @@ export class VfxService {
 
   // ------------------------------------------------------------ import
 
-  private async expand(paths: string[]): Promise<string[]> {
+  async expand(paths: string[]): Promise<string[]> {
     const out: string[] = []
     const walk = async (p: string, depth: number) => {
       if (out.length >= MAX_IMPORT_FILES || depth > 8) return
@@ -312,8 +346,9 @@ export class VfxService {
       if (s.isDirectory()) {
         const names = (await readdir(p).catch(() => [] as string[])).sort()
         for (const n of names) if (!n.startsWith('.')) await walk(join(p, n), depth + 1)
-      } else if (s.isFile() && s.size <= MAX_FILE_BYTES) {
+      } else if (s.isFile()) {
         const ext = extname(p).toLowerCase()
+        if (s.size > (PLACE_EXT.has(ext) ? MAX_PLACE_BYTES : MAX_FILE_BYTES)) return
         if (MODEL_EXT.has(ext) || MEDIA_MIME[ext]) out.push(p)
       }
     }
@@ -321,9 +356,10 @@ export class VfxService {
     return out
   }
 
-  // .rbxm / .rbxmx -> instance trees (Lune; .rbxmx also without Lune).
-  private async extractModels(models: string[]): Promise<Map<string, { roots?: import('../../../shared/vfx/types.ts').VfxNode[]; error?: string }>> {
-    const extracted = new Map<string, { roots?: import('../../../shared/vfx/types.ts').VfxNode[]; error?: string }>()
+  // .rbxm / .rbxmx -> instance trees (Lune; .rbxmx also without Lune). Place files -> their VFX
+  // packs (place: true; each root is a pack folder).
+  async extractModels(models: string[]): Promise<Map<string, { roots?: import('../../../shared/vfx/types.ts').VfxNode[]; error?: string; place?: boolean; packs?: string[] }>> {
+    const extracted = new Map<string, { roots?: import('../../../shared/vfx/types.ts').VfxNode[]; error?: string; place?: boolean; packs?: string[] }>()
     if (!models.length) return extracted
     const lune = await this.deps.lune().catch((e) => ({ error: (e as Error).message }))
     const runtime = this.deps.runtimeDir()
@@ -333,17 +369,51 @@ export class VfxService {
     for (const f of models) {
       const prev = extracted.get(f)
       if (prev?.roots) continue
-      if (extname(f).toLowerCase() === '.rbxmx') {
+      if (extname(f).toLowerCase() === '.rbxlx') {
+        try {
+          const packs = findVfxPacks(readRbxmx(await readFile(f, 'utf8')))
+          extracted.set(f, { roots: packs.map((p) => p.node), place: true, packs: packs.map((p) => p.path.join('.')) })
+        } catch (e) {
+          extracted.set(f, { error: `could not read the XML: ${(e as Error).message}` })
+        }
+      } else if (extname(f).toLowerCase() === '.rbxmx') {
         try {
           extracted.set(f, { roots: readRbxmx(await readFile(f, 'utf8')) })
         } catch (e) {
           extracted.set(f, { error: `could not read the XML: ${(e as Error).message}` })
         }
       } else if (!prev) {
-        extracted.set(f, { error: `binary .rbxm needs Lune to be read (${'error' in lune ? lune.error : 'the Lune runtime scripts are missing'}); install Lune (Settings > Tests) or save the model as .rbxmx in Studio` })
+        extracted.set(f, { error: `binary ${extname(f).toLowerCase()} needs Lune to be read (${'error' in lune ? lune.error : 'the Lune runtime scripts are missing'}); install Lune (Settings > Tests) or save it as ${extname(f).toLowerCase() === '.rbxl' ? '.rbxlx' : '.rbxmx'} in Studio` })
       }
     }
     return extracted
+  }
+
+  // One imported effect -> a library entry ('model'). `file` is the model file kept with it (re-import).
+  async addEffect(store: VfxStore, g: EffectGroup, opts: { origin: string; tagHint?: string; file?: { name: string; bytes: Buffer | string } | null; tags?: string[] }): Promise<{ entry: VfxEntry; notes: string[] }> {
+    const effect = effectFromNodes(g.name, g.nodes)
+    const notes = importNotes(g.nodes, effect, emitAttributes(effect.roots))
+    const id = entryId(g.name)
+    const now = this.now()
+    const entry: VfxEntry = {
+      id,
+      scope: store.scope,
+      kind: 'model',
+      name: g.name,
+      description: describeEffect(effect),
+      ...tagFields(effect, `${g.name} ${opts.tagHint ?? ''}`, opts.tags ?? []),
+      createdAt: now,
+      updatedAt: now,
+      origin: opts.origin,
+      effect,
+      stats: effectStats(effect),
+      thumbs: [],
+      quality: 'reference',
+      importVersion: IMPORT_VERSION,
+      ...(notes.length ? { importNotes: notes } : {})
+    }
+    if (opts.file) await store.writeFile(id, `media/${safeFileName(opts.file.name)}`, typeof opts.file.bytes === 'string' ? Buffer.from(opts.file.bytes, 'utf8') : opts.file.bytes)
+    return { entry: await store.save(entry), notes }
   }
 
   // Rebuilds an imported model entry from the model file stored with it (entries imported by an
@@ -373,8 +443,12 @@ export class VfxService {
     return saved
   }
 
-  async import(paths: string[], scope: VfxScope = 'user'): Promise<VfxImportResult> {
+  // Files and folders -> library entries. Effects already in the library (same content hash, same
+  // scope) or repeated in this import are skipped and listed in `duplicates` unless `force`.
+  async import(paths: string[], scope: VfxScope = 'user', opts: { force?: boolean } = {}): Promise<VfxImportResult> {
     const store = this.store(scope)
+    const known = opts.force ? new Map<string, VfxEntry>() : await this.hashIndex(scope)
+    const seen = new Map<string, string>()
     const files = await this.expand(Array.isArray(paths) ? paths : [])
     const result: VfxImportResult = { added: [], skipped: [] }
     if (!files.length) return result
@@ -387,39 +461,29 @@ export class VfxService {
         result.skipped.push({ file: f, reason: r?.error ?? 'unreadable' })
         continue
       }
-      const groups = splitEffects(r.roots)
+      const groups = r.place ? splitEffects(r.roots, { packs: true }) : splitEffects(r.roots)
       if (!groups.length) {
-        result.skipped.push({ file: f, reason: 'no ParticleEmitter, Beam, Trail, light or visible part found' })
+        result.skipped.push({ file: f, reason: r.place ? `no VFX folder found (a Folder with ${3}+ effects in ${'Workspace, ReplicatedStorage or ServerStorage'})` : 'no ParticleEmitter, Beam, Trail, light or visible part found' })
         continue
       }
+      const bytes = r.place ? null : await readFile(f)
+      const keep = bytes && bytes.length < KEEP_FILE_BYTES ? { name: basename(f), bytes } : null
       for (const g of groups) {
-        const name = groups.length > 1 ? g.name : basename(f, extname(f))
-        const effect = effectFromNodes(name, g.nodes)
-        const notes = importNotes(g.nodes, effect, emitAttributes(effect.roots))
-        if (notes.length) (result.notes ??= []).push({ file: f, notes })
-        const id = entryId(name)
-        const now = this.now()
-        const entry: VfxEntry = {
-          id,
-          scope,
-          kind: 'model',
-          name,
-          description: describeEffect(effect),
-          tags: autoTags(effect, basename(f)),
-          createdAt: now,
-          updatedAt: now,
-          origin: basename(f),
-          effect,
-          stats: effectStats(effect),
-          thumbs: [],
-          quality: 'reference',
-          importVersion: IMPORT_VERSION,
-          ...(notes.length ? { importNotes: notes } : {})
+        const name = groups.length > 1 || r.place ? g.name : basename(f, extname(f))
+        if (!opts.force) {
+          const hash = effectHash(effectFromNodes(name, g.nodes))
+          const of = known.get(hash)?.name ?? seen.get(hash)
+          if (of) {
+            ;(result.duplicates ??= []).push({ file: f, name, of })
+            continue
+          }
+          seen.set(hash, name)
         }
-        const bytes = await readFile(f)
-        if (bytes.length < 20 * 1024 * 1024) await store.writeFile(id, `media/${safeFileName(basename(f))}`, bytes)
-        result.added.push(await store.save(entry))
+        const { entry, notes } = await this.addEffect(store, { ...g, name }, { origin: basename(f), tagHint: basename(f), file: keep })
+        if (notes.length) (result.notes ??= []).push({ file: f, notes })
+        result.added.push(entry)
       }
+      if (r.place && r.packs?.length) (result.notes ??= []).push({ file: f, notes: [`VFX folders read: ${r.packs.slice(0, 6).join(', ')}${r.packs.length > 6 ? ` and ${r.packs.length - 6} more` : ''}`] })
     }
     for (const f of media) {
       const ext = extname(f).toLowerCase()
@@ -427,7 +491,9 @@ export class VfxService {
       const id = entryId(name)
       const file = `media/${safeFileName(basename(f))}`
       await store.writeFile(id, file, await readFile(f))
-      const tags = autoTags({ name, roots: [], cues: [], duration: 1 }, name).filter((t) => !['impact', 'aura'].includes(t))
+      const named = autoTagGroups({ name, roots: [], cues: [], duration: 1 }, name).groups
+      const tagGroups: TagGroups = { ...named, timing: [] }
+      const tags = flatTags(tagGroups)
       const now = this.now()
       const isImage = MEDIA_MIME[ext].startsWith('image/')
       result.added.push(
@@ -438,6 +504,7 @@ export class VfxService {
           name,
           description: `Visual reference (${MEDIA_MIME[ext]}) for critique.`,
           tags,
+          tagGroups,
           createdAt: now,
           updatedAt: now,
           origin: basename(f),
@@ -449,6 +516,107 @@ export class VfxService {
     }
     this.changed()
     return result
+  }
+
+  // ------------------------------------------------------------ duplicates, trash, re-tag
+
+  private hashes = new Map<string, { at: number; hash: string | null }>()
+
+  // The content hash of an entry's effect (fingerprint.ts); null for media entries.
+  entryHash(e: VfxEntry): string | null {
+    if (!e.effect) return null
+    const key = `${e.scope}:${e.id}`
+    const c = this.hashes.get(key)
+    if (c && c.at === e.updatedAt) return c.hash
+    const hash = effectHash(e.effect)
+    this.hashes.set(key, { at: e.updatedAt, hash })
+    return hash
+  }
+
+  // hash -> the oldest entry with it, in one scope (or both).
+  async hashIndex(scope?: VfxScope): Promise<Map<string, VfxEntry>> {
+    const out = new Map<string, VfxEntry>()
+    const entries = scope ? await this.store(scope).list().catch(() => [] as VfxEntry[]) : await this.list()
+    for (const e of [...entries].sort((a, b) => a.createdAt - b.createdAt)) {
+      const h = this.entryHash(e)
+      if (h && !out.has(h)) out.set(h, e)
+    }
+    return out
+  }
+
+  // Groups of entries with the same effect (same scope), oldest first: keep [0], the rest are extras.
+  async duplicates(): Promise<{ hash: string; scope: VfxScope; entries: VfxEntry[] }[]> {
+    const by = new Map<string, VfxEntry[]>()
+    for (const e of await this.list()) {
+      const h = this.entryHash(e)
+      if (!h) continue
+      const k = `${e.scope}:${h}`
+      by.set(k, [...(by.get(k) ?? []), e])
+    }
+    return [...by.entries()]
+      .filter(([, list]) => list.length > 1)
+      .map(([k, list]) => {
+        // Keep a rated / liked one first, then the oldest.
+        const sorted = [...list].sort((a, b) => Number(b.rating === 'up') - Number(a.rating === 'up') || a.createdAt - b.createdAt)
+        return { hash: k.slice(k.indexOf(':') + 1), scope: list[0].scope, entries: sorted }
+      })
+      .sort((a, b) => b.entries.length - a.entries.length)
+  }
+
+  // Moves entries to the library trash (both scopes); Undo with restore(batch). The trash is emptied
+  // at the next start (purgeTrash).
+  async trash(ids: string[]): Promise<{ batch: string; removed: string[] }> {
+    const batch = `t${this.now().toString(36)}-${Math.random().toString(36).slice(2, 8)}`
+    const removed: string[] = []
+    const want = new Set(ids.map(String))
+    for (const s of [this.project(), this.user]) {
+      if (!s) continue
+      const mine = (await s.list()).filter((e) => want.has(e.id)).map((e) => e.id)
+      if (mine.length) removed.push(...(await s.trash(mine, batch)))
+    }
+    if (removed.length) this.changed()
+    return { batch, removed }
+  }
+
+  async restore(batch: string): Promise<{ restored: string[] }> {
+    const restored: string[] = []
+    for (const s of [this.project(), this.user]) if (s) restored.push(...(await s.restore(String(batch))))
+    if (restored.length) this.changed()
+    return { restored }
+  }
+
+  // Every entry of one scope to the trash.
+  async clear(scope: VfxScope): Promise<{ batch: string; removed: string[] }> {
+    const ids = (await this.store(scope).list()).map((e) => e.id)
+    return this.trash(ids)
+  }
+
+  async purgeTrash(): Promise<void> {
+    for (const s of [this.project(), this.user]) if (s) await s.purgeTrash().catch(() => undefined)
+  }
+
+  // Recomputes the auto-tags of every entry with an effect; groups the user edited (and custom
+  // tags) stay as they are.
+  async retag(): Promise<{ changed: number; total: number }> {
+    let changed = 0
+    let total = 0
+    for (const s of [this.project(), this.user]) {
+      if (!s) continue
+      for (const e of await s.list()) {
+        if (!e.effect) continue
+        total++
+        const t = tagFields(e.effect, `${e.name} ${e.kind === 'model' ? e.origin : ''}`, [], { tags: e.tags, tagGroups: tagGroupsOf(e), userTagGroups: e.userTagGroups ?? [] })
+        // Keep the sequence timing of composed effects and custom tags of older entries.
+        const groups: TagGroups = { ...t.tagGroups!, custom: tagGroupsOf(e).custom }
+        if (e.effect.script && !groups.timing.includes('sequence') && !(e.userTagGroups ?? []).includes('timing')) groups.timing = ['sequence']
+        const tags = flatTags(groups)
+        if (tags.join('|') === e.tags.join('|') && JSON.stringify(e.tagGroups ?? null) === JSON.stringify(groups)) continue
+        await s.save({ ...e, tags, tagGroups: groups, autoTagInfo: t.autoTagInfo })
+        changed++
+      }
+    }
+    if (changed) this.changed()
+    return { changed, total }
   }
 
   // ------------------------------------------------------------ learn
@@ -477,7 +645,7 @@ export class VfxService {
     if (this.deps.memory) {
       for (const r of recipes) {
         const examples = entries
-          .filter((e) => e.tags.includes(r.tag) && e.quality !== 'avoid' && e.effect)
+          .filter((e) => recipeMatches(e, r.tag) && e.quality !== 'avoid' && e.effect)
           .slice(0, 4)
           .map((e) => `${e.name} (${e.scope} library ${e.id}): ${e.description}`.slice(0, 220))
         const skill = recipeSkill(r, examples)
@@ -495,6 +663,9 @@ export class VfxService {
 
   async recipeFor(tags: string[]): Promise<VfxRecipe | null> {
     const recipes = await this.recipes()
+    // The most specific first: KIND+ELEMENT pairs ("slash+fire"), then the tags.
+    const g = groupsFromTags(tags)
+    tags = [...g.kind.flatMap((k) => g.element.map((el) => `${k}+${el}`)), ...tags]
     for (const t of tags) {
       const hit = recipes.find((r) => r.tag === t)
       if (hit) return hit
@@ -617,7 +788,7 @@ export class VfxService {
     // built-in examples keep their textures.
     const effect = await this.prepareTextures(raw, store.scope, opts.reuseTextures ?? opts.writeProject !== false)
     const now = this.now()
-    const tags = [...new Set([...(spec.tags ?? []).map((t) => String(t).toLowerCase()), ...autoTags(effect, opts.prompt ?? '')])].slice(0, 10)
+    const tagInfo = tagFields(effect, opts.prompt ?? '', (spec.tags ?? []).map((t) => String(t).toLowerCase()), prev?.entry)
     const entry: VfxEntry = {
       ...(prev?.entry ?? { createdAt: now, thumbs: [], iterations: [] }),
       id: prev?.entry.id ?? entryId(effect.name),
@@ -625,7 +796,7 @@ export class VfxService {
       kind: 'generated',
       name: effect.name,
       description: spec.description?.slice(0, 600) || (prev && effect.script ? prev.entry.description : '') || describeEffect(effect),
-      tags,
+      ...tagInfo,
       updatedAt: now,
       origin: opts.prompt ?? prev?.entry.origin ?? effect.name,
       effect,
@@ -839,6 +1010,7 @@ export class VfxService {
         {
           render: async (effect, n) => {
             this.progress({ entryId: id, iteration: base + n, phase: 'render' })
+            this.deps.onDraft?.(id, base + n, effect)
             const { times, frames } = await this.renderEffect(effect, nFrames)
             timesByIt.set(n, times)
             pngs.set(n, frames)
@@ -866,6 +1038,7 @@ export class VfxService {
             const iteration: VfxIteration = { n: base + it.n, at: this.now(), effect: it.effect, frames: it.frames, critique: it.critique }
             await hit.store.save({ ...current, iterations: [...(current.iterations ?? []), iteration].slice(-20), updatedAt: this.now() })
             this.progress({ entryId: id, iteration: base + it.n, phase: 'adjust', score: it.critique.overall, message: it.critique.summary })
+            this.deps.onDraft?.(id, base + it.n, it.effect, it.critique.overall)
             this.changed()
           },
           cancelled: () => token.cancelled
@@ -1180,38 +1353,4 @@ async function exists(p: string): Promise<boolean> {
   )
 }
 
-// One effect per file, or one per child when the file is a pack (a Folder / Model of several
-// effects, or several top-level effects). Geometry counts as an effect too: a model of visible
-// parts / meshes with no emitters (a slash mesh tweened by a script) is imported, and in a pack a
-// child holding only geometry is its own entry.
-export function splitEffects(roots: import('../../../shared/vfx/types.ts').VfxNode[]): { name: string; nodes: import('../../../shared/vfx/types.ts').VfxNode[] }[] {
-  type N = import('../../../shared/vfx/types.ts').VfxNode
-  const hasVfx = (n: N) => allNodes([n]).some((x) => ['ParticleEmitter', 'Beam', 'Trail', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight'].includes(x.className))
-  // Visible geometry (as authored or revealed by a script's tween / set).
-  const revealed = revealedByCues(tweenCuesFromScripts(roots))
-  const hasGeometry = (n: N) => pruneToVfx([n], revealed).some((k) => allNodes([k]).some((x) => PART_CLASSES.has(x.className)))
-  const hasContent = (n: N) => hasVfx(n) || hasGeometry(n)
-  const withVfx = roots.filter(hasVfx)
-  const isGroup = (n: N) => n.className === 'Model' || n.className === 'Folder'
-  // Several Models / Folders: a pack of separate effects. Loose parts selected together in Studio
-  // (several Parts at the top) are one effect: they keep their relative positions.
-  if (withVfx.length > 1 && withVfx.every(isGroup)) return roots.filter((n) => isGroup(n) && hasContent(n)).map((n) => ({ name: n.name, nodes: [n] }))
-  if (withVfx.length > 1) return [{ name: withVfx[0].name, nodes: roots }]
-  if (withVfx.length === 1) {
-    const only = withVfx[0]
-    const kids = only.children.filter(hasVfx)
-    if (isGroup(only) && kids.length > 1 && kids.every(isGroup)) {
-      return only.children.filter((k) => isGroup(k) && hasContent(k)).map((k) => ({ name: k.name, nodes: [k] }))
-    }
-    // Visible geometry next to the effect (loose parts selected with it) stays in it.
-    const extra = roots.filter((r) => r !== only && hasGeometry(r))
-    return [{ name: only.name, nodes: [only, ...extra] }]
-  }
-  // No emitters at all: the visible geometry is the effect (one entry).
-  const geo = roots.filter(hasGeometry)
-  if (geo.length === 1) return [{ name: geo[0].name, nodes: geo }]
-  if (geo.length > 1) return [{ name: geo[0].name, nodes: roots }]
-  return []
-}
-
-export { relative, VfxLibraryError, SpecError, RECIPE_PREFIX }
+export { relative, VfxLibraryError, SpecError, RECIPE_PREFIX, splitEffects }

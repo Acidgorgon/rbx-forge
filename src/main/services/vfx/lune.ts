@@ -63,6 +63,9 @@ export interface ExtractResult {
   file: string
   roots?: VfxNode[]
   error?: string
+  // A place file: roots are its VFX packs (paths in `packs`).
+  place?: boolean
+  packs?: string[]
 }
 
 export async function luneExtract(files: string[], opts: { lune: string; runtimeDir: string; run?: LuneRun }): Promise<ExtractResult[]> {
@@ -80,10 +83,11 @@ export async function luneExtract(files: string[], opts: { lune: string; runtime
         const t = line.trim()
         if (!t.startsWith('{')) continue
         try {
-          const j = JSON.parse(t) as { file?: string; roots?: unknown[]; error?: string }
+          const j = JSON.parse(t) as { file?: string; roots?: unknown[]; error?: string; place?: boolean; packs?: unknown }
           if (!j.file) continue
           seen.add(j.file)
           if (j.error) out.push({ file: j.file, error: j.error.split('\n')[0].slice(0, 300) })
+          else if (j.place) out.push({ file: j.file, roots: (Array.isArray(j.roots) ? j.roots : []).map(normalizeLuneNode), place: true, packs: Array.isArray(j.packs) ? j.packs.map(String) : [] })
           else out.push({ file: j.file, roots: (j.roots ?? []).map(normalizeLuneNode) })
         } catch {
           // a partial line; the file is reported as missing below

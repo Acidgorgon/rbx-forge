@@ -30,7 +30,7 @@ export function vfxElectronDeps(preload: string): Pick<VfxWireDeps, 'capture' | 
         title: 'Import VFX references',
         properties: process.platform === 'darwin' ? ['openFile', 'openDirectory', 'multiSelections'] : ['openFile', 'multiSelections'],
         filters: [
-          { name: 'Roblox models and references', extensions: ['rbxm', 'rbxmx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'mp4', 'webm', 'mov'] },
+          { name: 'Roblox models, places and references', extensions: ['rbxm', 'rbxmx', 'rbxl', 'rbxlx', 'png', 'jpg', 'jpeg', 'webp', 'gif', 'mp4', 'webm', 'mov'] },
           { name: 'All files', extensions: ['*'] }
         ]
       }

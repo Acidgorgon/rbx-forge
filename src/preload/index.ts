@@ -65,6 +65,7 @@ const methods = [
   'vfxStatus', 'vfxList', 'vfxGet', 'vfxSearch', 'vfxImport', 'vfxChooseImport', 'vfxUpdate', 'vfxDelete', 'vfxRate',
   'vfxLearn', 'vfxRecipes', 'vfxMake', 'vfxRefine', 'vfxCancel', 'vfxCreate', 'vfxFile', 'vfxSaveThumb', 'vfxResolveTexture', 'vfxTestInStudio',
   'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample', 'vfxMeshGet', 'vfxMeshLoad', 'vfxMeshStatus', 'vfxReimport',
+  'vfxImportScan', 'vfxStudioScan', 'vfxImportCommit', 'vfxTrash', 'vfxRestore', 'vfxClear', 'vfxDuplicates', 'vfxRetag', 'vfxLiveStart', 'vfxLiveStop', 'vfxLiveSet', 'vfxLiveSettings', 'vfxLiveStatus',
   'vfxTexStatus', 'vfxTexList', 'vfxTexGenerate', 'vfxTexPreview', 'vfxTexUpdate', 'vfxTexRate', 'vfxTexDelete', 'vfxTexUpload', 'vfxTexCheck', 'vfxTexFile',
   'vfxTexImportPick', 'vfxTexImportScan', 'vfxTexImportIds', 'vfxTexImportStudio', 'vfxTexImportCommit', 'vfxTexSetPolicy',
   // Animation Lab (services/anim) + Labs model tiers

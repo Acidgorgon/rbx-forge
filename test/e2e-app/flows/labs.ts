@@ -1,7 +1,36 @@
 // The labs: VFX Lab, textures, Animation Lab, Ability Composer, Video references, UI Preview.
 
+import { PLUGIN_VERSION } from '../../../src/shared/studio/plugin.ts'
+import { SEL_DATA_TAG, SEL_PROGRESS_TAG } from '../../../src/shared/vfx/studioImport.ts'
+import { BRIDGE_PORT } from '../lib/app.ts'
 import { canvasInk, check, CENTER, closeBottom, dismissToasts, openPage, SkipFlow } from '../lib/ui.ts'
 import type { Flow } from './types.ts'
+
+const BRIDGE = `http://127.0.0.1:${BRIDGE_PORT}/forge-bridge`
+
+async function bridgeJson(url: string, body?: unknown): Promise<Record<string, any>> {
+  const r = await fetch(url, body === undefined ? undefined : { method: 'POST', body: JSON.stringify(body) })
+  return (await r.json()) as Record<string, any>
+}
+
+// What the Studio import module sends for a selected VFX folder (Studio's JSON shape): effect
+// Models, duplicate names, a loose Part with a Trail, one effect twice under two names.
+function studioPackMessages(): string[] {
+  let id = 0
+  const n = (className: string, name: string, children: unknown[] = [], props: Record<string, unknown> = {}) => ({ id: `s${++id}`, className, name, props: Object.keys(props).length ? props : [], children })
+  const emitter = (rate: number, color: number[]) => n('ParticleEmitter', 'Sparks', [], { Rate: rate, Color: [{ t: 0, c: color }, { t: 1, c: color }], Size: [{ t: 0, v: 1, e: 0 }, { t: 1, v: 0, e: 0 }], Lifetime: [0.4, 0.8], LightEmission: 1 })
+  const model = (name: string, rate: number, color = [1, 0.5, 0.1]) => n('Model', name, [n('Part', 'Root', [n('Attachment', 'At', [emitter(rate, color)])], { Transparency: 1, Size: [1, 1, 1], CFrame: [0, 3, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] })])
+  const kids = [model('AuraImpact', 11), model('Barrage', 12, [0.2, 0.6, 1]), model('Slash', 13), model('Slash', 14), model('Slash', 15), model('Impact', 16), model('Impact', 17), model('QuickDash', 18, [1, 1, 1]), model('ActivateFX', 19, [0.7, 0.3, 1])]
+  const a0 = n('Attachment', 'A0', [], { CFrame: [0, 1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] })
+  const a1 = n('Attachment', 'A1', [], { CFrame: [0, -1, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] })
+  kids.push(n('Part', 'Trail', [a0, a1, n('Trail', 'Trail', [], { Attachment0: a0.id, Attachment1: a1.id, Lifetime: 0.3 })], { Transparency: 1, Size: [1, 1, 1], CFrame: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] }))
+  for (let i = 1; i <= 3; i++) kids.push(model(`Extra${i}`, 30 + i))
+  kids.push(model('Copy of Barrage', 12, [0.2, 0.6, 1]))
+  const payload = JSON.stringify({ kind: 'nodes', roots: [n('Folder', 'VFX', kids)], paths: ['ReplicatedStorage.VFX'], count: id, truncated: false })
+  const pieces: string[] = []
+  for (let i = 0; i < payload.length; i += 4000) pieces.push(payload.slice(i, i + 4000))
+  return [`${SEL_PROGRESS_TAG} ${kids.length}/${kids.length} Copy of Barrage`, ...pieces.map((p, i) => `${SEL_DATA_TAG} ${i + 1}/${pieces.length} ${p}`)]
+}
 
 // What a lab says when no model provider is configured (the no-key flows assert one of these).
 export const NO_PROVIDER = /no (model )?provider|api key|add a model|not configured|no model|set up a (model|provider)|could not (restate|reach)|provider/i
@@ -214,6 +243,71 @@ export const labFlows: Flow[] = [
           note(`${c.page}: drafted without a model (${before} -> ${after})`)
         }
       }
+    }
+  },
+  {
+    name: 'vfx-studio-import',
+    title: 'VFX Lab: Import from Studio (fake plugin) -> review -> import, learn offer, select + delete + undo, duplicates',
+    needs: ['bridgePort'],
+    timeoutMs: 90_000,
+    async run({ page, shot, note }) {
+      await openPage(page, 'VFX Lab')
+      await closeBottom(page)
+      await dismissToasts(page)
+      const before = (await page.evaluate(() => window.harness.vfxList())).length
+      // The fake Forge Bridge plugin: a held poll (Studio connected) that receives the read job.
+      const poll = bridgeJson(`${BRIDGE}/poll?v=${PLUGIN_VERSION}&place=VFX%20Pack&placeId=0`)
+      await page.waitForTimeout(400)
+      await page.locator(`${CENTER} [data-testid="vfx-import-studio"]`).click()
+      const got = await poll
+      check(got.job?.entry === 'ForgeVfxRead', `the plugin got ${JSON.stringify(got).slice(0, 200)}`)
+      check(!/:Destroy\(|Selection:Set/.test(got.job.modules[0].source), 'the read job changes the place')
+      const post = (ev: unknown) => bridgeJson(`${BRIDGE}/event/${got.job.id}`, ev)
+      await post({ type: 'accepted' })
+      for (const m of studioPackMessages()) await post({ type: 'log', message: m })
+      await post({ type: 'done', marks: [] })
+      const lastSeen = Date.now()
+      // The review: one row per effect, duplicate names numbered, the repeated effect unchecked.
+      const rows = page.locator(`${CENTER} [data-testid="vfx-import-row"]`)
+      await rows.first().waitFor({ state: 'visible', timeout: 15_000 })
+      check((await rows.count()) === 14, `review rows: ${await rows.count()}`)
+      const names = await rows.locator('input[aria-label="Name"]').evaluateAll((els: HTMLInputElement[]) => els.map((e) => e.value))
+      check(names.includes('Slash (3)') && names.includes('Impact (2)') && names.includes('Trail'), `review names: ${names.join(', ')}`)
+      check(await rows.filter({ hasText: /same effect as/ }).count() === 1, 'the repeated effect is not marked')
+      await shot('review')
+      await page.locator(`${CENTER} [data-testid="vfx-import-commit"]`).click()
+      await page.locator(`${CENTER} [data-testid="vfx-learn-offer"]`).waitFor({ state: 'visible', timeout: 20_000 })
+      const after = (await page.evaluate(() => window.harness.vfxList())).length
+      check(after - before === 13, `imported ${after - before} (expected 13)`)
+      note(`library ${before} -> ${after}`)
+      await dismissToasts(page)
+      // Select two cards (Ctrl-click), delete them, undo.
+      const cards = page.locator(`${CENTER} .vfx-card`)
+      await page.locator(`${CENTER} .vfx-lib-head input`).fill('Extra')
+      await page.waitForTimeout(300)
+      check((await cards.count()) === 3, `search Extra shows ${await cards.count()}`)
+      await cards.nth(0).click({ modifiers: ['Control'] })
+      await cards.nth(1).click({ modifiers: ['Control'] })
+      await page.locator(`${CENTER} [data-testid="vfx-delete-selected"]`).click()
+      await page.waitForFunction(() => document.querySelectorAll('.editor-area .vfx-card').length === 1, undefined, { timeout: 10_000 })
+      await page.locator('.toast button', { hasText: 'Undo' }).first().click()
+      await page.waitForFunction(() => document.querySelectorAll('.editor-area .vfx-card').length === 3, undefined, { timeout: 10_000 })
+      await page.locator(`${CENTER} .vfx-lib-head input`).fill('')
+      await dismissToasts(page)
+      // Find duplicates: none (the repeat was not imported).
+      await page.locator(`${CENTER} button`, { hasText: 'Find duplicates' }).click()
+      await page.locator(`${CENTER} section[aria-label="Duplicates"]`, { hasText: /no duplicates|imported more than once/ }).waitFor({ timeout: 10_000 })
+      const dupText = await page.locator(`${CENTER} section[aria-label="Duplicates"]`).innerText()
+      check(/no duplicates/.test(dupText), `duplicates: ${dupText.replace(/\s+/g, ' ')}`)
+      await page.locator(`${CENTER} button[aria-label="Close duplicates"]`).click()
+      // Tag filters by group.
+      check(await page.locator(`${CENTER} .vfx-tag-groups [role="group"]`).count() >= 1, 'no tag filter rows')
+      // Clean up what this flow added (the trash is emptied on the next start).
+      const ids = (await page.evaluate(() => window.harness.vfxList())).filter((e: { origin?: string }) => (e.origin ?? '').startsWith('ReplicatedStorage.VFX')).map((e: { id: string }) => e.id)
+      await page.evaluate((x: string[]) => window.harness.vfxTrash(x), ids)
+      await dismissToasts(page)
+      // Later flows expect no Studio: wait until the fake plugin no longer counts as connected.
+      await page.waitForTimeout(Math.max(0, lastSeen + 16_000 - Date.now()))
     }
   }
 ]

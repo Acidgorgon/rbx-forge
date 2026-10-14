@@ -29,10 +29,17 @@ export interface RunOptions {
   acceptTimeoutMs?: number
   // The whole job, from enqueue to "done".
   timeoutMs?: number
+  // A background job (the VFX Lab's live Studio loop) that steps aside for any other job: a later
+  // run() cancels it (code 'cancelled', reason PREEMPTED) instead of failing with 'busy', and busy()
+  // does not report it.
+  preemptible?: boolean
 }
+
+export const PREEMPTED = 'paused for another Studio job'
 
 interface Active {
   job: BridgeJob
+  preemptible: boolean
   handler: EventHandler
   delivered: boolean
   accepted: boolean
@@ -102,6 +109,11 @@ export class StudioBridge {
   }
 
   busy(): BridgeJob | null {
+    return this.active && !this.active.preemptible ? this.active.job : null
+  }
+
+  // Any job at all, a preemptible one included.
+  current(): BridgeJob | null {
     return this.active?.job ?? null
   }
 
@@ -145,9 +157,14 @@ export class StudioBridge {
   // Queues a job for the plugin and resolves when it reports "done".
   run(job: BridgeJob, handler: EventHandler, opts: RunOptions = {}): Promise<void> {
     if (!this.listening) return Promise.reject(new BridgeError('not-listening', `Forge is not listening on 127.0.0.1:${this.wantPort}${this.error ? ` (${this.error})` : ''}`))
+    if (this.active?.preemptible) {
+      const prev = this.active
+      prev.aborted = PREEMPTED
+      prev.reject(new BridgeError('cancelled', PREEMPTED))
+    }
     if (this.active) return Promise.reject(new BridgeError('busy', 'a Studio check is already running'))
     return new Promise<void>((resolve, reject) => {
-      const a: Active = { job, handler, delivered: false, accepted: false, aborted: null, resolve, reject, timers: [] }
+      const a: Active = { job, handler, preemptible: !!opts.preemptible, delivered: false, accepted: false, aborted: null, resolve, reject, timers: [] }
       this.active = a
       const finish = (err?: Error) => {
         if (this.active !== a) return

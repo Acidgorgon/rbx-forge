@@ -957,6 +957,7 @@ app.on('before-quit', (event) => {
   updater.dispose()
   void spend.dispose()
   vfx.service.dispose()
+  vfx.live.dispose()
   anim.service.dispose()
   void studio.dispose()
   lsp.dispose()

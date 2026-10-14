@@ -419,35 +419,7 @@ export function layerRoles(effect: VfxEffect, kindOf?: TextureKindOf): LayerRole
 
 export const KNOWN_TAGS = ['fire', 'ice', 'lightning', 'electric', 'water', 'poison', 'dark', 'holy', 'magic', 'slash', 'impact', 'explosion', 'aura', 'heal', 'smoke', 'sparks', 'portal', 'beam', 'trail', 'projectile', 'charge', 'shockwave', 'wind', 'blood', 'level-up', 'buff', 'teleport', 'ambient'] as const
 
-const TAG_WORDS: Record<string, RegExp> = {
-  fire: /fire|flame|burn|blaze|inferno|ember|magma|lava/i,
-  ice: /ice|frost|freeze|snow|cryo|glacier/i,
-  lightning: /lightning|thunder|bolt|zap|volt/i,
-  electric: /electric|shock|spark|plasma/i,
-  water: /water|splash|aqua|wave|bubble|rain/i,
-  poison: /poison|toxic|venom|acid/i,
-  dark: /dark|shadow|void|abyss|curse/i,
-  holy: /holy|divine|angel|light ?beam|radiant/i,
-  magic: /magic|arcane|mana|spell|rune|mystic/i,
-  slash: /slash|swing|cut|sword|blade|katana|swipe/i,
-  impact: /impact|hit|punch|strike|land|smash|slam/i,
-  explosion: /explo|blast|boom|nuke|detonat/i,
-  aura: /aura|charge ?up|power ?up|ki\b|chi\b|ambient/i,
-  heal: /heal|regen|cure|restore/i,
-  smoke: /smoke|dust|fog|mist/i,
-  sparks: /spark|glitter|sparkle/i,
-  portal: /portal|gate|rift|warp/i,
-  shockwave: /shock ?wave|ring|wave/i,
-  wind: /wind|tornado|gust|air|whirl/i,
-  blood: /blood|gore/i,
-  'level-up': /level ?up|lvl ?up|rank ?up/i,
-  buff: /buff|boost|shield|barrier/i,
-  teleport: /teleport|blink|dash/i,
-  projectile: /projectile|bullet|fireball|orb|missile|shot/i,
-  charge: /charge|channel|gather/i
-}
-
-function hueName(c: Rgb): string | null {
+export function hueName(c: Rgb): string | null {
   const mx = Math.max(...c)
   const mn = Math.min(...c)
   if (mx < 0.15) return 'black'
@@ -468,45 +440,34 @@ function hueName(c: Rgb): string | null {
   return 'pink'
 }
 
-// Dominant hues of the effect (by emitter, weighted by its particle budget).
-export function effectColors(effect: VfxEffect): string[] {
+// Hue names of the effect and their share (0..1): emitters weighted by their particle budget
+// (bursts included), beams and trails by a fixed weight; start and middle colour of each.
+export function colorWeights(effect: VfxEffect): Map<string, number> {
   const w = new Map<string, number>()
+  let total = 0
   for (const n of allNodes(effect.roots)) {
     if (n.className !== 'ParticleEmitter' && n.className !== 'Beam' && n.className !== 'Trail') continue
     const seq = prop<ColorSequence>(n, 'Color')
-    const weight = n.className === 'ParticleEmitter' ? Math.max(1, emitterBudget(n).live) : 10
+    const bursts = effect.cues.filter((c) => c.target === n.id && c.action === 'emit').map((c) => c.count ?? 16)
+    const weight = n.className === 'ParticleEmitter' ? Math.max(1, emitterBudget(n, bursts).live) : 10
     for (const t of [0, 0.5]) {
       const name = hueName(evalColorSequence(seq, t))
-      if (name) w.set(name, (w.get(name) ?? 0) + weight)
+      if (name) {
+        w.set(name, (w.get(name) ?? 0) + weight)
+        total += weight
+      }
     }
   }
-  return [...w.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k)
+  if (total > 0) for (const [k, v] of w) w.set(k, v / total)
+  return w
 }
 
-// Tags from names, file name, colours and structure.
-export function autoTags(effect: VfxEffect, extra = ''): string[] {
-  const text = [effect.name, extra, ...allNodes(effect.roots).map((n) => n.name)].join(' ')
-  const tags = new Set<string>()
-  for (const [tag, re] of Object.entries(TAG_WORDS)) if (re.test(text)) tags.add(tag)
-  const nodes = allNodes(effect.roots)
-  const colors = effectColors(effect)
-  // What the layers do (from their properties when the names say nothing).
-  const roles = new Set(nodes.filter((n) => n.className === 'ParticleEmitter' || n.className === 'Beam').map((n) => nodeRole(n)))
-  if (roles.has('slash')) tags.add('slash')
-  if (roles.has('ring')) tags.add('shockwave')
-  if (nodes.some((n) => n.className === 'Trail')) tags.add('trail')
-  if (nodes.some((n) => n.className === 'Beam')) tags.add('beam')
-  const emitters = nodes.filter((n) => n.className === 'ParticleEmitter')
-  const allBurst = emitters.length > 0 && emitters.every((e) => prop<boolean>(e, 'Enabled') === false)
-  if (!tags.size) {
-    if (allBurst) tags.add('impact')
-    else if (emitters.length) tags.add('aura')
-    if ((colors[0] === 'orange' || colors[0] === 'red' || colors[0] === 'yellow') && emitters.some((e) => (prop<number[]>(e, 'Acceleration') ?? [0, 0, 0])[1] > 0)) tags.add('fire')
-    if (colors[0] === 'cyan' || colors[0] === 'blue') tags.add('magic')
-  }
-  for (const c of colors.slice(0, 2)) tags.add(c)
-  return [...tags].slice(0, 10)
+// Dominant hues of the effect (by emitter, weighted by its particle budget).
+export function effectColors(effect: VfxEffect): string[] {
+  return [...colorWeights(effect).entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([k]) => k)
 }
+
+// Tags (kind / element / timing, with evidence) live in tags.ts (it imports this module).
 
 export function describeEffect(effect: VfxEffect): string {
   const stats = effectStats(effect)

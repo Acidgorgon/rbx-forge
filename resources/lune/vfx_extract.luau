@@ -149,14 +149,88 @@ local function extract(roots)
 	return list
 end
 
+-- Place files (.rbxl / .rbxlx): the VFX packs, i.e. Folders / Models in Workspace, ReplicatedStorage
+-- and ServerStorage with at least 3 children holding a ParticleEmitter / Beam / Trail (or named like
+-- "VFX" / "Effects" with one). Top-most only. Same rule as src/shared/vfx/split.ts findVfxPacks.
+local PACK_FX = { ParticleEmitter = true, Beam = true, Trail = true }
+local PACK_SERVICES = { "Workspace", "ReplicatedStorage", "ServerStorage" }
+local function hasFx(inst)
+	if PACK_FX[inst.ClassName] then
+		return true
+	end
+	for _, d in inst:GetDescendants() do
+		if PACK_FX[d.ClassName] then
+			return true
+		end
+	end
+	return false
+end
+local function isGroup(inst)
+	return inst.ClassName == "Folder" or inst.ClassName == "Model"
+end
+local function findPacks(game)
+	local packs, paths = {}, {}
+	local function visit(inst, path, depth)
+		if depth > 12 or #packs >= 100 then
+			return
+		end
+		local effects = 0
+		for _, c in inst:GetChildren() do
+			if hasFx(c) then
+				effects += 1
+			end
+		end
+		local lname = string.lower(inst.Name)
+		local named = string.find(lname, "vfx") or string.find(lname, "fx") or string.find(lname, "effect") or string.find(lname, "particle")
+		if effects >= 3 or (effects >= 1 and named) then
+			table.insert(packs, inst)
+			table.insert(paths, path)
+			return
+		end
+		for _, c in inst:GetChildren() do
+			if isGroup(c) then
+				visit(c, path .. "." .. c.Name, depth + 1)
+			end
+		end
+	end
+	for _, name in PACK_SERVICES do
+		local service = game:FindFirstChildOfClass(name)
+		if service then
+			for _, c in service:GetChildren() do
+				if isGroup(c) then
+					visit(c, name .. "." .. c.Name, 1)
+				end
+			end
+		end
+	end
+	return packs, paths
+end
+
+local function isPlace(file)
+	local lower = string.lower(file)
+	return string.sub(lower, -5) == ".rbxl" or string.sub(lower, -6) == ".rbxlx"
+end
+
 for i = 2, #args do
 	local file = args[i]
+	local place = isPlace(file)
+	local packPaths = nil
 	local ok, result = pcall(function()
+		if place then
+			local game = roblox.deserializePlace(fs.readFile(file))
+			local packs, paths = findPacks(game)
+			packPaths = paths
+			return extract(packs)
+		end
 		local roots = roblox.deserializeModel(fs.readFile(file))
 		return extract(roots)
 	end)
 	if ok then
-		print(serde.encode("json", { file = file, roots = result }))
+		if place then
+			print(serde.encode("json", { file = file, roots = result, place = true, packs = packPaths }))
+		else
+			print(serde.encode("json", { file = file, roots = result }))
+		end
 	else
 		print(serde.encode("json", { file = file, error = tostring(result) }))
 	end

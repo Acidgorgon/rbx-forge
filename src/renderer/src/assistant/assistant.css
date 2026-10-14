@@ -43,6 +43,7 @@
 .pm-gemini { color: var(--lav); border-color: color-mix(in srgb, var(--lav) 40%, transparent); }
 .pm-ollama { color: var(--fg); }
 .pm-custom { color: var(--fg-muted); }
+.pm-codex { color: var(--ok); border-color: var(--ok-line); }
 
 /* meter */
 .meter { display: flex; align-items: center; gap: 8px; padding: 6px 12px; font-size: 10.5px; color: var(--fg-faint); border-bottom: 1px solid var(--line); flex: none; min-width: 0; white-space: nowrap; }

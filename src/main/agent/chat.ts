@@ -60,6 +60,8 @@ import type { ChatCommandInfo, ChatCommandResult } from '../../shared/chatComman
 import { ChatModes, gateOpenAiTools, modeNote, refuseRemovedTool, sdkModeOptions, todoTool, toolCatalog, type ModeChatFields, type ReviewDecision } from './modes.ts'
 import { ChatCommands, type CommandHost, type GatingCostRow } from './commands/index.ts'
 import { Checkpoints } from './checkpoints.ts'
+import { codexService, type CodexService } from './codex/service.ts'
+import { codexPrompt, codexSandboxFor } from './codex/chat.ts'
 import { estimateTokens } from './budget/tokens.ts'
 
 const SETTING = 'chats'
@@ -75,6 +77,10 @@ interface StoredChat extends Omit<ChatSession, 'provider' | 'model'>, ModeChatFi
   sdkSessionId?: string
   // OpenAI-format conversation for non-anthropic providers.
   oaiHistory?: OaiMessage[]
+  // Codex thread (`codex exec resume <id>`) of the last Codex turn.
+  codexThreadId?: string
+  // The "Codex edits without per-edit approval" note was shown.
+  codexNoted?: boolean
   // Provider of the last turn, to notice switches.
   lastProvider?: ProviderId
   messages: ChatMessage[]
@@ -134,6 +140,8 @@ export interface ChatDeps {
   oneShot?: (system: string, prompt: string) => Promise<string>
   checkpoints?: ((root: string) => Checkpoints) | null
   gitDiff?: (root: string) => Promise<string>
+  // Codex CLI (ChatGPT plan); default: the process-wide service.
+  codex?: () => CodexService
 }
 
 // OpenAI-compatible chats: compact the history at 80% of this window, down to 40%.
@@ -500,7 +508,7 @@ export class ChatManager {
     // Team mode: big multi-part requests go to the orchestrator (lead + specialists).
     // Ask / Plan never go to the team (it writes); with approvals on, only an explicit team mode does.
     const teamAllowed = !isReadOnlyMode(mode) && (mode === 'auto' || chat.orchestrate === 'team')
-    if (this.deps.team && !route.hint && !chat.guests?.length && !chat.crossCheckFix && teamAllowed) {
+    if (this.deps.team && provider !== 'codex' && !route.hint && !chat.guests?.length && !chat.crossCheckFix && teamAllowed) {
       const mode = chat.orchestrate ?? 'auto'
       const scriptCount = this.ctx.scripts().reduce((n, g) => n + g.scripts.length, 0)
       const decision = shouldOrchestrate(text, { scriptCount }, mode)
@@ -534,6 +542,18 @@ export class ChatManager {
         return
       }
       start = () => this.runSdk(chat, text, root, abort, modelId, auth.env, rules, effort, sendImages)
+    } else if (provider === 'codex') {
+      const codex = (this.deps.codex ?? codexService)()
+      const why = await codex.notReady()
+      if (why) {
+        this.push(chat, { ...systemMessage('main', why), settingsLink: 'codex' })
+        return
+      }
+      if (!isReadOnlyMode(mode) && mode === 'edit' && !chat.codexNoted) {
+        chat.codexNoted = true
+        this.push(chat, systemMessage('main', 'Codex edits project files directly (sandbox: workspace-write, no per-edit approval) and can run sandboxed commands in the project. /rewind restores the checkpoint taken before each turn.'))
+      }
+      start = () => this.runCodex(chat, codex, text, root, abort, modelId, rules, mode, sendImages)
     } else {
       const ep = this.deps.providers ? await this.deps.providers.endpoint(provider) : { error: 'Providers are not available.' }
       if ('error' in ep) {
@@ -735,7 +755,7 @@ export class ChatManager {
       task: 'chat',
       text,
       settings: { provider, model: chosen, autoRoute: this.ctx.getSetting<boolean>('autoRoute', true) !== false, tiers: this.ctx.getSetting('modelTiers', undefined) },
-      override: chat.modelPinned || explicit ? chosen : undefined,
+      override: chat.modelPinned || explicit || provider === 'codex' ? chosen : undefined,
       previousModel: chat.lastProvider === provider ? chat.lastModel : undefined
     })
     const support = effortSupport(provider, r.model)
@@ -925,6 +945,77 @@ export class ChatManager {
     if (result.outcome === 'error') this.ctx.log({ service: 'agent', stream: 'stderr', text: `${PROVIDERS[provider].label}: ${result.error}` })
   }
 
+  // One turn on Codex: `codex exec --json` in the project root (resuming the chat's Codex thread),
+  // its events mapped to chat messages. Cancel kills the CLI's process tree.
+  private async runCodex(chat: StoredChat, codex: CodexService, text: string, root: string, abort: AbortController, modelId: string, rules: string, mode: ChatMode, images: ChatImage[] = []): Promise<void> {
+    // Continue the Codex thread when the last turn was Codex; otherwise start one that carries the
+    // visible transcript (another provider, /clear, /compact, /rewind).
+    let resumeId = chat.lastProvider === 'codex' ? chat.codexThreadId : undefined
+    let seed: string | undefined
+    if (chat.seed !== undefined) {
+      resumeId = undefined
+      seed = chat.seed || undefined
+      chat.seed = undefined
+    }
+    const transcript = () => (seed !== undefined ? seed : transcriptText(chat.messages.slice(0, -1), this.choice(chat)))
+    const paths: string[] = []
+    if (images.length && hasChatImageStore()) {
+      for (const i of images) {
+        const p = await chatImageStore().pathOf(i.id)
+        if (p && !p.includes(',')) paths.push(p)
+      }
+    }
+    const speaker = this.hostSpeaker(chat)
+    const run = async (resume: string | undefined) => {
+      const ids = new Map<string, string>()
+      const idOf = (key: string) => {
+        let id = ids.get(key)
+        if (!id) ids.set(key, (id = randomUUID()))
+        return id
+      }
+      let errorShown = false
+      const prompt = codexPrompt({ text, mode, rules, fresh: !resume, transcript: resume ? '' : transcript(), basePrompt: SYSTEM_PROMPT })
+      const r = await codex.exec({
+        cwd: root,
+        prompt,
+        sandbox: codexSandboxFor(mode),
+        model: modelId,
+        resumeId: resume,
+        images: paths,
+        signal: abort.signal,
+        onUpdate: (u) => {
+          if (u.kind === 'thread') chat.codexThreadId = u.threadId
+          else if (u.kind === 'text') this.push(chat, { id: idOf(u.key), role: 'assistant', text: u.text, at: Date.now(), agentId: 'main' })
+          else if (u.kind === 'tool') this.push(chat, { id: idOf(u.key), role: 'tool', text: u.text, tool: { name: u.name, input: u.input }, at: Date.now(), agentId: 'main' })
+          else if (u.kind === 'notice') this.push(chat, { id: idOf(u.key), role: 'system', text: u.text, at: Date.now(), agentId: 'main' })
+          else if (u.kind === 'usage') {
+            // ChatGPT plan usage: tokens are counted, cost is 0 (no API spend).
+            this.recordUsage(chat, speaker, { input: Math.max(0, u.usage.input - u.usage.cachedInput), cacheRead: u.usage.cachedInput, output: u.usage.output, costUsd: 0 })
+            this.deps.meter?.ledger.record({ at: Date.now(), provider: 'codex', model: modelId, chatId: chat.id, input: Math.max(0, u.usage.input - u.usage.cachedInput), output: u.usage.output, cacheRead: u.usage.cachedInput, cacheWrite: 0, costUsd: 0, costSource: 'provider' })
+          } else if (u.kind === 'error' && !errorShown && !(resume && staleThread(u.message))) {
+            errorShown = true
+            this.push(chat, systemMessage('main', `Error: ${u.message}`))
+          }
+        }
+      })
+      return { r, errorShown }
+    }
+    try {
+      let { r, errorShown } = await run(resumeId)
+      // The Codex session is gone (deleted, another machine): start a new thread with the transcript.
+      if (resumeId && r.error && staleThread(r.error) && !abort.signal.aborted) {
+        chat.codexThreadId = undefined
+        ;({ r, errorShown } = await run(undefined))
+      }
+      if (r.aborted || abort.signal.aborted) this.push(chat, systemMessage('main', 'Stopped.'))
+      else if (r.error && !errorShown) this.push(chat, systemMessage('main', `Error: ${r.error}`))
+      if (r.error) this.ctx.log({ service: 'agent', stream: 'stderr', text: `Codex: ${r.error}` })
+    } catch (e) {
+      if (abort.signal.aborted) this.push(chat, systemMessage('main', 'Stopped.'))
+      else this.push(chat, systemMessage('main', `Error: ${(e as Error).message}`))
+    }
+  }
+
   // Summarizes old turns when the history nears the window. Errors keep the history as is.
   private async compact(history: OaiMessage[], baseUrl: string, headers: Record<string, string>, provider: ProviderId, modelId: string, signal: AbortSignal): Promise<OaiMessage[]> {
     const window = Number(this.ctx.getSetting('compactWindowTokens', COMPACT_WINDOW)) || COMPACT_WINDOW
@@ -1079,7 +1170,7 @@ export class ChatManager {
     if (r.kind !== 'ok') {
       // "ask gpt 9 and report back" with no such model: say so instead of a silent host turn.
       if (trigger!.converge && looksLikeModel(phrase)) {
-        const ready = (await this.group.available()).map((c) => modelLabel(c.model))
+        const ready = ((await this.group.available()).filter((c) => c.provider !== 'codex')).map((c) => modelLabel(c.model))
         this.push(chat, { ...systemMessage('main', `No model called “${phrase}” is set up. ${ready.length ? `Ready: ${[...new Set(ready)].slice(0, 8).join(', ')}.` : 'No provider is set up yet.'} Add providers in Settings → Providers.`), settingsLink: 'openai' })
         return { kind: 'asked' }
       }
@@ -1232,6 +1323,7 @@ export class ChatManager {
     const chat = this.find(id)
     if (!chat) throw new Error(`unknown chat ${id}`)
     if (!isProviderId(choice?.provider) || !choice.model?.trim()) throw new Error('invalid model choice')
+    if (choice.provider === 'codex') throw new Error('Codex can be a chat’s own model, not a guest in a group chat.')
     const p = this.group.ensureGuest(this.room(chat, new AbortController().signal), { provider: choice.provider, model: choice.model.trim() })
     if (p.role === 'host') throw new Error('that model is already the host of this chat')
     return this.session(chat)
@@ -1391,6 +1483,11 @@ function transcriptHistory(messages: ChatMessage[], host?: ModelChoice): OaiMess
   }
   while (out.length && out[0].role !== 'user') out.shift()
   return out
+}
+
+// `codex exec resume` with a thread id the CLI no longer has.
+function staleThread(error: string): boolean {
+  return /(session|thread|conversation|rollout)[^.]*(not found|no such|does not exist|missing)|no (saved )?(session|thread|rollout)/i.test(error)
 }
 
 function transcriptText(messages: ChatMessage[], host?: ModelChoice): string {

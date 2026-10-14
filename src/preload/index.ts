@@ -15,6 +15,7 @@ const methods = [
   // Settings > Accounts (sign-in per provider)
   'accountsList', 'accountsSignIn', 'accountsCancelSignIn', 'accountsSubmitCode', 'accountsSignOut', 'accountsUseExistingLogin',
   'accountsTest', 'accountsCancelTest',
+  'codexStatus', 'codexSignIn', 'codexCancelSignIn', 'codexSignOut',
   'getAgents', 'runAgents', 'cancelAgent',
   'lspStart',
   'getBlink',

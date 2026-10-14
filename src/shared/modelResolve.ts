@@ -274,7 +274,7 @@ export function resolveConsultModel<T extends ModelChoice & { alias?: string }>(
   return { kind: 'none' }
 }
 
-const PROVIDER_NAMES: Record<ProviderId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter', gemini: 'Google Gemini', ollama: 'Ollama', custom: 'the custom provider' }
+const PROVIDER_NAMES: Record<ProviderId, string> = { anthropic: 'Anthropic', openai: 'OpenAI', openrouter: 'OpenRouter', gemini: 'Google Gemini', ollama: 'Ollama', custom: 'the custom provider', codex: 'Codex' }
 
 export function providerName(id: ProviderId): string {
   return PROVIDER_NAMES[id] ?? id
@@ -284,6 +284,6 @@ export function providerName(id: ProviderId): string {
 export function unconfiguredText(choice: ModelChoice): string {
   const p = providerName(choice.provider)
   const a = /^[aeiou]/i.test(p) ? 'an' : 'a'
-  const how = choice.provider === 'ollama' ? 'Start Ollama, or pick another model' : choice.provider === 'custom' ? 'Set its base URL' : `Add ${a} ${p} API key`
+  const how = choice.provider === 'ollama' ? 'Start Ollama, or pick another model' : choice.provider === 'custom' ? 'Set its base URL' : choice.provider === 'codex' ? 'Sign in with ChatGPT' : `Add ${a} ${p} API key`
   return `${modelLabel(choice.model)} is ${a} ${p} model, and ${p} isn't set up in Forge yet. ${how} in Settings → Providers, then ask again.`
 }

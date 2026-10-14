@@ -141,7 +141,7 @@ export function toChatMessages(m: SDKMessage, agentId: string): ChatMessage[] {
   return []
 }
 
-export const AUTH_HELP = 'Claude sign-in failed or expired. Open a terminal, run `claude` and type /login, then send again. Or add an Anthropic API key in Settings.'
+export const AUTH_HELP = 'Claude sign-in failed or expired. Open Settings > Accounts and click Sign in with Claude (or use an API key there).'
 
 export function isAuthError(text: string): boolean {
   return /Failed to authenticate|OAuth session|authentication_failed|invalid x-api-key/i.test(text)

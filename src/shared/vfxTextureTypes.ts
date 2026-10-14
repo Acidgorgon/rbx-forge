@@ -38,6 +38,8 @@ export interface TextureStatus {
   spentTodayUsd: number
   dailyCapUsd: number
   counts: { user: number; project: number }
+  // Set when the Art page's image backend is Codex (ChatGPT plan): no key, cost or cap applies.
+  codex?: { ready: boolean; detail: string }
 }
 
 export interface VfxTextureApi {

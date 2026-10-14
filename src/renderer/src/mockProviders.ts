@@ -11,7 +11,8 @@ const LABEL: Record<ProviderId, string> = {
   openrouter: 'OpenRouter',
   gemini: 'Google Gemini',
   ollama: 'Ollama',
-  custom: 'Custom (OpenAI-compatible)'
+  custom: 'Custom (OpenAI-compatible)',
+  codex: 'Codex (ChatGPT plan)'
 }
 
 const DEFAULTS: Record<ProviderId, string[]> = {
@@ -20,7 +21,8 @@ const DEFAULTS: Record<ProviderId, string[]> = {
   openrouter: ['anthropic/claude-sonnet-5.5', 'openai/gpt-6-astra', 'google/gemini-3.8-flash'],
   gemini: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview'],
   ollama: ['qwen3.8', 'qwen3.6', 'llama3.1'],
-  custom: []
+  custom: [],
+  codex: ['codex-default', 'gpt-6.1-sol', 'gpt-6-astra']
 }
 
 // What GET /models would add once a key is present.
@@ -44,7 +46,7 @@ const FETCHED: Partial<Record<ProviderId, string[]>> = {
   custom: ['local-model']
 }
 
-const ORDER: ProviderId[] = ['anthropic', 'openai', 'openrouter', 'gemini', 'ollama', 'custom']
+const ORDER: ProviderId[] = ['anthropic', 'openai', 'openrouter', 'gemini', 'ollama', 'custom', 'codex']
 
 export function providersMock(emit: Emit) {
   const none = typeof location !== 'undefined' && new URLSearchParams(location.search).get('providers') === 'none'
@@ -54,7 +56,8 @@ export function providersMock(emit: Emit) {
     openrouter: none ? null : 'sk-or-v1-mock-41d7',
     gemini: null,
     ollama: null,
-    custom: null
+    custom: null,
+    codex: null
   }
   const baseUrls: Partial<Record<ProviderId, string>> = { ollama: 'http://localhost:11434/v1' }
   let ollamaRunning = !none
@@ -64,6 +67,10 @@ export function providersMock(emit: Emit) {
   let claudeExpired = accountsParam === 'expired'
   const checks: Partial<Record<AccountId, AccountCheck>> = {}
   let signInTimer: ReturnType<typeof setTimeout> | null = null
+  // ?codex=missing: no Codex CLI on this computer; ?codex=signedin: already signed in with ChatGPT.
+  const codexParam = typeof location !== 'undefined' ? new URLSearchParams(location.search).get('codex') : null
+  const codexInstalled = codexParam !== 'missing'
+  let codexSignedIn = codexParam === 'signedin'
   let defaultModel: ModelChoice = { provider: 'anthropic', model: 'claude-opus-5-5' }
   const fetched: Partial<Record<ProviderId, string[]>> = {}
 
@@ -79,6 +86,13 @@ export function providersMock(emit: Emit) {
     if (key) {
       p.keyHint = `…${key.slice(-4)}`
       p.keySource = 'stored'
+    }
+    if (id === 'codex') {
+      p.needsKey = false
+      p.ready = codexSignedIn
+      p.detail = !codexInstalled ? 'Codex CLI not found' : codexSignedIn ? 'Signed in with ChatGPT' : 'Not logged in'
+      p.codex = { installed: codexInstalled, loggedIn: codexSignedIn, version: '0.140.0', ...(codexSignedIn ? { method: 'chatgpt' as const } : {}) }
+      return p
     }
     if (id === 'anthropic') {
       p.ready = (!!key || useClaudeLogin) && !(useClaudeLogin && claudeExpired)
@@ -114,7 +128,11 @@ export function providersMock(emit: Emit) {
       const state = useClaudeLogin ? (claudeExpired ? 'expired' : 'signedIn') : 'signedOut'
       return { method: 'claude', label: 'Sign in with Claude', state, canCliLogout: true, ...(useClaudeLogin ? { account: 'you@example.com · Max', detail: 'Claude Code login on this computer' } : {}) }
     }
-    if (id === 'openai') return { method: 'codex', label: 'Sign in with ChatGPT (Codex)', state: 'unavailable', needs: 'Codex CLI', needsUrl: 'https://developers.openai.com/codex/cli', detail: 'Needs the Codex CLI. Use an API key for now.' }
+    if (id === 'openai') {
+      const base = { method: 'codex', label: 'Sign in with ChatGPT (Codex)', needs: 'Codex CLI', cliLogoutOnly: true, canCliLogout: true } as const
+      if (!codexInstalled) return { ...base, state: 'unavailable', needsUrl: 'https://developers.openai.com/codex/cli', detail: 'Needs the Codex CLI. Use an API key for now.' }
+      return codexSignedIn ? { ...base, state: 'signedIn', account: 'ChatGPT account', detail: 'Codex CLI login on this computer' } : { ...base, state: 'signedOut', detail: 'Codex CLI 0.140.0 found' }
+    }
     return undefined
   }
   const account = (id: AccountId): AccountSummary => {
@@ -123,7 +141,7 @@ export function providersMock(emit: Emit) {
     let state: AccountSummary['state'] = 'none'
     let statusText = id === 'ollama' ? 'Not running' : 'Not set up'
     if (signIn?.state === 'expired') [state, statusText] = ['expired', 'Sign-in expired']
-    else if (signIn?.state === 'signedIn') [state, statusText] = ['subscription', 'Signed in with Claude subscription']
+    else if (signIn?.state === 'signedIn') [state, statusText] = ['subscription', signIn.method === 'codex' ? 'Signed in with ChatGPT (Codex)' : 'Signed in with Claude subscription']
     else if (p.keySource) [state, statusText] = ['apiKey', `Using API key ${p.keyHint ?? ''}`.trim()]
     else if (id === 'ollama' && p.ready) [state, statusText] = ['local', `Running at ${p.baseUrl}`]
     return {
@@ -165,6 +183,10 @@ export function providersMock(emit: Emit) {
     | 'accountsUseExistingLogin'
     | 'accountsTest'
     | 'accountsCancelTest'
+    | 'codexStatus'
+    | 'codexSignIn'
+    | 'codexCancelSignIn'
+    | 'codexSignOut'
   > = {
     async accountsList() {
       return accounts()
@@ -174,6 +196,19 @@ export function providersMock(emit: Emit) {
         const full = { account: id, method: id === 'claude' ? 'claude' : 'codex', phase: 'waiting', ...p } as SignInProgress
         emit('accounts:signin', full)
         return full
+      }
+      if (id === 'openai' && codexInstalled) {
+        progress({ phase: 'starting' })
+        progress({ url: 'https://auth.openai.com/oauth/authorize?mock=1', message: 'Finish signing in in your browser.' })
+        return new Promise((resolve) => {
+          signInTimer = setTimeout(() => {
+            signInTimer = null
+            codexSignedIn = true
+            checks.openai = { ok: true, message: 'Signed in', at: Date.now(), via: 'subscription' }
+            changed()
+            resolve(progress({ phase: 'done', message: 'Signed in with ChatGPT.' }))
+          }, 1500)
+        })
       }
       if (id !== 'claude') return Promise.resolve(progress({ phase: 'failed', message: 'Sign in with ChatGPT needs the Codex CLI.' }))
       progress({ phase: 'starting' })
@@ -192,10 +227,11 @@ export function providersMock(emit: Emit) {
     async accountsCancelSignIn(id) {
       if (signInTimer) clearTimeout(signInTimer)
       signInTimer = null
-      emit('accounts:signin', { account: id, method: 'claude', phase: 'cancelled', message: 'Sign-in cancelled.' })
+      emit('accounts:signin', { account: id, method: id === 'openai' ? 'codex' : 'claude', phase: 'cancelled', message: 'Sign-in cancelled.' })
     },
     async accountsSubmitCode() {},
-    async accountsSignOut(id) {
+    async accountsSignOut(id, opts) {
+      if (id === 'openai' && opts?.cliLogout) codexSignedIn = false
       if (id === 'claude') {
         useClaudeLogin = false
         claudeExpired = false
@@ -219,6 +255,21 @@ export function providersMock(emit: Emit) {
       return check
     },
     async accountsCancelTest() {},
+    async codexStatus() {
+      return info('codex').codex!
+    },
+    async codexSignIn() {
+      await new Promise((r) => setTimeout(r, 600))
+      codexSignedIn = true
+      changed()
+      return { ok: true, message: 'Signed in with ChatGPT' }
+    },
+    async codexCancelSignIn() {},
+    async codexSignOut() {
+      codexSignedIn = false
+      changed()
+      return info('codex').codex!
+    },
     async listProviders() {
       return list()
     },

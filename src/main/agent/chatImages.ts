@@ -148,6 +148,16 @@ export class ChatImageStore {
     return null
   }
 
+  // File of a stored image (Codex takes images as paths), or null when it is gone.
+  async pathOf(id: string): Promise<string | null> {
+    if (!ID.test(id)) return null
+    for (const mime of IMAGE_MIMES) {
+      const file = this.file(id, mime)
+      if (await stat(file).then((s) => s.isFile()).catch(() => false)) return file
+    }
+    return null
+  }
+
   async base64(id: string): Promise<{ mime: ImageMime; base64: string } | null> {
     const r = await this.read(id)
     return r ? { mime: r.mime, base64: r.data.toString('base64') } : null

@@ -26,7 +26,8 @@ const BLURB: Record<ProviderId, string> = {
   openrouter: 'Hundreds of models from many labs with one key.',
   gemini: "Google's Gemini models through their OpenAI-compatible endpoint.",
   ollama: 'Local models on this machine. No key needed; start Ollama and pull a model with tool support.',
-  custom: 'Any server that speaks the OpenAI Chat Completions API (LM Studio, vLLM, a gateway...).'
+  custom: 'Any server that speaks the OpenAI Chat Completions API (LM Studio, vLLM, a gateway...).',
+  codex: 'Your ChatGPT plan through the official Codex CLI on this machine. Forge never sees your sign-in; the CLI keeps it.'
 }
 const KEY_PLACEHOLDER: Partial<Record<ProviderId, string>> = { anthropic: 'sk-ant-...', openai: 'sk-...', openrouter: 'sk-or-...', gemini: 'AIza...', custom: 'Optional' }
 const ENV_NAME: Partial<Record<ProviderId, string>> = { anthropic: 'ANTHROPIC_API_KEY', openai: 'OPENAI_API_KEY', openrouter: 'OPENROUTER_API_KEY', gemini: 'GEMINI_API_KEY' }
@@ -154,9 +155,14 @@ function ProviderCard({ p }: { p: ProviderInfo }) {
         </div>
         <span className={`badge-o ${p.ready ? 'ok' : ''}`} title={p.detail}>{status}</span>
       </div>
-      {p.detail && !/^No (API key|base URL)$/.test(p.detail) && <div className="note pv-detail">{p.detail}</div>}
+      {p.detail && p.id !== 'codex' && !/^No (API key|base URL)$/.test(p.detail) && <div className="note pv-detail">{p.detail}</div>}
       {(p.id === 'custom' || p.id === 'ollama') && <BaseUrlField p={p} />}
-      {p.id !== 'ollama' && <KeyField p={p} />}
+      {p.id !== 'ollama' && p.id !== 'codex' && <KeyField p={p} />}
+      {p.id === 'codex' && (
+        <div className="pv-field">
+          <span className="note grow">{p.ready ? 'Uses your ChatGPT plan through the Codex CLI.' : 'Sign in with ChatGPT under Accounts > OpenAI.'}</span>
+        </div>
+      )}
     </div>
   )
 }

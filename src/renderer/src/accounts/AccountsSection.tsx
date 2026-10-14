@@ -157,6 +157,16 @@ function SignOutConfirm({ a, onClose }: { a: AccountSummary; onClose: () => void
       setBusy(false)
     }
   }
+  if (a.signIn?.cliLogoutOnly) {
+    // Codex: Forge holds no login of its own, so signing out means `codex logout`.
+    return (
+      <div className="acct-confirm">
+        <div className="note grow">Log out of the {tool}? This signs out the {tool} everywhere on this computer (terminal and IDE too), not only in Forge.</div>
+        <button className="btn small danger" disabled={busy} onClick={() => void go(true)}>Log out of {tool}</button>
+        <button className="btn small ghost" disabled={busy} onClick={onClose}>Cancel</button>
+      </div>
+    )
+  }
   return (
     <div className="acct-confirm">
       <div className="note grow">Stop using this login in Forge? Logging out of {tool} too also signs out your terminal sessions.</div>

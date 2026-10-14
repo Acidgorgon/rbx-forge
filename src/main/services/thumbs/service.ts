@@ -40,6 +40,8 @@ import {
   type ThumbStatus
 } from '../../../shared/thumbs/types.ts'
 import { uploadExperienceThumbnail } from './experience.ts'
+import { codexBackend, type CodexImages } from '../art/imageBackend.ts'
+import { CODEX_IMAGE_MODEL, type ImageBackend } from '../../../shared/artTypes.ts'
 import { newBatchId, newId, PROJECT_THUMB_DIR, ThumbError, ThumbStore, type ThumbKind } from './store.ts'
 
 export interface ImagePayload {
@@ -62,7 +64,9 @@ export interface ThumbServiceDeps {
   settings: { get<T>(key: string, fallback: T): T; set(key: string, value: unknown): void }
   // The Art page's OpenAI key, daily cap and today's Art spend.
   openAiKey?: () => Promise<string | null>
-  imageSettings?: () => { model: string; quality: string; dailyCapUsd: number }
+  imageSettings?: () => { model: string; quality: string; dailyCapUsd: number; backend?: ImageBackend }
+  // The ChatGPT plan through Codex (Art page image backend 'codex').
+  codexImages?: CodexImages
   artSpentToday?: () => Promise<number>
   // The Art page's Open Cloud key and creator.
   robloxKey?: () => Promise<string | null>
@@ -200,6 +204,11 @@ export class ThumbService {
     return round(mine + art)
   }
 
+  // The Codex backend when the Art page picked it (no key, no cost, no cap).
+  private codex(): CodexImages | null {
+    return codexBackend(this.deps.imageSettings?.().backend, this.deps.codexImages)
+  }
+
   private cap(): number {
     return this.deps.imageSettings?.().dailyCapUsd ?? 5
   }
@@ -208,7 +217,9 @@ export class ThumbService {
     const s = this.settings()
     const creator = this.deps.creator?.() ?? {}
     const genSize = genSizeFor(s.model)
+    const codex = this.codex()
     return {
+      ...(codex ? { codex: await codex.status().catch((e) => ({ ready: false, detail: (e as Error).message })) } : {}),
       project: !!this.deps.projectRoot(),
       openaiKey: !!(await this.deps.openAiKey?.().catch(() => null)),
       robloxKey: !!(await this.deps.robloxKey?.().catch(() => null)),
@@ -488,6 +499,7 @@ export class ThumbService {
 
   async estimate(input: ThumbGenerateInput): Promise<ThumbEstimate> {
     const q = this.request(input)
+    if (this.codex()) return { n: Math.min(q.n, 4), model: CODEX_IMAGE_MODEL, quality: 'auto', genSize: 'auto', perImageUsd: 0, totalUsd: 0, spentTodayUsd: await this.spentToday(), dailyCapUsd: 0, overCap: false }
     const per = estimateImageUsd(q.model, q.quality, q.genSize)
     const profile = input.profileId ? (await this.find<ThumbStyleProfile>('profiles', input.profileId))?.item : undefined
     const images = Math.min(16, (input.baseIds ?? []).length + (q.sendRefs && profile ? Math.min(2, profile.refIds.length) : 0))
@@ -531,8 +543,9 @@ export class ThumbService {
   async generate(input: ThumbGenerateInput): Promise<{ id: string; thumbs: Thumb[]; bestId?: string }> {
     const brief = String(input.brief ?? '').trim().slice(0, 2000)
     if (!brief) throw new ThumbError('Describe the thumbnail, e.g. "player escaping a giant shark, shocked face".')
-    const key = await this.deps.openAiKey?.()
-    if (!key) throw new ThumbError('No OpenAI API key. Add one in Settings > Providers > OpenAI.')
+    const codex = this.codex()
+    const key = codex ? null : await this.deps.openAiKey?.()
+    if (!codex && !key) throw new ThumbError('No OpenAI API key. Add one in Settings > Providers > OpenAI.')
     const q = this.request(input)
     const est = await this.estimate(input)
     if (est.overCap) throw new ThumbError(`This would pass today's image budget (${formatUsd(est.spentTodayUsd)} spent + ${formatUsd(est.totalUsd)} > ${formatUsd(est.dailyCapUsd)}). Raise it on the Art page.`)
@@ -552,15 +565,18 @@ export class ThumbService {
     ]
     this.progress(batchId, 'generating', `${q.n} × ${q.genSize} ${q.quality}`)
     const req = { model: q.model, prompt, n: q.n, size: q.genSize, quality: q.quality, background: 'auto' as const, outputFormat: 'png' as const }
-    const client = { apiKey: key, fetch: this.deps.fetch, sleep: this.deps.sleep }
+    const client = { apiKey: key ?? '', fetch: this.deps.fetch, sleep: this.deps.sleep }
     let res
     try {
-      res = images.length ? await editImages({ ...req, images }, client) : await generateImages(req, client)
+      if (codex) {
+        res = await codex.generate({ prompt, n: q.n, size: q.genSize, references: images })
+        if (res.notes.length) this.deps.log?.(`thumbs: ${res.notes.join(' ')}`)
+      } else res = images.length ? await editImages({ ...req, images }, client) : await generateImages(req, client)
     } catch (e) {
       this.progress(batchId, 'failed', (e as Error).message, { done: true, error: true })
       throw e
     }
-    this.deps.chargeImage?.(est.totalUsd)
+    if (!codex) this.deps.chargeImage?.(est.totalUsd)
     const per = round(est.totalUsd / res.images.length)
     const thumbs: Thumb[] = []
     const failed: string[] = []
@@ -578,9 +594,9 @@ export class ThumbService {
             baseIds: baseHits.map((b) => b.item.id),
             round: 0,
             prompt,
-            model: q.model,
-            genSize: q.genSize,
-            quality: q.quality,
+            model: codex ? CODEX_IMAGE_MODEL : q.model,
+            genSize: codex ? 'auto' : q.genSize,
+            quality: codex ? 'auto' : q.quality,
             costUsd: per
           })
         )
@@ -590,7 +606,7 @@ export class ThumbService {
       }
     }
     if (!thumbs.length) {
-      const msg = `OpenAI answered, but no image could be read (${failed.join('; ').slice(0, 300)})`
+      const msg = `${codex ? 'Codex' : 'OpenAI'} answered, but no image could be read (${failed.join('; ').slice(0, 300)})`
       this.progress(batchId, 'failed', msg, { done: true, error: true })
       throw new ThumbError(msg)
     }
@@ -643,8 +659,9 @@ export class ThumbService {
   }
 
   async refine(id: string, opts: { note?: string; rounds?: number; threshold?: number } = {}): Promise<{ id: string; thumbs: Thumb[] }> {
-    const key = await this.deps.openAiKey?.()
-    if (!key) throw new ThumbError('No OpenAI API key. Add one in Settings > Providers > OpenAI.')
+    const codex = this.codex()
+    const key = codex ? null : await this.deps.openAiKey?.()
+    if (!codex && !key) throw new ThumbError('No OpenAI API key. Add one in Settings > Providers > OpenAI.')
     const rounds = Math.max(1, Math.min(4, Math.floor(opts.rounds ?? 1)))
     const threshold = Math.max(1, Math.min(10, Number(opts.threshold) || 8.5))
     let cur = (await this.must<Thumb>('thumbs', id)).item
@@ -654,9 +671,9 @@ export class ThumbService {
     const forbidden = await this.forbidden()
     const profile = cur.profileId ? (await this.find<ThumbStyleProfile>('profiles', cur.profileId))?.item : undefined
     for (let r = 0; r < rounds; r++) {
-      const est = round(estimateImageUsd(s.model, s.quality, genSize) + (1 + cur.baseIds.length) * REFERENCE_IMAGE_USD)
+      const est = codex ? 0 : round(estimateImageUsd(s.model, s.quality, genSize) + (1 + cur.baseIds.length) * REFERENCE_IMAGE_USD)
       const spent = await this.spentToday()
-      if (this.cap() > 0 && spent + est > this.cap()) throw new ThumbError(`This would pass today's image budget (${formatUsd(spent)} spent + ${formatUsd(est)} > ${formatUsd(this.cap())}).`)
+      if (!codex && this.cap() > 0 && spent + est > this.cap()) throw new ThumbError(`This would pass today's image budget (${formatUsd(spent)} spent + ${formatUsd(est)} > ${formatUsd(this.cap())}).`)
       const hit = await this.must<Thumb>('thumbs', cur.id)
       const bases = (await Promise.all(cur.baseIds.slice(0, MAX_BASES).map((b) => this.find<ThumbBase>('bases', b)))).filter((b): b is { item: ThumbBase; store: ThumbStore } => !!b)
       const changes = cur.critique?.changes.length ? cur.critique.changes : cur.critique?.principles.filter((p) => p.fix && p.score < 8).map((p) => p.fix!) ?? []
@@ -665,15 +682,17 @@ export class ThumbService {
       this.progress(cur.batchId, 'refining', `round ${r + 1}/${rounds}`)
       let res
       try {
-        res = await editImages({ model: s.model, prompt, n: 1, size: genSize, quality: s.quality, background: 'auto', outputFormat: 'png', images }, { apiKey: key, fetch: this.deps.fetch, sleep: this.deps.sleep })
+        res = codex
+          ? await codex.generate({ prompt, n: 1, size: genSize, references: images })
+          : await editImages({ model: s.model, prompt, n: 1, size: genSize, quality: s.quality, background: 'auto', outputFormat: 'png', images }, { apiKey: key ?? '', fetch: this.deps.fetch, sleep: this.deps.sleep })
       } catch (e) {
         this.progress(cur.batchId, 'failed', (e as Error).message, { done: true, error: true })
         throw e
       }
-      this.deps.chargeImage?.(est)
+      if (!codex) this.deps.chargeImage?.(est)
       const siblings = (await this.all<Thumb>('thumbs')).filter((t) => t.batchId === cur.batchId)
       const k = Math.max(0, ...siblings.map((t) => Number(t.id.split('-').pop()) || 0)) + 1
-      const next = await this.saveVariation(hit.store, res.images[0], { k, batchId: cur.batchId, name: `${cur.brief.slice(0, 40)} ${k}`, brief: cur.brief, ...(cur.restatement ? { restatement: cur.restatement } : {}), ...(cur.profileId ? { profileId: cur.profileId } : {}), baseIds: cur.baseIds, parentId: cur.id, round: cur.round + 1, prompt, model: s.model, genSize, quality: s.quality, costUsd: est })
+      const next = await this.saveVariation(hit.store, res.images[0], { k, batchId: cur.batchId, name: `${cur.brief.slice(0, 40)} ${k}`, brief: cur.brief, ...(cur.restatement ? { restatement: cur.restatement } : {}), ...(cur.profileId ? { profileId: cur.profileId } : {}), baseIds: cur.baseIds, parentId: cur.id, round: cur.round + 1, prompt, model: codex ? CODEX_IMAGE_MODEL : s.model, genSize: codex ? 'auto' : genSize, quality: codex ? 'auto' : s.quality, costUsd: est })
       const critiqued = await this.critique(next.id).then((x) => x.thumb).catch(() => next)
       made.push(critiqued)
       cur = critiqued

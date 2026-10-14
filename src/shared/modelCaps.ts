@@ -180,6 +180,9 @@ export function supportsVision(provider: ProviderId, model: string, meta?: Model
     case 'ollama':
     case 'custom':
       return VISION_NAME.test(id)
+    case 'codex':
+      // codex exec --image: every Codex model takes images.
+      return true
   }
   return false
 }

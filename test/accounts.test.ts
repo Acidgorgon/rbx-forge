@@ -506,3 +506,63 @@ test('ClaudeAccount: a wrong code fails, a missing CLI is reported', shOnly, asy
 test('stripAnsi removes colour codes', () => {
   assert.equal(stripAnsi('\x1b[32mLogin successful\x1b[0m'), 'Login successful')
 })
+
+test('Codex adapter: status mapping, sign-in delegates with the signal, sign-out only runs codex logout when asked', async () => {
+  const { codexAccountProvider, codexSignInStatus, CODEX_DOCS_URL } = await import('../src/main/accounts/codex.ts')
+  const at = 1
+  const missing = codexSignInStatus({ installed: false, loggedIn: false, detail: 'not found', checkedAt: at })
+  assert.equal(missing.state, 'unavailable')
+  assert.equal(missing.needs, 'Codex CLI')
+  assert.equal(missing.needsUrl, CODEX_DOCS_URL)
+  const inChat = codexSignInStatus({ installed: true, loggedIn: true, method: 'chatgpt', version: '0.140.0', detail: 'Signed in with ChatGPT', checkedAt: at })
+  assert.equal(inChat.state, 'signedIn')
+  assert.match(inChat.account ?? '', /ChatGPT plan · codex 0\.140\.0/)
+  assert.equal(inChat.cliLogoutOnly, true)
+  assert.equal(inChat.canCliLogout, true)
+  assert.match(codexSignInStatus({ installed: true, loggedIn: true, method: 'apikey', detail: 'x', checkedAt: at }).account ?? '', /API key/)
+  assert.equal(codexSignInStatus({ installed: true, loggedIn: false, detail: 'Not logged in', checkedAt: at }).state, 'signedOut')
+
+  const calls: string[] = []
+  let signal: AbortSignal | null = null
+  let loggedIn = false
+  const fake = {
+    status: async (o?: { refresh?: boolean }) => (calls.push(`status:${o?.refresh === true}`), { installed: true, loggedIn, detail: loggedIn ? 'Signed in with ChatGPT' : 'Not logged in', checkedAt: at }),
+    signIn: async (ctl: { signal: AbortSignal; progress?: (u: { url?: string; message?: string }) => void }) => {
+      signal = ctl.signal
+      ctl.progress?.({ url: 'https://auth.openai.com/x' })
+      loggedIn = true
+      return { ok: true, message: 'Signed in with ChatGPT' }
+    },
+    signOut: async () => {
+      calls.push('logout')
+      loggedIn = false
+      return { installed: true, loggedIn, detail: 'Not logged in', checkedAt: at }
+    }
+  }
+  const p = codexAccountProvider(() => fake as never)
+  assert.equal(p.method, 'codex')
+  assert.equal(p.account, 'openai')
+  assert.equal((await p.status({ refresh: true })).state, 'signedOut')
+  const abort = new AbortController()
+  const urls: string[] = []
+  const r = await p.signIn({ signal: abort.signal, progress: (u) => u.url && urls.push(u.url), onCode: () => undefined })
+  assert.equal(r.ok, true)
+  assert.equal(signal, abort.signal)
+  assert.deepEqual(urls, ['https://auth.openai.com/x'])
+  assert.equal((await p.test!(abort.signal)).ok, true)
+  await p.signOut({ cliLogout: false })
+  assert.ok(!calls.includes('logout'))
+  await p.signOut({ cliLogout: true })
+  assert.ok(calls.includes('logout'))
+  assert.equal((await p.test!(abort.signal)).ok, false)
+})
+
+test('Codex adapter replaces the placeholder on the OpenAI card', async () => {
+  const { codexAccountProvider } = await import('../src/main/accounts/codex.ts')
+  const reg = new AccountRegistry()
+  reg.register(CODEX_PLACEHOLDER)
+  const off = reg.register(codexAccountProvider(() => ({ status: async () => ({ installed: true, loggedIn: true, method: 'chatgpt', detail: 'ok', checkedAt: 1 }) }) as never))
+  assert.equal((await reg.forAccount('openai')!.status()).state, 'signedIn')
+  off()
+  assert.equal(reg.forAccount('openai'), undefined)
+})

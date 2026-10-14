@@ -5,6 +5,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Thumb, ThumbBase, ThumbEstimate, ThumbRef, ThumbStatus, ThumbStyleProfile, TasteView, ThumbsEvents } from '@shared/types'
 import { batchOf } from '@shared/thumbs/size'
+import { CODEX_IMAGE_NOTE } from '@shared/artTypes'
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
@@ -288,7 +289,9 @@ export function ThumbLabPage() {
     return [...thumbs].sort((a, b) => b.createdAt - a.createdAt).filter((t) => w.every((x) => t.brief.toLowerCase().includes(x)))
   }, [thumbs, libQuery])
   const gameName = state.project?.name ?? 'Your experience'
-  const ready = !!status?.openaiKey && !!status?.project
+  // Codex (ChatGPT plan) backend from the Art page: no key or cost.
+  const imagesReady = status?.codex ? status.codex.ready : !!status?.openaiKey
+  const ready = imagesReady && !!status?.project
 
   return (
     <div className="page">
@@ -311,11 +314,12 @@ export function ThumbLabPage() {
           </div>
         </div>
 
-        {status && (!status.openaiKey || !status.project || !status.vision) && (
+        {status && (!imagesReady || !status.project || !status.vision) && (
           <div className="callout row">
             <Icon name="info" size={12} />
             <span className="grow note">
-              {!status.openaiKey && <>No OpenAI key: add it on the Art page (it stays in the OS keychain). </>}
+              {status.codex && !status.codex.ready && <>Codex (ChatGPT plan) is the image backend but is not ready: {status.codex.detail} </>}
+              {!status.codex && !status.openaiKey && <>No OpenAI key: add it on the Art page (it stays in the OS keychain). </>}
               {!status.project && <>Open a project: game shots and thumbnails are saved in it. </>}
               {!status.vision && <>No vision model: style cards and critiques use the code checks only. </>}
             </span>
@@ -415,7 +419,12 @@ export function ThumbLabPage() {
               ))}
             </span>
           </div>
-          {estimate && (
+          {estimate && status?.codex && (
+            <div className="note th-est">
+              {estimate.n} × Codex (ChatGPT plan) → 1920×1080 · {CODEX_IMAGE_NOTE}
+            </div>
+          )}
+          {estimate && !status?.codex && (
             <div className={`note mono th-est${estimate.overCap ? ' err-text' : ''}`}>
               {estimate.n} × {usd(estimate.perImageUsd)} = {usd(estimate.totalUsd)} · {estimate.model} {estimate.quality} at {estimate.genSize} → 1920×1080 · today {usd(estimate.spentTodayUsd)} / {usd(estimate.dailyCapUsd)}
               {estimate.overCap ? ' · over the daily cap' : ''}

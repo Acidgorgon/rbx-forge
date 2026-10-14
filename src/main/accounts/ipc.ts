@@ -7,7 +7,9 @@ import { INVOKE_PREFIX } from '../../shared/types.ts'
 import type { HarnessContext } from '../context.ts'
 import type { Credentials } from '../agent/credentials.ts'
 import type { Providers } from '../agent/providers.ts'
+import { codexService } from '../agent/codex/service.ts'
 import { ClaudeAccount } from './claude.ts'
+import { codexAccountProvider } from './codex.ts'
 import { accountRegistry, type AccountRegistry } from './registry.ts'
 import { AccountsService } from './service.ts'
 
@@ -36,7 +38,9 @@ export function registerAccountsIpc(
 ): { service: AccountsService; dispose(): void } {
   const registry = deps.registry ?? accountRegistry
   const claude = claudeAccount(deps.credentials)
-  const unregister = registry.register(claude)
+  const unregisterClaude = registry.register(claude)
+  // Replaces the Codex placeholder on the OpenAI card (codexService() is configured before this runs).
+  const unregisterCodex = registry.register(codexAccountProvider(codexService))
   const service = new AccountsService({
     credentials: deps.credentials,
     providers: deps.providers,
@@ -70,7 +74,8 @@ export function registerAccountsIpc(
       for (const name of Object.keys(handlers)) ipcMain.removeHandler(INVOKE_PREFIX + name)
       offHealth()
       offRegistry()
-      unregister()
+      unregisterClaude()
+      unregisterCodex()
       service.dispose()
     }
   }

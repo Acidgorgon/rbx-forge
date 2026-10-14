@@ -263,7 +263,8 @@ export class GroupChat {
     const people = [room.host, ...room.guests]
     const inRoom = resolveConsultModel(phrase, people, [], room.host)
     if (inRoom.kind === 'ok') return inRoom
-    const all = await this.available()
+    // Codex runs only as a chat's own agent, never as a guest.
+    const all = (await this.available()).filter((c) => c.provider !== 'codex')
     const r = resolveConsultModel(phrase, all, await this.known().catch(() => []), room.host)
     if (r.kind === 'ok') return { kind: 'ok', choice: people.find((p) => sameModel(p, r.choice)) ?? r.choice }
     return inRoom.kind === 'ambiguous' ? inRoom : r

@@ -223,6 +223,8 @@ export interface ThumbStatus {
   settings: ThumbSettings
   models: string[]
   universeId?: number
+  // Set when the Art page's image backend is Codex (ChatGPT plan): no key, cost or cap applies.
+  codex?: { ready: boolean; detail: string }
 }
 
 export interface ThumbGenerateInput {

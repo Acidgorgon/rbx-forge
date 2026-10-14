@@ -36,6 +36,8 @@ import type { TextureGenerateInput, TextureStatus } from '../../../../shared/vfx
 import { decodePng, encodePng } from './png.ts'
 import { PROJECT_TEXTURE_DIR, TextureError, TextureStore, textureId } from './store.ts'
 import { assertSpend, chargeSpend } from '../../spend/gate.ts'
+import { codexBackend, type CodexImages } from '../../art/imageBackend.ts'
+import { CODEX_IMAGE_MODEL, type ImageBackend } from '../../../../shared/artTypes.ts'
 
 export interface TextureMemory {
   remember(input: { scope: 'user' | 'project'; kind?: 'memory' | 'skill'; type?: 'user' | 'project' | 'feedback' | 'reference'; name: string; description: string; body: string }, source?: 'agent' | 'reflection' | 'style' | 'user'): Promise<{ entry: { name: string } }>
@@ -47,7 +49,9 @@ export interface TextureServiceDeps {
   projectRoot: () => string | null
   // The Art page's OpenAI key, model / quality / daily cap and today's Art spend.
   openAiKey?: () => Promise<string | null>
-  imageSettings?: () => { model: string; quality: string; dailyCapUsd: number }
+  imageSettings?: () => { model: string; quality: string; dailyCapUsd: number; backend?: ImageBackend }
+  // The ChatGPT plan through Codex (Art page image backend 'codex').
+  codexImages?: CodexImages
   artSpentToday?: () => Promise<number>
   // The Art page's Open Cloud key and creator.
   robloxKey?: () => Promise<string | null>
@@ -158,6 +162,10 @@ export class TextureService {
     return round(tex + art)
   }
 
+  private codex(): CodexImages | null {
+    return codexBackend(this.deps.imageSettings?.().backend, this.deps.codexImages)
+  }
+
   private settings(): { model: string; quality: string; dailyCapUsd: number } {
     const s = this.deps.imageSettings?.() ?? { model: 'gpt-image-2.5-flare', quality: AI_QUALITY_DEFAULT, dailyCapUsd: 5 }
     // Sprites do not need high quality; medium keeps them cheap.
@@ -168,7 +176,9 @@ export class TextureService {
     const s = this.settings()
     const creator = this.deps.creator?.() ?? {}
     const p = this.project()
+    const codex = this.codex()
     return {
+      ...(codex ? { codex: await codex.status().catch((e) => ({ ready: false, detail: (e as Error).message })) } : {}),
       project: !!this.deps.projectRoot(),
       openaiKey: !!(await this.deps.openAiKey?.().catch(() => null)),
       robloxKey: !!(await this.deps.robloxKey?.().catch(() => null)),
@@ -232,29 +242,40 @@ export class TextureService {
 
   private async generateAi(input: TextureGenerateInput, o: { kind: TextureKind; description: string; tint: TintMode; frames: number; store: TextureStore; tags: string[] }): Promise<VfxTexture[]> {
     if (!o.description && o.kind === 'other') throw new TextureError('Describe the texture, e.g. "purple energy wisp".')
-    const key = await this.deps.openAiKey?.()
-    if (!key) throw new TextureError('No OpenAI API key. Add one in Settings > Providers > OpenAI (procedural textures are free and need none).')
+    const codex = this.codex()
+    const key = codex ? null : await this.deps.openAiKey?.()
+    if (!codex && !key) throw new TextureError('No OpenAI API key. Add one in Settings > Providers > OpenAI (procedural textures are free and need none).')
     const s = this.settings()
     const max = input.source === 'agent' ? AGENT_MAX_AI_VARIANTS : 8
     // A 2x2 flipbook is four variants on one sheet; 4x4 / 8x8 evolve one image.
     const n = o.frames === 4 ? 4 : o.frames > 4 ? 1 : Math.max(1, Math.min(max, Math.floor(input.n ?? 1)))
-    const per = estimateImageUsd(s.model, s.quality, AI_SIZE)
+    const per = codex ? 0 : estimateImageUsd(s.model, s.quality, AI_SIZE)
     const total = round(per * n)
-    const spent = await this.spentToday()
-    if (s.dailyCapUsd > 0 && spent + total > s.dailyCapUsd) throw new TextureError(`This would pass today's image budget (${formatUsd(spent)} spent + ${formatUsd(total)} > ${formatUsd(s.dailyCapUsd)}). Raise it on the Art page, or use a procedural texture (free).`)
-    // App-wide spending cap (Settings > Usage).
-    assertSpend('images')
     const prompt = texturePrompt(o.kind, o.description, o.tint)
-    const res = await generateImages({ model: s.model, prompt, n, size: AI_SIZE, quality: s.quality, background: 'transparent', outputFormat: 'png' }, { apiKey: key, fetch: this.deps.fetch, sleep: this.deps.sleep })
-    chargeSpend({ provider: 'openai', source: 'images', costUsd: total })
+    let res: { images: Buffer[] }
+    if (codex) {
+      // ChatGPT plan: no budget, no spending cap. Codex picks the size; prepareSprite fits it.
+      const r = await codex.generate({ prompt, n, size: AI_SIZE, transparent: true })
+      if (r.notes.length) this.deps.log?.(`textures: ${r.notes.join(' ')}`)
+      res = r
+    } else {
+      const spent = await this.spentToday()
+      if (s.dailyCapUsd > 0 && spent + total > s.dailyCapUsd) throw new TextureError(`This would pass today's image budget (${formatUsd(spent)} spent + ${formatUsd(total)} > ${formatUsd(s.dailyCapUsd)}). Raise it on the Art page, or use a procedural texture (free).`)
+      // App-wide spending cap (Settings > Usage).
+      assertSpend('images')
+      res = await generateImages({ model: s.model, prompt, n, size: AI_SIZE, quality: s.quality, background: 'transparent', outputFormat: 'png' }, { apiKey: key ?? '', fetch: this.deps.fetch, sleep: this.deps.sleep })
+      chargeSpend({ provider: 'openai', source: 'images', costUsd: total })
+    }
     const sprites = res.images.map((bytes) => prepareSprite(decodePng(bytes), { tint: o.tint, size: o.frames > 1 ? 256 : clampSize(input.size, 512) }))
     const now = this.now()
     const name = (input.name?.trim() || o.description || texturePreset(o.kind).label).slice(0, 48)
-    const base = { kind: o.kind, description: o.description || texturePreset(o.kind).label, source: 'ai' as const, prompt, model: s.model, tint: o.tint, createdAt: now, updatedAt: now }
+    const base = { kind: o.kind, description: o.description || texturePreset(o.kind).label, source: 'ai' as const, prompt, model: codex ? CODEX_IMAGE_MODEL : s.model, tint: o.tint, createdAt: now, updatedAt: now }
     const out: VfxTexture[] = []
     if (o.frames > 1) {
       const layout = layoutForFrames(o.frames)
-      const frames = o.frames === 4 ? sprites : evolveFrames(sprites[0], o.frames, now % 997)
+      // Codex may return fewer than the 4 variants a 2x2 sheet needs: repeat what came back.
+      const four = sprites.length >= 4 ? sprites : Array.from({ length: 4 }, (_, i) => sprites[i % sprites.length])
+      const frames = o.frames === 4 ? four : evolveFrames(sprites[0], o.frames, now % 997)
       const sheet = assembleFlipbook(frames, layout, clampSize(input.size, o.frames === 4 ? 512 : 1024))
       out.push(await this.saveImage(o.store, { ...base, id: textureId(name), name: `${name} ${layout}`, tags: [...o.tags, 'ai'], costUsd: total, flipbook: { layout, frames: o.frames } }, sheet))
     } else {

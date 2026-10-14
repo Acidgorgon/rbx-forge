@@ -248,8 +248,11 @@ function Generator({ status, onMade }: { status: TextureStatus | null; onMade: (
     setTint(t === 'smoke' ? 'grey' : 'white')
   }
   const count = ai ? (frames === 4 ? 4 : frames > 4 ? 1 : variants) : 0
-  const cost = status ? status.perImageUsd * count : 0
-  const over = !!status && status.dailyCapUsd > 0 && status.spentTodayUsd + cost > status.dailyCapUsd
+  // Codex (ChatGPT plan) backend from the Art page: no key, cost or cap.
+  const codex = status?.codex
+  const aiReady = codex ? codex.ready : !!status?.openaiKey
+  const cost = status && !codex ? status.perImageUsd * count : 0
+  const over = !!status && !codex && status.dailyCapUsd > 0 && status.spentTodayUsd + cost > status.dailyCapUsd
 
   const make = async () => {
     setBusy(true)
@@ -275,7 +278,7 @@ function Generator({ status, onMade }: { status: TextureStatus | null; onMade: (
           <button type="button" className={!ai ? 'on' : ''} aria-pressed={!ai} onClick={() => setAi(false)} title="Drawn in code from parameters: free, instant, exact">
             procedural · free
           </button>
-          <button type="button" className={ai ? 'on' : ''} aria-pressed={ai} onClick={() => (setAi(true), tint === 'grey' || setTint(texturePreset(kind).tint))} disabled={status ? !status.openaiKey : false} title={status && !status.openaiKey ? 'Add an OpenAI key in Settings > Providers' : 'OpenAI image model (Art page model and daily budget)'}>
+          <button type="button" className={ai ? 'on' : ''} aria-pressed={ai} onClick={() => (setAi(true), tint === 'grey' || setTint(texturePreset(kind).tint))} disabled={status ? !aiReady : false} title={codex ? (codex.ready ? 'Codex (ChatGPT plan) image tool, picked on the Art page' : codex.detail) : status && !status.openaiKey ? 'Add an OpenAI key in Settings > Providers' : 'OpenAI image model (Art page model and daily budget)'}>
             AI
           </button>
         </div>
@@ -373,7 +376,8 @@ function Generator({ status, onMade }: { status: TextureStatus | null; onMade: (
           </option>
           <option value="user">your library</option>
         </select>
-        {ai && status && (
+        {ai && status && codex && <span className="note">Codex (ChatGPT plan) · no spend cap · up to 4 per run</span>}
+        {ai && status && !codex && (
           <span className={`note mono${over ? ' err' : ''}`}>
             ≈ {usd(cost)} · {usd(status.spentTodayUsd)} of {usd(status.dailyCapUsd)} today · {status.model}
           </span>

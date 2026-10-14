@@ -14,6 +14,8 @@ import type { HarnessContext } from '../context.ts'
 import { maskKey, type Credentials } from './credentials.ts'
 import { clampEffort, effortSupport, type EffortLevel, type ModelMeta } from '../../shared/modelCaps.ts'
 import { DEFAULT_MODEL } from './sdk.ts'
+import { CODEX_DEFAULT_MODEL } from './codex/args.ts'
+import { codexService, type CodexService } from './codex/service.ts'
 
 export type FetchFn = typeof fetch
 
@@ -42,7 +44,10 @@ export const PROVIDERS: Record<ProviderId, ProviderDef> = {
     defaults: ['gemini-3.8-flash', 'gemini-3.5-flash-lite', 'gemini-3.1-pro-preview']
   },
   ollama: { label: 'Ollama', baseUrl: 'http://localhost:11434/v1', editableBaseUrl: true, needsKey: false, defaults: ['qwen3.8', 'qwen3.6', 'llama3.1'] },
-  custom: { label: 'Custom (OpenAI-compatible)', editableBaseUrl: true, needsKey: false, defaults: [] }
+  custom: { label: 'Custom (OpenAI-compatible)', editableBaseUrl: true, needsKey: false, defaults: [] },
+  // The user's Codex CLI signed in with ChatGPT (agent/codex). codex-default = no --model (the
+  // model set in the user's Codex config); the others are passed as --model.
+  codex: { label: 'Codex (ChatGPT plan)', needsKey: false, defaults: [CODEX_DEFAULT_MODEL, 'gpt-6.1-sol', 'gpt-6-astra'] }
 }
 
 const CONFIG_SETTING = 'providerConfig'
@@ -98,10 +103,13 @@ export class Providers {
   // Runtime model metadata (OpenRouter /models, Ollama /api/show), by provider then model id.
   private meta = new Map<ProviderId, Map<string, ModelMeta>>()
 
-  constructor(ctx: HarnessContext, credentials: Credentials, fetchFn: FetchFn = (...a) => fetch(...a)) {
+  private codex: () => CodexService
+
+  constructor(ctx: HarnessContext, credentials: Credentials, fetchFn: FetchFn = (...a) => fetch(...a), codex: () => CodexService = codexService) {
     this.ctx = ctx
     this.credentials = credentials
     this.fetchFn = fetchFn
+    this.codex = codex
   }
 
   baseUrl(provider: ProviderId): string | undefined {
@@ -138,6 +146,7 @@ export class Providers {
   // Endpoint and headers for an OpenAI-compatible provider, or why it cannot be used.
   async endpoint(provider: ProviderId): Promise<Endpoint | { error: string }> {
     if (provider === 'anthropic') return { error: 'anthropic uses the Agent SDK' }
+    if (provider === 'codex') return { error: 'Codex (ChatGPT plan) runs only as the chat agent and for one-shot calls. Pick another model here.' }
     const baseUrl = this.baseUrl(provider)
     if (!baseUrl) return { error: `Set a base URL for ${PROVIDERS[provider].label} in Settings.` }
     const key = await this.credentials.getKey(provider)
@@ -162,6 +171,14 @@ export class Providers {
     }
     const known = this.meta.get(provider)
     if (known?.size) info.meta = Object.fromEntries(known)
+    if (provider === 'codex') {
+      const svc = this.codex()
+      const s = await svc.status()
+      info.ready = s.installed && s.loggedIn
+      info.detail = s.detail
+      info.codex = { installed: s.installed, loggedIn: s.loggedIn, ...(s.method ? { method: s.method } : {}), ...(s.version ? { version: s.version } : {}), ...(s.path ? { path: s.path } : {}), ...(svc.signingInNow() ? { signingIn: true } : {}) }
+      return info
+    }
     const source = await this.credentials.keySource(provider)
     if (source) {
       const key = await this.credentials.getKey(provider)
@@ -213,7 +230,7 @@ export class Providers {
 
   // Fetches GET {base}/models when the provider is usable; falls back to defaults on any error.
   async models(provider: ProviderId, refresh = false): Promise<string[]> {
-    if (provider === 'anthropic') return PROVIDERS.anthropic.defaults.slice()
+    if (provider === 'anthropic' || provider === 'codex') return PROVIDERS[provider].defaults.slice()
     const cached = this.modelCache.get(provider)
     if (cached && !refresh && Date.now() - cached.at < MODELS_TTL) return this.cachedModels(provider)
     const ep = await this.endpoint(provider)

@@ -38,6 +38,9 @@ export interface SignInStatus {
   needsUrl?: string
   // The method's tool supports logging out of the tool itself (asked before running it).
   canCliLogout?: boolean
+  // Signing out always means logging the tool out (Codex: Forge holds no login of its own), so
+  // the sign-out dialog offers only the CLI logout.
+  cliLogoutOnly?: boolean
   // Last check time (ms).
   checkedAt?: number
 }

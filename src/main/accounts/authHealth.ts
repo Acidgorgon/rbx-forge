@@ -7,7 +7,7 @@
 // clears it. The record is kept in settings so the card still says "Sign-in expired" after a restart.
 
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import type { QueryFn } from '../agent/sdk.ts'
+import { isAuthError, type QueryFn } from '../agent/sdk.ts'
 
 export const AUTH_HEALTH_SETTING = 'anthropicAuthHealth'
 
@@ -31,8 +31,9 @@ export interface SettingsLike {
 const AUTH_TEXT =
   /failed to authenticate|authentication[_ ]failed|oauth (session|token) (has )?expired|could not be refreshed|invalid (x-)?api[- _]key|invalid bearer token|not logged in|please run \/login|login expired|token (has been )?revoked|\b401\b.*(unauthori[sz]ed|authentication)|unauthori[sz]ed.*\b401\b/i
 
+// The chat's matcher (agent/sdk.ts isAuthError) plus CLI wording it does not cover.
 export function isAnthropicAuthError(text: unknown): boolean {
-  return typeof text === 'string' && AUTH_TEXT.test(text)
+  return typeof text === 'string' && (isAuthError(text) || AUTH_TEXT.test(text))
 }
 
 // SDK assistant-message error codes that mean the credential itself is the problem.

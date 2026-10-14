@@ -3,8 +3,11 @@
 // spec, compare puts 2-3 stacks side by side, the timeline shows the state transitions, and the
 // critique scores captured frames against the UI motion principles. Export writes a client module
 // (<Name>Effects.luau) and a story into the project. Mirrors the VFX Lab layout.
+// Two sources: a Figma import, or "From a story": any UI Labs story the UI Preview lab discovers,
+// rendered on the stage with the same runtime, effects attached to the buttons / frames picked in it;
+// its export writes only the module and shows the lines to add to the user's own component.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
-import type { MotionSpec, UiComponentRef, UiMotionEntry, UiMotionExportResult, UiMotionStatus } from '@shared/types'
+import type { MotionSpec, StoryTarget, UiComponentRef, UiMotionEntry, UiMotionExportResult, UiMotionStatus, UiStoryEntry } from '@shared/types'
 import { compileMotionModule, labSpecJson } from '@shared/uimotion/compile'
 import { MOTION_PRESETS, EFFECT_LIBRARY, normalizeSpec, presetSpec } from '@shared/uimotion/spec'
 import { uiPrincipleChecks } from '@shared/principles/uiChecks'
@@ -16,8 +19,9 @@ import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
 import { PrinciplePriorities, PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 import { LabCostLine, LabDecisions } from '../gating/LabGating'
-import { MotionStage, type MotionStageHandle } from './MotionStage'
+import { MotionStage, type MotionStageHandle, type StorySubject } from './MotionStage'
 import { EffectStack } from './EffectStack'
+import { namePath, storyExportPlan } from '@shared/uimotion/story'
 import { MotionTimeline } from './MotionTimeline'
 import { FigmaImport } from './FigmaImport'
 import type { StageMode } from '../uipreview/Stage'
@@ -49,6 +53,26 @@ function useEntryFile(id: string, file: string | undefined, stamp = 0): string |
 }
 
 type CompareChoice = string | null // 'preset:<key>' | 'entry:<id>'
+
+// What the stage previews: an imported Figma component, or one of the project's UI Labs stories.
+type Source = { kind: 'figma'; name: string } | { kind: 'story'; file: string }
+const SOURCE_KEY = 'um.source'
+const readSource = (): Source | null => {
+  try {
+    const v = JSON.parse(localStorage.getItem(SOURCE_KEY) ?? 'null')
+    return v && (v.kind === 'figma' || v.kind === 'story') && typeof (v.name ?? v.file) === 'string' ? v : null
+  } catch {
+    return null
+  }
+}
+const writeSource = (s: Source | null) => {
+  try {
+    localStorage.setItem(SOURCE_KEY, JSON.stringify(s))
+  } catch {
+    // storage unavailable: the choice is not remembered
+  }
+}
+const sourceValue = (s: Source | null) => (!s ? '' : s.kind === 'figma' ? `figma:${s.name}` : `story:${s.file}`)
 
 function Frame({ id, file, label, stamp }: { id: string; file: string; label: string; stamp: number }) {
   const url = useEntryFile(id, file, stamp)
@@ -93,7 +117,11 @@ export function UiMotionLabPage() {
   const [status, setStatus] = useState<UiMotionStatus | null>(null)
   const [entries, setEntries] = useState<UiMotionEntry[]>([])
   const [components, setComponents] = useState<UiComponentRef[]>([])
-  const [componentName, setComponentName] = useState<string | null>(null)
+  const [source, setSourceState] = useState<Source | null>(readSource)
+  const [stories, setStories] = useState<UiStoryEntry[] | null>(null)
+  const [storyHint, setStoryHint] = useState<string | null>(null)
+  const [targets, setTargets] = useState<StoryTarget[]>([])
+  const [choosing, setChoosing] = useState(false)
   const [selected, setSelected] = useState<string | null>(null)
   const [draft, setDraft] = useState<MotionSpec>(() => presetSpec('snappy', '', 'Scratch'))
   const [path, setPath] = useState('')
@@ -110,7 +138,14 @@ export function UiMotionLabPage() {
   const [query, setQuery] = useState('')
   const stage = useRef<MotionStageHandle>(null)
   const saveTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const loaded = useRef(false)
   const restate = useRestateGate('uimotion')
+
+  const setSource = (s: Source | null) => {
+    setSourceState(s)
+    writeSource(s)
+  }
+  const setComponentName = (name: string | null) => setSource(name ? { kind: 'figma', name } : null)
 
   const load = useCallback(async () => {
     try {
@@ -118,16 +153,66 @@ export function UiMotionLabPage() {
       setStatus(s)
       setEntries(list)
       setComponents(comps)
-      setComponentName((cur) => (cur && comps.some((c) => c.name === cur) ? cur : (comps[0]?.name ?? null)))
+      // A Figma source that is gone falls back to the newest import (a story source is checked when
+      // the story list is in).
+      const first = !loaded.current
+      loaded.current = true
+      setSourceState((cur) => {
+        if (cur?.kind === 'story' || (cur?.kind === 'figma' && comps.some((c) => c.name === cur.name))) return cur
+        // No source chosen on purpose (the story chooser) stays empty after the first load.
+        if (!cur && !first) return null
+        return comps[0] ? { kind: 'figma', name: comps[0].name } : null
+      })
     } catch (e) {
       actions.toast({ text: 'Could not load the UI Motion Lab', detail: errorText(e), kind: 'err' })
     }
   }, [actions])
-  useEffect(() => void load(), [state.project?.root])
+  // The stories the UI Preview lab discovers (same discovery, same Lune runtime).
+  const loadStories = useCallback(async () => {
+    try {
+      const list = await h.uiPreviewStories()
+      const all = list.storybooks.flatMap((b) => b.stories)
+      const seen = new Set<string>()
+      const unique = all.filter((x) => !seen.has(x.file) && seen.add(x.file))
+      setStories(unique)
+      setStoryHint(list.luneAvailable ? null : (list.hint ?? 'Lune is needed to render stories.'))
+      setSourceState((cur) => (cur?.kind === 'story' && !unique.some((x) => x.file === cur.file) ? null : cur))
+    } catch (e) {
+      setStories([])
+      setStoryHint(errorText(e))
+    }
+  }, [])
+  useEffect(() => {
+    loaded.current = false
+    void load()
+    void loadStories()
+  }, [state.project?.root])
   useEffect(() => h.on('uimotion:changed', () => void load()), [load])
 
-  const component = components.find((c) => c.name === componentName) ?? null
+  const component = source?.kind === 'figma' ? (components.find((c) => c.name === source.name) ?? null) : null
+  const storyEntry = source?.kind === 'story' ? (stories?.find((x) => x.file === source.file) ?? null) : null
+  const story: StorySubject | null = useMemo(() => (storyEntry ? { file: storyEntry.file, name: storyEntry.name, path: storyEntry.path } : null), [storyEntry?.file, storyEntry?.path.join('/')])
   const current = entries.find((e) => e.id === selected) ?? null
+  const subjectName = component?.name ?? story?.name ?? ''
+  // The first element with effects: what capture / replay hover and press on a story.
+  const focusPath = story ? (draft.targets.find((t) => t.path === path && t.effects.length)?.path ?? draft.targets.find((t) => t.path && t.effects.length)?.path ?? (path || null)) : null
+  useEffect(() => setTargets([]), [story?.file])
+
+  const chooseStory = (x: UiStoryEntry) => {
+    setChoosing(false)
+    setSource({ kind: 'story', file: x.file })
+    setExported(null)
+    if (source?.kind !== 'story' || source.file !== x.file) setPath('')
+  }
+  const showInPreview = () => {
+    if (!story) return
+    try {
+      localStorage.setItem('uip.story', JSON.stringify(story.file))
+    } catch {
+      // the UI Preview opens its last story instead
+    }
+    actions.openPage('uipreview')
+  }
 
   // Selecting a stack loads its spec into the editor (and its component, when imported here).
   const pick = (e: UiMotionEntry | null) => {
@@ -145,6 +230,7 @@ export function UiMotionLabPage() {
     setDraft(e.spec)
     setPath(e.spec.targets.find((t) => t.effects.length)?.path ?? '')
     if (e.component && components.some((c) => c.name === e.component)) setComponentName(e.component)
+    else if (e.story && stories?.some((x) => x.file === e.story)) setSource({ kind: 'story', file: e.story })
   }
   useEffect(() => {
     if (!selected && entries.length && !current) pick(entries[0])
@@ -191,7 +277,8 @@ export function UiMotionLabPage() {
     try {
       const g = await restate.gate(what)
       if (!g) return
-      const r = await h.uiMotionCompose(what, { ...(g.restatement ? { restatement: g.restatement } : {}), ...(component ? { component: component.name } : {}), current: draft })
+      const subject = story ? { story: story.file, elements: targets.map((t) => ({ path: t.path, className: t.className })), ...(path ? { target: path } : {}) } : component ? { component: component.name } : {}
+      const r = await h.uiMotionCompose(what, { ...(g.restatement ? { restatement: g.restatement } : {}), ...subject, current: draft })
       await load()
       pick(r.entry)
       setPrompt('')
@@ -205,12 +292,23 @@ export function UiMotionLabPage() {
 
   const saveNew = async (spec: MotionSpec, origin: string, name?: string) => {
     try {
-      const e = await h.uiMotionSave(spec, { origin, ...(component ? { component: component.name } : {}), ...(name ? { name } : {}) })
+      const e = await h.uiMotionSave(spec, { origin, ...(story ? { story: story.file } : component ? { component: component.name } : {}), ...(name ? { name } : {}) })
       await load()
       pick(e)
     } catch (err) {
       actions.toast({ text: 'Could not save the stack', detail: errorText(err), kind: 'err' })
     }
+  }
+
+  // A story's presets go on the picked element (its slot is not the user's UI).
+  const applyPreset = (key: string, label: string) => {
+    if (story && !path) {
+      setMode('edit')
+      setTab('stack')
+      actions.toast({ text: 'Pick an element first', detail: 'Click a button on the stage (select mode is on) or choose it in the element list.', kind: 'info', ms: 3500 })
+      return
+    }
+    void saveNew(presetSpec(key, story ? path : ''), `preset:${key}`, `${subjectName}${label}`)
   }
 
   const critique = async (apply: boolean) => {
@@ -246,10 +344,10 @@ export function UiMotionLabPage() {
     setBusy('export')
     try {
       await flush()
-      const r = await h.uiMotionExport(current.id, component ? { component: component.name } : undefined)
+      const r = await h.uiMotionExport(current.id, story ? { story: story.file } : component ? { component: component.name } : undefined)
       setExported(r)
       setTab('export')
-      actions.toast({ text: `Wrote ${r.module}`, detail: r.story ? `story: ${r.story}` : undefined, kind: r.warnings.length ? 'info' : 'ok', ms: 3500 })
+      actions.toast({ text: `Wrote ${r.module}`, detail: r.story ? `story: ${r.story}` : r.snippet ? 'add the lines in the export tab to your component' : undefined, kind: r.warnings.length ? 'info' : 'ok', ms: 3500 })
       await load()
     } catch (e) {
       actions.toast({ text: 'Export failed', detail: errorText(e), kind: 'err' })
@@ -273,9 +371,54 @@ export function UiMotionLabPage() {
     return entries.filter((e) => words.every((w) => `${e.name} ${e.description} ${e.origin}`.toLowerCase().includes(w)))
   }, [entries, query])
 
-  const luau = useMemo(() => (tab === 'luau' ? compileMotionModule(normalizeSpec(draft, draft.name), { source: component ? `${component.name} / ${draft.name}` : draft.name }) : ''), [tab, draft, component?.name])
+  const luau = useMemo(() => {
+    if (tab !== 'luau') return ''
+    const spec = normalizeSpec(draft, draft.name)
+    if (!story) return compileMotionModule(spec, { source: component ? `${component.name} / ${draft.name}` : draft.name })
+    // What the export writes for a story: each target rebased onto the element it is attached to.
+    const plan = storyExportPlan(spec)
+    return compileMotionModule(plan.spec, { source: `${story.name} story / ${draft.name}`, stacks: plan.stacks })
+  }, [tab, draft, component?.name, story?.name])
   const liveChecks = useMemo(() => uiPrincipleChecks(normalizeSpec(draft, draft.name)), [draft])
   const c = current?.critique
+
+  // The stage with no source: the two ways in.
+  const emptyStage = (
+    <div className="um-choice">
+      <p className="um-choice-text">
+        Preview a UI here and give it a feel. <b>Import from Figma</b> brings in a frame or component as Luau. <b>From a story</b> renders one of your own UI Labs stories (Vide, Roact or plain Instance code) so you can pick its buttons and attach effects; your files stay as they are.
+      </p>
+      {!choosing ? (
+        <div className="row um-choice-btns">
+          <button className="btn" onClick={() => setShowImport(true)}>
+            <Icon name="download" size={12} /> Import from Figma
+          </button>
+          <button className="btn primary" onClick={() => setChoosing(true)} disabled={!status?.projectRoot}>
+            <Icon name="monitor" size={12} /> From a story
+          </button>
+        </div>
+      ) : (
+        <div className="um-story-list" role="list" aria-label="Stories">
+          {stories == null && (
+            <span className="note">
+              <span className="spinner" aria-hidden /> finding stories…
+            </span>
+          )}
+          {stories?.length === 0 && <span className="note">No *.story.luau found in the project (the UI Preview lab lists the same stories).</span>}
+          {(stories ?? []).map((x) => (
+            <button key={x.file} role="listitem" className="um-story-item" onClick={() => chooseStory(x)} title={x.file}>
+              <b className="mono">{x.name}</b>
+              <span className="faint mono">{x.folder ?? x.file.split('/').slice(-2, -1)[0]}</span>
+            </button>
+          ))}
+          <button className="btn small ghost" onClick={() => setChoosing(false)}>
+            Back
+          </button>
+        </div>
+      )}
+      {storyHint && choosing && <p className="note warn">{storyHint}</p>}
+    </div>
+  )
 
   return (
     <div className="page">
@@ -284,13 +427,16 @@ export function UiMotionLabPage() {
           <div>
             <h1>UI Motion Lab</h1>
             <div className="sub">
-              {status ? `${components.length} imported · ${status.entries.project} stacks in this project · ${status.entries.user} in your library` : 'loading…'}
+              {status ? `${components.length} imported · ${stories ? `${stories.length} stories · ` : ''}${status.entries.project} stacks in this project · ${status.entries.user} in your library` : 'loading…'}
               {status && !status.projectRoot ? ' · open a project to import and export' : ''}
             </div>
           </div>
           <div className="actions">
             <button className={`btn${showImport ? ' on' : ''}`} onClick={() => setShowImport((s) => !s)} aria-expanded={showImport}>
               <Icon name="download" size={12} /> Import from Figma
+            </button>
+            <button className={`btn${choosing && !source ? ' on' : ''}`} onClick={() => (source ? setSource(null) : undefined, setChoosing(true))} title="Preview one of your UI Labs stories and attach effects to its buttons">
+              <Icon name="monitor" size={12} /> From a story
             </button>
             <button className="btn" onClick={() => void saveNew(draft, 'manual', `${draft.name}Copy`)} title="Save the current stack as a new entry">
               <Icon name="plus" size={12} /> Save as new
@@ -346,7 +492,7 @@ export function UiMotionLabPage() {
             <span className="vfx-examples">
               <span className="faint mono">presets</span>
               {MOTION_PRESETS.map((p) => (
-                <button key={p.key} type="button" className="badge-o" title={p.feel} onClick={() => void saveNew(presetSpec(p.key, ''), `preset:${p.key}`, `${component?.name ?? ''}${p.label}`)}>
+                <button key={p.key} type="button" className="badge-o" title={p.feel} onClick={() => applyPreset(p.key, p.label)}>
                   {p.label}
                 </button>
               ))}
@@ -358,13 +504,40 @@ export function UiMotionLabPage() {
         <div className="um-work">
           <section className="um-preview" aria-label="Live preview">
             <div className="row um-bar">
-              <select className="input um-comp" value={componentName ?? ''} onChange={(e) => setComponentName(e.target.value || null)} aria-label="Component">
-                {!components.length && <option value="">no imported UI</option>}
-                {components.map((c) => (
-                  <option key={c.name} value={c.name}>
-                    {c.name}
-                  </option>
-                ))}
+              <select
+                className="input um-comp"
+                value={sourceValue(source)}
+                onChange={(e) => {
+                  const v = e.target.value
+                  if (v === 'import:figma') return setShowImport(true)
+                  if (v.startsWith('figma:')) {
+                    if (source?.kind !== 'figma') setPath('')
+                    return setComponentName(v.slice(6))
+                  }
+                  const x = stories?.find((st) => `story:${st.file}` === v)
+                  if (x) chooseStory(x)
+                  else setSource(null)
+                }}
+                aria-label="Source"
+              >
+                {!source && <option value="">choose a source…</option>}
+                {source?.kind === 'story' && !story && <option value={sourceValue(source)}>{source.file.split('/').pop()} (loading)</option>}
+                <optgroup label="Imported from Figma">
+                  {components.map((c) => (
+                    <option key={c.name} value={`figma:${c.name}`}>
+                      {c.name}
+                    </option>
+                  ))}
+                  <option value="import:figma">Import from Figma…</option>
+                </optgroup>
+                <optgroup label={stories && !stories.length ? 'From a story (none found)' : 'From a story'}>
+                  {(stories ?? []).map((x) => (
+                    <option key={x.file} value={`story:${x.file}`}>
+                      {x.name}
+                      {x.folder ? ` · ${x.folder}` : ''}
+                    </option>
+                  ))}
+                </optgroup>
               </select>
               <span className="seg um-seg" role="group" aria-label="Preview mode">
                 <button className={mode === 'interact' ? 'on' : ''} aria-pressed={mode === 'interact'} onClick={() => setMode('interact')} title="Hover and click drive the effects">
@@ -385,7 +558,37 @@ export function UiMotionLabPage() {
                 disappear
               </button>
             </div>
-            <MotionStage ref={stage} component={component} slots={slots} reduced={reduced} mode={mode} selectedPath={path} onSelectPath={(p) => (setPath(p), setTab('stack'))} onStatus={setStageStatus} />
+            <MotionStage
+              ref={stage}
+              component={component}
+              story={story}
+              focusPath={focusPath}
+              onTargets={setTargets}
+              empty={emptyStage}
+              slots={slots}
+              reduced={reduced}
+              mode={mode}
+              selectedPath={path}
+              onSelectPath={(p) => (setPath(p), setTab('stack'))}
+              onStatus={setStageStatus}
+            />
+            {story && (
+              <p className="note um-story-line">
+                <Icon name="monitor" size={11} /> <span className="mono">{story.file}</span>
+                {path ? (
+                  <>
+                    {' '}
+                    · <b className="mono">{namePath(path)}</b>
+                  </>
+                ) : (
+                  <> · switch to select and click a button, or pick it in the element list</>
+                )}
+                <span className="grow" />
+                <button className="btn small ghost" onClick={showInPreview} title="Open this story in the UI Preview lab">
+                  Show in UI Preview
+                </button>
+              </p>
+            )}
             {stageStatus && (
               <p className="note warn mono um-stage-msg">
                 <Icon name="warn" size={11} /> {stageStatus}
@@ -475,7 +678,16 @@ export function UiMotionLabPage() {
               ))}
             </div>
 
-            {tab === 'stack' && <EffectStack spec={draft} path={path} elements={component?.elements ?? []} onPath={setPath} onChange={edit} />}
+            {tab === 'stack' && (
+              <EffectStack
+                spec={draft}
+                path={path}
+                story={!!story}
+                elements={story ? targets.map((t) => ({ path: t.path, className: t.className, label: t.label, hidden: t.hidden })) : (component?.elements ?? [])}
+                onPath={setPath}
+                onChange={edit}
+              />
+            )}
 
             {tab === 'critique' && (
               <div className="um-crit">
@@ -561,7 +773,12 @@ export function UiMotionLabPage() {
               <div className="um-export">
                 <p className="note">
                   Writes <span className="mono">{status?.uiDir ?? 'src/shared/Interface'}/Motion/{draft.name}Effects.luau</span>
-                  {component ? (
+                  {story ? (
+                    <>
+                      {' '}
+                      only. Your story and components are not changed: the export shows the two lines to add where <span className="mono">{story.name}</span>'s button is created
+                    </>
+                  ) : component ? (
                     <>
                       {' '}
                       and a story for <span className="mono">{component.name}</span> next to its storybook
@@ -581,8 +798,26 @@ export function UiMotionLabPage() {
                         </li>
                       ))}
                     </ul>
-                    {exported.requirePath && (
-                      <pre className="um-code mono">{`local Effects = require(${exported.requirePath})\nlocal motion = Effects.attach(button) -- motion.destroy() when the UI goes away`}</pre>
+                    {exported.snippet ? (
+                      <div className="um-snippet">
+                        <div className="row">
+                          <span className="note">Add to your component, after the button is created (Vide: keep what create returns; call the handle's destroy() in cleanup):</span>
+                          <span className="grow" />
+                          <button className="btn small" onClick={() => void navigator.clipboard?.writeText(exported.snippet!).then(() => actions.toast({ text: 'Copied the lines', kind: 'ok', ms: 1600 }))}>
+                            <Icon name="copy" size={11} /> Copy
+                          </button>
+                        </div>
+                        <pre className="um-code mono" aria-label="Lines to add">
+                          {exported.snippet}
+                        </pre>
+                        {story && (
+                          <button className="btn small ghost" onClick={showInPreview}>
+                            <Icon name="monitor" size={11} /> Show in UI Preview
+                          </button>
+                        )}
+                      </div>
+                    ) : (
+                      exported.requirePath && <pre className="um-code mono">{`local Effects = require(${exported.requirePath})\nlocal motion = Effects.attach(button) -- motion.destroy() when the UI goes away`}</pre>
                     )}
                     {exported.warnings.map((w, i) => (
                       <p key={i} className="note warn">
@@ -607,8 +842,8 @@ export function UiMotionLabPage() {
                       </dd>
                     </>
                   )}
-                  <dt>component</dt>
-                  <dd className="mono">{component ? `${component.name} · ${component.module}` : 'none'}</dd>
+                  <dt>{story ? 'story' : 'component'}</dt>
+                  <dd className="mono">{story ? story.file : component ? `${component.name} · ${component.module}` : 'none'}</dd>
                   {component?.from && (
                     <>
                       <dt>imported</dt>
@@ -623,7 +858,7 @@ export function UiMotionLabPage() {
                   <dd className="mono">
                     {draft.targets
                       .filter((t) => t.effects.length)
-                      .map((t) => `${t.path || 'root'}: ${t.effects.map((e) => EFFECT_LIBRARY[e.kind].label).join(', ')}`)
+                      .map((t) => `${t.path ? (story ? namePath(t.path) : t.path) : 'root'}: ${t.effects.map((e) => EFFECT_LIBRARY[e.kind].label).join(', ')}`)
                       .join(' · ') || 'none'}
                   </dd>
                   <dt>spring model</dt>

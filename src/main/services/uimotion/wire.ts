@@ -58,8 +58,8 @@ export function createUiMotionWiring(deps: UiMotionWireDeps): UiMotionWiring {
     uiMotionStatus: () => service.status(),
     uiMotionList: () => service.list(),
     uiMotionGet: (id: string) => service.get(str(id)),
-    uiMotionSave: (spec: MotionSpec, o?: { id?: string; origin?: string; scope?: UiMotionScope; component?: string; name?: string }) =>
-      service.save(spec, { id: o?.id ? str(o.id) : undefined, origin: o?.origin ? str(o.origin) : undefined, scope: scope(o?.scope), component: o?.component ? str(o.component) : undefined, name: o?.name ? str(o.name) : undefined }),
+    uiMotionSave: (spec: MotionSpec, o?: { id?: string; origin?: string; scope?: UiMotionScope; component?: string; story?: string; name?: string }) =>
+      service.save(spec, { id: o?.id ? str(o.id) : undefined, origin: o?.origin ? str(o.origin) : undefined, scope: scope(o?.scope), component: o?.component ? str(o.component) : undefined, story: o?.story ? str(o.story) : undefined, name: o?.name ? str(o.name) : undefined }),
     uiMotionDelete: (id: string) => service.remove(str(id)),
     uiMotionRate: (id: string, r: unknown) => service.rate(str(id), r === 'up' || r === 'down' ? r : null),
     uiMotionComponents: () => service.components(),
@@ -70,10 +70,18 @@ export function createUiMotionWiring(deps: UiMotionWireDeps): UiMotionWiring {
     uiMotionClearFigmaToken: () => service.clearToken(),
     uiMotionTestFigmaToken: () => service.testToken(),
     uiMotionLabStory: (subject: LabSubject) => service.labStory(subject),
-    uiMotionCompose: (brief: string, o?: { restatement?: Restatement; component?: string; current?: MotionSpec }) => service.compose(str(brief), { restatement: o?.restatement, component: o?.component ? str(o.component) : undefined, current: o?.current }),
+    uiMotionCompose: (brief: string, o?: { restatement?: Restatement; component?: string; story?: string; elements?: { path: string; className: string }[]; target?: string; current?: MotionSpec }) =>
+      service.compose(str(brief), {
+        restatement: o?.restatement,
+        component: o?.component ? str(o.component) : undefined,
+        story: o?.story ? str(o.story) : undefined,
+        elements: Array.isArray(o?.elements) ? o!.elements : undefined,
+        target: o?.target ? str(o.target) : undefined,
+        current: o?.current
+      }),
     uiMotionCritique: (id: string, o?: { frames?: string[]; labels?: string[]; apply?: boolean }) =>
       service.critique(str(id), { frames: Array.isArray(o?.frames) ? o!.frames.map(str) : [], labels: Array.isArray(o?.labels) ? o!.labels.map(str) : [], apply: !!o?.apply }),
-    uiMotionExport: (id: string, o?: { component?: string }) => service.export(str(id), { component: o?.component ? str(o.component) : undefined }),
+    uiMotionExport: (id: string, o?: { component?: string; story?: string }) => service.export(str(id), { component: o?.component ? str(o.component) : undefined, story: o?.story ? str(o.story) : undefined }),
     uiMotionSnap: async (rect: { x: number; y: number; width: number; height: number }) => {
       const r = { x: Math.round(Number(rect?.x) || 0), y: Math.round(Number(rect?.y) || 0), width: Math.round(Number(rect?.width) || 0), height: Math.round(Number(rect?.height) || 0) }
       if (r.width < 4 || r.height < 4 || r.width > 4000 || r.height > 4000) return null

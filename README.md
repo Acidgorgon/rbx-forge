@@ -231,11 +231,11 @@ The VFX Lab, Animation Lab and Ability Composer score their work against named p
 - **Your priorities.** Thumbs up and down, and the notes you write, teach a weight for each principle. A thumbs down on a result whose weak point was arcs raises the arcs weight. A thumbs up despite weak readability lowers that weight. Notes that name a principle ("floaty", "pops off") push it up. Weights range from ×0.4 to ×2.5. They are stored under `<userData>/principles`, included in .forgepack files and device sync, and summarised in memory. The **priorities** tab of each lab shows them and has a Reset button.
 - **References.** Video references list which principles they show and how, using the vision model's notes where it gave them and measured beats, flashes, palette and motion otherwise. Compose and the critic receive that list.
 
-### UI Motion Lab: springs and effects on your Figma buttons
+### UI Motion Lab: springs and effects on your Figma or Luau buttons
 
 ![UI Motion Lab: a Figma button with its stack next to the Snappy and Bouncy presets, with the spring timeline](docs/screenshots/150-uimotion-compare-dark.png)
 
-The **UI Motion Lab** (activity bar, tap icon) runs your real UI component in the live preview and lets you try motion on it. It works like the VFX Lab.
+The **UI Motion Lab** (activity bar, tap icon) runs your real UI component in the live preview and lets you try motion on it. The component comes from Figma or from one of your own UI Labs stories. It works like the VFX Lab.
 
 - **Import from Figma.** There are two ways in, and both write a component module and a story into the project's UI folder (next to its storybook), with PNGs under `art/ui/<Name>/`. Both also show a mapping report that lists what was approximated or dropped.
   - **Plugin.** Run `figma-plugin/`, select any frame, component or layer and click **Send selection to Forge**. Then paste or drop the JSON. No token is needed and the plugin has no network access.
@@ -244,6 +244,12 @@ The **UI Motion Lab** (activity bar, tap icon) runs your real UI component in th
     - `GET /v1/images/:key` for vector renders;
     - `GET /v1/files/:key/images` for image fills.
     It authenticates with the `X-Figma-Token` header ([REST API docs](https://developers.figma.com/docs/rest-api/)), honours `Retry-After` on 429 ([rate limits](https://developers.figma.com/docs/rest-api/rate-limits/)) and caches responses for 5 minutes. The personal access token is set under *Settings › Integrations › Figma token* and needs the `file_content:read` scope. It is stored encrypted with Electron `safeStorage` in the main process, and is never sent to the renderer, written to the project or included in a pack.
+- **From a story.** Already have the UI in Luau (Vide, Roact or plain `Instance.new` code) with UI Labs `*.story.luau` files? Pick **From a story** on the empty stage (or in the source dropdown) and choose any story the UI Preview lab finds. It renders on the stage with the same Lune runtime. Pick the elements to animate by clicking them in **select** mode (a click on a button's label picks the button) or from the element list, which shows buttons and frames by name path (`RacingHud > BOOSTButton`). Presets, **Make it feel**, compare, the timeline and **Critique** then work on those live instances; **same stack on** copies a stack to other buttons. **Export** writes only `Motion/<Name>Effects.luau` and shows the lines to add to your own component, with a copy button:
+  ```lua
+  local Effects = require(game:GetService("ReplicatedStorage").Shared.Interface.Motion.RacingHudBouncyEffects)
+  Effects.attach(boostButton) -- RacingHud > BOOSTButton
+  ```
+  Your story and component files are never rewritten. Elements with different stacks get `Effects.attach(button, Effects.stacks.<Name>)`. **Show in UI Preview** opens the story there.
 - **What maps.**
   - Auto layout becomes `UIListLayout` (with direction, gap, alignment, space-between and wrap), plus `UIPadding` and `UIFlexItem` for fill and hug.
   - Corners become `UICorner`, and strokes become `UIStroke`.

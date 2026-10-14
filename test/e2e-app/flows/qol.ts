@@ -5,9 +5,11 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { WRITE_MARKER } from '../lib/fakeProvider.ts'
 import { INVENTORY_SERVICE } from '../lib/project.ts'
-import { check, CENTER, closeBottom, dismissDigest, dismissToasts, mod, openPage, waitText } from '../lib/ui.ts'
+import { check, CENTER, closeBottom, dismissDigest, dismissToasts, horizontalOverflow, mod, openPage, setTheme, SkipFlow, waitText } from '../lib/ui.ts'
+import { setWindowSize } from '../lib/app.ts'
 import type { Page } from '../lib/app.ts'
 import type { Flow } from './types.ts'
+import type { UiMotionEntry } from '../../../src/shared/uiMotionTypes.ts'
 
 const ASSISTANT = 'aside.panel.right'
 
@@ -95,6 +97,109 @@ export const qolFlows: Flow[] = [
       await openPage(page, 'UI Motion Lab')
       await page.locator(`${CENTER} h1`, { hasText: 'UI Motion Lab' }).first().waitFor({ state: 'visible', timeout: 10_000 })
       await shot('page')
+    }
+  },
+  {
+    name: 'ui-motion-story',
+    title: 'UI Motion Lab from a story: RacingHud, pick BOOST, Bouncy preset, hover it, export the snippet',
+    timeoutMs: 120_000,
+    async run({ app, page, root, shot, note }) {
+      const RACING = 'src/shared/Interface/Stories/RacingHud.story.luau'
+      const before = readFileSync(join(root, RACING), 'utf8')
+      await dismissToasts(page)
+      await openPage(page, 'UI Motion Lab')
+      await closeBottom(page)
+      const lab = page.locator(`${CENTER} .uimotion`).first()
+      await lab.waitFor({ state: 'visible', timeout: 10_000 })
+      // No Figma imports in this project: the stage offers both sources.
+      const choice = lab.locator('.um-choice')
+      await choice.waitFor({ state: 'visible', timeout: 10_000 })
+      check(/Import from Figma/.test(await choice.innerText()) && /From a story/.test(await choice.innerText()), 'the empty stage does not offer both sources')
+      await shot('empty')
+      await choice.getByRole('button', { name: /From a story/ }).click()
+      const item = choice.locator('.um-story-item', { hasText: 'RacingHud' }).first()
+      await item.waitFor({ state: 'visible', timeout: 30_000 })
+      const status = await page.evaluate(() => window.harness.uiMotionStatus())
+      if (!status.lune) {
+        check(await page.locator(`${CENTER} .callout`, { hasText: /Lune not found/ }).count(), 'no Lune message on the lab')
+        throw new SkipFlow('Lune not available (set LUNE_PATH)')
+      }
+      await item.click()
+      // The rendered story's buttons arrive in the element list.
+      const element = lab.getByLabel('Element')
+      await page.waitForFunction(() => [...document.querySelectorAll('.editor-area select[aria-label="Element"] option')].some((o) => /RacingHud > BOOSTButton/.test(o.textContent ?? '')), undefined, { timeout: 45_000 })
+      // Select mode: clicking the BOOST label picks its button.
+      await lab.locator('.um-seg button', { hasText: 'select' }).click()
+      const label = lab.locator('.um-stage .uip-node', { hasText: /^BOOST$/ }).last()
+      await label.click()
+      await page.waitForFunction(() => /RacingHud > BOOSTButton/.test(document.querySelector('.editor-area .um-story-line')?.textContent ?? ''), undefined, { timeout: 10_000 }).catch(async () => {
+        throw new Error(`select mode did not pick BOOSTButton (element: ${await element.inputValue()})`)
+      })
+      check((await element.inputValue()) === 'RacingHud.BOOSTButton', `element is ${await element.inputValue()}`)
+      // Bouncy preset on the picked button.
+      const n0 = (await page.evaluate(() => window.harness.uiMotionList())).length
+      await lab.locator('.vfx-examples button', { hasText: 'Bouncy' }).first().click()
+      await page.waitForFunction((n: number) => window.harness.uiMotionList().then((l: UiMotionEntry[]) => l.length > n), n0, { timeout: 10_000 })
+      const list: UiMotionEntry[] = await page.evaluate(() => window.harness.uiMotionList())
+      const entry = list.find((e) => e.story === 'src/shared/Interface/Stories/RacingHud.story.luau')
+      check(entry, 'the Bouncy stack was not saved with the story source')
+      check(entry.spec.targets.some((t) => t.path === 'RacingHud.BOOSTButton' && t.effects.some((e) => e.kind === 'hover')), `stack targets: ${JSON.stringify(entry.spec.targets.map((t) => t.path))}`)
+      // Hover it in interact mode: the runtime's UIScale on BOOSTButton springs above 1.
+      await lab.locator('.um-seg button', { hasText: 'interact' }).click()
+      const scaleOf = () =>
+        page.evaluate(() =>
+          window.harness.uiPreviewState().then((st) => {
+            const nodes = st?.tree.nodes ?? []
+            const s = nodes.find((n) => n.name === 'ForgeMotionScale' && nodes.find((p) => p.id === n.parent)?.name === 'BOOSTButton')
+            return s ? Number(s.props.Scale) : null
+          })
+        )
+      await page.waitForFunction(() => window.harness.uiPreviewState().then((st) => !!st?.tree.nodes.some((n) => n.name === 'ForgeMotionScale')), undefined, { timeout: 20_000 })
+      const rest = await scaleOf()
+      check(rest != null, 'no ForgeMotionScale under BOOSTButton: the stack did not attach to the live instance')
+      const btn = lab.locator('.um-stage .uip-node.uip-btn', { has: page.locator('.uip-node', { hasText: /^BOOST$/ }) }).last()
+      await btn.hover()
+      let hovered = rest!
+      for (let i = 0; i < 30 && hovered < 1.02; i++) {
+        await page.mouse.move(...(await btn.boundingBox().then((b: { x: number; y: number; width: number; height: number } | null) => [b!.x + b!.width * 0.5 + (i % 2), b!.y + b!.height * 0.5] as [number, number])))
+        await page.waitForTimeout(100)
+        hovered = (await scaleOf()) ?? hovered
+      }
+      check(hovered > 1.02, `hovering BOOST did not scale it up (UIScale ${rest} -> ${hovered})`)
+      note(`BOOSTButton UIScale ${rest} -> ${hovered.toFixed(3)} on hover`)
+      await page.waitForTimeout(250)
+      await shot('hover')
+      // Export: the module only, plus the two lines for the user's own component.
+      await lab.getByRole('button', { name: /^\s*Export$/ }).first().click()
+      const snippet = lab.locator('pre[aria-label="Lines to add"]')
+      await snippet.waitFor({ state: 'visible', timeout: 15_000 })
+      const text = await snippet.innerText()
+      check(/^local Effects = require\(game:GetService\("ReplicatedStorage"\)\..*Effects\)\nEffects\.attach\(boostButton\) -- RacingHud > BOOSTButton$/.test(text.trim()), `snippet: ${text}`)
+      check(await lab.getByRole('button', { name: /Show in UI Preview/ }).count(), 'no "Show in UI Preview" button')
+      const after: UiMotionEntry[] = await page.evaluate(() => window.harness.uiMotionList())
+      const module = after.find((e) => e.id === entry.id)?.written?.module
+      check(module && existsSync(join(root, module)), `module not written: ${module}`)
+      check(readFileSync(join(root, RACING), 'utf8') === before, 'the export changed the user\'s story')
+      note(text.trim().replace(/\n/g, ' | ').slice(0, 200))
+      await shot('export')
+      // Light theme and a 900px window: the story source comes back (remembered), nothing overflows.
+      await setWindowSize(app, 900, 800)
+      try {
+        await page.waitForFunction(() => window.innerWidth <= 900, undefined, { timeout: 5000 })
+        await openPage(page, 'Settings')
+        await setTheme(page, 'Light')
+        await openPage(page, 'UI Motion Lab')
+        await page.locator(`${CENTER} .um-story-line`, { hasText: 'RacingHud.story.luau' }).waitFor({ state: 'visible', timeout: 30_000 })
+        await page.waitForFunction(() => window.harness.uiPreviewState().then((st) => !!st?.tree.nodes.some((n) => n.name === 'BOOSTButton')), undefined, { timeout: 30_000 })
+        await page.waitForTimeout(400)
+        const o = await horizontalOverflow(page)
+        await shot('light-900')
+        check(o.doc <= o.win + 1 && !o.offenders.length, `overflow at 900px: page ${o.doc}px > ${o.win}px; ${o.offenders.slice(0, 3).join(', ')}`)
+      } finally {
+        await openPage(page, 'Settings')
+        await setTheme(page, 'Dark')
+        await setWindowSize(app, 1400, 900)
+      }
     }
   },
   {

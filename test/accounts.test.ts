@@ -223,7 +223,7 @@ test('card headline: subscription, API key, expired, cloud, local, not set up', 
   assert.equal(summarize({ id: 'ollama', info: info({ id: 'ollama' }) }).statusText, 'Not running')
   assert.equal(summarize({ id: 'gemini', info: info({ id: 'gemini' }) }).state, 'none')
   // Codex signed in (when its service plugs in).
-  assert.equal(summarize({ id: 'openai', info: info({ id: 'openai', ready: true }), signIn: { method: 'codex', label: 'Sign in with ChatGPT (Codex)', state: 'signedIn' } }).statusText, 'Signed in with ChatGPT (Codex)')
+  assert.equal(summarize({ id: 'openai', info: info({ id: 'openai', ready: true }), signIn: { method: 'codex', label: 'Sign in with ChatGPT (Codex)', state: 'signedIn' } }).statusText, 'Signed in with ChatGPT')
 })
 const CODEX_STATUS = { method: 'codex', label: 'Sign in with ChatGPT (Codex)', state: 'unavailable' as const, needs: 'Codex CLI' }
 
@@ -512,8 +512,10 @@ test('Codex adapter: status mapping, sign-in delegates with the signal, sign-out
   const at = 1
   const missing = codexSignInStatus({ installed: false, loggedIn: false, detail: 'not found', checkedAt: at })
   assert.equal(missing.state, 'unavailable')
-  assert.equal(missing.needs, 'Codex CLI')
+  assert.match(missing.needs ?? '', /^Codex CLI/)
   assert.equal(missing.needsUrl, CODEX_DOCS_URL)
+  // Not installed but npm is there: the sign-in button installs it.
+  assert.equal(codexSignInStatus({ installed: false, canInstall: true, loggedIn: false, detail: 'installs first', checkedAt: at }).state, 'signedOut')
   const inChat = codexSignInStatus({ installed: true, loggedIn: true, method: 'chatgpt', version: '0.140.0', detail: 'Signed in with ChatGPT', checkedAt: at })
   assert.equal(inChat.state, 'signedIn')
   assert.match(inChat.account ?? '', /ChatGPT plan · codex 0\.140\.0/)

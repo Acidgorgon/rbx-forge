@@ -434,6 +434,8 @@ case "$1" in
       if [ -f "$S/loggedin" ]; then echo "Logged in using ChatGPT" >&2; exit 0; fi
       echo "Not logged in" >&2; exit 1
     fi
+    # 0.140.0 predates --device-auth: the service falls back to the browser login.
+    if [ "$2" = "--device-auth" ]; then echo "error: unexpected argument '--device-auth' found" >&2; exit 2; fi
     echo "If your browser did not open, navigate to this URL to authenticate: https://auth.openai.com/oauth/authorize?state=abc" >&2
     if [ -f "$S/slowlogin" ]; then sleep 30; fi
     touch "$S/loggedin"; echo "Successfully logged in" >&2; exit 0 ;;

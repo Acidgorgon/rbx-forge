@@ -7,6 +7,7 @@
 
 import path from 'node:path'
 import { defaultContext, envGet, findTool, pathExts, type ToolContext } from '../../services/tools.ts'
+import { findPrivateCodex } from './install.ts'
 
 // Folders where `codex` usually lands that are not in tools.ts's extraToolDirs.
 export function codexDirs(ctx: ToolContext): string[] {
@@ -29,7 +30,8 @@ export function codexDirs(ctx: ToolContext): string[] {
 // Full path of the codex binary, or null. `override` is the user's own path (Settings), used when
 // it exists. On Windows the npm shim is codex.cmd (spawned through cmd.exe by tools.ts planSpawn);
 // a bare `codex` (the sh shim npm also writes) or codex.ps1 cannot be spawned and is skipped.
-export function findCodex(ctx: ToolContext = defaultContext(), override?: string | null): string | null {
+// `privatePrefix` is Forge's own install (install.ts), used when the user has none of their own.
+export function findCodex(ctx: ToolContext = defaultContext(), override?: string | null, privatePrefix?: string | null): string | null {
   const o = override?.trim()
   if (o && ctx.isExecutable(o)) return o
   const onPath = findTool('codex', ctx)
@@ -42,7 +44,7 @@ export function findCodex(ctx: ToolContext = defaultContext(), override?: string
       if (ctx.isExecutable(candidate)) return candidate
     }
   }
-  return null
+  return findPrivateCodex(privatePrefix, ctx)
 }
 
 // `codex --version` prints e.g. "codex-cli 0.140.0".
@@ -68,4 +70,75 @@ export function parseLoginStatus(code: number, text: string): { loggedIn: boolea
 export function loginUrl(text: string): string | null {
   const m = /(https:\/\/[^\s"'<>]+)/.exec(text)
   return m ? m[1] : null
+}
+
+// `codex login --device-auth` (codex-rs/cli/src/main.rs LoginCommand, codex-rs/login/src/
+// device_code_auth.rs) prints on stdout, with ANSI colours:
+//   1. Open this link in your browser and sign in to your account
+//      https://auth.openai.com/codex/device
+//   2. Enter this one-time code (expires in 15 minutes)
+//      ABCD-1234
+// then waits and exits 0 ("Successfully logged in") or 1 ("Error logging in with device code: ...").
+export class DeviceAuthParser {
+  url: string | null = null
+  code: string | null = null
+  private wantCode = false
+
+  // Feeds one line; true when it filled in the URL or the code.
+  line(raw: string): boolean {
+    // eslint-disable-next-line no-control-regex
+    const l = raw.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '').trim()
+    if (!l) return false
+    if (!this.url) {
+      const m = /https:\/\/[^\s"'<>]+/.exec(l)
+      if (m) {
+        this.url = m[0].replace(/[).,;]+$/, '')
+        return true
+      }
+    }
+    if (/one-time code|enter (this|the) code|user code/i.test(l)) {
+      this.wantCode = true
+      // Some versions may print the code on the same line.
+      const inline = /code[^:]*:\s*([A-Z0-9]{3,}(?:-[A-Z0-9]{3,})+)\s*$/i.exec(l)
+      if (inline && !this.code) {
+        this.code = inline[1].toUpperCase()
+        return true
+      }
+      return false
+    }
+    if (!this.code && (this.wantCode || /^[A-Z0-9]{4,5}-[A-Z0-9]{4,5}$/.test(l)) && /^[A-Z0-9]{3,}(?:-[A-Z0-9]{3,})*$/i.test(l) && l.length <= 16) {
+      this.code = l.toUpperCase()
+      this.wantCode = false
+      return true
+    }
+    return false
+  }
+}
+
+// The installed codex does not do device-code login (older CLI without the flag, or a server where
+// it is turned off): use the browser login instead.
+export function deviceAuthUnsupported(output: string): boolean {
+  return /unexpected argument '--device-auth'|unrecognized (argument|option).*device-auth|Found argument '--device-auth' which wasn't expected|device code login is not enabled/i.test(output)
+}
+
+// `codex debug models` prints the model catalog the CLI uses for this login as JSON:
+// { "models": [{ "slug": "gpt-6.1-sol", "visibility": "list" | "hide", "priority": 1, ... }] }.
+// The listed (picker) models, best first.
+export function parseModelCatalog(text: string): string[] {
+  const start = text.indexOf('{')
+  if (start < 0) return []
+  let body: unknown
+  try {
+    body = JSON.parse(text.slice(start, text.lastIndexOf('}') + 1))
+  } catch {
+    return []
+  }
+  const models = (body as { models?: unknown })?.models
+  if (!Array.isArray(models)) return []
+  return models
+    .filter((m): m is { slug: string; visibility?: string; priority?: number } => !!m && typeof m === 'object' && typeof (m as { slug?: unknown }).slug === 'string')
+    .filter((m) => m.visibility === undefined || m.visibility === 'list')
+    .filter((m) => /^[\w.:/-]+$/.test(m.slug))
+    .sort((a, b) => (a.priority ?? 999) - (b.priority ?? 999))
+    .map((m) => m.slug)
 }

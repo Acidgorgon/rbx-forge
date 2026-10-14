@@ -16,13 +16,14 @@
 // progress to the renderer, and refreshes provider status afterwards. A card's headline says
 // "Signed in with ..." when its method reports state 'signedIn' (and not foundButOff).
 
-import type { AccountCheck, AccountId, SignInStatus } from '../../shared/accountTypes.ts'
+import type { AccountCheck, AccountId, SignInProgress, SignInStatus } from '../../shared/accountTypes.ts'
 
 export interface SignInControl {
   // Aborted on cancel or timeout: stop the subprocess.
   signal: AbortSignal
-  // url: the sign-in page (shown as a fallback link); acceptsCode: the tool asks for a pasted code.
-  progress(update: { url?: string; message?: string; acceptsCode?: boolean }): void
+  // url: the sign-in page (shown as a fallback link); acceptsCode: the tool asks for a pasted code;
+  // stage / userCode: Codex's install step and device code (SignInProgress).
+  progress(update: { url?: string; message?: string; acceptsCode?: boolean; stage?: SignInProgress['stage']; userCode?: string }): void
   // Codes the user pastes from the browser, for tools that ask for one.
   onCode(handler: (code: string) => void): void
 }
@@ -34,7 +35,9 @@ export interface AccountProvider {
   account: AccountId
   label: string
   status(opts?: { refresh?: boolean }): Promise<SignInStatus>
-  signIn(ctl: SignInControl): Promise<{ ok: boolean; message?: string }>
+  signIn(ctl: SignInControl): Promise<{ ok: boolean; message?: string; helpUrl?: string }>
+  // Longest a sign-in may run (default: AccountsDeps.signInTimeoutMs, 10 minutes).
+  timeoutMs?: number
   // Stop using the login in Forge; cliLogout (asked first) also logs the tool itself out.
   signOut(opts: { cliLogout: boolean }): Promise<void>
   // Use a login that already exists on this computer.

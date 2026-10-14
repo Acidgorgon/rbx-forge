@@ -29,6 +29,7 @@ import { executableOption, OPENAI_TOOLS_NOTE, sdkQuery, type QueryFn } from './s
 import { SERVICE_WRITE_TOOLS } from './serviceTools.ts'
 import { TestAgentRunner } from './testAgents.ts'
 import { CodexService, codexService, setCodexService, type CodexStatus } from './codex/service.ts'
+import { privateCodexPrefix } from './codex/install.ts'
 import { defaultGroupIo } from './group/io.ts'
 import { Restater } from './restate.ts'
 import { normalizeRestatement, type RestateLab } from '../../shared/restate/types.ts'
@@ -417,6 +418,8 @@ export function registerAgentIpc(
   setCodexService(
     new CodexService({
       binOverride: () => ctx.getSetting<string | null>('codexPath', null),
+      // Forge's own copy, installed by "Sign in with ChatGPT" when the user has none (codex/install.ts).
+      ...(opts.userDataDir ? { privatePrefix: () => privateCodexPrefix(opts.userDataDir!) } : {}),
       log: (text, stream = 'info') => ctx.log({ service: 'agent', stream, text: `[codex] ${text}` })
     })
   )

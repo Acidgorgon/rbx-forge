@@ -141,7 +141,7 @@ export function providersMock(emit: Emit) {
     let state: AccountSummary['state'] = 'none'
     let statusText = id === 'ollama' ? 'Not running' : 'Not set up'
     if (signIn?.state === 'expired') [state, statusText] = ['expired', 'Sign-in expired']
-    else if (signIn?.state === 'signedIn') [state, statusText] = ['subscription', signIn.method === 'codex' ? 'Signed in with ChatGPT (Codex)' : 'Signed in with Claude subscription']
+    else if (signIn?.state === 'signedIn') [state, statusText] = ['subscription', signIn.method === 'codex' ? 'Signed in with ChatGPT' : 'Signed in with Claude subscription']
     else if (p.keySource) [state, statusText] = ['apiKey', `Using API key ${p.keyHint ?? ''}`.trim()]
     else if (id === 'ollama' && p.ready) [state, statusText] = ['local', `Running at ${p.baseUrl}`]
     return {
@@ -199,7 +199,7 @@ export function providersMock(emit: Emit) {
       }
       if (id === 'openai' && codexInstalled) {
         progress({ phase: 'starting' })
-        progress({ url: 'https://auth.openai.com/oauth/authorize?mock=1', message: 'Finish signing in in your browser.' })
+        progress({ stage: 'device', url: 'https://auth.openai.com/codex/device', userCode: 'MOCK-1234', message: 'Enter this code on the ChatGPT sign-in page. Waiting for you to finish...' })
         return new Promise((resolve) => {
           signInTimer = setTimeout(() => {
             signInTimer = null

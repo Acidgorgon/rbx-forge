@@ -38,7 +38,7 @@ export const KEY_URL: Partial<Record<AccountId, string>> = {
 
 const SUBSCRIPTION_TEXT: Record<string, string> = {
   claude: 'Signed in with Claude subscription',
-  codex: 'Signed in with ChatGPT (Codex)'
+  codex: 'Signed in with ChatGPT'
 }
 
 export interface SummaryInput {
@@ -184,10 +184,12 @@ export class AccountsService {
     const timer = setTimeout(() => {
       timedOut = true
       abort.abort()
-    }, this.deps.signInTimeoutMs ?? 10 * 60_000)
+    }, m.timeoutMs ?? this.deps.signInTimeoutMs ?? 10 * 60_000)
     const run: RunningSignIn = { abort, codeHandler: null, last: { account: id, method: m.method, phase: 'starting' }, done: null as never }
     const report = (p: Partial<SignInProgress>) => {
-      run.last = { ...run.last, ...p, account: id, method: m.method }
+      // A new stage (install -> device code -> browser) does not keep the last stage's link or code.
+      const base = p.stage && p.stage !== run.last.stage ? { ...run.last, url: undefined, userCode: undefined } : run.last
+      run.last = { ...base, ...p, account: id, method: m.method }
       this.deps.emit('accounts:signin', run.last)
     }
     run.done = (async (): Promise<SignInProgress> => {
@@ -203,7 +205,7 @@ export class AccountsService {
         if (timedOut) report({ phase: 'timeout', message: 'Sign-in timed out. Try again.' })
         else if (abort.signal.aborted) report({ phase: 'cancelled', message: 'Sign-in cancelled.' })
         else if (r.ok) report({ phase: 'done', message: r.message ?? 'Signed in.', acceptsCode: false })
-        else report({ phase: 'failed', message: r.message ?? 'Sign-in failed.', acceptsCode: false })
+        else report({ phase: 'failed', message: r.message ?? 'Sign-in failed.', acceptsCode: false, ...(r.helpUrl ? { helpUrl: r.helpUrl } : {}) })
       } catch (e) {
         report({ phase: timedOut ? 'timeout' : abort.signal.aborted ? 'cancelled' : 'failed', message: (e as Error).message })
       } finally {

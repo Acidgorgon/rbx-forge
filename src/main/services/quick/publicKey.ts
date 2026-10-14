@@ -3,7 +3,6 @@
 // launch. The private half is only in the repository's QUICK_UPDATE_SIGNING_KEY Actions secret;
 // .github/workflows/quick.yml refuses to publish when the secret does not match this key.
 //
-// Empty: quick updates are off in this build. README "Quick updates" has the one-time setup. The key
-// that counts at launch is the one in the installed app, so a new key reaches users with a full
-// release.
-export const QUICK_UPDATE_PUBLIC_KEY = ''
+// The key that counts at launch is the one in the installed app, so a new key reaches users with a
+// full release.
+export const QUICK_UPDATE_PUBLIC_KEY = 'MCowBQYDK2VwAyEAHMGGt8guaPAKI0GLGIXfCWM9GXi9bif0qDMMZRByy9I='

@@ -24,6 +24,8 @@ export interface StudioNode {
   properties?: Record<string, SyncValue>
   attributes?: Record<string, SyncValue>
   tags?: string[]
+  // Script whose Source is too large to send (plugin limit): content unknown, never written or trashed.
+  oversize?: true
 }
 
 export interface SyncPlace {
@@ -49,6 +51,12 @@ export interface MappedFile {
   kind: FileKind
   // For 'script': the class Rojo builds from the file name.
   className?: string
+  // The instance lives inside this .model.json (file) at these names below the model's root.
+  modelPath?: string[]
+  // Script RunContext that has to be set through an adjacent meta file (file conventions alone
+  // cannot express it), and that meta file.
+  metaFile?: string
+  runContext?: 'Legacy' | 'Server' | 'Client'
 }
 
 // ---- Reconcile outcome per file ----
@@ -70,6 +78,8 @@ export interface SyncEntry {
   // For renamed: the old file.
   from?: string
   at: number
+  // Why an instance was refused or left alone (unsafe name, duplicate sibling, oversize ...).
+  note?: string
 }
 
 export interface SyncConflictInfo {

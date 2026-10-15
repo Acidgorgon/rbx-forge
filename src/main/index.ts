@@ -568,6 +568,7 @@ const vfx = createVfxWiring({
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[vfx] ${text}` }),
   memory,
   vision: (tier) => labModel('vfx', tier ?? 'default'),
+  visionReady: () => agentIpc.visionReady(),
   gate: gating.service,
   rojo: {
     running: () => supervisor.statuses().some((s) => s.id === 'rojo' && (s.state === 'running' || s.state === 'starting')),

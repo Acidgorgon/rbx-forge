@@ -251,3 +251,25 @@ test('Settings > Labs sees a model the account rejected (labModelInfo.rejected),
     resetLabModelFailures()
   }
 })
+
+test('shotReady: true only when a provider a Labs call would try is set up (no model call)', async () => {
+  resetLabModelFailures()
+  const { fake, credentials } = signedInWithClaude()
+  const sdk = subscriptionSdk(() => true)
+  const layer = createAgentLayer(fake.ctx, { queryFn: sdk.queryFn, credentials, meterSaveDelayMs: 0 })
+  try {
+    assert.equal(await layer.shotReady(), true)
+    // Not signed in, no key, no other provider: the Labs draft and check without a model.
+    fake.settings.set('anthropicUseClaudeLogin', false)
+    assert.equal(await layer.shotReady(), false)
+    // The last chat model on Custom counts once Custom has a base URL.
+    fake.settings.set(LAST_CHAT_MODEL_SETTING, { provider: 'custom', model: 'fake' })
+    assert.equal(await layer.shotReady(), false)
+    layer.providers.setConfig('custom', { baseUrl: 'http://127.0.0.1:9/v1' })
+    assert.equal(await layer.shotReady(), true)
+    assert.equal(sdk.calls.length, 0)
+  } finally {
+    layer.dispose()
+    resetLabModelFailures()
+  }
+})

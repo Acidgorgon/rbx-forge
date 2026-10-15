@@ -55,6 +55,8 @@ export interface AgentLayer {
   // One-shot answer about images (VFX critique) on the default model, which should see images.
   // opts.tier picks a Labs model tier instead (shared/labModels.ts: cheap / default / critic).
   visionShot(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string>
+  // Whether a one-shot call could reach a model at all (some provider it would try is set up).
+  shotReady(): Promise<boolean>
   dispose(): void
 }
 
@@ -139,6 +141,7 @@ export function createAgentLayer(
     team,
     oneShot: (system, prompt, o) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt, [], o?.tier),
     visionShot: (system, prompt, images, o) => oneShot(ctx, { queryFn: opts.queryFn, fetchFn: opts.fetchFn, credentials, providers, meter }, system, prompt, images, o?.tier, o?.onUsage),
+    shotReady: () => shotReady(ctx, { credentials, providers }),
     dispose() {
       orchestrator.cancelAll()
       chats.dispose()
@@ -291,6 +294,24 @@ async function oneShot(
     }
   }
   throw new Error(errors.length > 1 ? `no model answered (${errors.join('; ')})` : errors[0] ?? 'no model is set up')
+}
+
+// Whether oneShot has a model to try: the default model's provider or the last chat model's is set
+// up (Claude sign-in / key, a key or base URL for the OpenAI-compatible ones; Codex is assumed to be,
+// checking it means running its CLI). No model call; the labs use it to skip rendering frames for a
+// critic that cannot be asked.
+export async function shotReady(ctx: Pick<HarnessContext, 'getSetting'>, w: { credentials: Pick<Credentials, 'anthropicAuth'>; providers: Pick<Providers, 'defaultModel' | 'endpoint'> }): Promise<boolean> {
+  const primary = w.providers.defaultModel()
+  const chat = lastChatModel(ctx)
+  for (const b of chat ? [primary, chat] : [primary]) {
+    if (b.provider === 'codex') return true
+    if (b.provider === 'anthropic') {
+      if ((await w.credentials.anthropicAuth()).ready) return true
+      continue
+    }
+    if (!('error' in (await w.providers.endpoint(b.provider)))) return true
+  }
+  return false
 }
 
 async function shotOnce(
@@ -522,7 +543,7 @@ export function registerAgentIpc(
   ctx: HarnessContext,
   ipcMain: IpcMain,
   opts: { memory?: MemoryHooks; userDataDir?: string; gating?: () => Promise<GatingCostRow[] | null> } = {}
-): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string>; providers(): Promise<ProviderInfo[]>; defaultProvider(): ProviderId; credentials: Credentials; meter: Meter } {
+): { dispose(): void; summarize(prompt: string): Promise<string>; vision(system: string, prompt: string, images: ImagePayload[], opts?: ShotOptions): Promise<string>; visionReady(): Promise<boolean>; providers(): Promise<ProviderInfo[]>; defaultProvider(): ProviderId; credentials: Credentials; meter: Meter } {
   // Codex CLI: an optional path from settings ('codexPath') wins over PATH lookup.
   setCodexService(
     new CodexService({
@@ -684,6 +705,7 @@ export function registerAgentIpc(
 
   return {
     vision: (system, prompt, images, o) => layer.visionShot(system, prompt, images, o),
+    visionReady: () => layer.shotReady(),
     // Forge Doctor: which providers have a key (never the key itself).
     providers: () => providers.list(),
     defaultProvider: () => providers.defaultModel().provider,

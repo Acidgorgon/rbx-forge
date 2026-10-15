@@ -38,6 +38,8 @@ export interface VfxWireDeps {
   log?: (text: string, stream?: 'info' | 'stderr') => void
   memory?: MemoryLike
   vision?: (tier?: LabTier) => VisionFn | null
+  // Whether a model call could run at all (a provider is set up); without one no critic frames are rendered.
+  visionReady?: () => Promise<boolean>
   capture?: (req: CaptureRequest) => Promise<Buffer[]>
   chooseImport?: () => Promise<string[]>
   // Texture import: file / folder picker and JPEG decoding (electron), Studio sources.
@@ -109,6 +111,7 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     runtimeDir: () => findRuntimeDir(),
     capture: deps.capture,
     vision: deps.vision,
+    visionReady: deps.visionReady,
     memory: deps.memory,
     rojo: deps.rojo,
     emit: deps.emit,

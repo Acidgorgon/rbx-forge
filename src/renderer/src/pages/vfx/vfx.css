@@ -179,6 +179,8 @@ select.vfx-live-opt { height: 26px; font-size: 11px; }
 
 /* Sequences: make-mode toggle, built-in examples */
 .vfx-mode button { flex: none; padding: 0 8px; }
+.vfx-scratch { flex: none; white-space: nowrap; }
+.vfx-scratch.on { color: var(--ember-text); background: var(--ember-fill); border-color: var(--ember-lo); }
 .vfx-examples { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-left: auto; }
 .vfx-examples .faint { font-size: 10.5px; }
 .vfx-examples .badge-o { height: 20px; font-size: 11px; color: var(--fg-2); font-family: var(--font-mono); }

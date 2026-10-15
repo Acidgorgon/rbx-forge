@@ -9,7 +9,8 @@ import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import './textures.css'
 
-type Edit = { include: boolean; name: string }
+// edited: the user typed the name (the "Name effects from tags" toggle leaves it).
+type Edit = { include: boolean; name: string; edited?: boolean }
 
 export function importProgressText(p: VfxImportProgress | null): string | null {
   if (!p || p.phase === 'done') return null
@@ -28,8 +29,13 @@ function dupOf(r: VfxImportRow, scope: VfxScope): string | null {
   return r.duplicates.find((d) => d.scope === scope)?.name ?? null
 }
 
-function defaults(scan: VfxImportScan, scope: VfxScope): Record<string, Edit> {
-  return Object.fromEntries(scan.rows.map((r) => [r.key, { include: !dupOf(r, scope) && !r.sameAs, name: r.name }]))
+// The name a row starts with: from its tags (the setting) or its own.
+export function rowName(r: VfxImportRow, fromTags: boolean): string {
+  return fromTags && r.tagName ? r.tagName : r.name
+}
+
+function defaults(scan: VfxImportScan, scope: VfxScope, fromTags: boolean): Record<string, Edit> {
+  return Object.fromEntries(scan.rows.map((r) => [r.key, { include: !dupOf(r, scope) && !r.sameAs, name: rowName(r, fromTags) }]))
 }
 
 function Row({ r, e, scope, rows, onEdit }: { r: VfxImportRow; e: Edit; scope: VfxScope; rows: VfxImportRow[]; onEdit: (p: Partial<Edit>) => void }) {
@@ -42,10 +48,11 @@ function Row({ r, e, scope, rows, onEdit }: { r: VfxImportRow; e: Edit; scope: V
       <input type="checkbox" checked={e.include} onChange={(ev) => onEdit({ include: ev.target.checked })} aria-label={`Import ${e.name}`} />
       <div className="tex-imp-main">
         <div className="tex-imp-line">
-          <input className="input" value={e.name} onChange={(ev) => onEdit({ name: ev.target.value })} aria-label="Name" />
+          <input className="input" value={e.name} onChange={(ev) => onEdit({ name: ev.target.value, edited: true })} aria-label="Name" />
           <span className="faint mono">{layers || 'no layers'}</span>
         </div>
         <span className="faint mono tex-imp-label" title={r.origin}>
+          {e.name.trim() !== r.name && <span data-testid="vfx-import-from">from: {r.name} · </span>}
           {r.origin}
           {r.notes.length ? ` · ${r.notes.join(' · ')}` : ''}
         </span>
@@ -105,10 +112,18 @@ function PackPicker({ packs, busy, onRead }: { packs: VfxStudioPack[]; busy: boo
 export function EffectImportReview({ scan, scope: initialScope, projectOpen, onClose, onDone, onRescan }: { scan: VfxImportScan; scope: VfxScope; projectOpen: boolean; onClose: () => void; onDone: (r: VfxImportResult) => void; onRescan: (packs: VfxStudioPack[]) => void }) {
   const { actions } = useStore()
   const [scope, setScope] = useState<VfxScope>(initialScope)
-  const [edit, setEdit] = useState<Record<string, Edit>>(() => defaults(scan, initialScope))
+  const [fromTags, setFromTags] = useState(scan.nameFromTags !== false)
+  const [edit, setEdit] = useState<Record<string, Edit>>(() => defaults(scan, initialScope, scan.nameFromTags !== false))
   const [busy, setBusy] = useState(false)
   const progress = useImportProgress()
-  useEffect(() => setEdit(defaults(scan, scope)), [scan.scanId])
+  useEffect(() => (setFromTags(scan.nameFromTags !== false), setEdit(defaults(scan, scope, scan.nameFromTags !== false))), [scan.scanId])
+  const tagNamed = scan.rows.filter((r) => r.tagName).length
+  // "Name effects from tags" (a setting): names the user typed stay as they are.
+  const toggleTags = (on: boolean) => {
+    setFromTags(on)
+    setEdit(Object.fromEntries(scan.rows.map((r) => [r.key, edit[r.key]?.edited ? edit[r.key] : { ...edit[r.key], name: rowName(r, on) }])))
+    void window.harness.vfxSetNameFromTags(on).catch(() => undefined)
+  }
   const chosen = scan.rows.filter((r) => edit[r.key]?.include)
   const dups = scan.rows.filter((r) => dupOf(r, scope) || r.sameAs).length
   const commit = async () => {
@@ -154,9 +169,13 @@ export function EffectImportReview({ scan, scope: initialScope, projectOpen, onC
               <Row key={r.key} r={r} e={edit[r.key] ?? { include: false, name: r.name }} scope={scope} rows={scan.rows} onEdit={(p) => setEdit({ ...edit, [r.key]: { ...edit[r.key], ...p } })} />
             ))}
           </ul>
+          <label className="vfx-imp-tagnames" title="Name each effect from its tags (element + kind, e.g. Lightning Impact) instead of its Studio / file name. The original name is kept: searchable, and shown as “from: …”.">
+            <input type="checkbox" checked={fromTags} onChange={(ev) => toggleTags(ev.target.checked)} data-testid="vfx-import-tagnames" /> Name effects from tags
+            <span className="faint">{tagNamed ? ` · ${tagNamed} of ${scan.rows.length} get a tag name` : ' · no tags to name these by'}</span>
+          </label>
           {!!scan.media.length && <p className="note">Also imports {scan.media.length} reference image{scan.media.length === 1 ? '' : 's'} / video{scan.media.length === 1 ? '' : 's'}.</p>}
           <div className="row">
-            <select className="input tex-imp-scope" value={scope} onChange={(e) => (setScope(e.target.value as VfxScope), setEdit(defaults(scan, e.target.value as VfxScope)))} aria-label="Import into">
+            <select className="input tex-imp-scope" value={scope} onChange={(e) => (setScope(e.target.value as VfxScope), setEdit(defaults(scan, e.target.value as VfxScope, fromTags)))} aria-label="Import into">
               <option value="user">your library</option>
               <option value="project" disabled={!projectOpen}>
                 this project

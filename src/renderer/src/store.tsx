@@ -37,6 +37,7 @@ import { diskReloadAction, openPathsIn } from './lib/diskReload'
 import type { SaveReason } from '@shared/editorAssist/policy'
 import { runBeforeSave } from './editorAssist/saveHooks'
 import * as EG from '@shared/editorGroups'
+import { scriptInjectionToasts } from '@shared/studio/errors'
 import type { GroupsState } from '@shared/editorGroups'
 
 // ---------------------------------------------------------------- types
@@ -187,6 +188,9 @@ export type CreateKind = 'ModuleScript' | 'Script' | 'LocalScript' | 'Feature' |
 const LAYOUT_KEY = 'forge.layout.v1'
 // Labs model-call failures already shown (lab|error -> time), so a refine loop does not stack toasts.
 const labErrorSeen = new Map<string, number>()
+// Studio blocking the Forge Bridge plugin's script writes (Script Injection off), from any Studio job:
+// one toast with the steps instead of one per failed job.
+const studioInjectionToast = scriptInjectionToasts()
 const LAB_NAMES: Record<string, string> = { vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab' }
 const DEFAULT_LAYOUT: Layout = { sideOpen: true, sideView: 'explorer', sideW: 268, bottomOpen: true, bottomH: 214, bottomTab: 'output', rightOpen: true, rightW: 360, sideAuto: false }
 
@@ -598,7 +602,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     // In-flight saves per path (saveFile chains them).
     const saving = new Map<string, Promise<void>>()
     const toast = (input: string | ToastInput) => {
-      const spec = typeof input === 'string' ? { text: input } : input
+      const spec = studioInjectionToast(typeof input === 'string' ? { text: input } : input)
+      if (!spec) return
       dispatch({ type: 'toast', toast: { id: Date.now() + Math.random(), at: Date.now(), ...spec } })
     }
     const loadProjectData = async () => {

@@ -136,6 +136,13 @@ export interface VfxEntry {
   updatedAt: number
   // Original file name (import) or the prompt (generated).
   origin: string
+  // The name the effect had in its file / in Studio ("Particles"), kept when the entry is named
+  // otherwise (from its tags, or by the user); searched, and shown as "from: Particles".
+  sourceName?: string
+  // How `name` was given: 'tags' = named from its tags (shared/vfx/tags.ts nameFromTags; re-tag may
+  // rename it again), 'user' = renamed by the user (bulk "Name from tags" leaves it). Absent: the
+  // name it was imported / made with.
+  nameFrom?: 'tags' | 'user'
   effect?: VfxEffect
   stats?: VfxStats
   // Media references (image / gif / video) for visual critique, file names inside the entry folder.
@@ -203,7 +210,7 @@ export interface VfxScriptResult {
   // Saved entry (when the run was saved / composed).
   entry?: VfxEntry
   // vfx_compose: who wrote the script.
-  source?: 'model' | 'draft' | 'example'
+  source?: 'model' | 'draft' | 'example' | 'library'
   // vfx_compose with source 'draft': why the model's script was not used (the actual error).
   modelError?: string
 }
@@ -285,6 +292,9 @@ export interface VfxImportResult {
 export interface VfxImportRow {
   key: string
   name: string
+  // The name from its auto-tags ("Lightning Impact"), unique in the library and the scan; absent
+  // when the tags give no name or the same one.
+  tagName?: string
   // File name, or the Studio path (Workspace.VFX.Slash).
   origin: string
   source: 'file' | 'studio'
@@ -318,12 +328,15 @@ export interface VfxImportScan {
   media: string[]
   skipped: { file: string; reason: string }[]
   notes: string[]
+  // Setting "Name effects from tags" (vfx.nameFromTags, default on): rows start with tagName.
+  nameFromTags?: boolean
 }
 
 export interface VfxImportCommit {
   scanId: string
   scope: VfxScope
-  // Rows to import (renamed as given).
+  // Rows to import (renamed as given; a row's tagName names it from its tags, its name keeps the
+  // original, anything else is the user's name).
   rows: { key: string; name: string }[]
   // Also import the scan's media files (default true).
   media?: boolean
@@ -346,6 +359,8 @@ export interface VfxLabStatus {
   rojo: boolean
   entries: { user: number; project: number }
   recipes: number
+  // Setting "Name effects from tags" (imports are named from their tags; default on).
+  nameFromTags?: boolean
 }
 
 export interface VfxRefineOptions {
@@ -354,6 +369,9 @@ export interface VfxRefineOptions {
   frames?: number
   // Make / compose: how many variations to make (1-3); the critic (or the code checks) keeps one.
   variations?: number
+  // Make / compose: never copy or remix a library effect (no copy at impact, no remix, no script
+  // reuse); the library is only a style guide (ranges, textures, palettes, richness, notes).
+  fromScratch?: boolean
 }
 
 export interface VfxRefineProgress {

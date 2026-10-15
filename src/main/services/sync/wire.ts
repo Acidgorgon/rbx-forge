@@ -3,6 +3,7 @@
 // the git-pull guard. The engine and place mapping are passed in (engine worker's modules) so this
 // file builds before they land. No electron imports.
 
+import { cleanTarget } from '../../../shared/studio/target.ts'
 import type { StudioConflict } from '../../../shared/types.ts'
 import type { SyncStatus, GateState, WaitReason } from '../../../shared/sync/types.ts'
 import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING } from '../../../shared/sync/types.ts'
@@ -125,7 +126,13 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     if (!bridge) throw new Error('The Forge Bridge is not running')
     return {
       bridge,
-      refusal: (path: string[]) => (current ? current.deleteRefusal(deps.activePlace?.() ?? 'default.project.json', path) : 'No project open')
+      refusal: (path: string[]) => (current ? current.deleteRefusal(deps.activePlace?.() ?? 'default.project.json', path) : 'No project open'),
+      place: async () => {
+        if (!current) return null
+        const file = deps.activePlace?.() ?? 'default.project.json'
+        const hit = (await current.status()).places.find((p) => p.connected && p.projectFile === file && p.place)
+        return hit?.place ? cleanTarget({ placeId: hit.place.placeId, place: hit.place.name }) : null
+      }
     }
   }
 

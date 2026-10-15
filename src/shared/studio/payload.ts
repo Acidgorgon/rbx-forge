@@ -4,7 +4,7 @@
 // version being judged.
 
 import { stageAt, stageFrameTimes } from '../vfx/critique.ts'
-import { luauModule, needsRuntime, timelineModule } from '../vfx/luau.ts'
+import { effectModules, needsRuntime, sourceLength, SOURCE_LIMIT, timelineModule } from '../vfx/luau.ts'
 import { FORGEFX_SOURCE, RUNTIME_MODULE } from '../vfx/runtime.ts'
 import { parseXml, type XmlEl } from '../vfx/rbxmx.ts'
 import type { VfxEffect } from '../vfx/types.ts'
@@ -108,10 +108,31 @@ interface JobBase {
   id: string
 }
 
+// The effect module with its children: the Timeline script, and the data parts of an effect too big
+// for one module (luau.ts effectModules).
 function vfxModules(effect: VfxEffect, name = 'Effect'): BridgeModule {
-  const children: BridgeModule[] = []
+  const m = effectModules(effect, {})
+  const children: BridgeModule[] = m.data.map((d) => ({ name: d.name, className: 'ModuleScript', source: d.source }))
   if (effect.script) children.push({ name: 'Timeline', className: 'ModuleScript', source: timelineModule(effect.script) })
-  return { name, className: 'ModuleScript', source: luauModule(effect, {}), children }
+  return { name, className: 'ModuleScript', source: m.source, children }
+}
+
+// Roblox refuses a Source of SOURCE_LIMIT characters or more with a cryptic Studio error; effect
+// modules split themselves well below it, so anything this close is refused here with a clear one.
+export const MAX_JOB_SOURCE = SOURCE_LIMIT - 1
+
+export class ModuleTooLargeError extends Error {}
+
+export function assertModuleSizes(modules: BridgeModule[], path: string[] = []): void {
+  for (const m of modules) {
+    const at = [...path, m.name]
+    const n = m.source ? sourceLength(m.source) : 0
+    if (n >= MAX_JOB_SOURCE) {
+      const what = m.name === 'Timeline' ? `the timeline script of ${path[path.length - 1] ?? 'this effect'}` : `the module ${at.join('.')}`
+      throw new ModuleTooLargeError(`Forge: ${what} is ${n.toLocaleString('en-US')} characters, and Roblox only accepts scripts shorter than ${SOURCE_LIMIT.toLocaleString('en-US')}. ${m.name === 'Timeline' ? 'Shorten the script (loops instead of repeated lines) and try again.' : 'This is a Forge bug; please report it.'}`)
+    }
+    if (m.children) assertModuleSizes(m.children, at)
+  }
 }
 
 const runtimeModule = (): BridgeModule => ({ name: RUNTIME_MODULE, className: 'ModuleScript', source: FORGEFX_SOURCE })
@@ -138,6 +159,7 @@ export function vfxJob(effect: VfxEffect, opts: JobBase & { times?: number[]; ca
   const beats = opts.times?.length ? opts.times.map((t, i) => ({ t, label: stageAt(effect, t) ?? `t${i + 1}` })) : vfxBeats(effect)
   const modules: BridgeModule[] = [vfxModules(effect)]
   if (needsRuntime(effect)) modules.unshift(runtimeModule())
+  assertModuleSizes(modules)
   return {
     id: opts.id,
     version: BRIDGE_VERSION,
@@ -195,6 +217,12 @@ export function abilityJob(ability: Ability, effects: Record<string, VfxEffect>,
   const playClip = clip ?? (anim && isPlaceholder(anim.clip) ? placeholderClip(anim.clip) : null)
   let lingerS = 0
   for (const fx of Object.values(effects)) lingerS = Math.max(lingerS, linger(fx))
+  const modules: BridgeModule[] = [
+    { name: 'VFX', className: 'Folder', children: vfx },
+    { name: RUNNER_MODULE, className: 'ModuleScript', source: runnerModule([...JOB_ROOT, 'VFX']) },
+    { name: ability.name, className: 'ModuleScript', source: abilityModule(ability, lengths).source }
+  ]
+  assertModuleSizes(modules)
   return {
     id: opts.id,
     version: BRIDGE_VERSION,
@@ -205,11 +233,7 @@ export function abilityJob(ability: Ability, effects: Record<string, VfxEffect>,
     duration: ability.duration,
     beats: opts.times.map((b) => ({ t: b.t, label: b.label })),
     camera: CAMERAS.ability,
-    modules: [
-      { name: 'VFX', className: 'Folder', children: vfx },
-      { name: RUNNER_MODULE, className: 'ModuleScript', source: runnerModule([...JOB_ROOT, 'VFX']) },
-      { name: ability.name, className: 'ModuleScript', source: abilityModule(ability, lengths).source }
-    ],
+    modules,
     entry: ability.name,
     vfxFolder: 'VFX',
     ...(playClip ? { sequence: sequenceJson(playClip) } : {}),

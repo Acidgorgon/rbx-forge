@@ -64,7 +64,7 @@ const methods = [
   'vfxStatus', 'vfxList', 'vfxGet', 'vfxSearch', 'vfxImport', 'vfxChooseImport', 'vfxUpdate', 'vfxDelete', 'vfxRate',
   'vfxLearn', 'vfxRecipes', 'vfxMake', 'vfxRefine', 'vfxCancel', 'vfxCreate', 'vfxFile', 'vfxSaveThumb', 'vfxResolveTexture', 'vfxTestInStudio',
   'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample', 'vfxMeshGet', 'vfxMeshLoad', 'vfxMeshStatus', 'vfxReimport',
-  'vfxImportScan', 'vfxStudioScan', 'vfxImportCommit', 'vfxTrash', 'vfxRestore', 'vfxClear', 'vfxDuplicates', 'vfxRetag', 'vfxLiveStart', 'vfxLiveStop', 'vfxLiveSet', 'vfxLiveSettings', 'vfxLiveStatus',
+  'vfxImportScan', 'vfxStudioScan', 'vfxImportCommit', 'vfxTrash', 'vfxRestore', 'vfxClear', 'vfxDuplicates', 'vfxRetag', 'vfxNameFromTags', 'vfxSetNameFromTags', 'vfxLiveStart', 'vfxLiveStop', 'vfxLiveSet', 'vfxLiveSettings', 'vfxLiveStatus',
   'vfxTexStatus', 'vfxTexList', 'vfxTexGenerate', 'vfxTexPreview', 'vfxTexUpdate', 'vfxTexRate', 'vfxTexDelete', 'vfxTexUpload', 'vfxTexCheck', 'vfxTexFile',
   'vfxTexImportPick', 'vfxTexImportScan', 'vfxTexImportIds', 'vfxTexImportStudio', 'vfxTexImportCommit', 'vfxTexSetPolicy',
   // Animation Lab (services/anim) + Labs model tiers
@@ -79,7 +79,7 @@ const methods = [
   'uiMotionImportFigmaDoc', 'uiMotionImportFigmaUrl', 'uiMotionFigmaToken', 'uiMotionSetFigmaToken', 'uiMotionClearFigmaToken',
   'uiMotionTestFigmaToken', 'uiMotionLabStory', 'uiMotionCompose', 'uiMotionCritique', 'uiMotionExport', 'uiMotionSnap', 'uiMotionFile',
   // Studio check (Forge Bridge plugin: play in Roblox Studio, capture the key beats)
-  'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile',
+  'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile', 'studioPlaces', 'studioSetTarget',
   // Video references (VFX Lab + Animation Lab: "make it like this")
   'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
   // Restate first (chat cards, Labs briefs)

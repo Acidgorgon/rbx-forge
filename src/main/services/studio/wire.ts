@@ -16,7 +16,8 @@ import { markStudioFrames } from '../../../shared/studio/frames.ts'
 import { abilityJob, animJob, vfxJob } from '../../../shared/studio/payload.ts'
 import { BRIDGE_PORT, type StudioCheckKind, type StudioCheckOptions } from '../../../shared/studio/types.ts'
 import { BUNDLED_TEMPLATE_DIR, PLUGIN_TEMPLATE_FILE, PLUGIN_VERSION, pluginTemplateVersion } from '../../../shared/studio/plugin.ts'
-import { StudioBridge } from './bridge.ts'
+import { cleanTarget, resolveTarget, STUDIO_TARGETS_SETTING, targetKey, type StudioPlace, type StudioPlaces, type StudioTarget } from '../../../shared/studio/target.ts'
+import { StudioBridge, type StudioInfo } from './bridge.ts'
 import { StudioService, type ImageOps, type PluginInstaller, type StudioCapturer, type StudioLab } from './service.ts'
 import { studioTools, type StudioTool } from './tools.ts'
 
@@ -43,6 +44,10 @@ export interface StudioWireDeps {
   rojo?: () => 'running' | 'stopped'
   chatImage?: (absPath: string, name: string) => Promise<string | null>
   port?: number
+  // The open project (the Studio target is kept per project root) and the PlaceIds linked to its
+  // active place (servePlaceIds): with several places open, jobs default to the linked one.
+  projectRoot?: () => string | null
+  linkedPlaceIds?: () => number[]
 }
 
 export interface StudioWiring {
@@ -232,9 +237,56 @@ function abilityLab(deps: StudioWireDeps): StudioLab {
   }
 }
 
+function studioPlace(info: StudioInfo, linkedIds: number[]): StudioPlace {
+  return {
+    key: targetKey(info),
+    ...(info.placeId ? { placeId: info.placeId } : {}),
+    ...(info.place ? { place: info.place } : {}),
+    ...(info.pluginVersion ? { pluginVersion: info.pluginVersion } : {}),
+    lastSeen: info.lastSeen,
+    since: info.since,
+    ...(info.placeId && linkedIds.includes(info.placeId) ? { linked: true } : {})
+  }
+}
+
+// The Studio target picker's state and the bridge's default target, per project root.
+export function studioTargets(deps: Pick<StudioWireDeps, 'settings' | 'projectRoot' | 'linkedPlaceIds'>, studios: () => StudioInfo[]) {
+  const all = () => deps.settings.get<Record<string, unknown>>(STUDIO_TARGETS_SETTING, {}) ?? {}
+  const root = () => deps.projectRoot?.() ?? ''
+  const chosen = (): StudioTarget | null => cleanTarget(all()[root()])
+  const view = (): StudioPlaces => {
+    const linked = deps.linkedPlaceIds?.() ?? []
+    const places = studios()
+      .map((s) => studioPlace(s, linked))
+      .sort((a, b) => a.since - b.since || a.key.localeCompare(b.key))
+    const c = chosen()
+    const r = resolveTarget(places, c, linked)
+    return { places, chosen: c, target: r.target?.key ?? null, why: r.why }
+  }
+  return {
+    chosen,
+    view,
+    // Where jobs go by default (null: any Studio window).
+    target: (): StudioTarget | null => {
+      const v = view()
+      const hit = v.places.find((p) => p.key === v.target)
+      return hit ? { ...(hit.placeId ? { placeId: hit.placeId } : {}), ...(hit.place ? { place: hit.place } : {}) } : null
+    },
+    set: (t: unknown): void => {
+      const next = { ...all() }
+      const clean = cleanTarget(t)
+      if (clean) next[root()] = clean
+      else delete next[root()]
+      deps.settings.set(STUDIO_TARGETS_SETTING, next)
+    }
+  }
+}
+
 export function createStudioWiring(deps: StudioWireDeps): StudioWiring {
   let service: StudioService | null = null
   const bridge = new StudioBridge({ port: deps.port ?? BRIDGE_PORT, log: deps.log, onChange: () => service?.bridgeChanged() })
+  const targets = studioTargets(deps, () => bridge.studios())
+  bridge.setDefaultTarget(targets.target)
   service = new StudioService({
     bridge,
     capturer: deps.capturer,
@@ -265,7 +317,15 @@ export function createStudioWiring(deps: StudioWireDeps): StudioWiring {
     studioSetPrefer: (on: unknown) => svc.setPrefer(on === true),
     studioCheck: (k: unknown, id: unknown, opts?: StudioCheckOptions) => svc.check(kind(k), String(id ?? ''), { critique: !!opts?.critique, preview: opts?.preview !== false }),
     studioLastCheck: (k: unknown, id: unknown) => svc.lastCheck(kind(k), String(id ?? '')),
-    studioFile: (k: unknown, id: unknown, file: unknown) => svc.file(kind(k), String(id ?? ''), String(file ?? ''))
+    studioFile: (k: unknown, id: unknown, file: unknown) => svc.file(kind(k), String(id ?? ''), String(file ?? '')),
+    studioPlaces: () => targets.view(),
+    studioSetTarget: (t: unknown) => {
+      targets.set(t)
+      // A live loop running in another place moves to the new one.
+      bridge.retarget()
+      svc.bridgeChanged()
+      return targets.view()
+    }
   }
   const labelFor = (beats: { t: number; label: string }[], t: number, i: number) => beats.find((b) => Math.abs(b.t - t) < 1e-3)?.label ?? `t${i + 1}`
   let tools: { read: StudioTool[]; write: StudioTool[] } | null = null

@@ -66,7 +66,7 @@ export interface PluginInstaller {
 }
 
 export interface StudioServiceDeps {
-  bridge: Pick<StudioBridge, 'port' | 'listening' | 'lastError' | 'studio' | 'connected' | 'busy' | 'run' | 'cancel'>
+  bridge: Pick<StudioBridge, 'port' | 'listening' | 'lastError' | 'studio' | 'connected' | 'busy' | 'run' | 'cancel'> & Partial<Pick<StudioBridge, 'targetStudio'>>
   capturer?: StudioCapturer
   image?: ImageOps
   labs: Partial<Record<StudioCheckKind, StudioLab>>
@@ -133,10 +133,15 @@ export class StudioService {
     return { dir, file: dir ? `${dir}${dir.includes('\\') ? '\\' : '/'}${PLUGIN_FILE}` : null }
   }
 
+  // The Studio window jobs go to: the Studio target when one is picked, else the last one that polled.
+  private place(): string | undefined {
+    return (this.deps.bridge.targetStudio?.() ?? this.deps.bridge.studio())?.place
+  }
+
   private async findWindow(): Promise<{ window: string } | { error: string }> {
     if (!this.deps.capturer) return { error: 'Screen capture needs the desktop app.' }
     if (this.captureCache && this.now() - this.captureCache.at < 4000) return this.captureCache.value
-    const value = await this.deps.capturer.find({ place: this.deps.bridge.studio()?.place }).catch((e) => ({ error: (e as Error).message }))
+    const value = await this.deps.capturer.find({ place: this.place() }).catch((e) => ({ error: (e as Error).message }))
     this.captureCache = { at: this.now(), value }
     return value
   }
@@ -147,7 +152,7 @@ export class StudioService {
     const text = file ? await this.deps.plugin.read(file).catch(() => null) : null
     const fileVersion = text ? pluginVersionOf(text) : null
     const portOk = !text || text.includes(`127.0.0.1:${bridge.port}/`)
-    const info = bridge.studio()
+    const info = bridge.targetStudio?.() ?? bridge.studio()
     const connected = bridge.connected()
     const outdated = (text !== null && ((fileVersion ?? 0) < PLUGIN_VERSION || !portOk)) || (connected && (info?.pluginVersion ?? 0) < PLUGIN_VERSION)
     const capture = connected ? await this.findWindow() : null
@@ -251,7 +256,7 @@ export class StudioService {
 
   private async runJob(job: BridgeJob, onPhase?: (phase: StudioPhase, message?: string) => void): Promise<JobCapture> {
     this.ready()
-    const place = this.deps.bridge.studio()?.place
+    const place = this.place()
     const session = await this.deps.capturer!.open({ place }).catch((e) => {
       throw new StudioCheckError('no-capture', `Could not record the Studio window: ${(e as Error).message}`)
     })

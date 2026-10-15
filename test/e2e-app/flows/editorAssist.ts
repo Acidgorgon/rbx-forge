@@ -5,7 +5,7 @@
 import { chmodSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { write } from '../../fixture.ts'
-import { check, CENTER, mod, openPage, settingsSection, showSide, SkipFlow, waitText } from '../lib/ui.ts'
+import { check, CENTER, mod, openPage, settingsSection, showSide, SkipFlow, waitForAsync, waitText } from '../lib/ui.ts'
 import type { Page } from '../lib/app.ts'
 import type { Flow } from './types.ts'
 
@@ -51,7 +51,7 @@ export const editorAssistFlows: Flow[] = [
       chmodSync(join(bin, 'stylua'), 0o755)
       // The window regaining focus re-reads the status (StyLua installed while Forge ran).
       await page.evaluate(() => window.dispatchEvent(new Event('focus')))
-      await page.waitForFunction(async () => (await window.harness.editorAssistStatus()).stylua.found, undefined, { timeout: 5000 })
+      await waitForAsync(page, async () => (await window.harness.editorAssistStatus()).stylua.found, undefined, { timeout: 5000 })
       const status = await page.evaluate(() => window.harness.editorAssistStatus())
       check(status.effective.formatOnSave, 'format on save should default to on when StyLua is found')
       check(status.settings.autoSave === 'onFocusChange', `autosave default is ${status.settings.autoSave}`)

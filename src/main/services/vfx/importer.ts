@@ -14,11 +14,12 @@ import { meshAssetId } from '../../../shared/vfx/mesh/data.ts'
 import { writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { PART_CLASSES } from '../../../shared/vfx/schema.ts'
 import { dedupeNames, splitEffects, type EffectGroup } from '../../../shared/vfx/split.ts'
+import { autoTagGroups, uniqueName } from '../../../shared/vfx/tags.ts'
 import { collectStudioImport, parseSelChunk, parseSelProgress, studioImportJob, type StudioPath } from '../../../shared/vfx/studioImport.ts'
 import type { VfxEntry, VfxImportCommit, VfxImportProgress, VfxImportResult, VfxImportRow, VfxImportScan, VfxNode, VfxScope } from '../../../shared/vfx/types.ts'
 import { normalizeLuneNode } from './lune.ts'
 import type { MeshBridge } from './meshes.ts'
-import { VfxError, type VfxService } from './service.ts'
+import { tagNameBase, VfxError, type VfxService } from './service.ts'
 
 const SCAN_TTL_MS = 30 * 60_000
 const MAX_SCANS = 4
@@ -77,15 +78,22 @@ export class VfxImporter {
   private async rows(entries: { group: EffectGroup; origin: string; source: 'file' | 'studio'; file: ScanRow['file']; tagHint: string }[]): Promise<Map<string, ScanRow>> {
     const svc = this.deps.service
     const index = new Map<string, VfxEntry[]>()
-    for (const e of await svc.list()) {
+    const library = await svc.list()
+    for (const e of library) {
       const h = svc.entryHash(e)
       if (h) index.set(h, [...(index.get(h) ?? []), e])
     }
+    // Names from the tags (the same auto-tags the entry gets on commit), unique in the library and
+    // the scan ("Fire Impact", "Fire Impact (2)").
+    const effects = entries.map((x) => effectFromNodes(x.group.name, x.group.nodes))
+    const bases = entries.map((x, i) => tagNameBase(autoTagGroups(effects[i], `${x.group.name} ${x.tagHint}`).groups, x.group.name))
+    const used = new Set([...library.map((e) => e.name.toLowerCase()), ...entries.filter((_, i) => !bases[i]).map((x) => x.group.name.toLowerCase())])
+    const tagNames = bases.map((b) => (b ? uniqueName(b, used) : undefined))
     const out = new Map<string, ScanRow>()
     const first = new Map<string, string>()
     let k = 0
-    for (const x of entries) {
-      const effect = effectFromNodes(x.group.name, x.group.nodes)
+    for (const [i, x] of entries.entries()) {
+      const effect = effects[i]
       const hash = effectHash(effect)
       const key = `r${k++}`
       const notes: string[] = []
@@ -95,6 +103,7 @@ export class VfxImporter {
       const row: VfxImportRow = {
         key,
         name: x.group.name,
+        ...(tagNames[i] ? { tagName: tagNames[i] } : {}),
         origin: x.origin,
         source: x.source,
         stats,
@@ -113,6 +122,7 @@ export class VfxImporter {
     const now = this.now()
     for (const [id, s] of this.scans) if (now - s.at > SCAN_TTL_MS) this.scans.delete(id)
     while (this.scans.size >= MAX_SCANS) this.scans.delete(this.scans.keys().next().value!)
+    scan.nameFromTags = this.deps.service.namesFromTags()
     this.scans.set(scan.scanId, { at: now, scan, rows, mediaPaths })
     return scan
   }
@@ -221,14 +231,21 @@ export class VfxImporter {
     const chosen = (Array.isArray(input.rows) ? input.rows : []).filter((r) => s.rows.has(String(r?.key)))
     const total = chosen.length
     let done = 0
-    for (const pick of chosen) {
+    // A row's tagName names it from its tags; anything else is kept as given (taken first, so tag
+    // names do not use it).
+    const picks = chosen.map((pick) => {
       const r = s.rows.get(String(pick.key))!
       const name = String(pick.name ?? '').trim().slice(0, 80) || r.row.name
-      const { entry, notes } = await svc.addEffect(store, { name, nodes: r.group.nodes }, { origin: r.row.origin, tagHint: r.tagHint, file: r.file })
+      return { r, name, fromTags: !!r.row.tagName && name === r.row.tagName }
+    })
+    const used = await svc.usedNames()
+    for (const p of picks) if (!p.fromTags) used.add(p.name.toLowerCase())
+    for (const { r, name, fromTags } of picks) {
+      const { entry, notes } = await svc.addEffect(store, { name: r.row.name, nodes: r.group.nodes }, { origin: r.row.origin, tagHint: r.tagHint, file: r.file, name, fromTags, used })
       if (notes.length) (result.notes ??= []).push({ file: r.row.origin, notes })
       result.added.push(entry)
       done++
-      this.progress({ scanId: s.scan.scanId, phase: 'importing', done, total, label: name })
+      this.progress({ scanId: s.scan.scanId, phase: 'importing', done, total, label: entry.name })
     }
     if (input.media !== false && s.mediaPaths.length) {
       const media = await svc.import(s.mediaPaths, scope, { force: true })

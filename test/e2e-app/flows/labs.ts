@@ -3,7 +3,7 @@
 import { PLUGIN_VERSION } from '../../../src/shared/studio/plugin.ts'
 import { SEL_DATA_TAG, SEL_PROGRESS_TAG } from '../../../src/shared/vfx/studioImport.ts'
 import { BRIDGE_PORT } from '../lib/app.ts'
-import { canvasInk, check, CENTER, closeBottom, dismissToasts, openPage, SkipFlow } from '../lib/ui.ts'
+import { canvasInk, check, CENTER, closeBottom, dismissToasts, openPage, SkipFlow, waitForAsync } from '../lib/ui.ts'
 import type { Flow } from './types.ts'
 
 const BRIDGE = `http://127.0.0.1:${BRIDGE_PORT}/forge-bridge`
@@ -30,6 +30,36 @@ function studioPackMessages(): string[] {
   const pieces: string[] = []
   for (let i = 0; i < payload.length; i += 4000) pieces.push(payload.slice(i, i + 4000))
   return [`${SEL_PROGRESS_TAG} ${kids.length}/${kids.length} Copy of Barrage`, ...pieces.map((p, i) => `${SEL_DATA_TAG} ${i + 1}/${pieces.length} ${p}`)]
+}
+
+// A fake Studio window: the Forge Bridge plugin of one place, polling until stopped; jobs it gets
+// are queued for the flow.
+function fakeStudioWindow(place: string, placeId: number) {
+  const jobs: Record<string, any>[] = []
+  let on = true
+  const loop = (async () => {
+    while (on) {
+      const r = await bridgeJson(`${BRIDGE}/poll?v=${PLUGIN_VERSION}&place=${encodeURIComponent(place)}&placeId=${placeId}`).catch(() => null)
+      if (r?.job) jobs.push(r.job)
+      else if (!r) await new Promise((res) => setTimeout(res, 200))
+    }
+  })()
+  return {
+    jobs,
+    async next(timeoutMs: number): Promise<Record<string, any>> {
+      const end = Date.now() + timeoutMs
+      while (Date.now() < end) {
+        const j = jobs.shift()
+        if (j) return j
+        await new Promise((res) => setTimeout(res, 100))
+      }
+      throw new Error(`${place} got no job`)
+    },
+    stop: async () => {
+      on = false
+      await loop
+    }
+  }
 }
 
 // What a lab says when no model provider is configured (the no-key flows assert one of these).
@@ -247,7 +277,7 @@ export const labFlows: Flow[] = [
   },
   {
     name: 'vfx-studio-import',
-    title: 'VFX Lab: Import from Studio (fake plugin) -> review -> import, learn offer, select + delete + undo, duplicates, Make remixes an imported effect',
+    title: 'VFX Lab: Import from Studio (fake plugin) -> review (named from tags) -> import, learn offer, select + delete + undo, duplicates, Make remixes an imported effect',
     needs: ['bridgePort'],
     timeoutMs: 120_000,
     async run({ page, shot, note }) {
@@ -272,7 +302,17 @@ export const labFlows: Flow[] = [
       await rows.first().waitFor({ state: 'visible', timeout: 15_000 })
       check((await rows.count()) === 14, `review rows: ${await rows.count()}`)
       const names = await rows.locator('input[aria-label="Name"]').evaluateAll((els: HTMLInputElement[]) => els.map((e) => e.value))
-      check(names.includes('Slash (3)') && names.includes('Impact (2)') && names.includes('Trail'), `review names: ${names.join(', ')}`)
+      // Named from their tags by default ("AuraImpact" -> "Aura Impact"; the loose "Trail" part is its
+      // own row), duplicate original names numbered; the original name shows as "from: ...".
+      check(names.includes('Slash (3)') && names.includes('Impact (2)') && names.includes('Aura Impact') && names.some((x: string) => /Trail$/.test(x)), `review names: ${names.join(', ')}`)
+      check(await rows.filter({ hasText: 'from: AuraImpact' }).count() === 1, 'the review does not show the original name')
+      // The toggle switches the review to the original names and back.
+      const tagToggle = page.locator(`${CENTER} [data-testid="vfx-import-tagnames"]`)
+      check(await tagToggle.isChecked(), '"Name effects from tags" is off by default')
+      await tagToggle.uncheck()
+      check((await rows.locator('input[aria-label="Name"]').evaluateAll((els: HTMLInputElement[]) => els.map((e) => e.value))).includes('AuraImpact'), 'toggle off keeps the tag names')
+      await tagToggle.check()
+      check((await rows.locator('input[aria-label="Name"]').evaluateAll((els: HTMLInputElement[]) => els.map((e) => e.value))).includes('Aura Impact'), 'toggle on does not name from tags')
       check(await rows.filter({ hasText: /same effect as/ }).count() === 1, 'the repeated effect is not marked')
       await shot('review')
       await page.locator(`${CENTER} [data-testid="vfx-import-commit"]`).click()
@@ -280,8 +320,12 @@ export const labFlows: Flow[] = [
       const after = (await page.evaluate(() => window.harness.vfxList())).length
       check(after - before === 13, `imported ${after - before} (expected 13)`)
       note(`library ${before} -> ${after}`)
+      const aura = (await page.evaluate(() => window.harness.vfxList())).find((e: { sourceName?: string }) => e.sourceName === 'AuraImpact') as { name: string; nameFrom?: string } | undefined
+      check(aura?.name === 'Aura Impact' && aura.nameFrom === 'tags', `AuraImpact imported as ${JSON.stringify(aura)}`)
+      check(await page.locator(`${CENTER} [data-testid="vfx-card-from"]`, { hasText: 'from: AuraImpact' }).count() === 1, 'the card does not show the original name')
       await dismissToasts(page)
-      // Select two cards (Ctrl-click), delete them, undo.
+      // Select two cards (Ctrl-click), delete them, undo. "Extra1".. are named from their tags now:
+      // the search finds them by their original names.
       const cards = page.locator(`${CENTER} .vfx-card`)
       await page.locator(`${CENTER} .vfx-lib-head input`).fill('Extra')
       await page.waitForTimeout(300)
@@ -308,9 +352,7 @@ export const labFlows: Flow[] = [
       await page.locator(`${CENTER} input[aria-label="Effect to make"]`).fill('orange slash')
       await page.locator(`${CENTER} .vfx-make-row button.primary`).click()
       const isMade = (e: { origin?: string; kind?: string }) => e.kind === 'generated' && e.origin === 'orange slash'
-      await page
-        .waitForFunction(() => window.harness.vfxList().then((l: { origin?: string; kind?: string }[]) => l.some((e) => e.kind === 'generated' && e.origin === 'orange slash')), undefined, { timeout: 45_000, polling: 500 })
-        .catch(() => null)
+      await waitForAsync(page, () => window.harness.vfxList().then((l: { origin?: string; kind?: string }[]) => l.some((e) => e.kind === 'generated' && e.origin === 'orange slash')), undefined, { timeout: 45_000, polling: 500 }).catch(() => null)
       const made = (await page.evaluate(() => window.harness.vfxList())).find(isMade) as { id: string; basedOn?: string[]; pick?: { of: number } } | undefined
       check(!!made, 'Make did not save the effect')
       check(!!made!.basedOn?.length, 'the made effect is not based on a library effect')
@@ -330,6 +372,57 @@ export const labFlows: Flow[] = [
       await dismissToasts(page)
       // Later flows expect no Studio: wait until the fake plugin no longer counts as connected.
       await page.waitForTimeout(Math.max(0, lastSeen + 16_000 - Date.now()))
+    }
+  },
+  {
+    name: 'vfx-studio-target',
+    title: 'VFX Lab: two Studio places -> "Test in" picker; Studio jobs go only to the picked place; Script Injection off -> one toast with the steps; the place closing -> fallback toast',
+    needs: ['bridgePort'],
+    timeoutMs: 90_000,
+    async run({ page, shot, note }) {
+      await openPage(page, 'VFX Lab')
+      await closeBottom(page)
+      await dismissToasts(page)
+      const arena = fakeStudioWindow('Forge Arena', 4242)
+      const local = fakeStudioWindow('Place1', 0)
+      try {
+        // Two places connected: the picker shows in the header.
+        const picker = page.locator(`${CENTER} [data-testid="studio-target"]`).first()
+        await picker.waitFor({ state: 'visible', timeout: 10_000 })
+        const options = ((await picker.locator('option').allTextContents()) as string[]).map((o: string) => o.trim())
+        check(options.some((o: string) => o.startsWith('Forge Arena (4242)')) && options.includes('Place1'), `picker options: ${options.join(' | ')}`)
+        await picker.selectOption('0|Place1')
+        await waitForAsync(page, () => window.harness.studioPlaces().then((v: { target: string | null }) => v.target === '0|Place1'), undefined, { timeout: 5000, polling: 200 })
+        // Import from Studio twice: both jobs reach Place1 only, and Studio refuses the script writes.
+        for (let i = 0; i < 2; i++) {
+          await page.locator(`${CENTER} [data-testid="vfx-import-studio"]`).click()
+          const job = await local.next(12_000)
+          check(job.entry === 'ForgeVfxRead', `Place1 got ${JSON.stringify(job).slice(0, 160)}`)
+          await bridgeJson(`${BRIDGE}/event/${job.id}`, { type: 'accepted' })
+          await bridgeJson(`${BRIDGE}/event/${job.id}`, { type: 'error', message: 'Unable to assign property Source. Script write access is restricted' })
+          await page.locator('.toast', { hasText: 'Studio blocked Forge Bridge from creating scripts' }).first().waitFor({ state: 'visible', timeout: 10_000 })
+          await page.waitForTimeout(600)
+        }
+        check(arena.jobs.length === 0, `Forge Arena got ${arena.jobs.length} job(s) meant for Place1`)
+        const blocked = page.locator('.toast', { hasText: 'Studio blocked Forge Bridge from creating scripts' })
+        check((await blocked.count()) === 1, `script injection toasts: ${await blocked.count()}`)
+        const text = await blocked.first().innerText()
+        check(/Plugins tab > Manage Plugins > Forge Bridge > edit \(pencil\) > turn on Script Injection/.test(text), `toast: ${text}`)
+        check((await page.locator('.toast', { hasText: /Script write access is restricted/ }).count()) === 0, 'the raw Studio error was toasted')
+        await shot('script-injection')
+        await dismissToasts(page)
+        // Place1 closes (and Forge Arena too, so later flows see no Studio): one fallback toast.
+        await Promise.all([local.stop(), arena.stop()])
+        await page.locator('.toast', { hasText: 'Place1 disconnected' }).first().waitFor({ state: 'visible', timeout: 25_000 })
+        const v = await page.evaluate(() => window.harness.studioPlaces())
+        check(v.target === null && v.why === 'lost', `after Place1 closed: ${JSON.stringify(v)}`)
+        check(!(await page.locator(`${CENTER} [data-testid="studio-target"]`).count()), 'the picker shows with no Studio connected')
+        note('jobs went to Place1 only; one Script Injection toast; fallback toast on disconnect')
+      } finally {
+        await Promise.all([local.stop(), arena.stop()])
+        await page.evaluate(() => window.harness.studioSetTarget(null)).catch(() => undefined)
+        await dismissToasts(page)
+      }
     }
   }
 ]

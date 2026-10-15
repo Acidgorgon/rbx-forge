@@ -7,6 +7,7 @@ import type { StudioCheckKind, StudioCheckRecord, StudioProgress, StudioStatus }
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
+import { StudioTargetPicker } from './StudioTarget'
 import './studio.css'
 
 const LIVE = new Set<StudioProgress['phase']>(['queued', 'waiting', 'staging', 'capturing', 'preview', 'critique'])
@@ -193,6 +194,7 @@ export function StudioCheckPanel({ kind, id, before }: { kind: StudioCheckKind; 
           <input type="checkbox" className="switch" checked={!!status?.prefer} onChange={(e) => setPrefer(e.target.checked)} /> critique in Studio when connected
         </label>
         <span className="grow" />
+        <StudioTargetPicker />
         <button className="btn small primary" onClick={() => void run()} disabled={running || state !== 'ready'} title={state === 'ready' ? 'Play in Studio, capture the beats, critique' : status?.message}>
           {running ? <span className="spinner" aria-hidden /> : <Icon name="eye" size={11} />} Run Studio check
         </button>

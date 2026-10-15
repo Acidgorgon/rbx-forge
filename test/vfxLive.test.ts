@@ -69,7 +69,7 @@ test('live schedule: debounced updates, versions, identical effects, pinned loop
   assert.equal(s.current?.label, 'A edited')
   const ans = s.answer({ version: -1, plays: 0, camera: null }, 1500)
   assert.equal(ans.version, 1)
-  assert.match(ans.effect!.source, /Rate = 20/)
+  assert.match(ans.effect!.source, /"Rate",20[,}]/)
   // Same version: no effect resent; plays and camera recorded.
   assert.deepEqual(s.answer({ version: 1, plays: 3, camera: [1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1] }, 1600), { version: 1, gap: 1.5, label: 'A edited' })
   assert.equal(s.plays, 3)
@@ -216,7 +216,7 @@ test('live controller: starts one preemptible job, answers polls, edits apply af
   await clock.advance(250)
   const edited = b.poll(1, 2)
   assert.equal(edited.version, 2)
-  assert.match(edited.effect!.source, /Rate = 50/)
+  assert.match(edited.effect!.source, /"Rate",50[,}]/)
   // Refine iterations replace what loops at once, labelled; the score arrives later as a label.
   refining.add('e1')
   live.draft('e1', 2, fx('Fireball', 70))

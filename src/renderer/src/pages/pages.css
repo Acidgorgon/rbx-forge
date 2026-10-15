@@ -204,3 +204,19 @@ button.kpi:hover { border-color: var(--line-strong); }
 .tr-tool { flex: 1; min-width: 0; color: var(--fg-muted); font-size: 12px; overflow-wrap: anywhere; }
 .tr-tool b { font-weight: 500; color: var(--fg-2); }
 .tr-tool pre { margin: 6px 0 0; padding: 8px; border: 1px solid var(--line); border-radius: var(--r-md); max-height: 200px; overflow: auto; font: 11.5px var(--font-mono); white-space: pre-wrap; }
+
+/* Settings > Labs model dropdowns (LabModelSelect): the chat model picker's look (.mpick), wider list. */
+.lms { display: flex; flex-direction: column; align-items: stretch; gap: 6px; width: 260px; }
+.lms-pick .mpick-pop { left: auto; right: 0; width: 340px; max-height: var(--lms-max, 420px); }
+.mpick-item.lms-item { height: auto; min-height: 26px; padding-top: 4px; padding-bottom: 4px; padding-left: 10px; }
+.lms-body { flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 1px; }
+.lms-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.lms-line .mpick-model.mono { font-size: 11.5px; }
+.lms-sub { font-size: 10.5px; color: var(--fg-faint); }
+.lms-rej { font-size: 10.5px; color: var(--warn); }
+.lms-hint { flex: none; font-size: 9.5px; letter-spacing: .04em; text-transform: uppercase; padding: 0 5px; border-radius: var(--r-sm); border: 1px solid var(--line-strong); color: var(--fg-muted); line-height: 15px; }
+.lms-hint.lms-flagship { color: var(--ember-text); border-color: var(--ember-lo); }
+.lms-hint.lms-cheap { color: var(--ok); }
+.lms-gnote { font-size: 10px; color: var(--fg-faint); white-space: nowrap; }
+.lms-none { padding-left: 10px; }
+.lms-custom { width: 100%; }

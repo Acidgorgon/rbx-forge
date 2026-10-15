@@ -545,7 +545,7 @@ export function SettingsPage() {
 
 type Hit = { key: string; text: string; secLabel: string; catLabel: string; el: HTMLElement | null; row: boolean }
 
-const SEARCHABLE = '.set-title, .set-sub, .tc-name, input[aria-label], select[aria-label], [role="radiogroup"][aria-label], [role="group"][aria-label]'
+const SEARCHABLE = '.set-title, .set-sub, .tc-name, input[aria-label], select[aria-label], button[data-search][aria-label], [role="radiogroup"][aria-label], [role="group"][aria-label]'
 
 function searchSettings(query: string): Hit[] {
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)

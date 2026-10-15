@@ -6,6 +6,7 @@ import { FAKE_MODEL } from '../lib/fakeProvider.ts'
 import { check, CENTER, dismissDigest, mod, openPage, SkipFlow, waitText } from '../lib/ui.ts'
 import type { Page } from '../lib/app.ts'
 import type { Flow } from './types.ts'
+import { labsTier, openLabsDropdown, openLabsSettings, waitLabModels } from './pages.ts'
 
 const ASSISTANT = 'aside.panel.right'
 
@@ -116,6 +117,45 @@ export const aiFlows: Flow[] = [
         throw new Error(`no fake reply in the chat (${fake.requests.length - before} request(s) reached the fake server)`)
       })
       note(`${fake.requests.length - before} request(s) to the fake provider`)
+    }
+  },
+  {
+    name: 'labs-model-dropdown',
+    title: 'Settings > Labs: the dropdown lists the provider\'s models; pick one, the small-model hint, back to Auto',
+    async run({ page, shot }) {
+      await openLabsSettings(page)
+      try {
+        let pop = await openLabsDropdown(page, 'Default')
+        // Auto says what it resolves to now: the default model (the fake provider's model).
+        const auto = pop.locator('[role="option"][data-kind="auto"]')
+        check((await auto.innerText()).includes(`Auto (${FAKE_MODEL})`), `Auto entry: ${await auto.innerText()}`)
+        // The ready provider (Custom, pointed at the fake server) is a group with its /models list.
+        const opt = pop.locator(`[role="option"][data-kind="model"][data-provider="custom"][data-model="${FAKE_MODEL}"]`)
+        await opt.waitFor({ state: 'visible', timeout: 5000 }).catch(() => {
+          throw new Error(`no ${FAKE_MODEL} entry under the Custom provider`)
+        })
+        await shot('labs-dropdown-open')
+        await opt.click()
+        await waitLabModels(page, (m) => m.default === FAKE_MODEL, 'picked model not saved')
+        await page.waitForFunction(() => document.querySelector('#set-labs button[aria-label="Default model for the Labs"]')?.getAttribute('data-kind') === 'model', undefined, { timeout: 3000 })
+        check((await labsTier(page, 'Default').innerText()).includes(FAKE_MODEL), `button shows ${await labsTier(page, 'Default').innerText()}`)
+        pop = await openLabsDropdown(page, 'Default')
+        check((await pop.locator(`[role="option"][data-model="${FAKE_MODEL}"]`).getAttribute('aria-selected')) === 'true', 'picked model is not the selected entry')
+        // A small model on the default tier (via Custom…) shows the hint; Auto removes it again.
+        await pop.locator('[role="option"][data-kind="custom-edit"]').click()
+        const custom = page.locator('#set-labs input[aria-label="Default custom model id for the Labs"]')
+        await custom.fill('claude-haiku-5-5')
+        await custom.press('Enter')
+        await waitLabModels(page, (m) => m.default === 'claude-haiku-5-5', 'custom small model not saved')
+        await page.locator('[data-testid="labs-small-model-default"]').waitFor({ state: 'visible', timeout: 3000 })
+        pop = await openLabsDropdown(page, 'Default')
+        await pop.locator('[role="option"][data-kind="auto"]').click()
+        await waitLabModels(page, (m) => !m.default, 'Auto did not clear the default tier')
+        await page.locator('[data-testid="labs-small-model-default"]').waitFor({ state: 'hidden', timeout: 3000 })
+      } finally {
+        // Later flows (restate-lab compose) use the Labs tiers: leave them on Auto.
+        await page.evaluate(() => window.harness.setLabModels({}))
+      }
     }
   },
   {

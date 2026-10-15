@@ -2,7 +2,7 @@
 
 import type { IpcMain } from 'electron'
 import type { ChatMessage, ModelChoice, OrchestrateMode, ProviderId, ProviderInfo } from '@shared/types'
-import { INVOKE_PREFIX } from '../../shared/types.ts'
+import { INVOKE_PREFIX, PROVIDER_IDS } from '../../shared/types.ts'
 import type { NewChatOptions } from '@shared/types'
 import { join } from 'node:path'
 import { tmpdir } from 'node:os'
@@ -11,7 +11,7 @@ import { isEffortChoice } from '../../shared/modelCaps.ts'
 import { ChatImageStore, chatImageStore, setChatImageStore } from './chatImages.ts'
 import type { HarnessContext } from '../context.ts'
 import { routeModel, tiersFor } from './budget/budget.ts'
-import { LAB_MODELS_SETTING, LAST_CHAT_MODEL_SETTING, resolveLabModel, type LabTier } from '../../shared/labModels.ts'
+import { LAB_MODELS_SETTING, LAB_TIERS, LAST_CHAT_MODEL_SETTING, resolveLabModel, type LabModelInfo, type LabTier } from '../../shared/labModels.ts'
 import { runOpenAiLoop } from './openaiLoop.ts'
 import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
 import { ChatManager, type TeamRunner } from './chat.ts'
@@ -191,6 +191,29 @@ const failedModels = new Map<string, { message: string; until: number }>()
 
 export function resetLabModelFailures(): void {
   failedModels.clear()
+}
+
+// Settings > Labs model dropdowns: what each tier's "auto" resolves to on the default model, each
+// provider's cheap / flagship pair (tier hints), and the models a Labs call was refused on recently.
+export function labModelInfo(ctx: Pick<HarnessContext, 'getSetting'>, primary: ModelChoice): LabModelInfo {
+  const tiers = ctx.getSetting('modelTiers', undefined)
+  const pairs: LabModelInfo['tiers'] = {}
+  for (const provider of PROVIDER_IDS) {
+    const t = tiersFor({ provider, model: '', tiers })
+    if (t) pairs[provider] = t
+  }
+  // Codex calls always run on the Codex model itself (oneShot), so every tier's auto is that model.
+  const auto = Object.fromEntries(
+    LAB_TIERS.map((t) => [t, primary.provider === 'codex' ? primary.model : resolveLabModel(t, {}, primary.model, pairs[primary.provider] ?? null)])
+  ) as LabModelInfo['auto']
+  const now = Date.now()
+  const rejected: LabModelInfo['rejected'] = []
+  for (const [key, f] of failedModels) {
+    const at = key.indexOf(':')
+    const provider = key.slice(0, at)
+    if (f.until > now && isProviderId(provider)) rejected.push({ provider, model: key.slice(at + 1), message: f.message, until: f.until })
+  }
+  return { provider: primary.provider, auto, tiers: pairs, rejected }
 }
 
 export interface ShotAttempt {
@@ -589,6 +612,7 @@ export function registerAgentIpc(
       chats.setModel(id, provider(p), String(model ?? ''))
     },
     getDefaultModel: () => providers.defaultModel(),
+    getLabModelInfo: async () => labModelInfo(ctx, providers.defaultModel()),
     setDefaultModel: (p: unknown, model: string) => providers.setDefaultModel(provider(p), String(model ?? '')),
 
     // Token usage meter and budgets.

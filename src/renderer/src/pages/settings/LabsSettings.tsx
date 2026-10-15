@@ -1,29 +1,41 @@
 // Settings > Labs: per-task model tiers shared by the VFX Lab, Animation Lab and Ability Composer
 // (stored in the settings store as labs.models). Empty = automatic. Style statistics never use a model.
-import { useEffect, useState } from 'react'
-import { LAB_TIERS, LAB_TIER_INFO, smallModelHint, type LabModels, type LabTier } from '@shared/labModels'
+// Each tier is a dropdown (LabModelSelect): Auto, the ready providers' models, or Custom… for any id.
+import { useCallback, useEffect, useState } from 'react'
+import { LAB_TIERS, LAB_TIER_INFO, smallModelHint, type LabModelInfo, type LabModels, type LabTier } from '@shared/labModels'
 import { useStore } from '../../store'
 import { errorText } from '../../lib/format'
 import { GatingSettings } from '../gating/LabGating'
+import { LabModelSelect } from './LabModelSelect'
 
 export function LabsSettings() {
   const { state, actions } = useStore()
   const [saved, setSaved] = useState<LabModels | null>(null)
-  const [draft, setDraft] = useState<LabModels>({})
+  const [info, setInfo] = useState<LabModelInfo | null>(null)
 
   useEffect(() => {
     void window.harness
       .getLabModels()
-      .then((m) => (setSaved(m), setDraft(m)))
-      .catch(() => (setSaved({}), setDraft({})))
+      .then(setSaved)
+      .catch(() => setSaved({}))
   }, [])
 
-  const save = async (tier: LabTier) => {
-    if (!saved || (draft[tier] ?? '') === (saved[tier] ?? '')) return
+  // What auto resolves to and recent rejections: on mount, when the default model changes, and each
+  // time a dropdown opens (a Labs call may have been refused since).
+  const refreshInfo = useCallback(() => {
+    void window.harness
+      .getLabModelInfo()
+      .then(setInfo)
+      .catch(() => {})
+  }, [])
+  const defaultKey = `${state.defaultModel?.provider}:${state.defaultModel?.model}`
+  useEffect(refreshInfo, [refreshInfo, defaultKey])
+
+  const save = async (tier: LabTier, value: string) => {
+    if (!saved || value.trim() === (saved[tier] ?? '')) return
     try {
-      const next = await window.harness.setLabModels({ ...saved, [tier]: (draft[tier] ?? '').trim() })
+      const next = await window.harness.setLabModels({ ...saved, [tier]: value.trim() })
       setSaved(next)
-      setDraft(next)
       actions.toast({ text: `Labs ${LAB_TIER_INFO[tier].label.toLowerCase()} model: ${next[tier] || 'auto'}`, kind: 'ok', ms: 2200 })
     } catch (e) {
       actions.toast({ text: 'Could not save the Labs models', detail: errorText(e), kind: 'err' })
@@ -33,20 +45,20 @@ export function LabsSettings() {
   return (
     <>
       <p className="note">
-        The VFX Lab, Animation Lab and Ability Composer pick a model per task. Leave a field empty for automatic. Model ids are for the provider of your
-        default model. Style statistics (timing, easing, poses) are measured in code and never call a model.
+        The VFX Lab, Animation Lab and Ability Composer pick a model per task. Auto follows your default model&apos;s provider; a model from another
+        provider is used only while your default model is on that provider. Style statistics (timing, easing, poses) are measured in code and never call a model.
       </p>
       {LAB_TIERS.map((tier) => {
-        const info = LAB_TIER_INFO[tier]
-        // What "auto" resolves to for the default tier is the chat model; the critic's auto is the
-        // provider's flagship (falls back to the chat model when the account has no flagship).
-        const effective = (saved?.[tier] ?? '').trim() || (tier === 'default' ? state.defaultModel?.model : '')
+        const info_ = LAB_TIER_INFO[tier]
+        // The model this tier uses now: its setting, else what auto resolves to (the default tier's
+        // auto is the chat model; the critic's is the provider's flagship, or the chat model without one).
+        const effective = (saved?.[tier] ?? '').trim() || info?.auto[tier] || (tier === 'default' ? state.defaultModel?.model : '')
         const hint = smallModelHint(tier, effective)
         return (
           <div className="set-row" key={tier}>
             <div className="set-text">
-              <div className="set-title">{info.label}</div>
-              <div className="note">{info.uses}</div>
+              <div className="set-title">{info_.label}</div>
+              <div className="note">{info_.uses}</div>
               {hint && (
                 <div className="note warn" role="note" data-testid={`labs-small-model-${tier}`}>
                   {hint}
@@ -54,16 +66,16 @@ export function LabsSettings() {
               )}
             </div>
             <div className="set-ctl">
-              <input
-                className="input mono"
-                style={{ width: 260 }}
-                value={draft[tier] ?? ''}
+              <LabModelSelect
+                tier={tier}
+                label={info_.label}
+                autoNote={info_.auto}
+                value={saved?.[tier] ?? ''}
+                info={info}
+                providers={state.providers}
                 disabled={!saved}
-                placeholder={`auto · ${info.auto}`}
-                aria-label={`${info.label} model for the Labs`}
-                onChange={(e) => setDraft({ ...draft, [tier]: e.target.value })}
-                onBlur={() => void save(tier)}
-                onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()}
+                onOpen={refreshInfo}
+                onChange={(v) => void save(tier, v)}
               />
             </div>
           </div>

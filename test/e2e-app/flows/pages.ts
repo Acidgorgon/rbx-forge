@@ -29,6 +29,38 @@ export const PAGES: PageSpec[] = [
   { label: 'Settings', expect: /Settings/i, narrow: true }
 ]
 
+// Settings > Labs model dropdowns (pages/settings/LabModelSelect.tsx), shared with the provider flow in ai.ts.
+const LABS = '#set-labs'
+export type LabsTierLabel = 'Cheap' | 'Default' | 'Critic'
+
+export async function openLabsSettings(page: Page): Promise<void> {
+  await openPage(page, 'Settings')
+  await page.locator('nav.set-nav button', { hasText: 'Labs' }).click()
+  await labsTier(page, 'Cheap').waitFor({ state: 'visible', timeout: 5000 })
+  await page.waitForFunction(() => !(document.querySelector('#set-labs button[aria-label="Cheap model for the Labs"]') as HTMLButtonElement | null)?.disabled, undefined, { timeout: 5000 })
+}
+
+export function labsTier(page: Page, tier: LabsTierLabel) {
+  return page.locator(`${LABS} button[aria-label="${tier} model for the Labs"]`)
+}
+
+// Opens a tier's dropdown and returns its list.
+export async function openLabsDropdown(page: Page, tier: LabsTierLabel) {
+  const pop = page.locator(`${LABS} [role="listbox"][aria-label="${tier} model"]`)
+  if (!(await pop.isVisible())) await labsTier(page, tier).click()
+  await pop.waitFor({ state: 'visible', timeout: 3000 })
+  return pop
+}
+
+export async function waitLabModels(page: Page, ok: (m: Record<string, string | undefined>) => boolean, message: string): Promise<void> {
+  let last: Record<string, string | undefined> = {}
+  for (const end = Date.now() + 5000; Date.now() < end; await page.waitForTimeout(100)) {
+    last = (await page.evaluate(() => window.harness.getLabModels())) as Record<string, string | undefined>
+    if (ok(last)) return
+  }
+  throw new Error(`${message}: ${JSON.stringify(last)}`)
+}
+
 export const SETTINGS_SECTIONS = ['Appearance', 'Default model', 'Chat', 'Providers', 'Usage', 'Budgets', 'Labs', 'Integrations', 'Places', 'Sync', 'Toolchain', 'Notifications', 'Updates']
 
 export const pageFlows: Flow[] = [
@@ -212,21 +244,63 @@ export const pageFlows: Flow[] = [
   },
   {
     name: 'labs-settings',
-    title: 'Settings > Labs: model tiers save, decision gates / models switches',
+    title: 'Settings > Labs: model tier dropdowns (Auto, Custom…, search), decision gates / models switches',
     async run({ page }) {
-      await openPage(page, 'Settings')
+      await openLabsSettings(page)
+      const sec = page.locator(LABS)
+      const cheap = labsTier(page, 'Cheap')
+      // Every tier starts on Auto, and the button says what Auto is.
+      for (const t of ['Cheap', 'Default', 'Critic'] as const) {
+        check((await labsTier(page, t).getAttribute('data-kind')) === 'auto', `${t} does not start on Auto`)
+        check(/^Auto\b/.test((await labsTier(page, t).innerText()).trim()), `${t} button: ${await labsTier(page, t).innerText()}`)
+      }
+      // Open: Auto first (selected), then provider groups, then Custom… last.
+      let pop = await openLabsDropdown(page, 'Cheap')
+      const kinds = await pop.locator('[role="option"]').evaluateAll((els: Element[]) => els.map((e) => e.getAttribute('data-kind')))
+      check(kinds[0] === 'auto' && kinds[kinds.length - 1] === 'custom-edit', `option order: ${kinds.join(', ')}`)
+      check((await pop.locator('[role="option"][data-kind="auto"]').getAttribute('aria-selected')) === 'true', 'Auto is not selected')
+      check(/provider's cheap tier/.test(await pop.locator('[role="option"][data-kind="auto"]').innerText()), 'Auto entry does not say what it means')
+      // Custom…: reveals the text field; any id saves as typed.
+      await pop.locator('[role="option"][data-kind="custom-edit"]').click()
+      const custom = sec.locator('input[aria-label="Cheap custom model id for the Labs"]')
+      await custom.waitFor({ state: 'visible', timeout: 3000 })
+      await custom.fill('e2e-cheap-model')
+      await custom.press('Enter')
+      await waitLabModels(page, (m) => m.cheap === 'e2e-cheap-model', 'Custom… id not saved')
+      await page.waitForFunction(() => document.querySelector('#set-labs button[aria-label="Cheap model for the Labs"]')?.getAttribute('data-kind') === 'custom', undefined, { timeout: 3000 })
+      check((await cheap.innerText()).includes('Custom: e2e-cheap-model'), `custom value shows as ${await cheap.innerText()}`)
+      // A stored custom id shows as the selected "Custom: <id>" entry; Auto clears it (empty string).
+      pop = await openLabsDropdown(page, 'Cheap')
+      const sel = pop.locator('[role="option"][aria-selected="true"]')
+      check((await sel.count()) === 1 && (await sel.innerText()).includes('Custom: e2e-cheap-model'), 'the custom id is not the selected entry')
+      await pop.locator('[role="option"][data-kind="auto"]').click()
+      await waitLabModels(page, (m) => !m.cheap, 'Auto did not clear the cheap tier')
+      await custom.waitFor({ state: 'hidden', timeout: 3000 })
+      // Typing an unlisted id in the dropdown's search and pressing Enter uses it as a custom id.
+      pop = await openLabsDropdown(page, 'Critic')
+      await pop.locator('.mpick-search input').fill('e2e-critic-id')
+      await pop.locator('.mpick-search input').press('Enter')
+      await waitLabModels(page, (m) => m.critic === 'e2e-critic-id', 'typed id not saved')
+      pop = await openLabsDropdown(page, 'Critic')
+      await pop.locator('[role="option"][data-kind="auto"]').click()
+      await waitLabModels(page, (m) => !m.critic, 'Auto did not clear the critic tier')
+      // Escape closes the list without changing anything.
+      pop = await openLabsDropdown(page, 'Default')
+      await page.keyboard.press('Escape')
+      await pop.waitFor({ state: 'hidden', timeout: 3000 })
+      const left = await page.evaluate(() => window.harness.getLabModels())
+      check(Object.keys(left).length === 0, `Labs models not back to auto: ${JSON.stringify(left)}`)
+      // Settings search still finds the tiers by name.
+      const search = page.locator('input[aria-label="Search settings"]')
+      await search.fill('critic model')
+      const hits = page.locator('ul.set-hits .set-hit-t')
+      await hits.first().waitFor({ state: 'visible', timeout: 3000 })
+      const texts = await hits.allInnerTexts()
+      check(texts.some((t: string) => /Critic model for the Labs/.test(t)), `search "critic model" hits: ${texts.join(' | ')}`)
+      await search.fill('cheap')
+      await page.waitForFunction(() => [...document.querySelectorAll('ul.set-hits .set-hit-t')].some((e) => e.textContent === 'Cheap'), undefined, { timeout: 3000 })
+      await search.fill('')
       await page.locator('nav.set-nav button', { hasText: 'Labs' }).click()
-      const sec = page.locator('#set-labs')
-      const tier = sec.locator('input[aria-label$="model for the Labs"]').first()
-      await tier.waitFor({ state: 'visible', timeout: 5000 })
-      await page.waitForFunction(() => !(document.querySelector('#set-labs input[aria-label$="model for the Labs"]') as HTMLInputElement | null)?.disabled, undefined, { timeout: 5000 })
-      await tier.fill('e2e-cheap-model')
-      await tier.press('Enter')
-      await page.waitForTimeout(400)
-      const saved = (await page.evaluate(() => window.harness.getLabModels())) as unknown as Record<string, string>
-      check(Object.values(saved).includes('e2e-cheap-model'), `tier not saved: ${JSON.stringify(saved)}`)
-      await tier.fill('')
-      await tier.press('Enter')
       for (const group of ['Decision gates', 'Decision models']) {
         const g = sec.locator(`[role="group"][aria-label="${group}"]`)
         for (const mode of ['On', 'Off', 'Shadow']) {

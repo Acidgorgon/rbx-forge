@@ -1,6 +1,7 @@
 // Browser-preview mock of the provider/key/model API (see mock.ts).
 // ?providers=none starts with nothing set up (the "Choose a provider" state).
 import type { HarnessApi, HarnessEvents, ModelChoice, ProviderId, ProviderInfo } from '@shared/types'
+import { LAB_TIERS, resolveLabModel, type LabModelInfo } from '@shared/labModels'
 import { ACCOUNT_IDS, ACCOUNT_PROVIDER, type AccountCheck, type AccountId, type AccountSummary, type SignInProgress, type SignInStatus } from '@shared/accountTypes'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
@@ -171,6 +172,7 @@ export function providersMock(emit: Emit) {
     | 'listModels'
     | 'getDefaultModel'
     | 'setDefaultModel'
+    | 'getLabModelInfo'
     | 'hasApiKey'
     | 'setApiKey'
     | 'accountsList'
@@ -278,6 +280,21 @@ export function providersMock(emit: Emit) {
     },
     async setDefaultModel(provider, model) {
       defaultModel = { provider, model }
+    },
+    async getLabModelInfo() {
+      // Same tier pairs as main (budget.ts TIER_DEFAULTS); the mock account rejects the flagship.
+      const tiers: LabModelInfo['tiers'] = {
+        anthropic: { cheap: 'claude-haiku-5-5', big: 'claude-opus-5-5' },
+        openai: { cheap: 'gpt-6-luna', big: 'gpt-6-astra' },
+        gemini: { cheap: 'gemini-3.5-flash-lite', big: 'gemini-3.1-pro-preview' },
+        openrouter: { cheap: 'anthropic/claude-haiku-5.5', big: 'anthropic/claude-opus-5.5' }
+      }
+      const pair = tiers[defaultModel.provider]
+      const auto = Object.fromEntries(
+        LAB_TIERS.map((t) => [t, defaultModel.provider === 'codex' ? defaultModel.model : resolveLabModel(t, {}, defaultModel.model, pair ?? null)])
+      ) as LabModelInfo['auto']
+      const rejected: LabModelInfo['rejected'] = [{ provider: 'anthropic', model: 'claude-opus-5-5', message: 'API Error: 403 claude-opus-5-5 is not available on this account', until: Date.now() + 600_000 }]
+      return { provider: defaultModel.provider, auto, tiers, rejected }
     },
     async hasApiKey() {
       return info('anthropic').ready

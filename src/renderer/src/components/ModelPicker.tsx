@@ -2,6 +2,7 @@
 // grouped by provider. Providers that are not set up are greyed with an "Add key" action.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { ModelChoice, ProviderId, ProviderInfo } from '@shared/types'
+import { shortModelId } from '@shared/labModels'
 import { IconCheck, IconChevronDown, IconSearch } from './Icons'
 
 const SHORT: Record<ProviderId, string> = {
@@ -28,9 +29,7 @@ export function ProviderMark({ id, size = 18 }: { id: ProviderId; size?: number 
 }
 
 // Pill label: the model id without the provider prefix or date stamp ("claude-sonnet-4-5" → "sonnet-4-5").
-function shortModel(model: string): string {
-  return model.replace(/^.*\//, '').replace(/^claude-/, '').replace(/-\d{8}$/, '')
-}
+const shortModel = shortModelId
 
 export function providerLabel(id: ProviderId): string {
   return SHORT[id]

@@ -2,6 +2,7 @@
 // Every IPC channel the renderer can call is listed in HarnessApi.
 
 import type { PathChange, TrashBatchResult } from './fileOps.ts'
+import type { LabModelInfo } from './labModels.ts'
 import type { IntegrationApi, IntegrationEvents, OrchestrateMode, UsageSummary } from './integrationTypes.ts'
 import type { AccountsApi, AccountsEvents } from './accountTypes.ts'
 import type { TerminalApi, TerminalEvents } from './terminalTypes.ts'
@@ -635,6 +636,8 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   setChatModel(sessionId: string, provider: ProviderId, model: string): Promise<void>
   getDefaultModel(): Promise<ModelChoice>
   setDefaultModel(provider: ProviderId, model: string): Promise<void>
+  // Settings > Labs model dropdowns: auto per tier, tier pairs, recent rejections (shared/labModels.ts).
+  getLabModelInfo(): Promise<LabModelInfo>
 
   // Test agents
   getAgents(): Promise<TestAgent[]>

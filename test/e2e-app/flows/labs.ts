@@ -3,7 +3,7 @@
 import { PLUGIN_VERSION } from '../../../src/shared/studio/plugin.ts'
 import { SEL_DATA_TAG, SEL_PROGRESS_TAG } from '../../../src/shared/vfx/studioImport.ts'
 import { BRIDGE_PORT } from '../lib/app.ts'
-import { canvasInk, check, CENTER, closeBottom, dismissToasts, openPage, SkipFlow } from '../lib/ui.ts'
+import { canvasInk, check, CENTER, closeBottom, dismissToasts, openPage, SkipFlow, waitForAsync } from '../lib/ui.ts'
 import type { Flow } from './types.ts'
 
 const BRIDGE = `http://127.0.0.1:${BRIDGE_PORT}/forge-bridge`
@@ -352,9 +352,7 @@ export const labFlows: Flow[] = [
       await page.locator(`${CENTER} input[aria-label="Effect to make"]`).fill('orange slash')
       await page.locator(`${CENTER} .vfx-make-row button.primary`).click()
       const isMade = (e: { origin?: string; kind?: string }) => e.kind === 'generated' && e.origin === 'orange slash'
-      await page
-        .waitForFunction(() => window.harness.vfxList().then((l: { origin?: string; kind?: string }[]) => l.some((e) => e.kind === 'generated' && e.origin === 'orange slash')), undefined, { timeout: 45_000, polling: 500 })
-        .catch(() => null)
+      await waitForAsync(page, () => window.harness.vfxList().then((l: { origin?: string; kind?: string }[]) => l.some((e) => e.kind === 'generated' && e.origin === 'orange slash')), undefined, { timeout: 45_000, polling: 500 }).catch(() => null)
       const made = (await page.evaluate(() => window.harness.vfxList())).find(isMade) as { id: string; basedOn?: string[]; pick?: { of: number } } | undefined
       check(!!made, 'Make did not save the effect')
       check(!!made!.basedOn?.length, 'the made effect is not based on a library effect')
@@ -394,7 +392,7 @@ export const labFlows: Flow[] = [
         const options = ((await picker.locator('option').allTextContents()) as string[]).map((o: string) => o.trim())
         check(options.some((o: string) => o.startsWith('Forge Arena (4242)')) && options.includes('Place1'), `picker options: ${options.join(' | ')}`)
         await picker.selectOption('0|Place1')
-        await page.waitForFunction(() => window.harness.studioPlaces().then((v: { target: string | null }) => v.target === '0|Place1'), undefined, { timeout: 5000, polling: 200 })
+        await waitForAsync(page, () => window.harness.studioPlaces().then((v: { target: string | null }) => v.target === '0|Place1'), undefined, { timeout: 5000, polling: 200 })
         // Import from Studio twice: both jobs reach Place1 only, and Studio refuses the script writes.
         for (let i = 0; i < 2; i++) {
           await page.locator(`${CENTER} [data-testid="vfx-import-studio"]`).click()

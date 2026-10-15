@@ -14,6 +14,7 @@ import { VfxPreview } from './VfxPreview'
 import { ParamEditor } from './ParamEditor'
 import { ScriptPanel } from './ScriptPanel'
 import { StudioCheckButton, StudioCheckPanel } from '../studio/StudioCheck'
+import { StudioTargetPicker } from '../studio/StudioTarget'
 import { TextureLab } from './TextureLab'
 import { RefCard, RefCompare, RefDetail } from '../videoref/RefViews'
 import { RefImport } from '../videoref/RefImport'
@@ -580,6 +581,8 @@ export function VfxLabPage() {
   // Live in Studio (persisted toggle) and the loop state from main.
   const [liveOn, setLiveOn] = usePersisted<boolean>('vfx.live', false)
   const [live, setLive] = useState<LiveStatus | null>(null)
+  // The live error last shown: the loop reports it again on every status change while it retries.
+  const liveError = useRef<string | null>(null)
   const [scope, setScope] = useState<VfxScope>('user')
   const [prompt, setPrompt] = useState('')
   const [iters, setIters] = useState(4)
@@ -627,7 +630,8 @@ export function VfxLabPage() {
     })
     const off3 = h.on('vfx:live', (st) => {
       setLive(st)
-      if (st.error && st.state !== 'looping') actions.toast({ text: 'Live in Studio', detail: st.error, kind: 'err', ms: 5000 })
+      if (st.error && st.state !== 'looping' && st.error !== liveError.current) actions.toast({ text: 'Live in Studio', detail: st.error, kind: 'err', ms: 5000 })
+      liveError.current = st.error ?? null
       // Forge gave up (Studio kept failing to start it): the toggle goes off with it.
       if (st.state === 'off' && st.error) setLiveOn(false)
     })
@@ -853,6 +857,7 @@ export function VfxLabPage() {
               <Icon name="memory" size={12} /> Learn
             </button>
             <LiveControls live={live} enabled={liveOn} onToggle={setLiveOn} onSettings={(st) => void h.vfxLiveSettings(st).then(setLive)} />
+            <StudioTargetPicker />
           </div>
         </div>
         {liveLine(live) && (

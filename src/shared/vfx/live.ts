@@ -49,6 +49,9 @@ export interface LiveStatus {
   plays: number
   settings: LiveSettings
   error?: string
+  // 'script-injection': Studio refused to create the live module (the plugin's Script Injection
+  // permission is off); the lab shows how to turn it on and the loop does not retry.
+  errorCode?: 'script-injection'
   message?: string
 }
 

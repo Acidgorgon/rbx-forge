@@ -7,6 +7,7 @@
 import { BridgeError, type EventHandler, type RunOptions } from './bridge.ts'
 import { BRIDGE_VERSION, newJobId, type BridgeJob } from '../../../shared/studio/protocol.ts'
 import { collapseInstancePaths } from '../../../shared/explorerSelection.ts'
+import type { StudioTarget } from '../../../shared/studio/target.ts'
 
 // The first plugin version that knows delete jobs (an older one would treat it as an effect job).
 export const DELETE_PLUGIN_VERSION = 7
@@ -22,6 +23,9 @@ export interface DeleteDeps {
   bridge: DeleteBridge
   // Why this path must not be deleted (project mapping, no sync session), or null.
   refusal: (path: string[]) => string | null | Promise<string | null>
+  // The connected Studio place the active place file syncs with: the delete goes to that window
+  // (several places open), whatever the Studio target picked for tests.
+  place?: () => StudioTarget | null | Promise<StudioTarget | null>
   newId?: () => string
 }
 
@@ -60,7 +64,8 @@ export async function deleteInStudio(deps: DeleteDeps, path: string[], className
   if (deps.bridge.busy()) throw new Error('A Studio check is running; delete again when it finishes')
   const job = deleteJob(path, className, deps.newId?.())
   try {
-    await deps.bridge.run(job, () => ({}), { acceptTimeoutMs: 10_000, timeoutMs: 20_000 })
+    const place = (await deps.place?.()) ?? null
+    await deps.bridge.run(job, () => ({}), { acceptTimeoutMs: 10_000, timeoutMs: 20_000, ...(place ? { target: place } : {}) })
   } catch (e) {
     if (e instanceof BridgeError && e.code === 'plugin-error') throw new Error(e.message.replace(/^Studio: /, ''))
     if (e instanceof BridgeError && e.code === 'busy') throw new Error('A Studio check is running; delete again when it finishes')

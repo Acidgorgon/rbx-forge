@@ -75,12 +75,16 @@ export function AbilityPreview({
     }
     scene.shakeEnabled = !reduced
     sceneRef.current = scene
+    // Use the element captured here, not wrapRef: on unmount React clears the ref before this
+    // effect's cleanup disconnects the observer, and the observer can still report the removal.
+    const wrap = wrapRef.current!
     const ro = new ResizeObserver(() => {
-      const r = wrapRef.current!.getBoundingClientRect()
+      if (!wrap.isConnected) return
+      const r = wrap.getBoundingClientRect()
       scene.resize(r.width, r.height)
       scene.render()
     })
-    ro.observe(wrapRef.current!)
+    ro.observe(wrap)
     let raf = 0
     let last = performance.now()
     let tick = 0

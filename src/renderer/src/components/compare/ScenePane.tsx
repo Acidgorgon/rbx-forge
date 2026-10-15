@@ -44,11 +44,15 @@ export function ScenePane<S extends PaneScene>({
       return
     }
     sceneRef.current = scene
+    // Use the element captured here, not wrapRef: on unmount React clears the ref before this
+    // effect's cleanup disconnects the observer, and the observer can still report the removal.
+    const wrap = wrapRef.current!
     const ro = new ResizeObserver(() => {
-      const r = wrapRef.current!.getBoundingClientRect()
+      if (!wrap.isConnected) return
+      const r = wrap.getBoundingClientRect()
       if (r.width && r.height) scene.resize(r.width, r.height)
     })
-    ro.observe(wrapRef.current!)
+    ro.observe(wrap)
     setReady((n) => n + 1)
     return () => {
       ro.disconnect()

@@ -11,7 +11,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { fakeContext } from './agentFake.ts'
 import { Credentials } from '../src/main/agent/credentials.ts'
-import { createAgentLayer, lastChatModel, resetLabModelFailures, shotAttempts } from '../src/main/agent/index.ts'
+import { createAgentLayer, labModelInfo, lastChatModel, resetLabModelFailures, shotAttempts } from '../src/main/agent/index.ts'
 import type { QueryFn } from '../src/main/agent/sdk.ts'
 import { LAST_CHAT_MODEL_SETTING, resolveLabModel } from '../src/shared/labModels.ts'
 import { TIER_DEFAULTS } from '../src/main/agent/budget/budget.ts'
@@ -224,6 +224,28 @@ test('VFX Lab compose with a subscription that rejects the flagship: the model w
     assert.equal(d.entry!.name, 'DashForward')
     assert.match(d.modelError!, /claude-haiku-5-5: API Error: 403/)
     assert.match(d.entry!.modelNote!, /^Drafted without a model because: no model answered \(claude-opus-5-5: API Error: 403/)
+  } finally {
+    layer.dispose()
+    resetLabModelFailures()
+  }
+})
+
+test('Settings > Labs sees a model the account rejected (labModelInfo.rejected), not a transient error', async () => {
+  resetLabModelFailures()
+  const { fake, credentials } = signedInWithClaude()
+  const sdk = subscriptionSdk((m) => m !== 'claude-opus-5-5')
+  const layer = createAgentLayer(fake.ctx, { queryFn: sdk.queryFn, credentials, meterSaveDelayMs: 0 })
+  try {
+    fake.settings.set(LAST_CHAT_MODEL_SETTING, { provider: 'anthropic', model: 'claude-haiku-5-5' })
+    assert.deepEqual(labModelInfo(fake.ctx, layer.providers.defaultModel()).rejected, [])
+    assert.equal(await layer.visionShot('critic', 'rate it', [], { tier: 'critic' }), 'ok')
+    const info = labModelInfo(fake.ctx, layer.providers.defaultModel())
+    assert.deepEqual(info.rejected.map((r) => `${r.provider}:${r.model}`), ['anthropic:claude-opus-5-5'])
+    assert.match(info.rejected[0].message, /403/)
+    assert.ok(info.rejected[0].until > Date.now())
+    assert.equal(info.auto.critic, 'claude-opus-5-5')
+    resetLabModelFailures()
+    assert.deepEqual(labModelInfo(fake.ctx, layer.providers.defaultModel()).rejected, [])
   } finally {
     layer.dispose()
     resetLabModelFailures()

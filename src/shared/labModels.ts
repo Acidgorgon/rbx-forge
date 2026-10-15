@@ -8,6 +8,8 @@
 // with no key, Codex not signed in) moves on to the default model and then to the last chat model
 // that answered (agent/index.ts oneShot); when none answers, the lab shows the error.
 
+import type { ProviderId } from './types.ts'
+
 export type LabTier = 'cheap' | 'default' | 'critic'
 export const LAB_TIERS: readonly LabTier[] = ['cheap', 'default', 'critic']
 export const LAB_MODELS_SETTING = 'labs.models'
@@ -62,4 +64,104 @@ export function smallModelHint(tier: LabTier, model: string | null | undefined):
   return tier === 'default'
     ? `Drafting on a small model (${model}): it tends to write sparse effects and hide layers of your library copies. Pick a larger model here for richer effects.`
     : `Critiquing on a small model (${model}): it tends to prefer the sparsest variation. Pick a larger model here for a better critic.`
+}
+
+// ---- Settings > Labs model dropdowns ----------------------------------------------------------
+
+// What the Labs model dropdowns need from main (agent/index.ts labModelInfo): what "auto" means
+// right now per tier, each provider's cheap / flagship pair (for the tier hints), and the models a
+// Labs call was refused on recently (a 403 on the flagship tier, a model the account cannot use).
+export interface LabModelInfo {
+  // The default model's provider: the provider the tier ids are sent to first.
+  provider: ProviderId
+  // The model each tier uses when its setting is empty.
+  auto: Record<LabTier, string>
+  // budget.ts tiersFor per provider (with Settings overrides); absent for Ollama / custom.
+  tiers: Partial<Record<ProviderId, { cheap: string; big: string }>>
+  // Recent non-transient failures of one-shot (Labs) calls; skipped by the fallback chain until `until`.
+  rejected: { provider: ProviderId; model: string; message: string; until: number }[]
+}
+
+export type LabModelHint = 'cheap' | 'balanced' | 'flagship'
+
+const FLAGSHIP = /opus|astra|(^|[-_.:/])(pro|ultra|max)([-_.:/]|$)/i
+
+// A short tier hint for a model id: the provider's cheap / flagship pair when it is one of them,
+// else by name. Ollama and custom endpoints (no tier pair) only get "cheap" for small models.
+export function labModelHint(model: string, tiers: { cheap: string; big: string } | null | undefined): LabModelHint | null {
+  if (tiers?.cheap === model) return 'cheap'
+  if (tiers?.big === model) return 'flagship'
+  if (isSmallModel(model) || /luna|flash-lite/i.test(model)) return 'cheap'
+  if (!tiers) return null
+  return FLAGSHIP.test(model) ? 'flagship' : 'balanced'
+}
+
+export interface LabModelOption {
+  provider: ProviderId
+  model: string
+  hint: LabModelHint | null
+  // The error a Labs call got on this model recently (it is skipped for now), when there is one.
+  rejected?: string
+}
+
+export interface LabModelGroup {
+  provider: ProviderId
+  label: string
+  // True for the default model's provider: tier ids go there first.
+  primary: boolean
+  options: LabModelOption[]
+}
+
+// The dropdown's model groups: every ready provider's models (the chat picker's list), the default
+// model's provider first. Codex is left out: Labs calls on Codex always use the Codex model itself,
+// so a Labs model id is never sent there.
+export function labModelGroups(
+  providers: readonly { id: ProviderId; label: string; ready: boolean; models: readonly string[] }[] | null | undefined,
+  info: LabModelInfo | null | undefined,
+  fetched: Partial<Record<ProviderId, readonly string[]>> = {}
+): LabModelGroup[] {
+  const now = Date.now()
+  const rejected = new Map((info?.rejected ?? []).filter((r) => r.until > now).map((r) => [`${r.provider}:${r.model}`, r.message]))
+  const ready = (providers ?? []).filter((p) => p.ready && p.id !== 'codex')
+  const primary = info?.provider
+  ready.sort((a, b) => Number(b.id === primary) - Number(a.id === primary))
+  return ready
+    .map((p) => {
+      const models = [...new Set((fetched[p.id] ?? p.models).filter(Boolean))]
+      return {
+        provider: p.id,
+        label: p.label,
+        primary: p.id === primary,
+        options: models.map((model) => {
+          const why = rejected.get(`${p.id}:${model}`)
+          return { provider: p.id, model, hint: labModelHint(model, info?.tiers[p.id]), ...(why ? { rejected: why } : {}) }
+        })
+      }
+    })
+    .filter((g) => g.options.length)
+}
+
+// What a stored tier value shows as: empty = Auto; an id listed by a provider = that model (the
+// default provider's entry when several list it); anything else = "Custom: <id>".
+export type LabModelSelection = { kind: 'auto' } | { kind: 'model'; option: LabModelOption } | { kind: 'custom'; model: string }
+
+export function labModelSelection(value: string | null | undefined, groups: readonly LabModelGroup[]): LabModelSelection {
+  const v = String(value ?? '').trim()
+  if (!v) return { kind: 'auto' }
+  for (const g of groups) {
+    const option = g.options.find((o) => o.model === v)
+    if (option) return { kind: 'model', option }
+  }
+  return { kind: 'custom', model: v }
+}
+
+// The recent rejection of a model on the default provider (for the Auto entry), if any.
+export function labRejection(info: LabModelInfo | null | undefined, model: string, provider: ProviderId | undefined = info?.provider): string | null {
+  const now = Date.now()
+  return info?.rejected.find((r) => r.provider === provider && r.model === model && r.until > now)?.message ?? null
+}
+
+// Short display form of a model id ("claude-haiku-5-5" -> "haiku-5-5"), as the chat picker shows it.
+export function shortModelId(model: string): string {
+  return model.replace(/^.*\//, '').replace(/^claude-/, '').replace(/-\d{8}$/, '')
 }

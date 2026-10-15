@@ -11,7 +11,7 @@ const methods = [
   'getGroupSettings', 'setGroupSettings', 'applyPatchProposal', 'mergePatchProposal', 'dismissPatchProposal', 'saveBoard',
   'setChatEffort', 'getDefaultEffort', 'setDefaultEffort', 'addChatImage', 'getChatImage',
   'listProviders', 'setProviderKey', 'setProviderConfig', 'listModels', 'setChatModel',
-  'getDefaultModel', 'setDefaultModel',
+  'getDefaultModel', 'setDefaultModel', 'getLabModelInfo',
   // Settings > Accounts (sign-in per provider)
   'accountsList', 'accountsSignIn', 'accountsCancelSignIn', 'accountsSubmitCode', 'accountsSignOut', 'accountsUseExistingLogin',
   'accountsTest', 'accountsCancelTest',

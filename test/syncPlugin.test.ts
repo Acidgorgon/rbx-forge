@@ -59,6 +59,8 @@ interface During {
   bridge: StudioBridge
   service: SyncService
   trees: string[][]
+  // Drops a marker file the fake Studio's scenario waits for (waitForMarker).
+  mark: (name: string) => void
 }
 
 // The link id an already linked place keeps in ServerStorage.ForgeSyncLink.
@@ -100,7 +102,8 @@ async function runStudio(scenario: string, during?: (env: During) => Promise<voi
     const run = new Promise<string>((res, rej) =>
       execFile(lune!, ['run', harness, join(dir, 'ForgeBridge.luau'), scenario, linked ? LINK : ''], { cwd: dir, timeout: 60_000 }, (err, stdout, stderr) => (err ? rej(new Error(`${err.message}\n${stdout}\n${stderr}`)) : res(stdout + stderr)))
     )
-    const [out] = await Promise.all([run, during?.({ bridge, service, trees })])
+    const mark = (name: string) => writeFileSync(join(dir, name), '')
+    const [out] = await Promise.all([run, during?.({ bridge, service, trees, mark })])
     assert.match(out, /SCENARIO DONE/, out)
     return { root, out, status: await service.status(), trees, final: paths() }
   } finally {
@@ -255,4 +258,73 @@ test('plugin: an unlinked place writes nothing and holds nothing; once linked, i
   assert.match(out, /now linked to the Forge project/, out)
   const links = JSON.parse(readFileSync(join(root, '.forge', 'sync', 'links.json'), 'utf8'))
   assert.deepEqual(Object.values(links.links).map((l: any) => l.projectFile), ['default.project.json'])
+})
+
+const ONBOARDING_DIR = 'src/client/Client/Controllers/OnboardingController'
+const CUTSCENE_FILES = [
+  'init.luau',
+  'TrainerCutscene/init.luau',
+  'TrainerCutscene/Shots.luau',
+  'TrainerCutscene/Body.luau',
+  'WakeUpCutscene/init.luau',
+  ...['Body', 'Lens', 'Motion', 'Overlay', 'Sfx', 'Title'].map((n) => `WakeUpCutscene/${n}.luau`),
+  'WakeUpCutscene/Props/init.luau',
+  'WakeUpCutscene/Props/Toon.luau'
+].map((f) => `${ONBOARDING_DIR}/${f}`)
+
+// Bug report (GenTree, 0.6.1-quick.7): Studio had OnboardingController.WakeUpCutscene and its child
+// modules, the disk did not, the gate was clear and Rojo's connect offered to delete WakeUpCutscene.
+test('plugin: a Studio-only module tree holds rojo after "Disk wins" until Pull to disk; new children sync live', { skip }, async () => {
+  let checked = false
+  const { out } = await runStudio('cutscene', async ({ service, mark }) => {
+    const key = `local:${LINK}`
+    await until('the first sync held with every Studio-only script', async () => service.conflicts().filter((c) => c.placeKey === key && c.reason === 'first-run').length === CUTSCENE_FILES.length)
+    for (const f of CUTSCENE_FILES) assert.ok(!existsSync(join(service.root, f)), f)
+    // "Disk wins": the disk has none of them. Rojo stays held instead of offering to delete them.
+    await service.resolveAll(key, 'disk', 'first-run')
+    let place = (await service.status()).places.find((p) => p.placeKey === key)!
+    assert.equal(place.gate, 'blocked')
+    assert.deepEqual({ count: place.studioOnly?.count, pullable: place.studioOnly?.pullable, holds: place.studioOnly?.holds }, { count: CUTSCENE_FILES.length, pullable: CUTSCENE_FILES.length, holds: true })
+    assert.match(service.gateFor('default.project.json').detail ?? '', /13 Studio-only scripts not on disk: pull to disk or serve anyway/)
+    // "Pull to disk".
+    place = (await service.pullStudioOnly(key)).places.find((p) => p.placeKey === key)!
+    assert.equal(place.gate, 'clear')
+    assert.equal(place.studioOnly, undefined)
+    assert.equal(service.gateFor('default.project.json').gate, 'clear')
+    for (const f of CUTSCENE_FILES) assert.ok(existsSync(join(service.root, f)), f)
+    assert.equal(readFileSync(join(service.root, ONBOARDING_DIR, 'WakeUpCutscene/Props/Toon.luau'), 'utf8'), "return 'toon'\n")
+    mark('pulled')
+    // A child module added in Studio afterwards is written right away.
+    await until('the live child', async () => existsSync(join(service.root, ONBOARDING_DIR, 'WakeUpCutscene/Vignette.luau')))
+    assert.equal(service.gateFor('default.project.json').gate, 'clear')
+    mark('vignette')
+    checked = true
+  })
+  assert.ok(checked, out)
+})
+
+// Studio's Ctrl+D makes a same-name copy (children included); the user then renames it. The copy's
+// subtree must land under the new name, and the original must keep syncing.
+test('plugin: Ctrl+D a cutscene module and rename the copy: both trees sync, deleting the copy leaves the original', { skip }, async () => {
+  let checked = false
+  const { out } = await runStudio('duplicate-rename', async ({ service, mark }) => {
+    const key = `local:${LINK}`
+    const read = (rel: string) => (existsSync(join(service.root, ONBOARDING_DIR, rel)) ? readFileSync(join(service.root, ONBOARDING_DIR, rel), 'utf8') : null)
+    await until('the first sync', async () => service.conflicts().filter((c) => c.placeKey === key).length >= 4)
+    await service.resolveAll(key, 'studio', 'first-run')
+    mark('synced')
+    await until('the renamed copy with its edited child and a new child', async () =>  read('WakeUpCutscene/Body.luau') === "return 'wake body'\n" && read('WakeUpCutscene/Lens.luau') !== null && read('TrainerCutscene/Shots.luau') === "return 'trainer shots 2'\n")
+    assert.equal(read('WakeUpCutscene/init.luau'), "return 'trainer'\n")
+    assert.equal(read('WakeUpCutscene/Shots.luau'), "return 'shots'\n")
+    assert.equal(read('TrainerCutscene/Body.luau'), "return 'trainer body'\n")
+    assert.equal(read('TrainerCutscene/init.luau'), "return 'trainer'\n")
+    assert.equal(service.gateFor('default.project.json').gate, 'clear')
+    mark('renamed')
+    await until('the original edited after the copy is gone', async () => read('TrainerCutscene/Body.luau') === "return 'trainer body 2'\n" && read('WakeUpCutscene/init.luau') === null)
+    assert.equal(read('TrainerCutscene/Shots.luau'), "return 'trainer shots 2'\n")
+    assert.equal((await service.status()).places.find((p) => p.placeKey === key)?.studioOnly, undefined)
+    mark('deleted')
+    checked = true
+  })
+  assert.ok(checked, out)
 })

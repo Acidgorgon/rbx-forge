@@ -10,7 +10,7 @@
 
 import * as nodeFs from 'node:fs/promises'
 import { join, resolve as resolvePath } from 'node:path'
-import type { GateState, PlaceSyncStatus, StudioChange, StudioNode, SyncAction, SyncConflictInfo, SyncEntry, SyncPlace } from '../../../shared/sync/types.ts'
+import type { GateState, PlaceSyncStatus, StudioChange, StudioNode, StudioOnlyScript, SyncAction, SyncConflictInfo, SyncEntry, SyncPlace } from '../../../shared/sync/types.ts'
 import { cleanRel, type DiskProbe, findRoot, fromDisk, insideMappedRoots, isProjectNode, isScriptClass, isSkipped, loadPlaces, PACKAGE_DIRS, parseFileName, type PlaceMap, placeFor, saveTarget, type SaveTarget, type SyncRoot, toDisk, unsafeName } from './mapping.ts'
 import { diff3, normalise, toFileText } from './merge.ts'
 import { canonicalJson, canonicalModel, detectStyle, modelFromStudio, readModel, writeMeta, writeModel } from './modelJson.ts'
@@ -52,6 +52,10 @@ interface Unit {
   // Desired file content given the current disk text.
   render: (disk: string | null) => string
   oversize?: boolean
+  // A script changing form (single file <-> init file in its own folder, because Studio added or
+  // removed its children): the other form's file still on disk. A base for this file is from an older
+  // form and does not mean "deleted on disk".
+  formFrom?: string
 }
 
 interface Plan {
@@ -95,6 +99,20 @@ interface Session {
   // First sync, undecided: nothing is written or trashed; every difference waits as a 'first-run'
   // conflict for the user's "which side" choice.
   firstSync: boolean
+  // Scripts only in Studio (no file on disk, no conflict held) that Rojo would delete when it connects.
+  // hold: found by a snapshot, a resolve or a pull (a "checkpoint"), so rojo serve waits for them.
+  studioOnly: HeldStudioOnly[]
+  // "Pull to disk" in progress: these instance paths are written even where the base says the disk
+  // deleted them.
+  restore: string[][]
+  // Parent id per node id where known. Paths alone cannot tell two same-name siblings apart (Studio's
+  // Ctrl+D makes a copy with the original's name, children included): renames, moves and removes
+  // carry a subtree by these ids.
+  parents: Map<string, string>
+}
+
+interface HeldStudioOnly extends StudioOnlyScript {
+  hold: boolean
 }
 
 // Why plan() leaves a Studio-only instance of an $ignoreUnknownInstances root alone.
@@ -106,6 +124,7 @@ const startsWith = (path: string[], prefix: string[]): boolean => prefix.length 
 const related = (a: string[], b: string[]): boolean => startsWith(a, b) || startsWith(b, a)
 const dirOf = (rel: string): string => (rel.includes('/') ? rel.slice(0, rel.lastIndexOf('/')) : '')
 const isInitFile = (rel: string): boolean => /(^|\/)init(\.server|\.client|\.plugin)?\.luau?$/.test(rel)
+const SCRIPT_SUFFIXES = ['', '.server', '.client', '.plugin']
 
 function canon(kind: UnitKind | 'meta', text: string): string {
   if (kind === 'model') return canonicalModel(text) ?? normalise(text)
@@ -207,13 +226,17 @@ export class SyncEngine {
       if (!(await this.store.hasPlace(placeKey))) this.store.setFirstSync(placeKey, true)
       s.firstSync = this.store.isFirstSync(placeKey)
       const tree = new Map<string, StudioNode>()
-      for (const node of s.buffer) if (node && typeof node.id === 'string' && Array.isArray(node.path)) tree.set(node.id, node)
+      const nodes = s.buffer.filter((node) => node && typeof node.id === 'string' && Array.isArray(node.path))
+      for (const node of nodes) tree.set(node.id, node)
       s.buffer = null
       s.tree = tree
+      s.parents = new Map()
+      this.linkParents(s, nodes)
       s.version++
       s.protect.clear()
       s.conflicts.clear()
-      const entries = await this.reconcile(s, null)
+      s.studioOnly = []
+      const entries = await this.reconcile(s, null, true)
       this.settleFirstSync(s, entries)
       s.lastSnapshot = this.now()
       this.updateGate(s)
@@ -237,7 +260,9 @@ export class SyncEngine {
           this.removeSubtree(s, change.id, change.path)
           scope.push(change.path)
         } else if (change.kind === 'added') {
-          for (const node of [change.node, ...(change.descendants ?? [])]) s.tree.set(node.id, node)
+          const nodes = [change.node, ...(change.descendants ?? [])]
+          for (const node of nodes) s.tree.set(node.id, node)
+          this.linkParents(s, nodes)
           scope.push(change.node.path)
         } else {
           const old = s.tree.get(change.node.id)
@@ -245,8 +270,19 @@ export class SyncEngine {
           // Unknown id (e.g. the plugin's table was rebuilt): the node at that path is the same instance.
           if (!old) for (const [id, n] of s.tree) if (pkey(n.path) === pkey(change.node.path) && n.className === change.node.className) s.tree.delete(id)
           s.tree.set(change.node.id, change.node)
+          if (!old || pkey(old.path) !== pkey(change.node.path)) this.linkParents(s, [change.node])
           scope.push(change.node.path)
         }
+      }
+      // A name freed by a remove / rename / move: a sibling refused as its duplicate (same name ignoring
+      // case) is writable now.
+      for (const change of changes) {
+        if (change.kind !== 'removed' && change.kind !== 'renamed' && change.kind !== 'moved') continue
+        const old = change.kind === 'removed' ? change.path : change.from
+        if (!old.length) continue
+        const parent = pkey(old.slice(0, -1))
+        const lower = old[old.length - 1].toLowerCase()
+        for (const n of s.tree.values()) if (n.path.length === old.length && n.path[n.path.length - 1].toLowerCase() === lower && pkey(n.path.slice(0, -1)) === parent) scope.push(n.path)
       }
       if (scope.length) entries.push(...(await this.reconcile(s, scope)))
       this.settleFirstSync(s, entries)
@@ -263,6 +299,8 @@ export class SyncEngine {
     s.tree = null
     s.buffer = null
     s.conflicts.clear()
+    s.studioOnly = []
+    s.parents.clear()
     s.gate = 'idle'
     s.version++
     this.emit(placeKey)
@@ -285,6 +323,35 @@ export class SyncEngine {
 
   leftInStudio(placeKey: string): string[][] {
     return this.sessions.get(placeKey)?.leftInStudio.map((p) => [...p]) ?? []
+  }
+
+  // Scripts only in Studio that Rojo would delete when it connects, and whether rojo serve is held for
+  // them (see Session.studioOnly).
+  studioOnly(placeKey: string): { items: StudioOnlyScript[]; holds: boolean } {
+    const list = this.sessions.get(placeKey)?.studioOnly ?? []
+    return { items: list.map(({ hold: _hold, ...i }) => ({ ...i, instancePath: [...i.instancePath] })), holds: list.some((i) => i.hold) }
+  }
+
+  // "Pull to disk": writes every Studio-only script Forge can write (and what it needs: its folder,
+  // its meta file, its children), even where the base says the disk deleted it. From then on Rojo
+  // has them on disk and never proposes deleting them from Studio.
+  pullStudioOnly(placeKey: string): Promise<SyncEntry[]> {
+    return this.serial(async () => {
+      await this.ensureLoaded()
+      const s = this.sessions.get(placeKey)
+      if (!s?.tree) throw new Error('Studio is not connected to Forge Sync for this place')
+      const paths = s.studioOnly.filter((i) => i.canPull).map((i) => i.instancePath)
+      if (!paths.length) return []
+      s.restore = paths
+      let entries: SyncEntry[]
+      try {
+        entries = await this.reconcile(s, paths, true)
+      } finally {
+        s.restore = []
+      }
+      this.updateGate(s)
+      return this.finish(s, entries)
+    })
   }
 
   // Where "Save to repo" would write a Studio-only instance of this place, or why it cannot.
@@ -379,6 +446,7 @@ export class SyncEngine {
       await this.resolveOne(s, held, take, text)
       this.settleFirstSync(s, 'decided')
       await this.store.save()
+      await this.refreshStudioOnly(s)
       this.updateGate(s)
       this.emit(placeKey)
     })
@@ -394,6 +462,7 @@ export class SyncEngine {
       for (const c of held) await this.resolveOne(s, c, take)
       this.settleFirstSync(s, 'decided')
       await this.store.save()
+      await this.refreshStudioOnly(s)
       this.updateGate(s)
       this.emit(placeKey)
       return held.length
@@ -446,7 +515,7 @@ export class SyncEngine {
     const projectFile = this.projectFiles.get(placeKey)
     const map = this.mapFor(place, projectFile) ?? { projectFile: 'default.project.json', name: '', root: this.root, placeIds: [], emitLegacyScripts: true, roots: [], skipped: [], virtual: [], skipGlobs: [] }
     if (!s) {
-      s = { placeKey, place, map, gate: 'idle', connected: false, buffer: null, tree: null, counts: {}, conflicts: new Map(), protect: new Set(), version: 0, leftInStudio: [], projectFile, firstSync: false }
+      s = { placeKey, place, map, gate: 'idle', connected: false, buffer: null, tree: null, counts: {}, conflicts: new Map(), protect: new Set(), version: 0, leftInStudio: [], projectFile, firstSync: false, studioOnly: [], restore: [], parents: new Map() }
       this.sessions.set(placeKey, s)
     } else {
       s.place = place
@@ -469,7 +538,7 @@ export class SyncEngine {
   private updateGate(s: Session): void {
     if (!s.connected) s.gate = 'idle'
     else if (s.buffer) s.gate = 'checking'
-    else s.gate = s.conflicts.size ? 'blocked' : 'clear'
+    else s.gate = s.conflicts.size || s.studioOnly.some((i) => i.hold) ? 'blocked' : 'clear'
   }
 
   private async finish(s: Session, entries: SyncEntry[]): Promise<SyncEntry[]> {
@@ -617,7 +686,10 @@ export class SyncEngine {
       }
       const source = node.source
       const hasMeta = Boolean(metaFile) || probe.isFile(adjacent)
-      plan.units.push({ kind: 'script', file, instancePath: node.path, primary: true, anchor, meta: !init && hasMeta ? adjacent : undefined, render: () => source })
+      const own = init ? dirOf(file) : `${dirOf(file) ? dirOf(file) + '/' : ''}${leaf}`
+      const otherForms = SCRIPT_SUFFIXES.flatMap((sfx) => (init ? [`${own}${sfx}.luau`, `${own}${sfx}.lua`] : [`${own}/init${sfx}.luau`, `${own}/init${sfx}.lua`]))
+      const formFrom = node.path.length > 0 && !map.roots.some((r) => pkey(r.instance) === pkey(node.path)) ? otherForms.find((f) => f !== file && probe.isFile(f)) : undefined
+      plan.units.push({ kind: 'script', file, instancePath: node.path, primary: true, anchor, meta: !init && hasMeta ? adjacent : undefined, render: () => source, ...(formFrom ? { formFrom } : {}) })
       if (hasMeta) plan.units.push({ kind: 'meta', file: adjacent, instancePath: node.path, primary: false, anchor: adjacent, render: (disk) => writeMeta(disk, { runContext: runContext ?? null }, true) })
       if (hasChildren && !init) for (const c of childrenOf(node.path)) plan.refused.push({ path: c.path, note: 'parent script is a single file' })
     }
@@ -717,7 +789,10 @@ export class SyncEngine {
 
   // ---- internals: reconcile ----
 
-  private async reconcile(s: Session, scope: string[][] | null): Promise<SyncEntry[]> {
+  // checkpoint: a snapshot, a resolve or a pull. Studio-only scripts it finds hold rojo serve; a live
+  // pass (the change stream) only lists new ones (Rojo is usually connected then, and a disk delete
+  // it is about to carry into Studio must not stop the serve).
+  private async reconcile(s: Session, scope: string[][] | null, checkpoint = false): Promise<SyncEntry[]> {
     const map = s.map
     const disk = await this.scan(map)
     const probe: DiskProbe = { isFile: (rel) => disk.files.has(rel), isDir: (rel) => disk.dirs.has(rel) }
@@ -820,7 +895,92 @@ export class SyncEngine {
         entries.push(this.entry(`${u.file}/${GITKEEP}`, 'unmapped', u.instancePath, { note: `refused: ${(err as Error).message}` }))
       }
     }
+    await this.updateStudioOnly(s, plan, disk, checkpoint, entries)
     return entries
+  }
+
+  private async refreshStudioOnly(s: Session): Promise<void> {
+    if (!s.tree) return
+    const disk = await this.scan(s.map)
+    const plan = this.plan(s, { isFile: (rel) => disk.files.has(rel), isDir: (rel) => disk.dirs.has(rel) })
+    await this.updateStudioOnly(s, plan, disk, true, [])
+  }
+
+  // Instance paths (keys) the disk builds for this place: every mapped file and directory.
+  private diskInstances(map: PlaceMap, disk: { files: Set<string>; dirs: Set<string> }): Set<string> {
+    const out = new Set<string>()
+    for (const f of disk.files) {
+      if (isGitkeep(f)) continue
+      const p = fromDisk(map, f)
+      if (p) out.add(pkey(p))
+    }
+    for (const d of disk.dirs) {
+      let best: SyncRoot | null = null
+      for (const r of map.roots) if (!r.isFile && (d === r.path || d.startsWith(r.path + '/')) && (!best || r.path.length > best.path.length)) best = r
+      if (best) out.add(pkey(d === best.path ? best.instance : [...best.instance, ...d.slice(best.path.length + 1).split('/')]))
+    }
+    return out
+  }
+
+  // Every script Studio has under a mapped root that has no file on disk and no conflict held for it,
+  // and that Rojo would delete from Studio when it connects. Forge writes Studio-only scripts as soon
+  // as it sees them; what is left here was refused (unsafe name, duplicate, oversize, inside a model
+  // file), failed to write, or has a base saying the disk deleted it (a git checkout, a delete on
+  // disk while Studio was closed, or "Disk" chosen for a script only Studio had). Before this list
+  // existed such a script passed as "disk ahead", the gate cleared, and Rojo's connect offered to
+  // delete it from Studio.
+  private async updateStudioOnly(s: Session, plan: Plan, disk: { files: Set<string>; dirs: Set<string> }, checkpoint: boolean, entries: SyncEntry[]): Promise<void> {
+    const map = s.map
+    const units = new Map<string, Unit>()
+    for (const u of plan.units) if (u.primary && u.kind === 'script') units.set(pkey(u.instancePath), u)
+    const notes = new Map<string, string>()
+    for (const r of plan.refused) notes.set(pkey(r.path), r.note)
+    const present = new Set(plan.present.map((r) => r.path))
+    const candidates: { node: StudioNode; root: SyncRoot; unit?: Unit }[] = []
+    for (const node of s.tree?.values() ?? []) {
+      if (!isScriptClass(node.className)) continue
+      const hit = findRoot(map, node.path)
+      if (!hit?.root || !present.has(hit.root.path)) continue
+      const unit = units.get(pkey(node.path))
+      if (unit && (disk.files.has(unit.file) || s.conflicts.has(unit.file))) continue
+      candidates.push({ node, root: hit.root, unit })
+    }
+    const before = new Map(s.studioOnly.map((i) => [pkey(i.instancePath), i]))
+    const next: HeldStudioOnly[] = []
+    if (candidates.length) {
+      // This pass may have written some of them: judge against the disk as it is now.
+      const now = await this.scan(map)
+      const onDisk = this.diskInstances(map, now)
+      const seen = new Set<string>()
+      for (const { node, root, unit } of candidates) {
+        const k = pkey(node.path)
+        if (seen.has(k)) continue
+        seen.add(k)
+        if (unit ? now.files.has(unit.file) : onDisk.has(k)) continue
+        // Rojo leaves a Studio-only child of an $ignoreUnknownInstances root alone (only that level).
+        let top = node.path
+        for (let i = root.instance.length + 1; i <= node.path.length; i++) {
+          if (!onDisk.has(pkey(node.path.slice(0, i)))) {
+            top = node.path.slice(0, i)
+            break
+          }
+        }
+        if (root.ignoreUnknown && top.length === root.instance.length + 1) continue
+        let reason: string
+        if (unit) {
+          const failed = entries.find((e) => e.file === unit.file && e.action === 'unmapped' && e.note)
+          const base = await this.store.get(s.placeKey, unit.file)
+          reason = failed ? `could not be written (${failed.note!.replace(/^refused: /, '')})` : base ? 'its file was removed from disk (or "Disk" was chosen for it) while Studio kept it' : before.get(k)?.reason ?? 'not written to disk yet'
+        } else {
+          let note: string | undefined
+          for (let i = node.path.length; i > root.instance.length && !note; i--) note = notes.get(pkey(node.path.slice(0, i)))
+          reason = `Forge cannot write it: ${note ?? 'unmapped'}`
+        }
+        next.push({ instancePath: [...node.path], ...(unit ? { file: unit.file } : {}), reason, canPull: !!unit, hold: checkpoint || !!before.get(k)?.hold })
+      }
+    }
+    next.sort((a, b) => a.instancePath.join('.').localeCompare(b.instancePath.join('.')))
+    s.studioOnly = next
   }
 
   // True when two paths name the same file on disk (case-insensitive file systems).
@@ -930,7 +1090,16 @@ export class SyncEngine {
         await this.store.set(s.placeKey, u.file, cS)
         return this.entry(u.file, 'created', u.instancePath)
       }
-      if (hashText(cS) === base.hash) return this.entry(u.file, 'disk-ahead', u.instancePath, { note: 'deleted on disk' })
+      if (hashText(cS) === base.hash) {
+        // "Pull to disk": the user wants Studio's copy back on disk. A form change: the script is on
+        // disk in its other form (trashed below), so this base is stale.
+        if (u.formFrom || s.restore.some((p) => startsWith(u.instancePath, p))) {
+          await this.writeFile(map, u.file, toFileText(studioText))
+          await this.store.set(s.placeKey, u.file, cS)
+          return this.entry(u.file, 'created', u.instancePath, { note: u.formFrom ? `form changed in Studio (was ${u.formFrom})` : 'pulled to disk (only Studio had it)' })
+        }
+        return this.entry(u.file, 'disk-ahead', u.instancePath, { note: 'deleted on disk' })
+      }
       this.hold(s, u, studioText, cS, '', base.text, 'deleted-vs-edited', { diskDeleted: true })
       return this.entry(u.file, 'conflict', u.instancePath, { note: 'deleted on disk, edited in Studio' })
     }
@@ -1039,12 +1208,58 @@ export class SyncEngine {
 
   // ---- internals: tree edits ----
 
+  // Records parents for nodes that arrive depth first (the plugin's snapshot walk; an 'added' node and
+  // its GetDescendants): a node's parent is the nearest earlier node whose path is its parent path. A
+  // node with no such node before it (the top of an 'added') gets the one instance at its parent path,
+  // if there is exactly one.
+  private linkParents(s: Session, nodes: StudioNode[]): void {
+    const stack: StudioNode[] = []
+    for (const n of nodes) {
+      const parent = pkey(n.path.slice(0, -1))
+      while (stack.length && pkey(stack[stack.length - 1].path) !== parent) stack.pop()
+      let pid = stack.length ? stack[stack.length - 1].id : undefined
+      if (!pid && n.path.length) {
+        const at = [...s.tree!.values()].filter((x) => x.id !== n.id && pkey(x.path) === parent)
+        if (at.length === 1) pid = at[0].id
+      }
+      if (pid) s.parents.set(n.id, pid)
+      else s.parents.delete(n.id)
+      stack.push(n)
+    }
+  }
+
+  // The id of `node`'s ancestor at depth `depth` through recorded parents, or undefined if unknown.
+  private ancestorAt(s: Session, node: StudioNode, depth: number): string | undefined {
+    let cur: StudioNode | undefined = node
+    while (cur && cur.path.length > depth) {
+      const pid = s.parents.get(cur.id)
+      cur = pid ? s.tree!.get(pid) : undefined
+    }
+    return cur && cur.path.length === depth ? cur.id : undefined
+  }
+
+  // Ids of the nodes below instance `id` (at `path`). With a same-name sibling at that path, only the
+  // nodes known to descend from `id` (a descendant of unknown parentage stays: it may be the twin's).
+  private subtreeOf(s: Session, id: string, path: string[]): string[] {
+    const tree = s.tree!
+    const twin = [...tree.values()].some((n) => n.id !== id && pkey(n.path) === pkey(path))
+    const out: string[] = []
+    for (const n of tree.values()) {
+      if (n.path.length <= path.length || !startsWith(n.path, path)) continue
+      if (!twin || this.ancestorAt(s, n, path.length) === id) out.push(n.id)
+    }
+    return out
+  }
+
   private removeSubtree(s: Session, id: string, path: string[]): void {
     const tree = s.tree!
+    const below = this.subtreeOf(s, id, path)
     tree.delete(id)
-    const twin = [...tree.values()].some((n) => pkey(n.path) === pkey(path))
-    if (twin) return
-    for (const [k, n] of tree) if (startsWith(n.path, path)) tree.delete(k)
+    s.parents.delete(id)
+    for (const k of below) {
+      tree.delete(k)
+      s.parents.delete(k)
+    }
   }
 
   private async applyRename(s: Session, change: Extract<StudioChange, { kind: 'renamed' | 'moved' }>): Promise<SyncEntry[]> {
@@ -1056,10 +1271,14 @@ export class SyncEngine {
     // Re-path the subtree.
     const from = change.from
     const to = change.node.path
-    const twin = [...tree.values()].some((n) => n.id !== change.id && pkey(n.path) === pkey(from))
+    const moving = this.subtreeOf(s, change.id, from)
     tree.delete(change.id)
-    if (!twin) for (const n of tree.values()) if (n.path.length > from.length && startsWith(n.path, from)) n.path = [...to, ...n.path.slice(from.length)]
+    for (const k of moving) {
+      const n = tree.get(k)!
+      n.path = [...to, ...n.path.slice(from.length)]
+    }
     tree.set(change.id, change.node)
+    this.linkParents(s, [change.node])
     // First sync undecided: no file moves; the new path is held like any other difference.
     if (!before || s.firstSync) return []
     const after = this.plan(s, probe).units.find((u) => u.primary && pkey(u.instancePath) === pkey(to))

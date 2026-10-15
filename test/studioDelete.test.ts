@@ -191,5 +191,5 @@ test('plugin template: a quick bundle must carry the current template', () => {
   const file = (p: string, text: string): [string, Buffer] => [p, Buffer.from(text)]
   assert.doesNotThrow(() => checkPluginTemplate([file('main/app.js', ''), file('main/studio/ForgeBridge.luau', TEMPLATE)]))
   assert.throws(() => checkPluginTemplate([file('main/app.js', '')]), /main\/studio\/ForgeBridge\.luau is missing/)
-  assert.throws(() => checkPluginTemplate([file('main/studio/ForgeBridge.luau', TEMPLATE.replace(/forge-bridge-template: \d+/, 'forge-bridge-template: 5'))]), /template v5 but the code installs v8/)
+  assert.throws(() => checkPluginTemplate([file('main/studio/ForgeBridge.luau', TEMPLATE.replace(/forge-bridge-template: \d+/, 'forge-bridge-template: 5'))]), new RegExp(`template v5 but the code installs v${PLUGIN_VERSION}`))
 })

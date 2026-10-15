@@ -28,6 +28,9 @@ export interface SyncApi {
   syncResolveAll(placeKey: string, take: 'studio' | 'disk', reason?: SyncConflictInfo['reason']): Promise<SyncStatus>
   // Lets rojo serve a blocked place now; the held conflicts stay listed.
   syncServeAnyway(placeKey: string): Promise<SyncStatus>
+  // Writes the place's Studio-only scripts (PlaceSyncStatus.studioOnly, canPull) to disk, so Rojo
+  // never offers to delete them from Studio.
+  syncPullStudioOnly(placeKey: string): Promise<SyncStatus>
   // Commits only the files Forge wrote from Studio ("Studio edits: ...").
   syncCommitStudioEdits(message?: string): Promise<SyncCommitResult>
   // Renames the legacy StudioSyncPlugin file(s) in the Studio plugins folder to *.disabled.

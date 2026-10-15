@@ -104,7 +104,7 @@ export function Titlebar() {
       el,
       [
         { header: hold.gate === 'blocked' ? `rojo serve waits: ${hold.file}` : `rojo serve waits for the Studio check: ${hold.file}`, mono: true },
-        { label: 'Resolve conflicts…', icon: <Icon name="sync" />, sub: 'Pick Studio or disk per file in Forge Sync', onSelect: resolveHeld },
+        { label: 'Resolve conflicts…', icon: <Icon name="sync" />, sub: 'Pick Studio or disk per file, or pull Studio-only scripts to disk', onSelect: resolveHeld },
         { label: 'Serve anyway', icon: <Icon name="play" />, sub: 'Studio edits in the held files may be overwritten', disabled: hold.gate !== 'blocked', reason: 'Still checking', onSelect: () => void serveAnyway(hold.file) },
         { label: 'Show log', icon: <Icon name="terminal" />, onSelect: () => actions.showBottom('output', ['rojo']) }
       ],

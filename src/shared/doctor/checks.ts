@@ -124,8 +124,11 @@ export function syncChecks(i: DoctorInputs): DoctorCheck[] {
   else out.push({ id: 'sync-engine', group: 'Sync', title: 'Forge Sync', status: 'ok', detail: s.engine === 'forge' ? 'Forge engine' : "Project's own engine" })
   const conflicts = s.places.reduce((n, p) => n + p.conflicts, 0)
   const blocked = s.places.filter((p) => p.gate === 'blocked')
-  if (conflicts || blocked.length) out.push({ id: 'sync-conflicts', group: 'Sync', title: 'Sync conflicts', status: 'fail', detail: `${conflicts} conflict${conflicts === 1 ? '' : 's'}${blocked.length ? `; rojo is held for ${blocked.map((p) => p.projectFile).join(', ')}` : ''}.`, fix: { kind: 'open', target: 'side:sync', label: 'Resolve' } })
+  const heldFor = blocked.length ? `rojo is held for ${blocked.map((p) => p.projectFile).join(', ')}` : ''
+  if (conflicts || blocked.length) out.push({ id: 'sync-conflicts', group: 'Sync', title: 'Sync conflicts', status: 'fail', detail: conflicts || !blocked.some((p) => p.studioOnly) ? `${conflicts} conflict${conflicts === 1 ? '' : 's'}${heldFor ? `; ${heldFor}` : ''}.` : `${heldFor}: Studio-only scripts are not on disk yet.`, fix: { kind: 'open', target: 'side:sync', label: 'Resolve' } })
   else if (s.engine !== 'off') out.push({ id: 'sync-conflicts', group: 'Sync', title: 'Sync conflicts', status: 'ok', detail: s.places.some((p) => p.gate === 'checking') ? 'Reconciling…' : 'None' })
+  const studioOnly = s.places.reduce((n, p) => n + (p.studioOnly ?? 0), 0)
+  if (studioOnly) out.push({ id: 'sync-studio-only', group: 'Sync', title: 'Studio-only scripts', status: 'warn', detail: `${studioOnly} script${studioOnly === 1 ? ' exists' : 's exist'} only in Studio, not on disk: Rojo would delete ${studioOnly === 1 ? 'it' : 'them'} from Studio when it connects.`, fix: { kind: 'open', target: 'side:sync', label: 'Pull to disk' } })
   if (s.pendingStudioEdits > 0) out.push({ id: 'sync-pending', group: 'Sync', title: 'Uncommitted Studio edits', status: 'warn', detail: `${s.pendingStudioEdits} file${s.pendingStudioEdits === 1 ? '' : 's'} written from Studio are not committed yet.`, fix: { kind: 'open', target: 'side:sync', label: 'Commit' } })
   return out
 }

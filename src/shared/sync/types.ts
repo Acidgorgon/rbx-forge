@@ -118,7 +118,7 @@ export type GateState =
   | 'idle' // no Studio session for this place yet: Rojo serves normally (nothing to overwrite)
   | 'checking' // snapshot arriving / reconciling: Rojo held
   | 'clear' // reconciled: Rojo serves
-  | 'blocked' // conflicts held: Rojo held until resolved or "serve anyway"
+  | 'blocked' // conflicts (or Studio-only scripts not on disk) held: Rojo held until resolved or "serve anyway"
 
 export interface PlaceSyncStatus {
   placeKey: string // `${placeId}` (published) or `local:<linkId>` (unpublished, linked in Forge)
@@ -135,6 +135,23 @@ export interface PlaceSyncStatus {
   // Mapped roots (instance paths joined with '.') the last Studio snapshot did not have: nothing
   // under them is synced until they exist in Studio (e.g. Rojo has not connected yet).
   missingRoots?: string[]
+  // Scripts that exist only in Studio (no file on disk) and that Rojo would delete from Studio when
+  // it connects. `holds`: rojo serve is held for them (found by a snapshot or a resolve) until they
+  // are pulled to disk or the user serves anyway. Items capped at STUDIO_ONLY_MAX; count is not.
+  studioOnly?: { count: number; pullable: number; holds: boolean; items: StudioOnlyScript[] }
+}
+
+export const STUDIO_ONLY_MAX = 50
+
+// A script in Studio under a mapped root with no file on disk, which Rojo would delete from Studio
+// when it (re)connects: its topmost Studio-only ancestor is not a direct child of an
+// $ignoreUnknownInstances root (Rojo only leaves those alone).
+export interface StudioOnlyScript {
+  instancePath: string[]
+  // The file "Pull to disk" writes; absent when Forge cannot write it (reason says why).
+  file?: string
+  reason: string
+  canPull: boolean
 }
 
 // Why Studio edits are NOT reaching disk right now, when they are not (shown in the Sync view and the

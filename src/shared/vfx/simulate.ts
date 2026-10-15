@@ -36,6 +36,7 @@
 //               Speed, Drag and Acceleration keep their authored values in the closed-form motion.
 
 import { add, alignY, cf, IDENTITY, isCFrame, mul, norm, NORMALS, point, pos, rotate, scale, fromEuler } from './cframe.ts'
+import { centreEffect } from './placement.ts'
 import { prop } from './schema.ts'
 import { envelopeOffsets, evalColorSequence, evalNumberSequence, hashSeed, rng, sequenceMax, sequenceMean } from './sequence.ts'
 import { applyTint, Timeline, type Tint } from './timeline.ts'
@@ -253,26 +254,19 @@ export function enableWindows(node: VfxNode, cues: VfxCue[], duration: number): 
 }
 
 // Builds transforms and schedules for every node of the effect.
-export function prepareEffect(effect: VfxEffect, seed = 1): PreparedEffect {
+export function prepareEffect(authored: VfxEffect, seed = 1): PreparedEffect {
+  // Imported models keep the world positions they had in their place: the effect plays with its
+  // anchor at the root (placement.ts; scripted effects keep their rigs where the script put them).
+  const effect = centreEffect(authored)
   const root = (t: number) => motionAt(effect, t)
-  // Imported models sit anywhere in their place: re-centre on the mean of their parts. Scripted
-  // effects ('local' space) place parts relative to the root.
-  const parts: Vec3[] = []
-  const collect = (n: VfxNode) => {
-    if (PART_CLASSES.has(n.className) && isCFrame(n.props.CFrame)) parts.push(pos(n.props.CFrame as CFrameArr))
-    n.children.forEach(collect)
-  }
-  if (effect.space !== 'local') effect.roots.forEach(collect)
-  const centre: Vec3 = parts.length ? scale(parts.reduce((a, b) => add(a, b), [0, 0, 0] as Vec3), 1 / parts.length) : [0, 0, 0]
-  const recentre = cf(-centre[0], -centre[1], -centre[2])
   const tl = new Timeline(effect)
   // A node's own CFrame (parent space) at t: tweened CFrame, then a tweened Position on top.
-  const localAt = (n: VfxNode, pre: CFrameArr = IDENTITY): ((t: number) => CFrameArr) => {
+  const localAt = (n: VfxNode): ((t: number) => CFrameArr) => {
     const base = isCFrame(n.props.CFrame) ? (n.props.CFrame as CFrameArr) : IDENTITY
     const hasCf = tl.has(n.id, 'CFrame')
     const hasPos = tl.has(n.id, 'Position')
     if (!hasCf && !hasPos) {
-      const fixed = mul(pre, base)
+      const fixed = [...base]
       return () => fixed
     }
     return (t) => {
@@ -281,7 +275,7 @@ export function prepareEffect(effect: VfxEffect, seed = 1): PreparedEffect {
         const p = tl.value<number[]>(n.id, 'Position', base.slice(0, 3), t)
         c = [p[0], p[1], p[2], ...c.slice(3)]
       }
-      return mul(pre, c)
+      return c
     }
   }
 
@@ -292,7 +286,7 @@ export function prepareEffect(effect: VfxEffect, seed = 1): PreparedEffect {
   const walk = (n: VfxNode, parentAt: (t: number) => CFrameArr, parentPart: VfxNode | null, parentIsAttachment: boolean) => {
     let here = parentAt
     if (PART_CLASSES.has(n.className)) {
-      const local = localAt(n, recentre)
+      const local = localAt(n)
       here = (t) => mul(root(t), local(t))
     } else if (ATTACH_CLASSES.has(n.className)) {
       const local = localAt(n)
@@ -925,3 +919,33 @@ export function emitterBudget(node: VfxNode, bursts: number[] = []): { live: num
 }
 
 export { alignY, sequenceMax }
+
+// Where the effect's emitters, beams, trails, lights and visible parts reach over one play, with
+// the root standing still at its anchor (motion presets excluded): the preview frames its camera on
+// this. null when there is nothing placed.
+export function effectBounds(effect: VfxEffect, samples = 8): { min: Vec3; max: Vec3 } | null {
+  const p = prepareEffect({ ...effect, motion: 'static' }, 1)
+  const min: Vec3 = [Infinity, Infinity, Infinity]
+  const max: Vec3 = [-Infinity, -Infinity, -Infinity]
+  const add = (c: CFrameArr | Vec3, r = 0) => {
+    for (let i = 0; i < 3; i++) {
+      if (!Number.isFinite(c[i])) return
+    }
+    for (let i = 0; i < 3; i++) {
+      min[i] = Math.min(min[i], c[i] - r)
+      max[i] = Math.max(max[i], c[i] + r)
+    }
+  }
+  const D = Math.max(0.1, effect.duration || 2)
+  for (let k = 0; k < samples; k++) {
+    const t = (D * k) / Math.max(1, samples - 1)
+    for (const e of p.emitters) add(e.parentAt(t), e.partSize ? Math.hypot(...e.partSize) / 2 : 0)
+    for (const l of p.lights) add(l.at(t))
+    for (const m of p.meshes) add(m.at(t), Math.hypot(...m.look(t).size) / 2)
+    for (const b of [...p.beams, ...p.trails]) {
+      if (b.a0) add(b.a0(t))
+      if (b.a1) add(b.a1(t))
+    }
+  }
+  return min[0] <= max[0] ? { min, max } : null
+}

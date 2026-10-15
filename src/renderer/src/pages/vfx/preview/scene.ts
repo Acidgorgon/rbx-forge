@@ -9,9 +9,10 @@
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { prop } from '@shared/vfx/schema'
-import type { SimFrame } from '@shared/vfx/simulate'
+import { effectBounds, type SimFrame } from '@shared/vfx/simulate'
 import type { Rgb, VfxEffect } from '@shared/vfx/types'
 import { FxLayer, type LayerStats, type MeshInfo } from './fxLayer'
+import { frameView } from './framing'
 import { placeholderTexture, type PlaceholderKind } from './textures'
 import { DUMMY_GREY, LinearOutput, setSrgb, srgbColor, Stage, type Background } from './stage'
 
@@ -125,6 +126,10 @@ export class VfxScene {
   private disposed = false
   private stage: Stage
   private output: LinearOutput
+  private view: View = 'front'
+  // Where the loaded effect reaches (the camera pulls back when a preset does not show it all).
+  private bounds: ReturnType<typeof effectBounds> = null
+  private framed = false
 
   constructor(canvas: HTMLCanvasElement, opts: { resolver?: TextureResolver; interactive?: boolean; background?: Background } = {}) {
     THREE.ColorManagement.enabled = false
@@ -153,7 +158,10 @@ export class VfxScene {
   }
 
   setView(view: View): void {
-    const v = VIEWS[view] ?? VIEWS.front
+    this.view = VIEWS[view] ? view : 'front'
+    const preset = VIEWS[this.view]
+    const v = frameView(preset, this.bounds, this.camera.fov)
+    this.framed = v !== preset
     this.camera.position.set(...v.pos)
     if (this.controls) {
       this.controls.target.set(...v.target)
@@ -177,6 +185,15 @@ export class VfxScene {
   // every texture is ready (placeholders count), so a capture can render right away.
   async load(effect: VfxEffect, seed = 1): Promise<void> {
     const done = this.layer.load(effect, seed)
+    // Re-aim the camera only when this effect (or the last one) needs more than the preset shows,
+    // so an orbit the user made stays while browsing effects that fit.
+    try {
+      this.bounds = effectBounds(effect)
+    } catch {
+      this.bounds = null
+    }
+    const preset = VIEWS[this.view]
+    if (this.framed || frameView(preset, this.bounds, this.camera.fov) !== preset) this.setView(this.view)
     this.applyHighlight()
     await done
   }

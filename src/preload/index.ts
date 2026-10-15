@@ -79,7 +79,7 @@ const methods = [
   'uiMotionImportFigmaDoc', 'uiMotionImportFigmaUrl', 'uiMotionFigmaToken', 'uiMotionSetFigmaToken', 'uiMotionClearFigmaToken',
   'uiMotionTestFigmaToken', 'uiMotionLabStory', 'uiMotionCompose', 'uiMotionCritique', 'uiMotionExport', 'uiMotionSnap', 'uiMotionFile',
   // Studio check (Forge Bridge plugin: play in Roblox Studio, capture the key beats)
-  'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile',
+  'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile', 'studioPlaces', 'studioSetTarget',
   // Video references (VFX Lab + Animation Lab: "make it like this")
   'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
   // Restate first (chat cards, Labs briefs)

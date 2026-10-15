@@ -5,10 +5,14 @@
 
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 import { CONNECTED_MS, parseEvent, POLL_HOLD_MS, type BridgeEvent, type BridgeJob } from '../../../shared/studio/protocol.ts'
+import { isScriptInjectionError, SCRIPT_INJECTION_MESSAGE } from '../../../shared/studio/errors.ts'
+import { matchesTarget, placeLabel, targetKey, type StudioTarget } from '../../../shared/studio/target.ts'
 import { parseChangesBody, parseConfigQuery, parseOutlineBody, parseSnapshotBody, sanitizeConfig, SYNC_LIMITS, SyncProtocolError, type SyncHandler } from '../../../shared/sync/protocol.ts'
 
 export class BridgeError extends Error {
-  readonly code: 'not-listening' | 'busy' | 'not-accepted' | 'timeout' | 'plugin-error' | 'cancelled'
+  // 'script-injection': Studio refused the plugin's ModuleScript.Source writes (its Script Injection
+  // permission is off); the message says how to turn it on.
+  readonly code: 'not-listening' | 'busy' | 'not-accepted' | 'timeout' | 'plugin-error' | 'script-injection' | 'cancelled'
   constructor(code: BridgeError['code'], message: string) {
     super(message)
     this.code = code
@@ -17,6 +21,8 @@ export class BridgeError extends Error {
 
 export interface StudioInfo {
   lastSeen: number
+  // When this window started polling (its current connection).
+  since: number
   place?: string
   placeId?: number
   pluginVersion?: number
@@ -33,12 +39,21 @@ export interface RunOptions {
   // run() cancels it (code 'cancelled', reason PREEMPTED) instead of failing with 'busy', and busy()
   // does not report it.
   preemptible?: boolean
+  // Only the Studio window of this place gets the job (several places open). undefined: the
+  // bridge's default target (the Studio target picked in Forge); null: any window. A target that is
+  // not connected falls back to any window.
+  target?: StudioTarget | null
 }
 
 export const PREEMPTED = 'paused for another Studio job'
+// A background job running in another place than the new Studio target is stopped (it restarts there).
+export const RETARGETED = 'the Studio target changed'
 
 interface Active {
   job: BridgeJob
+  target: StudioTarget | null
+  // targetKey of the window that took the job.
+  deliveredTo: string | null
   preemptible: boolean
   handler: EventHandler
   delivered: boolean
@@ -60,19 +75,22 @@ export class StudioBridge {
   private info: StudioInfo | null = null
   private pollers = new Map<string, StudioInfo>()
   private active: Active | null = null
-  private waiters = new Set<(job: BridgeJob | null) => void>()
+  // Held polls, with the window each one came from.
+  private waiters = new Map<(job: BridgeJob | null) => void, StudioInfo>()
   private now: () => number
   private onChange?: () => void
   private log?: (text: string, stream?: 'info' | 'stderr') => void
   private holdMs: number
   private sync: SyncHandler | null = null
+  private defaultTarget?: () => StudioTarget | null
 
-  constructor(opts: { port: number; now?: () => number; onChange?: () => void; log?: (text: string, stream?: 'info' | 'stderr') => void; holdMs?: number }) {
+  constructor(opts: { port: number; now?: () => number; onChange?: () => void; log?: (text: string, stream?: 'info' | 'stderr') => void; holdMs?: number; target?: () => StudioTarget | null }) {
     this.wantPort = opts.port
     this.now = opts.now ?? Date.now
     this.onChange = opts.onChange
     this.log = opts.log
     this.holdMs = opts.holdMs ?? POLL_HOLD_MS
+    this.defaultTarget = opts.target
   }
 
   get port(): number {
@@ -101,6 +119,39 @@ export class StudioBridge {
 
   connected(): boolean {
     return !!this.info && this.now() - this.info.lastSeen < CONNECTED_MS
+  }
+
+  // Where jobs without their own target go (the Studio target picker), resolved by the wiring.
+  setDefaultTarget(fn: (() => StudioTarget | null) | undefined): void {
+    this.defaultTarget = fn
+  }
+
+  // The connected window jobs go to by default, or null (any window).
+  targetStudio(): StudioInfo | null {
+    const t = this.defaultTarget?.() ?? null
+    return t ? (this.studios().find((p) => matchesTarget(t, p)) ?? null) : null
+  }
+
+  // The Studio target changed: a background (preemptible) job running in another place is stopped
+  // so it starts again in the new one.
+  retarget(): void {
+    const a = this.active
+    if (!a?.preemptible || !a.delivered || a.aborted) return
+    const next = this.targetStudio()
+    if (!next || a.deliveredTo === targetKey(next)) return
+    a.aborted = RETARGETED
+    a.reject(new BridgeError('cancelled', RETARGETED))
+  }
+
+  // A job's target: its own, else the default; one that is not connected falls back to any window.
+  private targetFor(own: StudioTarget | null | undefined): StudioTarget | null {
+    const want = own !== undefined ? own : (this.defaultTarget?.() ?? null)
+    if (!want) return null
+    const hit = this.studios().find((p) => matchesTarget(want, p))
+    // (With the window's place name, for messages.)
+    if (hit) return hit.place && !want.place ? { ...want, place: hit.place } : want
+    this.log?.(`studio bridge: ${placeLabel(want)} is not connected; the job goes to any Studio window`)
+    return null
   }
 
   // Forge Sync: the handler behind /forge-bridge/sync/*. Without one, config answers { enabled: false }.
@@ -143,7 +194,7 @@ export class StudioBridge {
 
   async stop(): Promise<void> {
     this.cancel('Forge is closing')
-    for (const w of this.waiters) w(null)
+    for (const w of [...this.waiters.keys()]) w(null)
     this.waiters.clear()
     const s = this.server
     this.server = null
@@ -163,8 +214,9 @@ export class StudioBridge {
       prev.reject(new BridgeError('cancelled', PREEMPTED))
     }
     if (this.active) return Promise.reject(new BridgeError('busy', 'a Studio check is already running'))
+    const target = this.targetFor(opts.target)
     return new Promise<void>((resolve, reject) => {
-      const a: Active = { job, handler, preemptible: !!opts.preemptible, delivered: false, accepted: false, aborted: null, resolve, reject, timers: [] }
+      const a: Active = { job, target, deliveredTo: null, handler, preemptible: !!opts.preemptible, delivered: false, accepted: false, aborted: null, resolve, reject, timers: [] }
       this.active = a
       const finish = (err?: Error) => {
         if (this.active !== a) return
@@ -180,7 +232,12 @@ export class StudioBridge {
         setTimeout(() => {
           if (!a.accepted) {
             a.aborted = 'not picked up'
-            finish(new BridgeError('not-accepted', a.delivered ? 'the Forge Bridge plugin took the job but did not start it' : 'Studio did not pick up the job (is Studio open with the Forge Bridge plugin on?)'))
+            finish(
+              new BridgeError(
+                'not-accepted',
+                a.delivered ? 'the Forge Bridge plugin took the job but did not start it' : target ? `${placeLabel(target)} did not pick up the job (is it still open in Studio with the Forge Bridge plugin on?)` : 'Studio did not pick up the job (is Studio open with the Forge Bridge plugin on?)'
+              )
+            )
           }
         }, opts.acceptTimeoutMs ?? 12_000)
       )
@@ -191,10 +248,12 @@ export class StudioBridge {
         }, opts.timeoutMs ?? job.timeout * 1000)
       )
       this.onChange?.()
-      // Hand it to a poll that is already waiting.
-      for (const w of this.waiters) {
+      // Hand it to a poll that is already waiting (from the target's window when it has one).
+      for (const [w, info] of this.waiters) {
+        if (target && !matchesTarget(target, info)) continue
         this.waiters.delete(w)
         a.delivered = true
+        a.deliveredTo = targetKey(info)
         w(job)
         break
       }
@@ -215,13 +274,18 @@ export class StudioBridge {
     const v = Number(url.searchParams.get('v'))
     const placeId = Number(url.searchParams.get('placeId'))
     const first = !this.connected()
+    const now = this.now()
+    const key = `${Number.isFinite(placeId) && placeId > 0 ? placeId : 0}|${url.searchParams.get('place')?.slice(0, 100) ?? ''}`
+    const prev = this.pollers.get(key)
     this.info = {
-      lastSeen: this.now(),
+      lastSeen: now,
+      since: prev && now - prev.lastSeen < CONNECTED_MS ? prev.since : now,
       ...(url.searchParams.get('place') ? { place: url.searchParams.get('place')!.slice(0, 100) } : {}),
       ...(Number.isFinite(placeId) && placeId > 0 ? { placeId } : {}),
       ...(Number.isFinite(v) && v > 0 ? { pluginVersion: v } : {})
     }
-    this.pollers.set(`${this.info.placeId ?? 0}|${this.info.place ?? ''}`, this.info)
+    this.pollers.delete(key)
+    this.pollers.set(key, this.info)
     if (this.pollers.size > 32) this.pollers.delete(this.pollers.keys().next().value!)
     if (first) this.onChange?.()
   }
@@ -241,7 +305,7 @@ export class StudioBridge {
       if (req.method === 'GET' && path === '/forge-bridge/ping') return send(200, { now: this.now() })
       if (req.method === 'GET' && path === '/forge-bridge/poll') {
         this.seen(url)
-        const job = await this.nextJob(req)
+        const job = await this.nextJob(req, this.info!)
         if (job) {
           this.log?.(`studio bridge: job ${job.id} (${job.kind} ${job.name}) sent to Studio`)
           return send(200, { job })
@@ -324,10 +388,11 @@ export class StudioBridge {
     }
   }
 
-  private nextJob(req: IncomingMessage): Promise<BridgeJob | null> {
+  private nextJob(req: IncomingMessage, from: StudioInfo): Promise<BridgeJob | null> {
     const a = this.active
-    if (a && !a.delivered) {
+    if (a && !a.delivered && (!a.target || matchesTarget(a.target, from))) {
       a.delivered = true
+      a.deliveredTo = targetKey(from)
       return Promise.resolve(a.job)
     }
     return new Promise((resolve) => {
@@ -341,7 +406,7 @@ export class StudioBridge {
       }
       const t = setTimeout(() => w(null), this.holdMs)
       req.once('close', () => w(null))
-      this.waiters.add(w)
+      this.waiters.set(w, from)
     })
   }
 
@@ -349,7 +414,7 @@ export class StudioBridge {
     const at = this.now()
     if (ev.type === 'accepted') a.accepted = true
     if (ev.type === 'error') {
-      a.reject(new BridgeError('plugin-error', `Studio: ${ev.message}`))
+      a.reject(isScriptInjectionError(ev.message) ? new BridgeError('script-injection', SCRIPT_INJECTION_MESSAGE) : new BridgeError('plugin-error', `Studio: ${ev.message}`))
       return { ok: true }
     }
     let answer: unknown

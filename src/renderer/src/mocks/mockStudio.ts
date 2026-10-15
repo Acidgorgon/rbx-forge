@@ -1,7 +1,7 @@
 // Browser-preview mock of StudioApi: a fake Forge Bridge connection and Studio check that returns SVG
 // "Studio" and "preview" frames, so the Studio check UI renders without Electron or Studio.
 // ?studio=ready (default) | offline | noplugin | outdated | nocapture
-import type { HarnessEvents, StudioApi, StudioCheckKind, StudioCheckRecord, StudioStatus } from '@shared/types'
+import type { HarnessEvents, StudioApi, StudioCheckKind, StudioCheckRecord, StudioPlaces, StudioStatus, StudioTarget } from '@shared/types'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -41,7 +41,26 @@ export function studioMock(emit: Emit): StudioApi {
     return base
   }
   const key = (k: StudioCheckKind, id: string) => `${k}:${id}`
+  // ?places=2: two Studio windows (the Studio target picker shows).
+  const many = Number(new URLSearchParams(location.search).get('places') ?? 1) > 1
+  let chosen: StudioTarget | null = null
+  const places = (): StudioPlaces => {
+    const now = Date.now()
+    const list = [
+      { key: '1234|MyGame', placeId: 1234, place: 'MyGame', lastSeen: now, since: now - 60_000, linked: true },
+      ...(many ? [{ key: '0|Place1', place: 'Place1', lastSeen: now, since: now - 5_000 }] : [])
+    ]
+    const hit = chosen ? list.find((p) => (chosen!.placeId ? p.placeId === chosen!.placeId : p.place === chosen!.place)) : null
+    return { places: list, chosen, target: hit ? hit.key : chosen ? null : many ? list[0].key : null, why: hit ? 'chosen' : chosen ? 'lost' : many ? 'linked' : 'single' }
+  }
   return {
+    async studioPlaces() {
+      return places()
+    },
+    async studioSetTarget(t) {
+      chosen = t
+      return places()
+    },
     async studioStatus() {
       return status()
     },

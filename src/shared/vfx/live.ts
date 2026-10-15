@@ -15,10 +15,10 @@
 // Pure code: the module source, the job, the message format and the loop schedule (LiveSchedule,
 // tested without Studio). main/services/vfx/live.ts drives it.
 
-import { CAMERAS } from '../studio/payload.ts'
+import { assertModuleSizes, CAMERAS } from '../studio/payload.ts'
 import { KEY_COLOR } from '../studio/crop.ts'
 import { BRIDGE_VERSION, type BridgeJob } from '../studio/protocol.ts'
-import { luauModule, timelineModule } from './luau.ts'
+import { effectModules, timelineModule } from './luau.ts'
 import { FORGEFX_SOURCE, RUNTIME_MODULE } from './runtime.ts'
 import type { VfxEffect } from './types.ts'
 
@@ -55,6 +55,8 @@ export interface LiveStatus {
 export interface LiveEffectPayload {
   name: string
   source: string
+  // Data parts of an effect too big for one module (luau.ts effectModules): children of the module.
+  data?: { name: string; source: string }[]
   timeline?: string
   duration: number
   linger: number
@@ -84,11 +86,16 @@ function lingerOf(effect: VfxEffect): number {
   return Math.min(4, max)
 }
 
+// Throws (ModuleTooLargeError) when a module could not be built in Studio.
 export function livePayload(effect: VfxEffect): LiveEffectPayload {
+  const m = effectModules(effect, {})
+  const timeline = effect.script ? timelineModule(effect.script) : null
+  assertModuleSizes([{ name: effect.name, className: 'ModuleScript', source: m.source, children: [...m.data.map((d) => ({ name: d.name, className: 'ModuleScript' as const, source: d.source })), ...(timeline ? [{ name: 'Timeline', className: 'ModuleScript' as const, source: timeline }] : [])] }])
   return {
     name: effect.name,
-    source: luauModule(effect, {}),
-    ...(effect.script ? { timeline: timelineModule(effect.script) } : {}),
+    source: m.source,
+    ...(m.data.length ? { data: m.data } : {}),
+    ...(timeline ? { timeline } : {}),
     duration: Math.max(0.1, Number(effect.duration) || 1),
     linger: lingerOf(effect)
   }
@@ -201,6 +208,15 @@ function M.play(origin, _stage, _opts)
 		local m = Instance.new("ModuleScript")
 		m.Name = "LiveEffect" .. tostring(live.version)
 		m.Source = e.source
+		if type(e.data) == "table" then
+			-- An effect too big for one module: its data parts (Data1, Data2, ...).
+			for _, d in e.data do
+				local part = Instance.new("ModuleScript")
+				part.Name = tostring(d.name)
+				part.Source = tostring(d.source)
+				part.Parent = m
+			end
+		end
 		if type(e.timeline) == "string" then
 			local t = Instance.new("ModuleScript")
 			t.Name = "Timeline"
@@ -334,6 +350,11 @@ return M
 
 // The runtime (ForgeFX) always ships: scripted effects need it and any version may be one.
 export function liveJob(opts: { id: string; port: number; mode: LiveMode; frame: boolean; camera?: number[] | null }): BridgeJob {
+  const modules: BridgeJob['modules'] = [
+    { name: RUNTIME_MODULE, className: 'ModuleScript', source: FORGEFX_SOURCE },
+    { name: LIVE_ENTRY, className: 'ModuleScript', source: liveModuleSource({ ...opts, jobId: opts.id }) }
+  ]
+  assertModuleSizes(modules)
   return {
     id: opts.id,
     version: BRIDGE_VERSION,
@@ -344,10 +365,7 @@ export function liveJob(opts: { id: string; port: number; mode: LiveMode; frame:
     duration: 0,
     beats: [],
     camera: CAMERAS.vfx,
-    modules: [
-      { name: RUNTIME_MODULE, className: 'ModuleScript', source: FORGEFX_SOURCE },
-      { name: LIVE_ENTRY, className: 'ModuleScript', source: liveModuleSource({ ...opts, jobId: opts.id }) }
-    ],
+    modules,
     entry: LIVE_ENTRY,
     calibrate: false,
     key: KEY_COLOR,
@@ -422,8 +440,16 @@ export class LiveSchedule {
     const p = this.pending
     if (!p || (!force && now - p.at < LIVE_DEBOUNCE_MS)) return false
     this.pending = null
-    const payload = livePayload(p.value.effect)
-    if (this.current && this.current.payload.source === payload.source && this.current.payload.timeline === payload.timeline) {
+    let payload: LiveEffectPayload
+    try {
+      payload = livePayload(p.value.effect)
+    } catch (e) {
+      // Keep looping the last good version; the lab shows why this one cannot play.
+      this.lastError = (e as Error).message
+      return false
+    }
+    const same = (a: LiveEffectPayload, b: LiveEffectPayload) => a.source === b.source && a.timeline === b.timeline && JSON.stringify(a.data ?? []) === JSON.stringify(b.data ?? [])
+    if (this.current && same(this.current.payload, payload)) {
       this.current = { ...this.current, key: p.value.key, label: p.value.label }
       return false
     }

@@ -10,7 +10,7 @@ import type { LabTier } from '../../../shared/labModels.ts'
 import type { LabGate } from '../../../shared/gating/hooks.ts'
 import { rephraseNote, skippedCritique } from '../../../shared/gating/gates.ts'
 import { ComposeGaveUp, composeWithGate, type AttemptResult } from '../../../shared/gating/compose.ts'
-import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
+import { readdir, readFile, rm, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { allNodes, describeEffect, effectFromNodes, effectStats, emitAttributes, importNotes, IMPORT_VERSION, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
 import { findVfxPacks, splitEffects, type EffectGroup } from '../../../shared/vfx/split.ts'
@@ -24,7 +24,7 @@ import { RECORDED } from '../../../shared/vfx/examples.recorded.ts'
 import { FORGEFX_SOURCE, isOwnRuntime, RUNTIME_MODULE } from '../../../shared/vfx/runtime.ts'
 import { timelineSummary } from '../../../shared/vfx/timeline.ts'
 import { promptTags } from '../../../shared/vfx/draft.ts'
-import { luauModule, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
+import { DATA_HEADER, effectModules, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
 import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { centreEffect } from '../../../shared/vfx/placement.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeMatches, recipeSkill } from '../../../shared/vfx/recipes.ts'
@@ -937,7 +937,8 @@ export class VfxService {
       // Do not overwrite an effect folder another entry (or a person) owns.
       for (let i = 2; await exists(join(root, dir)); i++) dir = `${VFX_SRC_DIR}/${entry.effect.name}${i}`
     }
-    for (const f of await this.exportFiles(entry, dir)) {
+    const files = await this.exportFiles(entry, dir)
+    for (const f of files) {
       const abs = resolve(root, f.path)
       if (!abs.startsWith(resolve(root) + sep)) throw new VfxError('effect path escapes the project')
       const cur = await readFile(abs, 'utf8').catch(() => null)
@@ -946,6 +947,14 @@ export class VfxService {
       if (cur === f.content) continue
       await mkdir(dirname(abs), { recursive: true })
       await writeFile(abs, f.content, 'utf8')
+    }
+    // Data parts (Data1.luau, ...) left from a bigger version of the effect: ours, so removed.
+    const keep = new Set(files.map((f) => basename(f.path)))
+    for (const name of await readdir(resolve(root, dir)).catch(() => [] as string[])) {
+      if (!/^Data\d+\.luau$/.test(name) || keep.has(name)) continue
+      const abs = resolve(root, dir, name)
+      const cur = await readFile(abs, 'utf8').catch(() => '')
+      if (cur.split('\n').slice(0, 3).some((l) => l.startsWith(DATA_HEADER))) await rm(abs, { force: true })
     }
     return this.markWritten(entry, dir)
   }
@@ -968,8 +977,12 @@ export class VfxService {
     // Centred like the preview (placement.ts): the template and the module play the effect with
     // its anchor at the target, also when it was imported with its place's world positions.
     const fx = centreEffect(await this.exportTextures(entry.effect))
+    // An effect too big for one script (Roblox: Source under 200,000 characters) also writes its data
+    // parts, Data1.luau ... (children of the module in Rojo).
+    const mod = effectModules(fx, { description: entry.description })
     const out: { path: string; content: string; role: string; owned?: (current: string) => boolean; onlyIfExists?: boolean }[] = [
-      { path: `${dir}/init.luau`, content: luauModule(fx, { description: entry.description }), role: 'effect module' },
+      { path: `${dir}/init.luau`, content: mod.source, role: 'effect module' },
+      ...mod.data.map((d) => ({ path: `${dir}/${d.name}.luau`, content: d.source, role: 'effect data' })),
       { path: `${dir}/Effect.rbxmx`, content: writeRbxmx(fx.roots), role: 'effect model' }
     ]
     if (fx.script) out.push({ path: `${dir}/Timeline.luau`, content: timelineModule(fx.script), role: 'timeline script' })

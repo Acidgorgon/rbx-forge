@@ -3,7 +3,7 @@
 
 import { join } from 'node:path'
 import type { PrincipleHooks } from '../../../shared/principles/types.ts'
-import type { ThumbGenerateInput, ThumbScope, ThumbSettings } from '../../../shared/thumbs/types.ts'
+import type { BuildPromptInput, ThumbGenerateInput, ThumbScope, ThumbSettings, UiGenerateInput } from '../../../shared/thumbs/types.ts'
 import type { ArtFetch } from '../art/openaiImages.ts'
 import type { CodexImages } from '../art/imageBackend.ts'
 import type { ImageBackend } from '../../../shared/artTypes.ts'
@@ -89,7 +89,20 @@ export function createThumbsWiring(deps: ThumbsWireDeps): ThumbsWiring {
     thumbUpload: (id: unknown) => service.upload(String(id ?? '')),
     thumbSetExperience: (id: unknown, opts: { universeId: number; languageCode?: string }) => service.setExperience(String(id ?? ''), opts ?? { universeId: 0 }),
     thumbTaste: () => service.tasteView(),
-    thumbFile: (kind: unknown, id: unknown, which: unknown) => service.file(kind === 'ref' || kind === 'base' ? kind : 'thumb', String(id ?? ''), which === 's256' || which === 's160' ? which : 'image')
+    thumbFile: (kind: unknown, id: unknown, which: unknown) => service.file(kind === 'ref' || kind === 'base' || kind === 'ui' ? kind : 'thumb', String(id ?? ''), which === 's256' || which === 's160' ? which : 'image'),
+    thumbUseAsRef: (id: unknown) => service.useAsRef(String(id ?? '')),
+    thumbBuildPrompt: (input: BuildPromptInput) => service.buildPrompt({ ...(input ?? { ask: '', mode: 'thumbnail' }), names: input?.names ? strs(input.names) : undefined, baseIds: input?.baseIds ? strs(input.baseIds) : undefined }),
+    thumbUiEstimate: (input: UiGenerateInput) => service.ui.estimate(input ?? { ask: '', kind: 'button' }),
+    thumbUiGenerate: (input: UiGenerateInput) => service.ui.generate({ ...(input ?? { ask: '', kind: 'button' }), names: input?.names ? strs(input.names) : undefined, source: 'page' }),
+    thumbUiList: () => service.ui.list(),
+    thumbUiRate: (id: unknown, r: unknown) => service.ui.rate(String(id ?? ''), r === 'up' || r === 'down' ? r : null),
+    thumbUiKeep: (id: unknown, keep: unknown) => service.ui.keep(String(id ?? ''), keep === true),
+    thumbUiPin: (id: unknown, pinned: unknown) => service.ui.pin(String(id ?? ''), pinned === true),
+    thumbUiCritique: (id: unknown) => service.ui.critique(String(id ?? '')),
+    thumbUiDelete: (id: unknown) => service.ui.remove(String(id ?? '')),
+    thumbUiKit: () => service.ui.kit(),
+    thumbUiExport: (id: unknown) => service.ui.export(String(id ?? '')),
+    thumbUiUpload: (id: unknown) => service.ui.upload(String(id ?? ''))
   }
   return { service, handlers }
 }

@@ -99,6 +99,8 @@ const methods = [
   'thumbProfiles', 'thumbSaveProfile', 'thumbDeleteProfile', 'thumbBases', 'thumbAddBases', 'thumbCaptureStudio', 'thumbDeleteBase',
   'thumbEstimate', 'thumbGenerate', 'thumbCritique', 'thumbRefine', 'thumbList', 'thumbRate', 'thumbShip', 'thumbNotes', 'thumbDelete',
   'thumbAddCtr', 'thumbRemoveCtr', 'thumbUpload', 'thumbSetExperience', 'thumbTaste', 'thumbFile',
+  'thumbUseAsRef', 'thumbBuildPrompt', 'thumbUiEstimate', 'thumbUiGenerate', 'thumbUiList', 'thumbUiRate', 'thumbUiKeep', 'thumbUiPin',
+  'thumbUiCritique', 'thumbUiDelete', 'thumbUiKit', 'thumbUiExport', 'thumbUiUpload',
   // Quality of life (bug reports, notifications, session restore, away digest)
   'qolGetSettings', 'qolSetSettings', 'qolBugReportStart', 'qolBugReport', 'qolBugReportPreview', 'qolRevealPath', 'qolReportError',
   'qolLoadSession', 'qolSaveSession', 'qolDigest', 'qolSeen', 'qolTestNotify',

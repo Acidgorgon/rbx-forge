@@ -7,6 +7,7 @@
 //   profiles/<id>/item.json                       named style profiles
 //   bases/<id>/item.json + image.png              base images from the game (screenshots, Studio)
 //   thumbs/<id>/item.json + image.png s256.png s160.png   generated variations (CTR in item.json)
+//   ui/<id>/item.json + image.png                  UI art (buttons, panels, icons, HUD mockups)
 //
 // Files ending in ".conflict" (left by sync) are ignored. No electron imports.
 
@@ -18,8 +19,8 @@ import { renameRetry } from '../fs/renameRetry.ts'
 
 export const PROJECT_THUMB_DIR = '.forge/thumbs'
 export const META = 'item.json'
-export type ThumbKind = 'refs' | 'profiles' | 'bases' | 'thumbs'
-export const KINDS: readonly ThumbKind[] = ['refs', 'profiles', 'bases', 'thumbs']
+export type ThumbKind = 'refs' | 'profiles' | 'bases' | 'thumbs' | 'ui'
+export const KINDS: readonly ThumbKind[] = ['refs', 'profiles', 'bases', 'thumbs', 'ui']
 export const ID_RE = /^[a-z0-9][a-z0-9-]{2,63}$/
 
 export class ThumbError extends Error {}

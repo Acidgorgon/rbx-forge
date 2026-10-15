@@ -2,7 +2,10 @@
 // canvas (blocky avatars, a big threat, outlined text), measured with the real shared code
 // (shared/thumbs stats, checks, style aggregation, taste, CTR), fake generation / critique / refine,
 // fake upload and experience thumbnail.
-import type { HarnessEvents, SmallSizeReport, Thumb, ThumbBase, ThumbCritique, ThumbGenerateInput, ThumbImageStats, ThumbRef, ThumbsApi, ThumbSettings, ThumbStatus, ThumbStyleProfile } from '@shared/types'
+import type { HarnessEvents, SmallSizeReport, Thumb, ThumbBase, ThumbCritique, ThumbGenerateInput, ThumbImageStats, ThumbRef, ThumbsApi, ThumbSettings, ThumbStatus, ThumbStyleProfile, UiAsset, UiAssetKind, UiGenerateInput } from '@shared/types'
+import { analyzeAsk, buildSections, isUiKind, lintSections, normalizeSections, splitNames, uiGenSize, uiPrompt, UI_KINDS } from '@shared/thumbs/builder'
+import { generationPrompt } from '@shared/thumbs/prompt'
+import { blendCritique, codeCritique, learnUiKit, pickBestUi, sliceCenter, uiAssetStats, uiChecks } from '@shared/thumbs/uiart'
 import { imageStats, smallSizeReport } from '@shared/thumbs/stats'
 import { codeOverall, thumbChecks } from '@shared/thumbs/checks'
 import { aggregateProfile, cardFromStats, profileSummary } from '@shared/thumbs/style'
@@ -235,6 +238,123 @@ function seed(): void {
   for (const [i, l] of LOOKS.entries()) addThumb(batch, i + 1, l, { flagged: i === 2, words: i === 3 ? 5 : 2 })
 }
 
+// ------------------------------------------------------------------ UI art (canvas-drawn)
+
+let uiAssets: UiAsset[] = []
+const UI_HUES = ['#2ec4b6', '#ff9f1c', '#e71d36', '#8338ec', '#3a86ff', '#06d6a0']
+
+function roundRect(g: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number) {
+  g.beginPath()
+  g.moveTo(x + r, y)
+  g.arcTo(x + w, y, x + w, y + h, r)
+  g.arcTo(x + w, y + h, x, y + h, r)
+  g.arcTo(x, y + h, x, y, r)
+  g.arcTo(x, y, x + w, y, r)
+  g.closePath()
+}
+
+// Draws one UI asset: transparent canvas (opaque for HUD mockups), outline, top-lit fill.
+function drawUi(kind: UiAssetKind, hue: string, k: number, label?: string): HTMLCanvasElement {
+  const c = document.createElement('canvas')
+  const [w, h] = kind === 'button' ? [480, 176] : kind === 'panel' ? [400, 320] : kind === 'hud' ? [640, 360] : [256, 256]
+  c.width = w
+  c.height = h
+  const g = c.getContext('2d')!
+  const fill = (y0: number, y1: number) => {
+    const gr = g.createLinearGradient(0, y0, 0, y1)
+    gr.addColorStop(0, '#ffffff')
+    gr.addColorStop(0.12, hue)
+    gr.addColorStop(1, hue)
+    return gr
+  }
+  if (kind === 'button' || kind === 'panel') {
+    const r = kind === 'button' ? 36 + (k % 3) * 10 : 28
+    roundRect(g, 12, 12, w - 24, h - 24, r)
+    g.fillStyle = '#16161e'
+    g.fill()
+    roundRect(g, 22, 22, w - 44, h - 44, r - 10)
+    g.fillStyle = fill(22, h - 22)
+    g.fill()
+    g.fillStyle = 'rgba(0,0,0,.22)'
+    g.fillRect(22 + r, h - 40, w - 44 - 2 * r, 14)
+    if (kind === 'panel') {
+      g.fillStyle = 'rgba(255,255,255,.18)'
+      g.fillRect(40, 70, w - 80, h - 120)
+    }
+    if (label) {
+      g.font = `900 ${Math.round(h * 0.36)}px system-ui, sans-serif`
+      g.textAlign = 'center'
+      g.textBaseline = 'middle'
+      g.lineWidth = 10
+      g.strokeStyle = '#16161e'
+      g.strokeText(label, w / 2, h / 2)
+      g.fillStyle = '#fff'
+      g.fillText(label, w / 2, h / 2)
+    }
+  } else if (kind === 'hud') {
+    const bg = g.createLinearGradient(0, 0, 0, h)
+    bg.addColorStop(0, '#87c5ff')
+    bg.addColorStop(1, '#3c8d3a')
+    g.fillStyle = bg
+    g.fillRect(0, 0, w, h)
+    g.filter = 'blur(2px)'
+    for (let i = 0; i < 7; i++) (g.fillStyle = ['#8d8d8d', '#a0522d', '#5b6f8c'][i % 3]), g.fillRect(i * 96, h * 0.55 - (i % 3) * 30, 70, 120)
+    g.filter = 'none'
+    for (const [x, y] of [[16, 46], [16, 86]]) (roundRect(g, x, y, 150, 30, 15), (g.fillStyle = '#16161e'), g.fill(), roundRect(g, x + 3, y + 3, 144, 24, 12), (g.fillStyle = hue), g.fill())
+    for (let i = 0; i < 5; i++) (roundRect(g, w / 2 - 150 + i * 62, h - 66, 54, 54, 12), (g.fillStyle = '#16161e'), g.fill(), roundRect(g, w / 2 - 146 + i * 62, h - 62, 46, 46, 9), (g.fillStyle = i === 0 ? hue : '#3a3a48'), g.fill())
+    g.fillStyle = '#fff'
+    g.font = '700 16px system-ui'
+    g.fillText('1,250', 50, 67)
+  } else {
+    // A gem / coin / heart-ish object, centred with padding.
+    const cx = w / 2
+    const cy = h / 2
+    const rad = 82 + (k % 2) * 10
+    g.beginPath()
+    if (k % 3 === 1) {
+      g.moveTo(cx, cy - rad)
+      g.lineTo(cx + rad, cy - rad * 0.2)
+      g.lineTo(cx, cy + rad)
+      g.lineTo(cx - rad, cy - rad * 0.2)
+      g.closePath()
+    } else g.arc(cx, cy, rad, 0, Math.PI * 2)
+    g.lineWidth = 16
+    g.strokeStyle = '#16161e'
+    g.stroke()
+    g.fillStyle = fill(cy - rad, cy + rad)
+    g.fill()
+    g.fillStyle = 'rgba(255,255,255,.55)'
+    g.beginPath()
+    g.ellipse(cx - rad * 0.35, cy - rad * 0.4, rad * 0.22, rad * 0.12, -0.6, 0, Math.PI * 2)
+    g.fill()
+  }
+  return c
+}
+
+function addUi(batchId: string, k: number, kind: UiAssetKind, ask: string, extra: Partial<UiAsset> = {}): UiAsset {
+  const label = analyzeAsk(ask).quoted[0]
+  const c = drawUi(kind, UI_HUES[(k + ask.length) % UI_HUES.length], k, label)
+  const img = rgba(c)
+  const stats = uiAssetStats(img)
+  const slice = kind === 'button' || kind === 'panel' ? (sliceCenter(img) ?? undefined) : undefined
+  const checks = uiChecks({ kind, img, stats, background: UI_KINDS[kind].transparent ? 'transparent' : 'opaque', fill: 0.86, slice })
+  const now = Date.now()
+  const sections = buildSections({ ask, mode: kind, gameName: 'Shark Escape', names: kind === 'icon-set' ? splitNames(ask) : undefined, size: uiGenSize(kind, settings.model) })
+  const a: UiAsset = { id: `${batchId}-${k}`, batchId, scope: 'project', kind, name: `${ask.slice(0, 40)} ${k}`, ask, prompt: uiPrompt(sections, { kind, gameName: 'Shark Escape' }), sections, model: settings.model, genSize: uiGenSize(kind, settings.model), quality: settings.quality, costUsd: 0.04, transparent: UI_KINDS[kind].transparent, file: 'image.png', width: img.width, height: img.height, stats, ...(slice ? { slice } : {}), checks, critique: codeCritique(checks, now), refIds: [], createdAt: now + k, updatedAt: now, ...extra }
+  files.set(a.id, { image: c.toDataURL('image/png') })
+  uiAssets = [a, ...uiAssets.filter((x) => x.id !== a.id)]
+  return a
+}
+
+let uiSeeded = false
+function seedUi(): void {
+  if (uiSeeded) return
+  uiSeeded = true
+  const b = 'ua-mg2seed0a1'
+  addUi(b, 1, 'button', 'a teal PLAY button, glossy', { keep: true, pinned: true, look: { stroke: 'thick dark outline', corners: 'rounded corners', shading: 'top-lit glossy gradient', typography: 'chunky rounded sans' }, createdAt: t0 - 3_600_000 })
+  addUi(b, 2, 'button', 'a teal PLAY button, glossy', { rating: 'up', createdAt: t0 - 3_500_000 })
+}
+
 function status(): ThumbStatus {
   const genSize = genSizeFor(settings.model)
   const per = settings.model.startsWith('gpt-image-1-mini') ? 0.015 : settings.quality === 'low' ? 0.009 : settings.quality === 'medium' ? 0.019 : 0.077
@@ -251,7 +371,7 @@ function status(): ThumbStatus {
     perImageUsd: per,
     spentTodayUsd: Math.round(thumbs.filter((t) => t.createdAt >= t0).reduce((s, t) => s + t.costUsd, 0) * 1000) / 1000,
     dailyCapUsd: 5,
-    counts: { refs: refs.length, profiles: profiles.length, bases: bases.length, thumbs: thumbs.length },
+    counts: { refs: refs.length, profiles: profiles.length, bases: bases.length, thumbs: thumbs.length, ui: uiAssets.length },
     settings,
     models: [...THUMB_MODELS],
     ...(universeId ? { universeId } : {})
@@ -269,6 +389,14 @@ export function thumbsMock(emit: Emit): ThumbsApi {
     thumbs = thumbs.map((x) => (x.id === t.id ? t : x))
     changed()
     return t
+  }
+  const putUi = (uid: string, fn: (a: UiAsset) => UiAsset) => {
+    const a = uiAssets.find((x) => x.id === uid)
+    if (!a) throw new Error(`no UI asset "${uid}"`)
+    const next = { ...fn(a), updatedAt: Date.now() }
+    uiAssets = uiAssets.map((x) => (x.id === uid ? next : x))
+    changed()
+    return next
   }
   return {
     async thumbStatus() {
@@ -450,8 +578,110 @@ export function thumbsMock(emit: Emit): ThumbsApi {
     async thumbTaste() {
       return tasteView(learnTaste(tasteSamples(thumbs)))
     },
+    async thumbUseAsRef(tid) {
+      const t = find(tid)
+      const r: ThumbRef = { id: id('ref'), scope: 'user', name: `kept ${t.brief.slice(0, 40)}`, source: 'file', file: 'image.png', width: 1920, height: 1080, stats: t.stats, tags: ['own'], card: cardFromStats(t.stats), analyzedAt: Date.now(), createdAt: Date.now(), updatedAt: Date.now() }
+      files.set(r.id, { image: files.get(tid)?.image ?? '' })
+      refs.unshift(r)
+      changed()
+      return r
+    },
+    async thumbBuildPrompt(input) {
+      seedUi()
+      await delay(input.model ? 700 : 80)
+      const mode = isUiKind(input.mode) ? input.mode : 'thumbnail'
+      const profile = profiles.find((p) => p.id === input.profileId)
+      const kit = learnUiKit(uiAssets, { kind: mode === 'thumbnail' ? undefined : mode })
+      const names = mode === 'icon-set' ? (input.names?.length ? input.names : splitNames(input.ask)) : undefined
+      const sections = buildSections({ ask: input.ask, mode, gameName: 'Shark Escape', profile, kit: kit.samples ? kit : null, names, size: mode === 'thumbnail' ? undefined : uiGenSize(mode, settings.model) })
+      if (input.model) for (const s of sections) if (s.key === 'lighting') Object.assign(s, { text: `${s.text} Add a crisp specular streak and a soft bounce light from below.`, source: 'model' })
+      const prompt = mode === 'thumbnail' ? generationPrompt({ brief: input.ask, bases: input.baseIds?.length ?? 0, gameName: 'Shark Escape', sections }).prompt : uiPrompt(sections, { kind: mode, gameName: 'Shark Escape', icon: names?.[0], kitRefs: Math.min(2, kit.refIds.length) })
+      const notes = [...(profile ? [`Style profile "${profile.name}" is in the composition, camera, palette and text sections.`] : []), ...(mode !== 'thumbnail' && kit.samples ? [`Your UI kit (${kit.samples} kept) is attached: ${kit.lines.slice(0, 3).join(', ')}.`] : [])]
+      return { mode, sections, prompt, notes, warnings: lintSections(sections, mode, names), by: input.model ? 'model' : 'rules', ...(names ? { names } : {}) }
+    },
+    async thumbUiEstimate(input: UiGenerateInput) {
+      const kind = isUiKind(input.kind) ? input.kind : 'button'
+      const n = Math.max(1, Math.min(10, input.n ?? UI_KINDS[kind].n)) + (kind === 'icon-set' ? Math.max(0, (input.names?.length ? input.names : splitNames(input.ask)).length - 1) : 0)
+      const per = status().perImageUsd
+      const spent = status().spentTodayUsd
+      return { n, model: settings.model, quality: input.quality ?? settings.quality, genSize: uiGenSize(kind, settings.model, input.shape), perImageUsd: per, totalUsd: Math.round(per * n * 1000) / 1000, spentTodayUsd: spent, dailyCapUsd: 5, overCap: spent + per * n > 5 }
+    },
+    async thumbUiGenerate(input) {
+      seedUi()
+      const kind = isUiKind(input.kind) ? input.kind : 'button'
+      const names = kind === 'icon-set' ? (input.names?.length ? input.names : splitNames(input.ask)) : []
+      if (kind === 'icon-set' && names.length < 2) throw new Error('Name at least two icons for a set, e.g. "coin, gem, heart, key".')
+      const batchId = `ua-${Date.now().toString(36)}${Math.random().toString(16).slice(2, 6)}`
+      const n = Math.max(1, Math.min(10, input.n ?? UI_KINDS[kind].n))
+      emit('thumbs:progress', { batchId, stage: 'generating', detail: `${n} × ${UI_KINDS[kind].label.toLowerCase()}` })
+      await delay(1100)
+      const sections = normalizeSections(input.sections)
+      const made: UiAsset[] = []
+      for (let i = 0; i < n; i++) made.push(addUi(batchId, i + 1, kind, input.ask, { ...(sections ? { sections } : {}), ...(kind === 'icon-set' ? { name: `${names[0]} ${i + 1}`, setName: input.ask.slice(0, 60), setIndex: 0 } : {}) }))
+      emit('thumbs:progress', { batchId, stage: 'critique', detail: `${n} candidates` })
+      await delay(500)
+      const ranked = made.map((a, i) => ({ ...a, critique: blendCritique({ overall: 6 + ((i * 7) % 4), scores: { brief: 8, readability: 7 + (i % 3), consistency: 7, clean: 8 }, summary: i % 2 ? 'Reads well at 48 px; outline could be thicker.' : 'Bold silhouette, clean edges, matches the kit.', changes: ['Thicker outline'] }, a.checks, Date.now()), look: { stroke: 'thick dark outline', corners: 'rounded corners', shading: 'top-lit glossy gradient', typography: 'chunky rounded sans' } }))
+      uiAssets = uiAssets.map((a) => ranked.find((r) => r.id === a.id) ?? a)
+      const bestId = pickBestUi(ranked)
+      let set: string[] | undefined
+      if (kind === 'icon-set' && bestId) {
+        set = [bestId]
+        for (const [i, name] of names.slice(1).entries()) {
+          emit('thumbs:progress', { batchId, stage: 'set', detail: `${i + 2}/${names.length}: ${name}` })
+          await delay(250)
+          const a = addUi(batchId, n + i + 1, kind, input.ask, { name, setName: input.ask.slice(0, 60), setIndex: i + 1, refIds: [bestId] })
+          set.push(a.id)
+        }
+      }
+      emit('thumbs:progress', { batchId, stage: 'done', done: true })
+      changed()
+      return { id: batchId, assets: uiAssets.filter((a) => a.batchId === batchId), ...(bestId ? { bestId } : {}), ...(set ? { set } : {}), notes: [] }
+    },
+    async thumbUiList() {
+      seedUi()
+      return [...uiAssets].sort((a, b) => b.createdAt - a.createdAt)
+    },
+    async thumbUiRate(uid, rating) {
+      return putUi(uid, (a) => {
+        const n = { ...a }
+        if (rating) n.rating = rating
+        else delete n.rating
+        return n
+      })
+    },
+    async thumbUiKeep(uid, keep) {
+      return putUi(uid, (a) => ({ ...a, keep }))
+    },
+    async thumbUiPin(uid, pinned) {
+      return putUi(uid, (a) => ({ ...a, pinned }))
+    },
+    async thumbUiCritique(uid) {
+      await delay(600)
+      const a = putUi(uid, (x) => ({ ...x, critique: blendCritique({ overall: 8, scores: { brief: 8, readability: 8, consistency: 8, clean: 9 }, summary: 'Critic tier: clean shape, the bevel reads at phone size.', changes: [] }, x.checks, Date.now()) }))
+      return { id: a.batchId, asset: a }
+    },
+    async thumbUiDelete(uid) {
+      uiAssets = uiAssets.filter((a) => a.id !== uid)
+      changed()
+      return true
+    },
+    async thumbUiKit() {
+      seedUi()
+      return learnUiKit(uiAssets)
+    },
+    async thumbUiExport(uid) {
+      await delay(300)
+      const a = putUi(uid, (x) => ({ ...x, exportedTo: `art/ui/${x.kind === 'icon-set' ? 'icons' : `${x.kind}s`}/${x.name.toLowerCase().replace(/[^a-z0-9]+/g, '-')}.png` }))
+      return { path: a.exportedTo!, luau: `image.Image = "rbxassetid://0"${a.slice ? `\nimage.ScaleType = Enum.ScaleType.Slice\nimage.SliceCenter = Rect.new(${a.slice.x0}, ${a.slice.y0}, ${a.slice.x1}, ${a.slice.y1})` : ''}` }
+    },
+    async thumbUiUpload(uid) {
+      await delay(800)
+      const asset = String(18400000 + Math.floor(Math.random() * 99999))
+      return putUi(uid, (x) => ({ ...x, roblox: { assetId: asset, uri: `rbxassetid://${asset}`, uploadedAt: Date.now(), moderation: 'Reviewing' } }))
+    },
     async thumbFile(kind, fid, which) {
       seed()
+      seedUi()
       const f = files.get(fid)
       if (!f) return null
       return which && which !== 'image' ? (f[which] ?? f.image) : f.image

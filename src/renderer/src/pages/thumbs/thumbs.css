@@ -151,3 +151,70 @@
   .vfx-body.th-body.has-detail { grid-template-columns: minmax(0, 1fr); }
 }
 .th .vfx-view { max-width: 100%; overflow-x: auto; scrollbar-width: none; }
+
+/* Prompt builder: the ask turned into editable sections (PromptBuilder.tsx) */
+.th-builder { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 10px; border-top: 1px dashed var(--line); }
+.th-builder-head { display: flex; flex-wrap: wrap; align-items: center; gap: 6px 8px; min-width: 0; }
+.th-builder-toggle { flex: none; }
+.th-builder-state { font-size: 11px; min-width: 0; overflow-wrap: anywhere; }
+.th-builder-body { display: flex; flex-direction: column; gap: 8px; }
+.th-builder-notes { margin: 0; padding-left: 16px; font-size: 11px; color: var(--fg-muted); }
+.th-builder-warn { align-items: flex-start; gap: 6px; }
+.th-sections { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 8px 10px; }
+.th-section { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.th-section-head { display: flex; align-items: center; gap: 6px; font-size: 11px; color: var(--fg-2); }
+.th-src { margin-left: auto; padding: 0 5px; border-radius: var(--r-sm); border: 1px solid var(--line); font-size: 10px; line-height: 15px; color: var(--fg-faint); }
+.th-section.src-model .th-src { color: var(--info); border-color: var(--info-line); }
+.th-section.src-kit .th-src { color: var(--ok); border-color: var(--ok-line); }
+.th-section.src-user .th-src { color: var(--ember-text); border-color: var(--ember-lo); }
+.th-section-text { width: 100%; min-height: 44px; padding: 5px 7px; font-size: 11.5px; line-height: 1.45; resize: vertical; }
+.th-section.src-user .th-section-text { border-color: var(--ember-lo); }
+
+/* Thumbnails | UI art switch and the UI make box (UiArtView.tsx) */
+.th-mode { flex: none; }
+.th-mode button { flex: none; padding: 0 10px; }
+.th-kinds { flex-wrap: wrap; margin-bottom: 10px; }
+.th-kinds button { flex: 1 1 auto; }
+.th-names .input { height: 24px; width: 280px; max-width: 100%; font-size: 11.5px; }
+.th-kit-toggle { cursor: pointer; }
+.th-kit-toggle input { margin: 0; }
+
+/* UI art wells: a checkerboard so transparency reads; stays dark in both themes like the image wells */
+.th-ui-well { position: relative; display: grid; place-items: center; width: 100%; aspect-ratio: 1; padding: 8px; border-bottom: 1px solid var(--line); overflow: hidden;
+  background-color: #1b1b20; background-image: conic-gradient(#26262c 25%, transparent 0 50%, #26262c 0 75%, transparent 0); background-size: 16px 16px; }
+.th-ui-well.kind-button { aspect-ratio: 8 / 3; }
+.th-ui-well.kind-hud { aspect-ratio: 16 / 9; padding: 0; }
+.th-ui-well img { max-width: 100%; max-height: 100%; object-fit: contain; display: block; }
+.th-ui-well.kind-hud img { width: 100%; height: 100%; object-fit: cover; }
+.th-ui-well > .th-ph { position: absolute; inset: 0; height: auto; background: transparent; }
+.th-ui-well.big { border: 1px solid var(--line); border-radius: var(--r-md); max-height: 360px; }
+.th-ui-grid { grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); }
+.has-detail .th-ui-grid { grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
+
+/* Real-size previews: the icon set strip and the 9-slice stretch */
+.th-set-row, .th-real-row { flex-direction: row; flex-wrap: wrap; align-items: flex-end; gap: 12px; }
+.th-set-fig { margin: 0; display: flex; flex-direction: column; align-items: center; gap: 3px; width: 64px; }
+.th-set-fig figcaption { max-width: 64px; font: 10.5px/1.2 var(--font-sans, system-ui); opacity: .75; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.th-set-icon { display: inline-block; flex: none; }
+.th-set-icon img { display: block; width: 100%; height: 100%; object-fit: contain; }
+.th-set-gap { flex: 0 0 1px; align-self: stretch; margin: 0 4px; background: currentColor; opacity: .15; }
+.th-real { display: flex; flex-direction: column; gap: 6px; }
+.th-real-row img { display: block; object-fit: contain; }
+.th-slice-box { display: inline-block; flex: none; box-sizing: border-box; border-color: transparent; }
+
+/* UI detail panel extras */
+.th-exported { align-items: flex-start; gap: 6px; font-size: 11px; overflow-wrap: anywhere; }
+
+/* UI kit tab */
+.th-kit-refs { display: flex; flex-wrap: wrap; gap: 6px; }
+.th-kit-ref { display: grid; place-items: center; width: 76px; height: 76px; padding: 0; border: 1px solid var(--line); border-radius: var(--r-md); cursor: pointer;
+  background-color: #1b1b20; background-image: conic-gradient(#26262c 25%, transparent 0 50%, #26262c 0 75%, transparent 0); background-size: 12px 12px; }
+.th-kit-ref:hover { border-color: var(--line-strong); }
+.th-kit-ref:focus-visible { outline: none; border-color: var(--line-focus); }
+
+@container (max-width: 520px) {
+  .th-sections { grid-template-columns: minmax(0, 1fr); }
+  .th-ui-grid, .has-detail .th-ui-grid { grid-template-columns: minmax(0, 1fr) minmax(0, 1fr); }
+  .th-names .input { width: 100%; }
+  .th-names { flex: 1 1 100%; }
+}

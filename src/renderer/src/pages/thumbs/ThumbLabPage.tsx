@@ -1,7 +1,9 @@
 // Thumbnail Lab: reference thumbnails (style only) -> style profiles; bases from the real game
 // (screenshots or a Studio capture); "Make a thumbnail of ___" generates N 1920x1080 variations in
 // one image call, the critic scores each and picks the best; refine, rate, "would ship", manual CTR,
-// upload to Roblox. Mirrors the VFX Lab layout (make box, tabs, grid + detail panel).
+// upload to Roblox. Mirrors the VFX Lab layout (make box, tabs, grid + detail panel). The prompt
+// builder shows (and lets you edit) the structured prompt; the "UI art" mode makes buttons, panels,
+// icons, icon sets and HUD mockups through the same image backend (UiArtView).
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Thumb, ThumbBase, ThumbEstimate, ThumbRef, ThumbStatus, ThumbStyleProfile, TasteView, ThumbsEvents } from '@shared/types'
 import { batchOf } from '@shared/thumbs/size'
@@ -14,6 +16,8 @@ import { PrinciplePriorities } from '../principles/Principles'
 import { LabCostLine } from '../gating/LabGating'
 import { DiscoveryStrip, ProfileCard, RefCard, ThumbCard, ctrText, useThumbFile } from './parts'
 import { ThumbDetail } from './ThumbDetail'
+import { builderSections, EMPTY_BUILDER, PromptBuilder, type BuilderState } from './PromptBuilder'
+import { UiArtView } from './UiArtView'
 import '../vfx/vfx.css'
 import './thumbs.css'
 
@@ -28,6 +32,18 @@ const TABS: { id: Tab; title: string }[] = [
 const SUGGESTIONS = ['escaping a giant shark', 'the boss fight in the lava cave', 'racing past the finish line', 'opening a legendary egg']
 const QUALITIES = ['low', 'medium', 'high']
 const usd = (x: number) => `$${x < 1 ? x.toFixed(3) : x.toFixed(2)}`
+
+// Thumbnails or UI art; remembered per viewer, and the "Open UI Art" command switches it.
+type Mode = 'thumbs' | 'ui'
+export const THUMBS_MODE_KEY = 'forge.thumbs.mode'
+export const THUMBS_MODE_EVENT = 'forge:thumbs-mode'
+function savedMode(): Mode {
+  try {
+    return localStorage.getItem(THUMBS_MODE_KEY) === 'ui' ? 'ui' : 'thumbs'
+  } catch {
+    return 'thumbs'
+  }
+}
 
 // The best of a batch: the server's pick when we have it, else the top critique without copy flags.
 function bestOf(thumbs: Thumb[], picked?: string): string | undefined {
@@ -114,6 +130,22 @@ export function ThumbLabPage() {
   const [profileName, setProfileName] = useState('')
   const [libQuery, setLibQuery] = useState('')
   const [baseInit, setBaseInit] = useState(false)
+  const [mode, setModeState] = useState<Mode>(savedMode)
+  const [builder, setBuilder] = useState<BuilderState>(EMPTY_BUILDER)
+  const [builderOpen, setBuilderOpen] = useState(false)
+  const setMode = (m: Mode) => {
+    setModeState(m)
+    try {
+      localStorage.setItem(THUMBS_MODE_KEY, m)
+    } catch {
+      // private window: the mode just is not remembered
+    }
+  }
+  useEffect(() => {
+    const on = (e: Event) => setModeState((e as CustomEvent<Mode>).detail === 'ui' ? 'ui' : 'thumbs')
+    window.addEventListener(THUMBS_MODE_EVENT, on)
+    return () => window.removeEventListener(THUMBS_MODE_EVENT, on)
+  }, [])
 
   const load = useCallback(async () => {
     try {
@@ -185,13 +217,15 @@ export function ThumbLabPage() {
     try {
       const g = await restate.gate(what)
       if (!g) return
-      const r = await h.thumbGenerate({ ...input, brief: what, ...(g.restatement ? { restatement: g.restatement } : {}), source: 'page' })
+      const sections = builderSections(builder, what, 'thumbnail')
+      const r = await h.thumbGenerate({ ...input, brief: what, ...(sections ? { sections } : {}), ...(g.restatement ? { restatement: g.restatement } : {}), source: 'page' })
       await load()
       setBatchId(r.id)
       if (r.bestId) setPicked((m) => ({ ...m, [r.id]: r.bestId! }))
       setSelected(r.bestId ?? r.thumbs[0]?.id ?? null)
       setTab('variations')
       setBrief('')
+      setBuilder(EMPTY_BUILDER)
       actions.toast({ text: `${r.thumbs.length} variation${r.thumbs.length === 1 ? '' : 's'} made`, detail: r.bestId ? `Best: #${r.bestId.split('-').pop()}` : undefined, kind: 'ok', ms: 3000 })
     } catch (e) {
       actions.toast({ text: 'Could not make thumbnails', detail: errorText(e), kind: 'err' })
@@ -300,17 +334,35 @@ export function ThumbLabPage() {
           <div>
             <h1>Thumbnail Lab</h1>
             <div className="sub">
-              {status ? `${status.counts.refs} references · ${status.counts.profiles} style${status.counts.profiles === 1 ? '' : 's'} · ${status.counts.bases} game shots · ${status.counts.thumbs} made` : 'loading…'}
-              {taste && taste.samples > 0 ? ` · taste from ${taste.samples} labels${taste.ctrSamples ? ` (${taste.ctrSamples} CTR)` : ''}` : ''}
+              {mode === 'ui'
+                ? status
+                  ? `UI art · ${status.counts.ui ?? 0} made · buttons, panels, icons, icon sets and HUD mockups with transparent backgrounds`
+                  : 'loading…'
+                : status
+                  ? `${status.counts.refs} references · ${status.counts.profiles} style${status.counts.profiles === 1 ? '' : 's'} · ${status.counts.bases} game shots · ${status.counts.thumbs} made`
+                  : 'loading…'}
+              {mode === 'thumbs' && taste && taste.samples > 0 ? ` · taste from ${taste.samples} labels${taste.ctrSamples ? ` (${taste.ctrSamples} CTR)` : ''}` : ''}
             </div>
           </div>
           <div className="actions">
-            <button className="btn" onClick={() => void chooseRefs()} title="Thumbnails you like from popular games: they teach the style only">
-              <Icon name="image" size={12} /> Add references
-            </button>
-            <button className="btn" onClick={() => void capture()} disabled={!status?.project || !!busy} title={status?.studio.message ?? 'Capture the current Studio viewport as a base'}>
-              <Icon name="studio" size={12} /> Capture Studio
-            </button>
+            <div className="seg th-mode" role="tablist" aria-label="What to make">
+              <button role="tab" aria-selected={mode === 'thumbs'} className={mode === 'thumbs' ? 'on' : ''} onClick={() => setMode('thumbs')} title="Experience thumbnails (16:9)">
+                <Icon name="thumbnail" size={11} /> thumbnails
+              </button>
+              <button role="tab" aria-selected={mode === 'ui'} className={mode === 'ui' ? 'on' : ''} onClick={() => setMode('ui')} title="Buttons, panels, icons, icon sets and HUD mockups">
+                <Icon name="image" size={11} /> UI art
+              </button>
+            </div>
+            {mode === 'thumbs' && (
+              <>
+                <button className="btn" onClick={() => void chooseRefs()} title="Thumbnails you like from popular games: they teach the style only">
+                  <Icon name="image" size={12} /> Add references
+                </button>
+                <button className="btn" onClick={() => void capture()} disabled={!status?.project || !!busy} title={status?.studio.message ?? 'Capture the current Studio viewport as a base'}>
+                  <Icon name="studio" size={12} /> Capture Studio
+                </button>
+              </>
+            )}
           </div>
         </div>
 
@@ -319,13 +371,16 @@ export function ThumbLabPage() {
             <Icon name="info" size={12} />
             <span className="grow note">
               {status.codex && !status.codex.ready && <>Codex (ChatGPT plan) is the image backend but is not ready: {status.codex.detail} </>}
-              {!status.codex && !status.openaiKey && <>No OpenAI key: add it on the Art page (it stays in the OS keychain). </>}
-              {!status.project && <>Open a project: game shots and thumbnails are saved in it. </>}
+              {!status.codex && !status.openaiKey && <>No image backend: add an OpenAI key on the Art page (it stays in the OS keychain), or choose ChatGPT plan (Codex) there. The prompt builder still works. </>}
+              {!status.project && <>Open a project: {mode === 'ui' ? 'UI art is exported into it.' : 'game shots and thumbnails are saved in it.'} </>}
               {!status.vision && <>No vision model: style cards and critiques use the code checks only. </>}
             </span>
           </div>
         )}
 
+        {mode === 'ui' && <UiArtView status={status} ready={imagesReady} />}
+        {mode === 'thumbs' && (
+        <>
         <section className="set-sec vfx-make th-make">
           <form
             className="vfx-make-row"
@@ -419,6 +474,7 @@ export function ThumbLabPage() {
               ))}
             </span>
           </div>
+          <PromptBuilder mode="thumbnail" ask={brief} input={{ ...(profileId ? { profileId } : {}), baseIds }} state={builder} setState={setBuilder} open={builderOpen} setOpen={setBuilderOpen} />
           {estimate && status?.codex && (
             <div className="note th-est">
               {estimate.n} × Codex (ChatGPT plan) → 1920×1080 · {CODEX_IMAGE_NOTE}
@@ -606,6 +662,8 @@ export function ThumbLabPage() {
             </div>
             {current && <ThumbDetail key={current.id} thumb={current} status={status} busy={busy} onClose={() => setSelected(null)} onRefined={(id) => void load().then(() => setSelected(id))} />}
           </div>
+        )}
+        </>
         )}
       </div>
     </div>

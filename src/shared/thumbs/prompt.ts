@@ -14,7 +14,8 @@ import { principleCriticBlock } from '../principles/select.ts'
 import type { PrincipleCheck, PrincipleWeights } from '../principles/types.ts'
 import { restatementBlock } from '../restate/prompt.ts'
 import type { Restatement } from '../restate/types.ts'
-import type { ThumbRef } from './types.ts'
+import { renderSections, THUMB_RULES } from './builder.ts'
+import type { PromptSection, ThumbRef } from './types.ts'
 
 export const MAX_TEXT_WORDS = 3
 
@@ -75,6 +76,9 @@ export interface PromptInput {
   restatement?: Restatement | null
   // The user's taste, learned from ratings and CTR (taste.ts tasteLines).
   taste?: string[]
+  // Prompt builder sections (builder.ts): when present they replace the brief / style / taste lines.
+  // The honesty lines (bases, style references, copy rule) and the thumbnail rules always stay.
+  sections?: PromptSection[]
 }
 
 export const COPY_RULE =
@@ -90,12 +94,18 @@ export function generationPrompt(input: PromptInput, forbidden: string[] = []): 
     )
   } else lines.push('Show only what the game really contains, as described below; do not invent mechanics, UI or characters that are not in it.')
   if (input.styleRefs) lines.push(`The last ${input.styleRefs === 1 ? 'attached image is a style reference' : `${input.styleRefs} attached images are style references`} from other games: borrow only colour, lighting, framing and text treatment from ${input.styleRefs === 1 ? 'it' : 'them'}; nothing in ${input.styleRefs === 1 ? 'it' : 'them'} (characters, logos, words, layout) may appear in the thumbnail.`)
-  lines.push(`What it shows: ${brief || 'the most exciting moment of the game'}`)
-  if (input.style) lines.push(`Style: ${input.style}.`)
-  lines.push(
-    `Thumbnail rules: one focal point that reads at phone size (160 px wide); strong value contrast and a rim light or outline separating the subject; saturated colours that stand out on both dark and light pages; at most ${MAX_TEXT_WORDS} large words of text or none, never the game's full title; keep the bottom 15% free of text and key elements.`
-  )
-  if (input.taste?.length) lines.push(`This creator's taste: ${input.taste.join('; ')}.`)
+  if (input.sections?.length) {
+    const scrubbed = input.sections.map((s) => ({ ...s, text: scrubBrief(s.text, forbidden, input.gameName ? [input.gameName] : []).text }))
+    for (const s of input.sections) for (const r of copyGuard(s.text, forbidden, input.gameName ? [input.gameName] : [])) if (!removed.includes(r)) removed.push(r)
+    lines.push(renderSections(scrubbed))
+    // The platform rules stay even when the user edited them away.
+    if (!scrubbed.some((s) => s.key === 'roblox' && s.text.includes(THUMB_RULES))) lines.push(`Thumbnail rules: ${THUMB_RULES}`)
+  } else {
+    lines.push(`What it shows: ${brief || 'the most exciting moment of the game'}`)
+    if (input.style) lines.push(`Style: ${input.style}.`)
+    lines.push(`Thumbnail rules: ${THUMB_RULES}`)
+    if (input.taste?.length) lines.push(`This creator's taste: ${input.taste.join('; ')}.`)
+  }
   lines.push(COPY_RULE)
   const block = restatementBlock(input.restatement)
   if (block) lines.push(block)

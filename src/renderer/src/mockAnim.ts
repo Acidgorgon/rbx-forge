@@ -13,6 +13,8 @@ import { measureClip } from '@shared/anim/measure'
 import { runChecks } from '@shared/anim/checks'
 import { autoTags, buildStyle, coverage, profileFor } from '@shared/anim/style'
 import { animRefineLoop, beatFrameTimes, heuristicAnimCritique, withMustFix } from '@shared/anim/critique'
+import { bestIteration, guardedApply, iterationScore } from '@shared/anim/quality'
+import { motionIntent } from '@shared/anim/intent'
 import { allKnownTags, coverageOptions, heuristicRetag, MOVE_SETS, moveSetDef, normalizeCustomTag, resolveMoveSet, setPromptTags, type MoveSetSettings } from '@shared/anim/movesets'
 import { clipRig, poseCFrames } from '@shared/anim/sample'
 import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
@@ -98,6 +100,7 @@ export function animMock(emit: Emit): AnimApi {
   async function refine(e: AnimEntry, max: number) {
     const ref = e.reference ? entries.find((x) => x.id === e.reference)?.clip : undefined
     const base = e.iterations?.length ?? 0
+    const ctx = { intent: motionIntent(e.kind === 'generated' ? e.origin : '', e.tags), profile: profileFor(style, e.tags, clipRig(e.clip)) }
     await animRefineLoop(
       e.clip,
       {
@@ -116,13 +119,16 @@ export function animMock(emit: Emit): AnimApi {
           emit('anim:progress', { entryId: e.id, iteration: base + n, phase: 'critique' })
           await delay(400)
           const p = profileFor(style, e.tags, clipRig(clip))
-          const checks = runChecks(clip, p, { request: e.kind === 'generated' ? e.origin : '', tags: e.tags })
+          const checks = runChecks(clip, p, { intent: ctx.intent })
           return withMustFix(withAnimPrinciples(heuristicAnimCritique(clip, checks, p), clip, { request: e.origin.replace(/^Make: /, '') || e.description, weights: mockPrincipleWeights(), checks }))
         },
-        onIteration: (it) => {
-          const iteration: AnimIteration = { n: base + it.n, at: Date.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique }
+        score: (clip, c) => iterationScore(c, clip, ctx),
+        apply: (clip, changes) => guardedApply(clip, changes, ctx),
+        onIteration: (it, best) => {
+          const iteration: AnimIteration = { n: base + it.n, at: Date.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique, score: it.score, ...(it.rejected.length ? { guarded: it.rejected } : {}) }
           e.iterations = [...(e.iterations ?? []), iteration]
-          emit('anim:progress', { entryId: e.id, iteration: base + it.n, phase: 'adjust', score: it.critique.overall, message: it.critique.summary })
+          e.clip = best.clip
+          emit('anim:progress', { entryId: e.id, iteration: base + it.n, phase: 'adjust', score: it.score.quality, message: it.critique.summary, best: { n: base + best.n, quality: best.score.quality } })
           changed()
         }
       },
@@ -131,7 +137,7 @@ export function animMock(emit: Emit): AnimApi {
       (r) => {
         e.clip = r.best.clip
         e.stats = measureClip(e.clip)
-        emit('anim:progress', { entryId: e.id, iteration: base + r.iterations.length, phase: 'done', score: r.best.critique.overall, message: `stopped: ${r.stop}` })
+        emit('anim:progress', { entryId: e.id, iteration: base + r.iterations.length, phase: 'done', score: r.best.score.quality, message: `stopped: ${r.stop}; using #${base + r.best.n}`, best: { n: base + r.best.n, quality: r.best.score.quality } })
         changed()
       },
       (err) => emit('anim:progress', { entryId: e.id, iteration: base, phase: 'error', message: (err as Error).message })
@@ -317,6 +323,14 @@ export function animMock(emit: Emit): AnimApi {
     },
     async animRefine(id, opts) {
       void refine(find(id), opts?.maxIterations ?? 3)
+    },
+    async animUseIteration(id, n) {
+      const e = find(id)
+      const it = (e.iterations ?? []).find((x) => x.n === n) ?? bestIteration(e.iterations ?? [])
+      if (it) e.clip = it.clip
+      e.updatedAt = Date.now()
+      changed()
+      return e
     },
     async animCancel(id) {
       emit('anim:progress', { entryId: id, iteration: 0, phase: 'done', message: 'Cancelled.' })

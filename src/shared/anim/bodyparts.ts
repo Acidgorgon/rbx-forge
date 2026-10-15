@@ -27,6 +27,21 @@ export interface PartMotion extends PartRequest {
   warnDeg: number
   ok: boolean
   joint?: R15Joint
+  // The limb that leads the move (intent.ts): its thresholds come from the references, and the other
+  // side must not out-move it.
+  lead?: boolean
+  // Swing of the lead limb in the references (degrees).
+  refDeg?: number
+  // The other side moves more than the lead (hard: 1.5x or more, a must-fix).
+  outmovedBy?: { label: string; rangeDeg: number; hard: boolean }
+}
+
+// The lead limb (intent.ts LeadIntent; kept structural here to avoid an import cycle).
+export interface LeadSpec {
+  limb: 'RightLeg' | 'LeftLeg' | 'RightArm' | 'LeftArm'
+  minDeg: number
+  warnDeg: number
+  refDeg?: number
 }
 
 const LEG = String.raw`foot|feet|leg|legs|kick\w*|knee\w*|shin|shins|toe|toes|heel|heels|thigh|thighs|stomp\w*|instep|laces|sole`
@@ -115,20 +130,37 @@ export function jointRange(clip: AnimClip, joint: R15Joint, samples = 36): numbe
   return (best * 180) / Math.PI
 }
 
-export function measureParts(clip: AnimClip, parts: PartRequest[]): PartMotion[] {
+function widest(view: AnimClip, part: BodyPart): { rangeDeg: number; joint?: R15Joint } {
+  let rangeDeg = 0
+  let joint: R15Joint | undefined
+  for (const j of PART_JOINTS[part]) {
+    const v = jointRange(view, j)
+    if (v > rangeDeg) {
+      rangeDeg = v
+      joint = j
+    }
+  }
+  return { rangeDeg, ...(joint ? { joint } : {}) }
+}
+
+const OTHER_SIDE: Record<LeadSpec['limb'], LeadSpec['limb']> = { RightLeg: 'LeftLeg', LeftLeg: 'RightLeg', RightArm: 'LeftArm', LeftArm: 'RightArm' }
+
+// How far each named part moves. With a lead limb, that part uses the lead's thresholds and fails
+// when the other side moves 1.5x as much (warns from 1.15x).
+export function measureParts(clip: AnimClip, parts: PartRequest[], lead?: LeadSpec | null): PartMotion[] {
   const view = r15View(clip)
   return parts.map((r) => {
-    let rangeDeg = 0
-    let joint: R15Joint | undefined
-    for (const j of PART_JOINTS[r.part]) {
-      const v = jointRange(view, j)
-      if (v > rangeDeg) {
-        rangeDeg = v
-        joint = j
-      }
+    const { rangeDeg, joint } = widest(view, r.part)
+    const isLead = !!lead && r.part === lead.limb
+    const [minDeg, warnDeg] = isLead ? [lead!.minDeg, lead!.warnDeg] : THRESHOLDS[kindOf(r.part)]
+    let outmovedBy: PartMotion['outmovedBy']
+    if (isLead) {
+      const other = OTHER_SIDE[lead!.limb]
+      const o = widest(view, other).rangeDeg
+      if (o > Math.max(rangeDeg, 1) * 1.15 && o >= minDeg) outmovedBy = { label: LABEL[other], rangeDeg: Math.round(o * 10) / 10, hard: o >= Math.max(rangeDeg, 1) * 1.5 }
     }
-    const [minDeg, warnDeg] = THRESHOLDS[kindOf(r.part)]
-    return { ...r, label: LABEL[r.part], rangeDeg: Math.round(rangeDeg * 10) / 10, minDeg, warnDeg, ok: rangeDeg >= minDeg, ...(joint ? { joint } : {}) }
+    const ok = rangeDeg >= minDeg && !outmovedBy?.hard
+    return { ...r, label: LABEL[r.part], rangeDeg: Math.round(rangeDeg * 10) / 10, minDeg, warnDeg, ok, ...(joint ? { joint } : {}), ...(isLead ? { lead: true } : {}), ...(isLead && lead!.refDeg ? { refDeg: lead!.refDeg } : {}), ...(outmovedBy ? { outmovedBy } : {}) }
   })
 }
 
@@ -138,5 +170,8 @@ export function missingParts(motion: PartMotion[] | undefined | null): PartMotio
 }
 
 export function partMustFix(m: PartMotion): string {
-  return `the request names the ${m.label} ("${m.source.replace(/^tag:/, '')}") but it barely moves (${m.rangeDeg.toFixed(0)}° of joint rotation, needs at least ${m.minDeg}°); make the ${m.label} do the move`
+  const src = m.source.replace(/^tag:/, '')
+  if (m.lead && m.rangeDeg >= m.minDeg && m.outmovedBy?.hard) return `the ${m.label} leads this move (${src === 'references' ? 'like the references' : `"${src}"`}) but the ${m.outmovedBy.label} moves more (${m.outmovedBy.rangeDeg.toFixed(0)}° vs ${m.rangeDeg.toFixed(0)}°); make the ${m.label} do the move and let the other side support`
+  if (m.lead && src === 'references') return `the ${m.label} leads this move in the references (about ${m.refDeg ?? m.warnDeg}° of swing) but it barely moves (${m.rangeDeg.toFixed(0)}°, needs at least ${m.minDeg}°); make the ${m.label} do the move`
+  return `the request names the ${m.label} ("${src}") but it barely moves (${m.rangeDeg.toFixed(0)}° of joint rotation, needs at least ${m.minDeg}°); make the ${m.label} do the move`
 }

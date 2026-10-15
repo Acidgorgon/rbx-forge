@@ -70,7 +70,7 @@ const methods = [
   'vfxTexImportPick', 'vfxTexImportScan', 'vfxTexImportIds', 'vfxTexImportStudio', 'vfxTexImportCommit', 'vfxTexSetPolicy',
   // Animation Lab (services/anim) + Labs model tiers
   'animStatus', 'animList', 'animGet', 'animImport', 'animPreviewImport', 'animChooseImport', 'animUpdate', 'animDelete', 'animRate',
-  'animLearn', 'animStyle', 'animCoverage', 'animMoveSets', 'animSetMoveSet', 'animAddMoveTag', 'animRemoveMoveTag', 'animRetag', 'animCompose', 'animRemixCandidates', 'animRemix', 'animRemixApply', 'animRemixMode', 'animSetRemixMode', 'animRunScript', 'animGetRig', 'animSetRig', 'animConvert', 'animRefine', 'animCancel', 'animChecks', 'animExamples',
+  'animLearn', 'animStyle', 'animCoverage', 'animMoveSets', 'animSetMoveSet', 'animAddMoveTag', 'animRemoveMoveTag', 'animRetag', 'animCompose', 'animRemixCandidates', 'animRemix', 'animRemixApply', 'animRemixMode', 'animSetRemixMode', 'animRunScript', 'animGetRig', 'animSetRig', 'animConvert', 'animRefine', 'animUseIteration', 'animCancel', 'animChecks', 'animExamples',
   'animAddExample', 'animFile', 'animSaveThumb', 'animExport', 'animUpload', 'listAnimClips', 'getAnimPose', 'getLabModels', 'setLabModels',
   // Ability Composer (moves: animation + VFX + shake / screen / hit-stop / movement)
   'abilityStatus', 'abilityList', 'abilityGet', 'abilitySave', 'abilityDelete', 'abilityRate', 'abilityCompose', 'abilityCritique',

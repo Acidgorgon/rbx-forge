@@ -109,6 +109,8 @@ export interface AnimApi {
   // Converts a clip to the other rig (in place, or as a copy). R15 -> R6 loses elbow / knee / waist bends.
   animConvert(id: string, to: RigType, opts?: { copy?: boolean }): Promise<{ entry: AnimEntry; warning: string }>
   animRefine(id: string, opts?: AnimRefineOptions): Promise<void>
+  // "Use #n": the round's clip becomes the clip (and teaches the critic weight when it overrules the ranking).
+  animUseIteration(id: string, n: number): Promise<AnimEntry>
   animCancel(id: string): Promise<void>
   animChecks(id: string): Promise<AnimCheckReport>
   animExamples(): Promise<{ key: string; name: string; description: string; tags: string[]; rig: RigType }[]>

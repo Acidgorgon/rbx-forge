@@ -27,9 +27,9 @@ import { CompareButton, VfxCompare } from '../compare/LabCompare'
 import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
 import { AddToGameButton } from '../qolc/AddToGame'
-import { EffectImportReview, importProgressText, useImportProgress } from './EffectImport'
+import { EffectImportReview, importProgressText, rowName, useImportProgress } from './EffectImport'
 import { DuplicatesPanel, LiveControls, liveLine, matchesTagFilter, TagFilters, TagGroupEditor, type TagFilter } from './LibraryTools'
-import { tagGroupsOf } from '@shared/vfx/tags'
+import { nameFromTags, tagGroupsOf } from '@shared/vfx/tags'
 import { chooseRecipe, fitToPriors, priorFit } from '@shared/vfx/priors'
 import { smallModelHint, type LabModels } from '@shared/labModels'
 
@@ -76,7 +76,7 @@ function Card({ entry, selected, checked, selecting, progress, onSelect }: { ent
   const g = tagGroupsOf(entry)
   const shown = [...g.kind, ...g.element, ...g.custom, ...g.timing].slice(0, 4)
   return (
-    <button className={`vfx-card${selected ? ' on' : ''}${checked ? ' checked' : ''}`} onClick={onSelect} aria-pressed={selecting ? !!checked : selected} title={entry.description || entry.name} data-testid="vfx-card">
+    <button className={`vfx-card${selected ? ' on' : ''}${checked ? ' checked' : ''}`} onClick={onSelect} aria-pressed={selecting ? !!checked : selected} title={`${entry.description || entry.name}${entry.sourceName && entry.sourceName !== entry.name ? `\nfrom: ${entry.sourceName}` : ''}`} data-testid="vfx-card">
       {selecting && <span className={`vfx-check${checked ? ' on' : ''}`} aria-hidden>{checked ? <Icon name="check" size={10} /> : null}</span>}
       <div className="vfx-thumb">
         {url ? <img src={url} alt="" loading="lazy" draggable={false} /> : <Icon name="sparkle" size={22} className="vfx-thumb-ph" />}
@@ -91,6 +91,11 @@ function Card({ entry, selected, checked, selecting, progress, onSelect }: { ent
         {qualityTag(entry)}
         <span className="faint mono">{kindLabel(entry)}</span>
       </div>
+      {entry.sourceName && entry.sourceName !== entry.name && (
+        <div className="vfx-from faint mono" title={`Original name: ${entry.sourceName}`} data-testid="vfx-card-from">
+          from: {entry.sourceName}
+        </div>
+      )}
       <div className="vfx-tags">
         {shown.map((t) => (
           <span key={t} className="vfx-tag">
@@ -173,6 +178,47 @@ function Media({ entry }: { entry: VfxEntry }) {
   const url = useEntryFile(entry.id, m?.file)
   if (!m) return null
   return <div className="vfx-media">{url ? m.mime.startsWith('video') ? <video src={url} controls loop muted playsInline /> : <img src={url} alt={entry.name} /> : <span className="spinner" />}</div>
+}
+
+// The entry's name: rename (the user's: bulk "Name from tags" leaves it), name it from its tags
+// ("Lightning Impact"), or go back to its original name. Layers inside keep their names.
+function EntryName({ entry }: { entry: VfxEntry }) {
+  const { actions } = useStore()
+  const [text, setText] = useState(entry.name)
+  useEffect(() => setText(entry.name), [entry.id, entry.name])
+  const tagName = nameFromTags(tagGroupsOf(entry), '')
+  const rename = async (name: string) => {
+    if (!name.trim() || name.trim() === entry.name) return setText(entry.name)
+    try {
+      await window.harness.vfxUpdate(entry.id, { name: name.trim() })
+    } catch (e) {
+      actions.toast({ text: 'Rename failed', detail: errorText(e), kind: 'err' })
+    }
+  }
+  const fromTags = async () => {
+    try {
+      const r = await window.harness.vfxNameFromTags([entry.id], { force: true })
+      if (!r.renamed.length) actions.toast({ text: r.noTags ? 'No kind, element or custom tag to name it by' : 'Already named from its tags', kind: 'info', ms: 2500 })
+    } catch (e) {
+      actions.toast({ text: 'Name from tags failed', detail: errorText(e), kind: 'err' })
+    }
+  }
+  return (
+    <div className="vfx-name-edit">
+      <input className="input" value={text} onChange={(e) => setText(e.target.value)} onBlur={() => void rename(text)} onKeyDown={(e) => e.key === 'Enter' && (e.currentTarget as HTMLInputElement).blur()} aria-label="Effect name" data-testid="vfx-entry-name" />
+      {entry.effect && (
+        <button className="btn small ghost" disabled={!tagName} onClick={() => void fromTags()} title={tagName ? `Rename to “${tagName}” (from its tags; the original name stays searchable)` : 'No kind, element or custom tag to name it by'} data-testid="vfx-name-from-tags">
+          Name from tags
+        </button>
+      )}
+      {entry.sourceName && entry.sourceName !== entry.name && (
+        <button className="btn small ghost" onClick={() => void rename(entry.sourceName!)} title="Back to its name in the file / in Studio">
+          Use “{entry.sourceName}”
+        </button>
+      )}
+      {entry.nameFrom && <span className="faint mono">{entry.nameFrom === 'tags' ? 'named from tags' : 'named by you'}</span>}
+    </div>
+  )
 }
 
 function Detail({ entry, entries, progress, recipes, live, onClose, onTrashed }: { entry: VfxEntry; entries: VfxEntry[]; progress?: VfxRefineProgress; recipes: VfxRecipe[]; live: LiveStatus | null; onClose: () => void; onTrashed: (batch: string, n: number) => void }) {
@@ -306,6 +352,11 @@ function Detail({ entry, entries, progress, recipes, live, onClose, onTrashed }:
       <div className="vfx-detail-head">
         <Icon name="sparkle" size={13} />
         <b className="vfx-title">{entry.name}</b>
+        {entry.sourceName && entry.sourceName !== entry.name && (
+          <span className="faint mono vfx-title-from" title="Its name in the file / in Studio (searchable)" data-testid="vfx-detail-from">
+            from: {entry.sourceName}
+          </span>
+        )}
         <span className="badge-o">{entry.scope}</span>
         {qualityTag(entry)}
         {saving && <span className="note">saving…</span>}
@@ -437,6 +488,10 @@ function Detail({ entry, entries, progress, recipes, live, onClose, onTrashed }:
         <div className="vfx-info">
           <p className="vfx-desc">{entry.description || <span className="faint">No description.</span>}</p>
           <dl className="vfx-meta">
+            <dt>name</dt>
+            <dd>
+              <EntryName entry={entry} />
+            </dd>
             <dt>tags</dt>
             <dd>
               <TagGroupEditor entry={entry} />
@@ -648,7 +703,7 @@ export function VfxLabPage() {
 
   const shown = useMemo(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean)
-    return entries.filter((e) => matchesTagFilter(e, tagFilter) && words.every((w) => `${e.name} ${e.description} ${e.tags.join(' ')}`.toLowerCase().includes(w)))
+    return entries.filter((e) => matchesTagFilter(e, tagFilter) && words.every((w) => `${e.name} ${e.sourceName ?? ''} ${e.description} ${e.tags.join(' ')}`.toLowerCase().includes(w)))
   }, [entries, query, tagFilter])
 
   const current = entries.find((e) => e.id === selected) ?? null
@@ -699,7 +754,7 @@ export function VfxLabPage() {
       const sc = await h.vfxImportScan(paths)
       const decide = sc.rows.length > 1 || sc.rows.some((r) => r.duplicates.some((d) => d.scope === scope) || r.sameAs)
       if (decide) setScan(sc)
-      else if (sc.rows.length || sc.media.length) await imported(await h.vfxImportCommit({ scanId: sc.scanId, scope, rows: sc.rows.map((r) => ({ key: r.key, name: r.name })) }))
+      else if (sc.rows.length || sc.media.length) await imported(await h.vfxImportCommit({ scanId: sc.scanId, scope, rows: sc.rows.map((r) => ({ key: r.key, name: rowName(r, sc.nameFromTags !== false) })) }))
       else actions.toast({ text: 'Nothing to import', detail: sc.skipped.slice(0, 3).map((s) => `${s.file.split(/[\\/]/).pop()} (${s.reason})`).join('; ') || undefined, kind: 'info' })
     } catch (e) {
       actions.toast({ text: 'Import failed', detail: errorText(e), kind: 'err' })
@@ -761,9 +816,24 @@ export function VfxLabPage() {
     setBusy('re-tagging…')
     try {
       const r = await h.vfxRetag()
-      actions.toast({ text: `Re-tagged ${r.changed} of ${r.total}`, detail: 'Kind, element and timing come from names, layer roles and colours; tags you edited stay.', kind: 'ok', ms: 4000 })
+      actions.toast({ text: `Re-tagged ${r.changed} of ${r.total}${r.renamed ? ` · ${r.renamed} renamed` : ''}`, detail: `Kind, element and timing come from names, layer roles and colours; tags you edited stay.${r.renamed ? ' Effects named from their tags follow the new tags.' : ''}`, kind: 'ok', ms: 4000 })
     } catch (e) {
       actions.toast({ text: 'Re-tag failed', detail: errorText(e), kind: 'err' })
+    } finally {
+      setBusy(null)
+    }
+  }
+  // "Name from tags": the selected effects, or every imported model; names chosen on purpose
+  // (renamed by you, made effects, examples) stay unless generic ("Particles").
+  const nameChecked = async (ids: string[] | null) => {
+    if (!ids && !confirm('Name every imported effect from its tags (e.g. “Particles” → “Lightning Impact”)? The original names stay searchable and shown as “from: …”; effects you renamed keep their names.')) return
+    setBusy('naming from tags…')
+    try {
+      const r = await h.vfxNameFromTags(ids)
+      const detail = [r.kept ? `${r.kept} named on purpose kept` : '', r.unchanged ? `${r.unchanged} already named so` : '', r.noTags ? `${r.noTags} with no kind / element / custom tag` : ''].filter(Boolean).join(' · ')
+      actions.toast({ text: `Renamed ${r.renamed.length} of ${r.total} from their tags`, detail: detail || undefined, kind: r.renamed.length ? 'ok' : 'info', ms: 4000 })
+    } catch (e) {
+      actions.toast({ text: 'Name from tags failed', detail: errorText(e), kind: 'err' })
     } finally {
       setBusy(null)
     }
@@ -1035,6 +1105,9 @@ export function VfxLabPage() {
                     <button className="btn small ghost" onClick={() => setChecked(new Set(shown.map((e) => e.id)))}>
                       all shown
                     </button>
+                    <button className="btn small" disabled={!checked.size || !!busy} onClick={() => void nameChecked([...checked])} title="Rename the selected effects from their tags (element + kind, e.g. Lightning Impact); the original names stay searchable" data-testid="vfx-name-selected">
+                      Name from tags
+                    </button>
                     <button className="btn small danger" disabled={!checked.size} onClick={() => void deleteChecked()} data-testid="vfx-delete-selected">
                       <Icon name="trash" size={11} /> Delete selected
                     </button>
@@ -1052,6 +1125,9 @@ export function VfxLabPage() {
                     </button>
                     <button className="btn small ghost" disabled={!entries.length || !!busy} onClick={() => void retag()} title="Recompute kind / element / timing tags from names, layer roles and colours (your edits stay)">
                       Re-tag library
+                    </button>
+                    <button className="btn small ghost" disabled={!entries.some((e) => e.kind === 'model') || !!busy} onClick={() => void nameChecked(null)} title="Rename every imported effect from its tags (e.g. Particles → Lightning Impact); the original names stay searchable, names you chose stay" data-testid="vfx-name-all">
+                      Name from tags…
                     </button>
                     <button className="btn small ghost danger" disabled={!entries.length} onClick={() => void clearLibrary()} title="Move every effect of the library chosen above (your library / this project) to the trash">
                       Clear library…

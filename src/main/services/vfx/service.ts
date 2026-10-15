@@ -14,7 +14,7 @@ import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { allNodes, describeEffect, effectFromNodes, effectStats, emitAttributes, importNotes, IMPORT_VERSION, perfWarnings, type PerfWarning } from '../../../shared/vfx/analyze.ts'
 import { findVfxPacks, splitEffects, type EffectGroup } from '../../../shared/vfx/split.ts'
-import { autoTagGroups, changedGroups, flatTags, groupsFromTags, normalizeGroups, retagGroups, tagGroupsOf, TAG_GROUP_ORDER, type TagGroup, type TagGroups } from '../../../shared/vfx/tags.ts'
+import { autoTagGroups, baseName, changedGroups, flatTags, groupsFromTags, isGenericName, nameFromTags, normalizeGroups, retagGroups, tagGroupsOf, TAG_GROUP_ORDER, uniqueName, type NameSet, type TagGroup, type TagGroups } from '../../../shared/vfx/tags.ts'
 import { effectHash } from '../../../shared/vfx/fingerprint.ts'
 import { CRITIC_SYSTEM, critiquePrompt, DEFAULT_MAX_ITERATIONS, DEFAULT_THRESHOLD, heuristicCritique, parseCritique, refineLoop, stageFrameTimes, type RefineResult } from '../../../shared/vfx/critique.ts'
 import { CHOREOGRAPHY_GUIDE, draftScript, kitReference, TIMELINE_API } from '../../../shared/vfx/choreo.ts'
@@ -29,6 +29,7 @@ import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { centreEffect } from '../../../shared/vfx/placement.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeMatches, recipeSkill } from '../../../shared/vfx/recipes.ts'
 import { applyChanges, compactEffect, effectFromSpec, safeName, shortTitle, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
+import type { VfxNameFromTagsResult } from '../../../shared/vfxTypes.ts'
 import type { VfxChange, VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxPick, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
 import { alignBaseToStage, baseColors, baseLayerLines, composeBase, draftCandidate, enrichSpec, finishEffect, finishScriptRemix, ground, groundingLines, libraryScript, pickByCode, richnessNotes, scratchCandidate, scratchNote, scriptedBase, singleCandidates, tweakRecorded, tweakScript, type Candidate, type Grounding, type ScriptBase } from '../../../shared/vfx/ground.ts'
 import { asksSimpler, guardLayerEdits, richness, richnessLine, richTargetOf, tooSimple } from '../../../shared/vfx/richness.ts'
@@ -95,6 +96,9 @@ export interface VfxServiceDeps {
   gate?: LabGate
   // Roblox Studio connected through the Forge Bridge (status for Import from Studio).
   studioConnected?: () => boolean
+  // Setting "Name effects from tags" (NAME_FROM_TAGS_SETTING): imports are named from their tags
+  // ("Lightning Impact") instead of their Studio / file name. Absent: off.
+  nameFromTags?: { get(): boolean; set?(on: boolean): void }
   // Each refine iteration's effect as it is rendered (and again with its score): Live in Studio.
   onDraft?: (entryId: string, iteration: number, effect: VfxEffect, score?: number) => void
 }
@@ -123,6 +127,23 @@ export const VFX_SRC_DIR = 'src/shared/VFX'
 const FRAME_SIZE = { width: 512, height: 384 }
 
 export class VfxError extends Error {}
+
+// The setting key of "Name effects from tags" (default on).
+export const NAME_FROM_TAGS_SETTING = 'vfx.nameFromTags'
+
+// The effect's own name for an entry name: the original when it keeps it ("Particles (2)" as it
+// was), else an identifier ("Lightning Impact (2)" -> "LightningImpact2"; the Luau module, the
+// project folder and the Studio instance use it). Layers inside are never renamed.
+export function effectNameFor(name: string, sourceName?: string): string {
+  return sourceName !== undefined && name === sourceName ? sourceName : safeName(name)
+}
+
+// The tag-based name of an import, or null when its tags give none (or the same as its original
+// name, "Slash (2)" with kind slash).
+export function tagNameBase(groups: TagGroups, source: string): string | null {
+  const base = nameFromTags(groups, '')
+  return base && base.toLowerCase() !== baseName(source).toLowerCase() ? base : null
+}
 
 // Tag fields of an entry from its effect: auto groups (with evidence), merged with tags given by
 // the caller (spec / compose), and with the groups the user edited on `prev` kept as they are.
@@ -313,7 +334,8 @@ export class VfxService {
       studio: this.deps.studioConnected?.() ?? false,
       rojo: this.deps.rojo?.running() ?? false,
       entries: { user: (await this.user.list()).length, project: p ? (await p.list()).length : 0 },
-      recipes: (await this.recipes()).length
+      recipes: (await this.recipes()).length,
+      nameFromTags: this.namesFromTags()
     }
   }
 
@@ -325,7 +347,7 @@ export class VfxService {
     const scored = all
       .map((e) => {
         const layers = e.effect ? allNodes(e.effect.roots).map((n) => n.name.toLowerCase()).join(' ') : ''
-        const name = e.name.toLowerCase()
+        const name = `${e.name} ${e.sourceName ?? ''}`.toLowerCase()
         let s = 0
         for (const w of words) {
           if (e.tags.includes(w)) s += 4
@@ -346,7 +368,18 @@ export class VfxService {
     const hit = await this.find(id)
     if (!hit) throw new VfxError(`no VFX entry "${id}"`)
     const e: VfxEntry = { ...hit.entry, updatedAt: this.now() }
-    if (typeof patch.name === 'string' && patch.name.trim()) e.name = patch.name.trim().slice(0, 80)
+    if (typeof patch.name === 'string' && patch.name.trim() && patch.name.trim().slice(0, 80) !== e.name) {
+      // A rename is the user's ("Name from tags" on many entries leaves it); an imported model keeps
+      // its original name as sourceName; back to the original name is not a rename.
+      const name = patch.name.trim().slice(0, 80)
+      if (e.kind === 'model' && e.sourceName === undefined) e.sourceName = e.name
+      if (name === e.sourceName) {
+        delete e.sourceName
+        delete e.nameFrom
+      } else e.nameFrom = 'user'
+      e.name = name
+      if (e.effect) e.effect = { ...e.effect, name: effectNameFor(name, hit.entry.sourceName ?? (e.kind === 'model' ? hit.entry.name : undefined)) }
+    }
     if (typeof patch.description === 'string') e.description = patch.description.slice(0, 2000)
     // Tag edits are the user's: the groups they change are kept on re-tag.
     if (Array.isArray(patch.tags) || (patch.tagGroups && typeof patch.tagGroups === 'object')) {
@@ -359,7 +392,10 @@ export class VfxService {
     }
     if (typeof patch.notes === 'string') e.notes = patch.notes.slice(0, 2000)
     if (patch.effect) {
+      // The effect's name follows the entry (the editor may still hold the one from before a rename).
+      const name = e.effect?.name
       e.effect = await this.prepareTextures(patch.effect, hit.store.scope)
+      if (name && e.effect.name !== name) e.effect = { ...e.effect, name }
       e.stats = effectStats(e.effect)
     }
     const saved = await hit.store.save(e)
@@ -461,19 +497,50 @@ export class VfxService {
     return extracted
   }
 
+  // Setting "Name effects from tags".
+  namesFromTags(): boolean {
+    return this.deps.nameFromTags?.get() ?? false
+  }
+
+  setNamesFromTags(on: boolean): boolean {
+    this.deps.nameFromTags?.set?.(!!on)
+    return this.namesFromTags()
+  }
+
+  // Lower-case names of every entry (both libraries): tag names get " (2)", " (3)" against them.
+  async usedNames(): Promise<Set<string>> {
+    return new Set((await this.list()).map((e) => e.name.toLowerCase()))
+  }
+
   // One imported effect -> a library entry ('model'). `file` is the model file kept with it (re-import).
-  async addEffect(store: VfxStore, g: EffectGroup, opts: { origin: string; tagHint?: string; file?: { name: string; bytes: Buffer | string } | null; tags?: string[] }): Promise<{ entry: VfxEntry; notes: string[] }> {
-    const effect = effectFromNodes(g.name, g.nodes)
+  // g.name is the effect's own name (file / Studio). The entry is named from its tags when
+  // `fromTags` (undefined: the setting), else `name` (the user's, from the import review) or g.name;
+  // `used` holds the names taken so far (tag names are made unique against it).
+  async addEffect(store: VfxStore, g: EffectGroup, opts: { origin: string; tagHint?: string; file?: { name: string; bytes: Buffer | string } | null; tags?: string[]; name?: string; fromTags?: boolean; used?: NameSet }): Promise<{ entry: VfxEntry; notes: string[] }> {
+    const given = opts.name?.trim().slice(0, 80) || undefined
+    const userName = opts.fromTags !== true && given && given !== g.name ? given : undefined
+    // A name the user typed is evidence for the tags too (as the effect's name).
+    let effect = effectFromNodes(userName ?? g.name, g.nodes)
     const notes = importNotes(g.nodes, effect, emitAttributes(effect.roots))
-    const id = entryId(g.name)
+    const tags = tagFields(effect, `${userName ? `${userName} ` : ''}${g.name} ${opts.tagHint ?? ''}`, opts.tags ?? [])
+    let name = userName ?? g.name
+    let naming: Pick<VfxEntry, 'sourceName' | 'nameFrom'> = userName ? { sourceName: g.name, nameFrom: 'user' } : {}
+    const base = !userName && (opts.fromTags ?? this.namesFromTags()) ? tagNameBase(tags.tagGroups!, g.name) : null
+    if (base) {
+      name = uniqueName(base, opts.used ?? (await this.usedNames()))
+      naming = { sourceName: g.name, nameFrom: 'tags' }
+      effect = { ...effect, name: effectNameFor(name) }
+    } else opts.used?.add(name.toLowerCase())
+    const id = entryId(name)
     const now = this.now()
     const entry: VfxEntry = {
       id,
       scope: store.scope,
       kind: 'model',
-      name: g.name,
+      name,
+      ...naming,
       description: describeEffect(effect),
-      ...tagFields(effect, `${g.name} ${opts.tagHint ?? ''}`, opts.tags ?? []),
+      ...tags,
       createdAt: now,
       updatedAt: now,
       origin: opts.origin,
@@ -503,9 +570,11 @@ export class VfxService {
     const r = (await this.extractModels([file])).get(file)
     if (!r?.roots) throw new VfxError(`Could not read ${basename(file)}: ${r?.error ?? 'unreadable'}`)
     const groups = splitEffects(r.roots)
-    const g = groups.find((x) => x.name === e.name) ?? (groups.length === 1 ? groups[0] : null)
-    if (!g) throw new VfxError(groups.length ? `The model file holds ${groups.length} effects and none is named "${e.name}".` : 'No effect found in the stored model file.')
-    const effect = effectFromNodes(e.name, g.nodes)
+    // Entries named from their tags (or renamed) find their effect by its original name.
+    const own = e.sourceName ?? e.name
+    const g = groups.find((x) => x.name === own) ?? (groups.length === 1 ? groups[0] : null)
+    if (!g) throw new VfxError(groups.length ? `The model file holds ${groups.length} effects and none is named "${own}".` : 'No effect found in the stored model file.')
+    const effect = effectFromNodes(e.sourceName !== undefined ? (e.effect?.name ?? e.name) : e.name, g.nodes)
     const notes = importNotes(g.nodes, effect, emitAttributes(effect.roots))
     const next: VfxEntry = { ...e, effect, stats: effectStats(effect), description: describeEffect(effect), importVersion: IMPORT_VERSION, updatedAt: this.now(), thumbs: [] }
     if (notes.length) next.importNotes = notes
@@ -527,6 +596,7 @@ export class VfxService {
     const models = files.filter((f) => MODEL_EXT.has(extname(f).toLowerCase()))
     const media = files.filter((f) => !MODEL_EXT.has(extname(f).toLowerCase()))
     const extracted = await this.extractModels(models)
+    const used = await this.usedNames()
     for (const f of models) {
       const r = extracted.get(f)
       if (!r?.roots) {
@@ -551,7 +621,7 @@ export class VfxService {
           }
           seen.set(hash, name)
         }
-        const { entry, notes } = await this.addEffect(store, { ...g, name }, { origin: basename(f), tagHint: basename(f), file: keep })
+        const { entry, notes } = await this.addEffect(store, { ...g, name }, { origin: basename(f), tagHint: basename(f), file: keep, used })
         if (notes.length) (result.notes ??= []).push({ file: f, notes })
         result.added.push(entry)
       }
@@ -668,27 +738,78 @@ export class VfxService {
   }
 
   // Recomputes the auto-tags of every entry with an effect; groups the user edited (and custom
-  // tags) stay as they are.
-  async retag(): Promise<{ changed: number; total: number }> {
+  // tags) stay as they are. Entries named from their tags are named again from the new tags (with the
+  // setting on), unless the user renamed them or edited their kind / element / custom tags (then only
+  // "Name from tags" renames them).
+  async retag(): Promise<{ changed: number; total: number; renamed?: number }> {
     let changed = 0
     let total = 0
+    let renamed = 0
+    const rename = this.namesFromTags()
+    const used = rename ? nameCounter(await this.list()) : null
     for (const s of [this.project(), this.user]) {
       if (!s) continue
       for (const e of await s.list()) {
         if (!e.effect) continue
         total++
-        const t = tagFields(e.effect, `${e.name} ${e.kind === 'model' ? e.origin : ''}`, [], { tags: e.tags, tagGroups: tagGroupsOf(e), userTagGroups: e.userTagGroups ?? [] })
+        // A name given from the tags is no evidence for them: the original name is.
+        const byTags = e.nameFrom === 'tags'
+        const own = byTags ? (e.sourceName ?? e.effect.name) : e.name
+        const t = tagFields(byTags ? { ...e.effect, name: own } : e.effect, `${own} ${e.kind === 'model' ? e.origin : ''}`, [], { tags: e.tags, tagGroups: tagGroupsOf(e), userTagGroups: e.userTagGroups ?? [] })
         // Keep the sequence timing of composed effects and custom tags of older entries.
         const groups: TagGroups = { ...t.tagGroups!, custom: tagGroupsOf(e).custom }
         if (e.effect.script && !groups.timing.includes('sequence') && !(e.userTagGroups ?? []).includes('timing')) groups.timing = ['sequence']
         const tags = flatTags(groups)
         if (tags.join('|') === e.tags.join('|') && JSON.stringify(e.tagGroups ?? null) === JSON.stringify(groups)) continue
-        await s.save({ ...e, tags, tagGroups: groups, autoTagInfo: t.autoTagInfo })
+        const next: VfxEntry = { ...e, tags, tagGroups: groups, autoTagInfo: t.autoTagInfo }
+        const base = byTags && used && !(e.userTagGroups ?? []).some((k) => k !== 'timing') ? nameFromTags(groups, '') : ''
+        if (base && baseName(e.name).toLowerCase() !== base.toLowerCase()) {
+          used!.delete(e.name.toLowerCase())
+          next.name = uniqueName(base, used!)
+          next.effect = { ...e.effect, name: effectNameFor(next.name) }
+          renamed++
+        }
+        await s.save(next)
         changed++
       }
     }
     if (changed) this.changed()
-    return { changed, total }
+    return { changed, total, ...(renamed ? { renamed } : {}) }
+  }
+
+  // "Name from tags": entries named from their tags ("Lightning Impact"), the original name kept as
+  // sourceName. ids: those entries (null: every imported model). Names someone chose on purpose
+  // (renamed by the user; made effects and built-in examples, "Hollow Purple") are left (kept)
+  // unless they are generic ("Particles", "Effect3") or force; names get " (2)", " (3)" against the
+  // rest of the library. Layers inside the effect keep their names (scripts find them by name); the
+  // effect's own name follows the entry.
+  async renameFromTags(ids: string[] | null, opts: { force?: boolean } = {}): Promise<VfxNameFromTagsResult> {
+    const all = await this.list()
+    const used = nameCounter(all)
+    const want = ids ? new Set(ids.map(String)) : null
+    const targets = all.filter((e) => e.effect && (want ? want.has(e.id) : e.kind === 'model'))
+    const out: VfxNameFromTagsResult = { renamed: [], kept: 0, unchanged: 0, noTags: 0, total: targets.length }
+    for (const e of targets) {
+      if (!opts.force && (e.nameFrom === 'user' || e.kind !== 'model') && !isGenericName(e.name)) {
+        out.kept++
+        continue
+      }
+      const base = nameFromTags(tagGroupsOf(e), '')
+      if (!base) {
+        out.noTags++
+        continue
+      }
+      if (baseName(e.name).toLowerCase() === base.toLowerCase()) {
+        out.unchanged++
+        continue
+      }
+      used.delete(e.name.toLowerCase())
+      const name = uniqueName(base, used)
+      const next: VfxEntry = { ...e, name, nameFrom: 'tags', sourceName: e.sourceName ?? e.name, effect: { ...e.effect!, name: effectNameFor(name) } }
+      out.renamed.push(await this.store(e.scope).save(next))
+    }
+    if (out.renamed.length) this.changed()
+    return out
   }
 
   // ------------------------------------------------------------ learn
@@ -1771,6 +1892,23 @@ Pick the one a senior Roblox VFX artist would ship for this request (readability
 
   dispose(): void {
     for (const t of this.running.values()) t.cancelled = true
+  }
+}
+
+// Lower-case names in use, counted (several entries can share one): uniqueName checks and adds,
+// delete frees one use.
+function nameCounter(entries: VfxEntry[]): NameSet & { delete(name: string): void } {
+  const n = new Map<string, number>()
+  const add = (k: string) => n.set(k, (n.get(k) ?? 0) + 1)
+  for (const e of entries) add(e.name.toLowerCase())
+  return {
+    has: (k) => (n.get(k) ?? 0) > 0,
+    add,
+    delete: (k) => {
+      const c = n.get(k) ?? 0
+      if (c > 1) n.set(k, c - 1)
+      else n.delete(k)
+    }
   }
 }
 

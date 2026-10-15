@@ -266,10 +266,13 @@ export const qolFlows: Flow[] = [
       await openPage(page, 'VFX Lab')
       await closeBottom(page)
       const detail = page.locator(`${CENTER} .vfx-detail`).first()
-      if (!(await detail.count())) {
-        await page.locator(`${CENTER} .vfx-card`, { hasText: /HollowPurple|Hollow Purple/ }).first().click()
-        await detail.waitFor({ state: 'visible', timeout: 10_000 })
-      }
+      // Open Hollow Purple itself, whatever is open. Earlier flows leave another effect open: after
+      // vfx-studio-import trashes the effect it made, studio-check opens the first card, which is the
+      // "Jab" labs-make-no-key made with Ability Composer, already in the project (no new files).
+      const card = page.locator(`${CENTER} .vfx-card`, { hasText: /HollowPurple|Hollow Purple/ }).first()
+      if (!(await card.evaluate((el: Element) => el.classList.contains('on')))) await card.click()
+      await page.locator(`${CENTER} .vfx-card.on`, { hasText: /HollowPurple|Hollow Purple/ }).waitFor({ timeout: 10_000 })
+      await detail.waitFor({ state: 'visible', timeout: 10_000 })
       // Adding the example put it in the library only: nothing in the project yet.
       const dir = join(root, 'src', 'shared', 'VFX', 'HollowPurple')
       check(!existsSync(dir), 'adding the VFX example already wrote src/shared/VFX/HollowPurple')
@@ -282,6 +285,8 @@ export const qolFlows: Flow[] = [
       }
       // First time: every file is new; write them.
       await open()
+      const heading = (await a2g.innerText()).split('\n')[0]
+      check(/HollowPurple|Hollow Purple/.test(heading), `Add to game opened for another effect: "${heading}"`)
       const files = await a2g.locator('.a2g-file .a2g-path').allInnerTexts()
       check(files.length > 0, 'Add to game lists no files')
       check((await a2g.locator('.a2g-file.new').count()) > 0, 'no file is listed as new for an unwritten example')

@@ -10,6 +10,7 @@
 //   vfx_set_script      write  same, and save it on the entry (project files, preview, Script tab)
 
 import { z } from 'zod'
+import { nearestEffects } from '../../../shared/vfx/retrieve.ts'
 import { perfWarnings } from '../../../shared/vfx/analyze.ts'
 import { compactEffect, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
 import type { VfxEntry, VfxScriptResult } from '../../../shared/vfx/types.ts'
@@ -76,7 +77,9 @@ export function vfxTools(service: VfxService, opts: { chatImage?: (absPath: stri
       inputSchema: { query: z.string().min(1).max(200), limit: z.number().int().min(1).max(6).optional() },
       handler: (args: { query: string; limit?: number }) =>
         guard(async () => {
-          const hits = await service.search(args.query, { limit: args.limit ?? 3 })
+          // Ranked by kind / element / colour / words, ratings and remix feedback; else the word search.
+          const near = nearestEffects(args.query, await service.list(), { limit: args.limit ?? 3, feedback: await service.feedback() }).map((m) => m.entry)
+          const hits = near.length ? near : await service.search(args.query, { limit: args.limit ?? 3 })
           const tags = args.query.toLowerCase().split(/\W+/).filter(Boolean)
           const recipe = await service.recipeFor(tags)
           const parts: string[] = []
@@ -164,10 +167,16 @@ export function vfxTools(service: VfxService, opts: { chatImage?: (absPath: stri
       name: 'vfx_compose',
       description:
         "Make a multi-stage Roblox VFX (any request: a beam merge, a charged slash, a ground slam, a teleport...) in one step: writes a Luau timeline script with the kit (anticipation -> charge -> release -> impact -> dissipate), records it, saves the effect to the VFX library and the project (src/shared/VFX/<Name>/init.luau + Timeline.luau + Effect.rbxmx, and the ForgeFX runtime), then refines it in the background (render + critique at each stage). Pass script to use your own timeline script instead of drafting one. Returns the entry id, the stages and cues. Iterate with vfx_set_script and vfx_refine.",
-      inputSchema: { request: z.string().min(3).max(500), script: z.string().max(60000).optional(), refine: z.boolean().optional(), reference: z.string().max(120).optional().describe('id of a video reference (ref_list / ref_import): "make it like this"; its beats, palette, glow, vision summary and key frames guide the script and the critic scores the match') },
-      handler: (args: { request: string; script?: string; refine?: boolean; reference?: string }) =>
+      inputSchema: {
+        request: z.string().min(3).max(500),
+        script: z.string().max(60000).optional(),
+        refine: z.boolean().optional(),
+        reference: z.string().max(120).optional().describe('id of a video reference (ref_list / ref_import): "make it like this"; its beats, palette, glow, vision summary and key frames guide the script and the critic scores the match'),
+        variations: z.number().int().min(1).max(3).optional().describe('draft this many scripts (1-3) and keep the one the critic (or the library-fit checks) prefers; default 1')
+      },
+      handler: (args: { request: string; script?: string; refine?: boolean; reference?: string; variations?: number }) =>
         guard(async () => {
-          const r = await service.compose(args.request, { script: args.script, refine: args.refine, reference: args.reference })
+          const r = await service.compose(args.request, { script: args.script, refine: args.refine, reference: args.reference, variations: args.variations })
           return scriptReport(r, args.script) + (r.ok && r.refined ? '\nrefining in the background (watch the VFX Lab, or call vfx_refine to wait for it)' : '')
         })
     },

@@ -247,9 +247,9 @@ export const labFlows: Flow[] = [
   },
   {
     name: 'vfx-studio-import',
-    title: 'VFX Lab: Import from Studio (fake plugin) -> review -> import, learn offer, select + delete + undo, duplicates',
+    title: 'VFX Lab: Import from Studio (fake plugin) -> review -> import, learn offer, select + delete + undo, duplicates, Make remixes an imported effect',
     needs: ['bridgePort'],
-    timeoutMs: 90_000,
+    timeoutMs: 120_000,
     async run({ page, shot, note }) {
       await openPage(page, 'VFX Lab')
       await closeBottom(page)
@@ -302,6 +302,28 @@ export const labFlows: Flow[] = [
       await page.locator(`${CENTER} button[aria-label="Close duplicates"]`).click()
       // Tag filters by group.
       check(await page.locator(`${CENTER} .vfx-tag-groups [role="group"]`).count() >= 1, 'no tag filter rows')
+      // Make (single, 3 variations) remixes one of the imported slashes and keeps the best variation.
+      await page.locator(`${CENTER} .vfx-mode button`, { hasText: /^single$/ }).click()
+      await page.locator(`${CENTER} [data-testid="vfx-variations"] button`, { hasText: /^3$/ }).click()
+      await page.locator(`${CENTER} input[aria-label="Effect to make"]`).fill('orange slash')
+      await page.locator(`${CENTER} .vfx-make-row button.primary`).click()
+      const isMade = (e: { origin?: string; kind?: string }) => e.kind === 'generated' && e.origin === 'orange slash'
+      await page
+        .waitForFunction(() => window.harness.vfxList().then((l: { origin?: string; kind?: string }[]) => l.some((e) => e.kind === 'generated' && e.origin === 'orange slash')), undefined, { timeout: 45_000, polling: 500 })
+        .catch(() => null)
+      const made = (await page.evaluate(() => window.harness.vfxList())).find(isMade) as { id: string; basedOn?: string[]; pick?: { of: number } } | undefined
+      check(!!made, 'Make did not save the effect')
+      check(!!made!.basedOn?.length, 'the made effect is not based on a library effect')
+      check(made!.pick?.of === 3, `variations: ${JSON.stringify(made!.pick)}`)
+      await page.evaluate((id: string) => window.harness.vfxCancel(id), made!.id)
+      await page.locator(`${CENTER} .vfx-detail [role="tab"]`, { hasText: /^info$/ }).click()
+      const from = page.locator(`${CENTER} [data-testid="vfx-made-from"]`)
+      await from.waitFor({ state: 'visible', timeout: 10_000 })
+      check(/Slash/.test(await from.innerText()), `made from: ${await from.innerText()}`)
+      await shot('made-from')
+      note(`made ${made!.id} from ${made!.basedOn!.join(', ')}`)
+      await page.evaluate((id: string) => window.harness.vfxTrash([id]), made!.id)
+      await dismissToasts(page)
       // Clean up what this flow added (the trash is emptied on the next start).
       const ids = (await page.evaluate(() => window.harness.vfxList())).filter((e: { origin?: string }) => (e.origin ?? '').startsWith('ReplicatedStorage.VFX')).map((e: { id: string }) => e.id)
       await page.evaluate((x: string[]) => window.harness.vfxTrash(x), ids)

@@ -23,12 +23,15 @@ import { findExample, VFX_EXAMPLES, CHARGE_SLASH } from '../../../shared/vfx/exa
 import { RECORDED } from '../../../shared/vfx/examples.recorded.ts'
 import { FORGEFX_SOURCE, isOwnRuntime, RUNTIME_MODULE } from '../../../shared/vfx/runtime.ts'
 import { timelineSummary } from '../../../shared/vfx/timeline.ts'
-import { draftSpec, libraryTextures, promptTags } from '../../../shared/vfx/draft.ts'
+import { promptTags } from '../../../shared/vfx/draft.ts'
 import { luauModule, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
 import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeMatches, recipeSkill } from '../../../shared/vfx/recipes.ts'
-import { compactEffect, effectFromSpec, safeName, shortTitle, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
-import type { VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
+import { applyChanges, compactEffect, effectFromSpec, safeName, shortTitle, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
+import type { VfxChange, VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxPick, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
+import { draftCandidate, finishEffect, ground, groundingLines, pickByCode, singleCandidates, type Candidate, type Grounding } from '../../../shared/vfx/ground.ts'
+import { emptyFeedback, feedbackBoost, nearestEffects, normalizeFeedback, recordFeedback, type VfxFeedback } from '../../../shared/vfx/retrieve.ts'
+import { texRef } from '../../../shared/vfx/tex/textures.ts'
 import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { entryId, PROJECT_VFX_DIR, safeFileName, VfxLibraryError, VfxStore } from './library.ts'
 import { PROCEDURAL_GUIDE, isTexRef, type ExportPlan } from '../../../shared/vfx/tex/textures.ts'
@@ -98,6 +101,8 @@ export interface VfxTextureHooks {
   promptList(limit?: number): Promise<string[]>
   // Draft layer roles -> library textures under the texture policy (reuse first).
   roleTextures?(): Promise<Record<string, string>>
+  // The texture library (Make counts its textures as reuse).
+  list?(): Promise<{ id: string; rating?: 'up' | 'down'; roblox?: { uri?: string } }[]>
 }
 
 // Place files (.rbxl / .rbxlx): the VFX packs in Workspace / ReplicatedStorage / ServerStorage.
@@ -116,10 +121,13 @@ export class VfxError extends Error {}
 
 // Tag fields of an entry from its effect: auto groups (with evidence), merged with tags given by
 // the caller (spec / compose), and with the groups the user edited on `prev` kept as they are.
-export function tagFields(effect: VfxEffect, hint: string, given: string[] = [], prev?: Pick<VfxEntry, 'tags' | 'tagGroups' | 'userTagGroups'> | null): Pick<VfxEntry, 'tags' | 'tagGroups' | 'autoTagInfo' | 'userTagGroups'> {
+// authoritative: groups where the given tags replace the auto ones when there are any (Make: "an ice
+// slash" remixed from a fire slash is ice, whatever its colours still say to the auto-tagger).
+export function tagFields(effect: VfxEffect, hint: string, given: string[] = [], prev?: Pick<VfxEntry, 'tags' | 'tagGroups' | 'userTagGroups'> | null, authoritative: TagGroup[] = []): Pick<VfxEntry, 'tags' | 'tagGroups' | 'autoTagInfo' | 'userTagGroups'> {
   const { groups: auto, auto: info } = autoTagGroups(effect, hint)
   const g = groupsFromTags(given)
-  const merged: TagGroups = { kind: [...new Set([...g.kind, ...auto.kind])], element: [...new Set([...g.element, ...auto.element])], timing: g.timing.length ? g.timing : auto.timing, custom: g.custom }
+  const pick = (k: 'kind' | 'element') => (authoritative.includes(k) && g[k].length ? g[k] : [...new Set([...g[k], ...auto[k]])])
+  const merged: TagGroups = { kind: pick('kind'), element: pick('element'), timing: g.timing.length ? g.timing : auto.timing, custom: g.custom }
   const user = prev?.userTagGroups ?? []
   const final = prev && user.length ? retagGroups(tagGroupsOf(prev), merged, user) : merged
   return { tags: flatTags(final), tagGroups: final, autoTagInfo: info, ...(user.length ? { userTagGroups: user } : {}) }
@@ -155,6 +163,44 @@ ${'$'}{EXAMPLE}\`\`\``
   .replace('${EXAMPLE}', CHARGE_SLASH)
 
 const EMPTY_BASE = (name: string): VfxEffect => ({ name, roots: [], cues: [], duration: 2 })
+
+// Make from the closest real effect: the model edits a copy instead of drafting from scratch.
+export const REMIX_SYSTEM = `You adapt a real Roblox VFX from the user's own library to a new request for the RBX Forge VFX Lab. The starting effect is already recoloured and resized for the request; keep what makes it look like the user's work (its structure, textures, flipbooks, timing). Answer with JSON only, no prose:
+{"name":"PascalCase","description":"one sentence","changes":[{"node":"<layer name from the parameters>","prop":"<Roblox property>","value":...,"why":"short"}]}
+At most 10 changes, only what the request needs that the effect does not do yet (a colour accent, more or fewer sparks, a longer dissipate, a bigger ring, a slower flipbook...). Use only layer names (the "name" field) and properties that exist in the parameters; values in the same JSON shapes (sequences [[t, v], ...], colour sequences [[t, "#hex"], ...], ranges [min, max]); bursts with prop "emit" and [{"at": seconds, "count": n}]; the length of one play with node "$effect" prop "duration"; to drop a layer that does not belong (lightning bolts in an ice slash) set its "emit" to [] and "Enabled" to false. Texture: only ids already in the effect or listed as the user's textures; never invent asset ids. An empty changes list is right when it already fits the request.`
+
+// Picking between variations.
+const PICK_SYSTEM = 'You are a senior Roblox VFX artist choosing between variations of one effect from preview frames (dark background, a grey R15 dummy for scale). Answer with JSON only.'
+
+// Variation hints: one model call per variation (Make and compose).
+export const VARIATION_HINTS = ['', 'Variation B: punchier and tighter: a faster peak, shorter lifetimes, a hotter core, fewer but sharper secondary layers.', 'Variation C: bigger and more showy: a larger silhouette, more secondary detail (sparks, debris, a ring), a longer dissipate.']
+
+export function clampVariations(n: unknown): number {
+  const v = Math.floor(Number(n))
+  return Number.isFinite(v) ? Math.max(1, Math.min(VARIATION_HINTS.length, v)) : 1
+}
+
+// Tag groups the request names (they win over what the auto-tagger reads off a remixed copy).
+function authoritative(g: Grounding): TagGroup[] {
+  return (['kind', 'element'] as const).filter((k) => g.req.groups[k].length > 0)
+}
+
+// The first JSON object in a model answer (fenced or not).
+function jsonObject(raw: string): Record<string, unknown> {
+  const m = /\{[\s\S]*\}/.exec(raw.replace(/```(?:json)?/g, ''))
+  if (!m) throw new Error('no JSON in the answer')
+  const v = JSON.parse(m[0])
+  if (!v || typeof v !== 'object' || Array.isArray(v)) throw new Error('the answer is not a JSON object')
+  return v as Record<string, unknown>
+}
+
+function asChanges(raw: unknown): VfxChange[] {
+  if (!Array.isArray(raw)) return []
+  return raw
+    .filter((c): c is Record<string, unknown> => !!c && typeof c === 'object' && typeof (c as { node?: unknown }).node === 'string' && typeof (c as { prop?: unknown }).prop === 'string' && (c as { value?: unknown }).value !== undefined)
+    .slice(0, 12)
+    .map((c) => ({ node: String(c.node), prop: String(c.prop), value: c.value, ...(c.why ? { why: String(c.why).slice(0, 200) } : {}) }))
+}
 
 // The script in a model answer: the first lua / luau fence, else the text from "return function".
 export function extractScript(raw: string): string | null {
@@ -649,7 +695,8 @@ export class VfxService {
   // Library -> recipes -> memory skills (vfx-recipe-<tag>) through the memory layer.
   async learn(): Promise<{ recipes: VfxRecipe[]; saved: string[]; errors: string[] }> {
     const entries = await this.list()
-    const recipes = extractRecipes(entries)
+    const fb = await this.feedback()
+    const recipes = extractRecipes(entries, 1, { boost: (e) => feedbackBoost(fb, e.id) })
     await mkdir(this.deps.userDir, { recursive: true })
     await writeFile(this.recipesFile(), JSON.stringify(recipes, null, 1), 'utf8')
     const saved: string[] = []
@@ -697,11 +744,14 @@ export class VfxService {
     const hit = await this.find(id)
     if (!hit) throw new VfxError(`no VFX entry "${id}"`)
     const e: VfxEntry = { ...hit.entry, updatedAt: this.now() }
+    const prevRating = hit.entry.rating ?? null
     if (rating) e.rating = rating
     else delete e.rating
     if (e.kind === 'generated') e.quality = rating === 'up' ? 'good' : rating === 'down' ? 'avoid' : undefined
     if (!e.quality) delete e.quality
     const saved = await hit.store.save(e)
+    // The effects it was made from: liked results make them better starting points, disliked worse.
+    if (saved.basedOn?.length && prevRating !== (rating ?? null)) await this.saveFeedback(recordFeedback(await this.feedback(), saved.basedOn, rating, prevRating)).catch((err) => this.deps.log?.(`vfx: feedback: ${(err as Error).message}`, 'stderr'))
     await this.recordPrinciples(saved, rating).catch((err) => this.deps.log?.(`vfx: principle feedback: ${(err as Error).message}`, 'stderr'))
     if (rating === 'up' && this.deps.memory && saved.effect?.script) await this.saveSequenceSkill(saved).catch((err) => this.deps.log?.(`vfx: sequence skill: ${(err as Error).message}`, 'stderr'))
     if (rating === 'down' && this.deps.memory) await this.saveAvoidNotes(saved).catch((err) => this.deps.log?.(`vfx: avoid note: ${(err as Error).message}`, 'stderr'))
@@ -764,8 +814,9 @@ export class VfxService {
   private async relearn(tags: string[]): Promise<void> {
     const entries = await this.list()
     const recipes = await this.recipes()
+    const fb = await this.feedback()
     for (const t of tags) {
-      const r = extractRecipe(t, entries)
+      const r = extractRecipe(t, entries, { boost: (e) => feedbackBoost(fb, e.id) })
       if (!r) continue
       const i = recipes.findIndex((x) => x.tag === t)
       if (i >= 0) recipes[i] = r
@@ -778,9 +829,42 @@ export class VfxService {
 
   // ------------------------------------------------------------ create
 
+  // The closest library effects for a request (retrieve.ts: kind, element, colours, words, ratings
+  // and remix feedback), else the word search.
   async references(tags: string[], text: string, exclude?: string): Promise<VfxEntry[]> {
+    const entries = await this.list()
+    const near = nearestEffects(`${text} ${tags.join(' ')}`, entries, { exclude, limit: 3, feedback: await this.feedback() }).map((m) => m.entry)
+    if (near.length) return near
     const hits = await this.search([...tags, text].join(' '), { limit: 8 })
     return hits.filter((e) => e.id !== exclude && e.effect).slice(0, 3)
+  }
+
+  // ------------------------------------------------------------ feedback (which bases remix well)
+
+  private feedbackFile(): string {
+    return join(this.deps.userDir, 'feedback.json')
+  }
+
+  async feedback(): Promise<VfxFeedback> {
+    try {
+      return normalizeFeedback(JSON.parse(await readFile(this.feedbackFile(), 'utf8')))
+    } catch {
+      return emptyFeedback()
+    }
+  }
+
+  private async saveFeedback(fb: VfxFeedback): Promise<void> {
+    await mkdir(this.deps.userDir, { recursive: true })
+    await writeFile(this.feedbackFile(), JSON.stringify(fb, null, 1), 'utf8')
+  }
+
+  // Request + library -> grounding (closest effects, learned recipe, real textures by role).
+  async groundFor(text: string, exclude?: string): Promise<Grounding> {
+    const [entries, recipes, feedback] = await Promise.all([this.list(), this.recipes(), this.feedback()])
+    const libraryRoles = (await this.deps.textures?.roleTextures?.().catch(() => ({}))) ?? {}
+    const lib = (await this.deps.textures?.list?.().catch(() => [])) ?? []
+    const libraryRefs = lib.filter((t) => t.rating !== 'down').flatMap((t) => [texRef(t.id), ...(t.roblox?.uri ? [t.roblox.uri] : [])])
+    return ground(text, { entries, recipes, feedback, libraryRoles, libraryRefs }, { exclude })
   }
 
   // Creates (or replaces, with `id`) a generated entry from a spec and writes it into the project.
@@ -793,7 +877,7 @@ export class VfxService {
   // saves of an example not written yet): those reach the project only through Export / Add to game.
   // modelNote: why the model did not draft it ("Drafted without a model because: ..."); a later save
   // without one clears it.
-  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string; restatement?: Restatement; writeProject?: boolean; reuseTextures?: boolean; modelNote?: string } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
+  async saveEffect(raw: VfxEffect, opts: { id?: string; prompt?: string; description?: string; tags?: string[]; refId?: string; restatement?: Restatement; writeProject?: boolean; reuseTextures?: boolean; modelNote?: string; basedOn?: string[]; makeNotes?: string[]; pick?: VfxPick; authoritativeTags?: TagGroup[] } = {}): Promise<{ entry: VfxEntry; warnings: PerfWarning[] }> {
     const spec = { name: raw.name, description: opts.description, tags: opts.tags }
     const prev = opts.id ? await this.find(opts.id) : null
     if (opts.id && !prev) throw new VfxError(`no VFX entry "${opts.id}"`)
@@ -802,7 +886,7 @@ export class VfxService {
     // built-in examples keep their textures.
     const effect = await this.prepareTextures(raw, store.scope, opts.reuseTextures ?? opts.writeProject !== false)
     const now = this.now()
-    const tagInfo = tagFields(effect, opts.prompt ?? '', (spec.tags ?? []).map((t) => String(t).toLowerCase()), prev?.entry)
+    const tagInfo = tagFields(effect, opts.prompt ?? '', (spec.tags ?? []).map((t) => String(t).toLowerCase()), prev?.entry, opts.authoritativeTags)
     const entry: VfxEntry = {
       ...(prev?.entry ?? { createdAt: now, thumbs: [], iterations: [] }),
       id: prev?.entry.id ?? entryId(effect.name),
@@ -816,7 +900,10 @@ export class VfxService {
       effect,
       stats: effectStats(effect),
       ...(opts.refId ? { refId: opts.refId } : {}),
-      ...(opts.restatement ? { restatement: opts.restatement } : {})
+      ...(opts.restatement ? { restatement: opts.restatement } : {}),
+      ...(opts.basedOn?.length ? { basedOn: opts.basedOn.slice(0, 6) } : {}),
+      ...(opts.makeNotes?.length ? { makeNotes: opts.makeNotes.slice(0, 8).map((n) => n.slice(0, 200)) } : {}),
+      ...(opts.pick ? { pick: opts.pick } : {})
     } as VfxEntry
     if (opts.modelNote) entry.modelNote = opts.modelNote.slice(0, 600)
     else delete entry.modelNote
@@ -1085,43 +1172,125 @@ export class VfxService {
     }
   }
 
-  // First spec for a prompt: the default model when available (recipe + references in the prompt),
-  // else the deterministic draft (shared/vfx/draft.ts).
-  async draft(prompt: string): Promise<{ spec: VfxSpec; source: 'model' | 'draft'; modelError?: string }> {
-    const tags = promptTags(prompt)
-    const recipe = await this.recipeFor(tags.length ? tags : prompt.toLowerCase().split(/\W+/))
-    const entries = await this.list()
-    const fallback = draftSpec(prompt, { recipe, textures: { ...libraryTextures(entries), ...((await this.deps.textures?.roleTextures?.().catch(() => ({}))) ?? {}) } })
+  // Make (single): candidates from the closest effects in the library (remixes) or the archetype
+  // draft, all finished against the library (real textures, learned ranges). With a model, one model
+  // edit of each candidate (or a grounded draft) per variation; when every model answer fails, the
+  // code candidates are used and the error is kept for the entry's note.
+  async makeCandidates(text: string, variations = 1): Promise<{ cands: Candidate[]; g: Grounding; source: 'model' | 'draft'; modelError?: string }> {
+    const n = clampVariations(variations)
+    const g = await this.groundFor(text)
+    const base = singleCandidates(text, g, n)
     const vision = this.deps.vision?.('default')
-    if (!vision) return { spec: fallback, source: 'draft' }
-    const refs = await this.references(tags, prompt)
-    const lines = [
-      `Make: ${prompt}`,
-      recipe ? `Learned recipe "${recipe.tag}": ${JSON.stringify({ layers: recipe.layers, ranges: recipe.ranges, notes: recipe.notes, avoid: recipe.avoid }).slice(0, 4000)}` : 'No learned recipe for this type yet.',
-      ...refs.map((r) => `Reference "${r.name}": ${JSON.stringify(compactEffect(r.effect!)).slice(0, 2500)}`),
-      `Library textures by role (use these ids; never invent asset ids): ${JSON.stringify(libraryTextures(entries))}`,
-      ...(await this.textureLines()),
-      `A starting draft you may improve: ${JSON.stringify(fallback)}`
-    ]
-    try {
-      const raw = await vision(DRAFT_SYSTEM, lines.join('\n\n'), [])
-      const m = /\{[\s\S]*\}/.exec(raw.replace(/```(?:json)?/g, ''))
-      if (!m) throw new Error('no JSON in the answer')
-      const spec = JSON.parse(m[0]) as VfxSpec
-      effectFromSpec(spec)
-      return { spec, source: 'model' }
-    } catch (e) {
-      this.deps.log?.(`vfx: model draft unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
-      return { spec: fallback, source: 'draft', modelError: (e as Error).message }
-    }
+    if (!vision) return { cands: base, g, source: 'draft' }
+    const textures = await this.textureLines()
+    const runs = await Promise.allSettled(Array.from({ length: n }, (_, i) => this.modelCandidate(text, g, base[Math.min(i, base.length - 1)], VARIATION_HINTS[i] ?? '', vision, textures)))
+    const cands = runs.flatMap((r) => (r.status === 'fulfilled' ? [r.value] : []))
+    const failed = runs.find((r): r is PromiseRejectedResult => r.status === 'rejected')
+    if (failed) this.deps.log?.(`vfx: model draft unusable (${(failed.reason as Error)?.message}); ${cands.length ? 'using the other variations' : 'using the built-in draft'}`, 'stderr')
+    if (!cands.length) return { cands: base, g, source: 'draft', modelError: (failed?.reason as Error)?.message ?? 'no answer' }
+    return { cands, g, source: 'model' }
   }
 
-  // "Make a ___ effect": draft, create, then refine in the background. Returns the new entry.
+  // One model answer: edits to a remix of a library effect, or a whole spec from the grounded draft.
+  private async modelCandidate(text: string, g: Grounding, start: Candidate, hint: string, vision: VisionFn, textures: string[]): Promise<Candidate> {
+    const grounding = groundingLines(g)
+    if (start.how === 'remix') {
+      const baseName = g.matches.find((m) => m.entry.id === start.basedOn[0])?.entry.name ?? 'library effect'
+      const lines = [
+        `Make: ${text}`,
+        hint,
+        `Starting effect: a copy of the user's "${baseName}" (${start.notes.join('; ')}). Its parameters (edit these; "name" is the layer key):\n${JSON.stringify(compactEffect(start.effect, { keys: true })).slice(0, 12000)}`,
+        ...grounding,
+        ...textures
+      ].filter(Boolean)
+      const raw = await vision(REMIX_SYSTEM, lines.join('\n\n'), [])
+      const data = jsonObject(raw) as { name?: unknown; description?: unknown; changes?: unknown }
+      let effect = start.effect
+      let applied = 0
+      let rejected = 0
+      for (const ch of asChanges(data.changes)) {
+        try {
+          effect = applyChanges(effect, [ch])
+          applied++
+        } catch (e) {
+          if (!(e instanceof SpecError)) throw e
+          rejected++
+        }
+      }
+      if (typeof data.name === 'string' && safeName(data.name)) effect = { ...effect, name: safeName(data.name).slice(0, 40) }
+      const f = finishEffect(effect, g)
+      return { effect: f.effect, basedOn: start.basedOn, how: 'model-remix', notes: [...start.notes, `${applied} model edit${applied === 1 ? '' : 's'}${rejected ? ` (${rejected} did not apply)` : ''}`, ...f.notes], ...(typeof data.description === 'string' ? { description: data.description.slice(0, 600) } : {}) }
+    }
+    const fallback = start.spec ?? draftCandidate(text, g).spec!
+    const lines = [
+      `Make: ${text}`,
+      hint,
+      g.recipe ? `Learned recipe "${g.recipe.tag}": ${JSON.stringify({ layers: g.recipe.layers, notes: g.recipe.notes, avoid: g.recipe.avoid }).slice(0, 3000)}` : 'No learned recipe for this type yet.',
+      ...grounding,
+      ...textures,
+      `A starting draft you may improve: ${JSON.stringify(fallback)}`
+    ].filter(Boolean)
+    const raw = await vision(DRAFT_SYSTEM, lines.join('\n\n'), [])
+    const spec = jsonObject(raw) as unknown as VfxSpec
+    const f = finishEffect(effectFromSpec(spec), g)
+    return { effect: f.effect, basedOn: start.basedOn, how: 'model-draft', notes: f.notes, spec, ...(typeof spec.description === 'string' ? { description: spec.description } : {}), ...(Array.isArray(spec.tags) ? { tags: spec.tags.map(String) } : {}) }
+  }
+
+  // Several variations -> one: the critic looks at two frames of each and picks (when frames can be
+  // rendered and a critic model is set), else the code checks pick (library fit + principles).
+  // modelFailed: the model just failed to answer, so the critic is not asked (rendering the frames
+  // for it would only slow the fallback down).
+  async pickCandidate(cands: Candidate[], g: Grounding, text: string, opts: { modelFailed?: boolean } = {}): Promise<{ index: number; pick?: VfxPick }> {
+    if (cands.length < 2) return { index: 0 }
+    const code = pickByCode(cands, g)
+    const scores = code.scores.map((x) => x.total)
+    const critic = opts.modelFailed ? null : await this.criticPick(cands, text).catch((e) => {
+      this.deps.log?.(`vfx: critic pick unavailable (${(e as Error).message}); picking by the code checks`, 'stderr')
+      return null
+    })
+    if (critic) return { index: critic.index, pick: { of: cands.length, chosen: critic.index, by: 'critic', why: critic.why, scores } }
+    const best = code.scores[code.index]
+    return { index: code.index, pick: { of: cands.length, chosen: code.index, by: 'code', why: `best library fit ${best.total}/10 (realism ${Math.round(best.realism * 100)}%, textures reused ${Math.round(best.textureReuse * 100)}%, timing ${Math.round(best.timing * 100)}%)`, scores } }
+  }
+
+  private async criticPick(cands: Candidate[], text: string): Promise<{ index: number; why: string } | null> {
+    const vision = this.deps.vision?.('critic')
+    if (!vision || !this.deps.capture) return null
+    const images: ImagePayload[] = []
+    for (const c of cands) {
+      const { frames } = await this.renderEffect(c.effect, 2)
+      for (const f of frames.slice(0, 2)) images.push({ mime: 'image/png', base64: f.toString('base64') })
+    }
+    const letters = cands.map((_, i) => String.fromCharCode(65 + i))
+    const prompt = `Request: ${text}\n${cands.length} variations of the effect, 2 frames each, in order: ${letters.map((l, i) => `images ${i * 2 + 1}-${i * 2 + 2} = ${l}`).join(', ')}.\nPick the one a senior Roblox VFX artist would ship for this request (readability, layering, timing, colour, silhouette). Answer JSON only: {"pick":"${letters[0]}","why":"one sentence"}`
+    const raw = await vision(PICK_SYSTEM, prompt, images)
+    const m = /"pick"\s*:\s*"?([A-Z])/i.exec(raw)
+    const index = m ? letters.indexOf(m[1].toUpperCase()) : -1
+    if (index < 0) throw new Error('the critic did not name a variation')
+    const why = /"why"\s*:\s*"([^"]{0,300})/.exec(raw)?.[1] ?? 'the critic preferred it'
+    return { index, why }
+  }
+
+  // "Make a ___ effect": grounded candidates (remix the closest effect, or draft), pick one, create,
+  // then refine in the background. Returns the new entry.
   async make(prompt: string, opts: VfxRefineOptions & { wait?: boolean } = {}): Promise<{ entry: VfxEntry; refined?: Promise<unknown> }> {
     const text = String(prompt ?? '').trim()
     if (text.length < 3) throw new VfxError('Describe the effect, e.g. "a fire slash with embers".')
-    const { spec, modelError } = await this.draft(text)
-    const { entry } = await this.create(spec, { prompt: text, ...(modelError ? { modelNote: draftedWithout(modelError) } : {}) })
+    const { cands, g, modelError } = await this.makeCandidates(text, opts.variations ?? 1)
+    const { index, pick } = await this.pickCandidate(cands, g, text, { modelFailed: !!modelError })
+    const c = cands[index]
+    const base = c.basedOn[0] && c.how.endsWith('remix') ? g.matches.find((m) => m.entry.id === c.basedOn[0])?.entry : undefined
+    const description = c.description ?? (base ? `${text} (remixed from your "${base.name}")` : `Draft for "${text}"`)
+    const { entry } = await this.saveEffect(c.effect, {
+      prompt: text,
+      description,
+      tags: [...new Set([...g.tags, ...(c.tags ?? [])])],
+      basedOn: c.basedOn,
+      makeNotes: c.notes,
+      ...(pick ? { pick } : {}),
+      authoritativeTags: authoritative(g),
+      ...(modelError ? { modelNote: draftedWithout(modelError) } : {})
+    })
     if (!this.deps.capture) return { entry }
     const refined = this.refine(entry.id, opts).catch((e) => this.deps.log?.(`vfx: refine failed: ${(e as Error).message}`, 'stderr'))
     if (opts.wait) await refined
@@ -1178,6 +1347,11 @@ export class VfxService {
     let result: VfxScriptResult | null = null
     let script = opts.script?.trim() ? opts.script : ''
     const vision = this.deps.vision?.('default')
+    // Grounding in the user's library (closest effects, learned ranges, real textures by role); a
+    // script passed in by the caller is used as written.
+    const g = script ? null : await this.groundFor(text).catch((e) => (this.deps.log?.(`vfx: grounding: ${(e as Error).message}`, 'stderr'), null))
+    let finished: { effect: VfxEffect; notes: string[] } | null = null
+    let pick: VfxPick | undefined
     if (!script && vision) {
       const tags = promptTags(text)
       const liked = (await this.list()).filter((e) => e.rating === 'up' && e.effect?.script && e.tags.some((t) => tags.includes(t))).slice(0, 1)
@@ -1187,30 +1361,48 @@ export class VfxService {
         restatementBlock(restatement),
         ...liked.map((e) => `The user liked this related sequence ("${e.origin}"); reuse what fits:\n\`\`\`lua\n${e.effect!.script!.slice(0, 4000)}\n\`\`\``),
         ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : []),
+        ...(g ? groundingLines(g, { script: true }) : []),
         ...(await this.textureLines()),
         ...(pinned ? [pinned.compose] : []),
         principlePlan('vfx', text, { weights: await this.principleWeights() })
       ].filter(Boolean)
       try {
         const images = pinned?.images ?? []
-        const prompt = lines.join('\n\n')
-        const done = await composeWithGate({
-          lab: 'vfx',
-          gate: this.deps.gate,
-          ask: () => vision(COMPOSE_SYSTEM, prompt, images),
-          check: async (raw): Promise<AttemptResult<{ s: string; r: VfxScriptResult }>> => {
-            const s = extractScript(raw)
-            if (!s) return { ok: false, kind: 'no-script', message: 'no script in the answer' }
-            const r = await this.recordScript(s, EMPTY_BASE(scriptName(s, text)))
-            if (r.ok) return { ok: true, value: { s, r } }
-            const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
-            return { ok: false, kind: 'script-error', message: `${r.error?.message ?? 'the script failed'}${where}` }
-          },
-          repair: (raw, message) => vision(COMPOSE_SYSTEM, `${prompt}\n\nYour script:\n\`\`\`lua\n${extractScript(raw) ?? raw.slice(0, 4000)}\`\`\`\nfailed: ${message}\nFix it and answer with the whole corrected script.`, images),
-          rephrase: () => vision(COMPOSE_SYSTEM, `${prompt}\n\n${rephraseNote('script')}`, images)
+        const base = lines.join('\n\n')
+        const one = (hint: string) => {
+          const prompt = hint ? `${base}\n\n${hint}` : base
+          return composeWithGate({
+            lab: 'vfx',
+            gate: this.deps.gate,
+            ask: () => vision(COMPOSE_SYSTEM, prompt, images),
+            check: async (raw): Promise<AttemptResult<{ s: string; r: VfxScriptResult }>> => {
+              const s = extractScript(raw)
+              if (!s) return { ok: false, kind: 'no-script', message: 'no script in the answer' }
+              const r = await this.recordScript(s, EMPTY_BASE(scriptName(s, text)))
+              if (r.ok) return { ok: true, value: { s, r } }
+              const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
+              return { ok: false, kind: 'script-error', message: `${r.error?.message ?? 'the script failed'}${where}` }
+            },
+            repair: (raw, message) => vision(COMPOSE_SYSTEM, `${prompt}\n\nYour script:\n\`\`\`lua\n${extractScript(raw) ?? raw.slice(0, 4000)}\`\`\`\nfailed: ${message}\nFix it and answer with the whole corrected script.`, images),
+            rephrase: () => vision(COMPOSE_SYSTEM, `${prompt}\n\n${rephraseNote('script')}`, images)
+          })
+        }
+        // Variations: one script per hint; every one that records is finished against the library
+        // and the critic (or the code checks) keeps one.
+        const n = clampVariations(opts.variations)
+        const runs = await Promise.allSettled(VARIATION_HINTS.slice(0, n).map((h) => one(h)))
+        const ok = runs.flatMap((r) => (r.status === 'fulfilled' ? [r.value.value] : []))
+        if (!ok.length) throw (runs.find((r): r is PromiseRejectedResult => r.status === 'rejected')?.reason ?? new Error('no script'))
+        const cands: (Candidate & { s: string; r: VfxScriptResult })[] = ok.map((v) => {
+          const f = g ? finishEffect(v.r.effect!, g) : { effect: v.r.effect!, notes: [] }
+          return { effect: f.effect, basedOn: g?.near ?? [], how: 'model-script', notes: f.notes, s: v.s, r: v.r }
         })
-        script = done.value.s
-        result = done.value.r
+        const chosen = g ? await this.pickCandidate(cands, g, text) : { index: 0 }
+        const c = cands[chosen.index]
+        pick = chosen.pick
+        script = c.s
+        result = { ...c.r, effect: c.effect }
+        finished = { effect: c.effect, notes: c.notes }
         source = 'model'
       } catch (e) {
         this.deps.log?.(`vfx: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
@@ -1226,11 +1418,25 @@ export class VfxService {
         // The built-in draft always records; this only happens when Lune itself fails.
         throw new VfxError(`could not record the draft timeline: ${result.error?.message}`)
       }
+      if (g && result.effect && !opts.script) {
+        finished = finishEffect(result.effect, g)
+        result = { ...result, effect: finished.effect }
+      }
     }
     const refTags = pinned ? ((await this.find(pinned.id))?.entry.tags ?? []).filter((t) => t !== 'video') : []
-    const tags = [...new Set([...promptTags(text), ...refTags, 'sequence'])]
+    const tags = [...new Set([...promptTags(text), ...(g?.tags ?? []), ...refTags, 'sequence'])]
     const modelNote = source === 'draft' && modelError ? draftedWithout(modelError) : undefined
-    const { entry } = await this.saveEffect(result.effect!, { prompt: text, tags, description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})`, ...(pinned ? { refId: pinned.id } : {}), ...(restatement ? { restatement } : {}), ...(modelNote ? { modelNote } : {}) })
+    const { entry } = await this.saveEffect(result.effect!, {
+      prompt: text,
+      tags,
+      description: `${text.slice(0, 300)} (${(result.effect!.stages ?? []).map((s) => s.label).join(' > ')})`,
+      ...(pinned ? { refId: pinned.id } : {}),
+      ...(restatement ? { restatement } : {}),
+      ...(modelNote ? { modelNote } : {}),
+      ...(g && !opts.script ? { basedOn: g.near } : {}),
+      ...(finished?.notes.length ? { makeNotes: finished.notes } : {}),
+      ...(pick ? { pick } : {})
+    })
     await this.ensureChoreographySkill()
     const out: VfxScriptResult & { refined?: Promise<unknown> } = { ...result, entry, source, ...(modelError && source === 'draft' ? { modelError } : {}) }
     if (opts.refine !== false && this.deps.capture) {

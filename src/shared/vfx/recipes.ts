@@ -5,7 +5,7 @@
 
 import { allNodes, effectColors, emitterRole, sizeShape } from './analyze.ts'
 import { prop } from './schema.ts'
-import { curveShape, sequenceMax } from './sequence.ts'
+import { curveShape, evalNumberSequence, sequenceMax } from './sequence.ts'
 import { flipbookFrames } from './simulate.ts'
 import type { NumberRange, NumberSequence, VfxEntry, VfxRecipe } from './types.ts'
 import { videoHintNote, videoHints } from '../videoref/prompt.ts'
@@ -14,6 +14,40 @@ import { tagGroupsOf } from './tags.ts'
 export const RECIPE_PREFIX = 'vfx-recipe-'
 // Tags that are colours or too generic to make a recipe of their own.
 const NON_TYPE_TAGS = new Set(['red', 'orange', 'yellow', 'green', 'cyan', 'blue', 'purple', 'pink', 'white', 'grey', 'black'])
+
+// Weighted quantile over (value, weight) samples (weights > 0): liked effects pull the ranges more.
+function wquantile(samples: { v: number; w: number }[], q: number): number {
+  const s = [...samples].filter((x) => x.w > 0).sort((a, b) => a.v - b.v)
+  if (!s.length) return 0
+  if (s.length === 1) return s[0].v
+  // Midpoint cumulative weights (so equal weights match the unweighted quantile at the ends).
+  const total = s.reduce((a, x) => a + x.w, 0)
+  let acc = 0
+  const pos = s.map((x) => {
+    const mid = acc + x.w / 2
+    acc += x.w
+    return mid / total
+  })
+  const lo0 = pos[0]
+  const hi0 = pos[pos.length - 1]
+  const target = lo0 + (hi0 - lo0) * q
+  for (let i = 1; i < s.length; i++) {
+    if (pos[i] >= target) {
+      const span = pos[i] - pos[i - 1] || 1
+      return s[i - 1].v + (s[i].v - s[i - 1].v) * ((target - pos[i - 1]) / span)
+    }
+  }
+  return s[s.length - 1].v
+}
+
+// How much one library entry counts when learning: liked effects twice, references once, generated
+// results nobody rated half; disliked never (they only add "avoid" notes). `boost` is the feedback
+// multiplier (effects whose remixes the user liked count more; see shared/vfx/retrieve.ts).
+export function learnWeight(e: Pick<VfxEntry, 'rating' | 'quality' | 'kind'>, boost = 1): number {
+  if (e.quality === 'avoid' || e.rating === 'down') return 0
+  const base = e.rating === 'up' ? 2 : e.quality === 'good' ? 1.5 : e.kind === 'generated' ? 0.5 : 1
+  return base * Math.max(0.25, Math.min(3, boost))
+}
 
 function quantile(sorted: number[], q: number): number {
   if (!sorted.length) return 0
@@ -35,7 +69,7 @@ export function recipeTags(entries: VfxEntry[]): string[] {
   const counts = new Map<string, number>()
   const bump = (k: string) => counts.set(k, (counts.get(k) ?? 0) + 1)
   for (const e of entries) {
-    if (!e.effect || e.quality === 'avoid') continue
+    if (!e.effect || learnWeight(e) <= 0) continue
     const g = tagGroupsOf(e)
     for (const k of g.kind) bump(k)
     for (const k of g.kind) for (const el of g.element) bump(`${k}+${el}`)
@@ -57,13 +91,14 @@ export function recipeMatches(e: VfxEntry, key: string): boolean {
 
 // One recipe from the entries tagged `tag` (references and liked results; "avoid" entries only
 // contribute notes).
-export function extractRecipe(tag: string, entries: VfxEntry[]): VfxRecipe | null {
+export function extractRecipe(tag: string, entries: VfxEntry[], opts: { boost?: (e: VfxEntry) => number } = {}): VfxRecipe | null {
   const tagged = entries.filter((e) => recipeMatches(e, tag) && e.effect)
-  const good = tagged.filter((e) => e.quality !== 'avoid')
+  const good = tagged.filter((e) => learnWeight(e) > 0)
   if (!good.length) return null
-  const samples: Record<string, number[]> = {}
+  const samples: Record<string, { v: number; w: number }[]> = {}
+  let w = 1
   const add = (k: string, v: number) => {
-    if (Number.isFinite(v)) (samples[k] ??= []).push(v)
+    if (Number.isFinite(v)) (samples[k] ??= []).push({ v, w })
   }
   const roles = new Map<string, number>()
   const shapes: Record<string, number> = {}
@@ -73,9 +108,12 @@ export function extractRecipe(tag: string, entries: VfxEntry[]): VfxRecipe | nul
   const colorCount = new Map<string, number>()
   const emitterCounts: number[] = []
   for (const e of good) {
+    w = learnWeight(e, opts.boost?.(e) ?? 1)
     const eff = e.effect!
     const emitters = allNodes(eff.roots).filter((n) => n.className === 'ParticleEmitter')
     emitterCounts.push(emitters.length)
+    add('effect.duration', eff.duration)
+    add('effect.emitters', emitters.length)
     if (eff.cues.some((c) => c.action === 'emit')) burstEffects++
     for (const c of effectColors(eff)) colorCount.set(c, (colorCount.get(c) ?? 0) + 1)
     for (const n of allNodes(eff.roots)) {
@@ -100,6 +138,8 @@ export function extractRecipe(tag: string, entries: VfxEntry[]): VfxRecipe | nul
       else add(`${role}.Rate`, prop<number>(n, 'Rate'))
       const spread = prop<number[]>(n, 'SpreadAngle') ?? [0, 0]
       add(`${role}.Spread`, Math.max(spread[0], spread[1]))
+      add(`${role}.TransparencyEnd`, evalNumberSequence(prop<NumberSequence>(n, 'Transparency'), 1))
+      if (bursts.length) add(`${role}.BurstAt`, Math.min(...bursts.map((b) => b.at)))
       const shape = sizeShape(n)
       shapes[shape] = (shapes[shape] ?? 0) + 1
       const tshape = curveShape(prop<NumberSequence>(n, 'Transparency'))
@@ -109,14 +149,11 @@ export function extractRecipe(tag: string, entries: VfxEntry[]): VfxRecipe | nul
     for (const c of eff.cues) if (c.action === 'emit') add('burst.at', c.at)
   }
   const ranges: VfxRecipe['ranges'] = {}
-  for (const [k, vs] of Object.entries(samples)) {
-    const s = [...vs].sort((a, b) => a - b)
-    ranges[k] = { p10: r(quantile(s, 0.1)), median: r(quantile(s, 0.5)), p90: r(quantile(s, 0.9)) }
-  }
+  for (const [k, vs] of Object.entries(samples)) ranges[k] = { p10: r(wquantile(vs, 0.1)), median: r(wquantile(vs, 0.5)), p90: r(wquantile(vs, 0.9)) }
   const layerTotal = [...roles.values()].reduce((a, b) => a + b, 0) || 1
   const sortedCounts = [...emitterCounts].sort((a, b) => a - b)
   const avoid = tagged
-    .filter((e) => e.quality === 'avoid')
+    .filter((e) => e.quality === 'avoid' || e.rating === 'down')
     .map((e) => `${e.name}: ${e.description}`.slice(0, 160))
     .slice(0, 6)
   const notes: string[] = []
@@ -147,9 +184,9 @@ export function extractRecipe(tag: string, entries: VfxEntry[]): VfxRecipe | nul
   }
 }
 
-export function extractRecipes(entries: VfxEntry[], minSamples = 1): VfxRecipe[] {
+export function extractRecipes(entries: VfxEntry[], minSamples = 1, opts: { boost?: (e: VfxEntry) => number } = {}): VfxRecipe[] {
   return recipeTags(entries)
-    .map((t) => extractRecipe(t, entries))
+    .map((t) => extractRecipe(t, entries, opts))
     .filter((x): x is VfxRecipe => !!x && x.samples >= minSamples)
 }
 

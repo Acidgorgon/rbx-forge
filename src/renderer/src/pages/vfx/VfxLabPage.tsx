@@ -29,6 +29,7 @@ import { AddToGameButton } from '../qolc/AddToGame'
 import { EffectImportReview, importProgressText, useImportProgress } from './EffectImport'
 import { DuplicatesPanel, LiveControls, liveLine, matchesTagFilter, TagFilters, TagGroupEditor, type TagFilter } from './LibraryTools'
 import { tagGroupsOf } from '@shared/vfx/tags'
+import { chooseRecipe, fitToPriors, priorFit } from '@shared/vfx/priors'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · .rbxl places · folders · png/jpg · video refs: mp4/webm/mov/gif'
 // After a bulk import of more than this many effects the lab offers to learn from them.
@@ -172,7 +173,7 @@ function Media({ entry }: { entry: VfxEntry }) {
   return <div className="vfx-media">{url ? m.mime.startsWith('video') ? <video src={url} controls loop muted playsInline /> : <img src={url} alt={entry.name} /> : <span className="spinner" />}</div>
 }
 
-function Detail({ entry, progress, recipes, live, onClose, onTrashed }: { entry: VfxEntry; progress?: VfxRefineProgress; recipes: VfxRecipe[]; live: LiveStatus | null; onClose: () => void; onTrashed: (batch: string, n: number) => void }) {
+function Detail({ entry, entries, progress, recipes, live, onClose, onTrashed }: { entry: VfxEntry; entries: VfxEntry[]; progress?: VfxRefineProgress; recipes: VfxRecipe[]; live: LiveStatus | null; onClose: () => void; onTrashed: (batch: string, n: number) => void }) {
   const { actions } = useStore()
   const h = window.harness
   const [tab, setTab] = useState<'params' | 'script' | 'iterations' | 'studio' | 'info'>(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info')
@@ -229,8 +230,18 @@ function Detail({ entry, progress, recipes, live, onClose, onTrashed }: { entry:
 
   const warnings = useMemo(() => (draft ? dedupeWarnings(perfWarnings(draft)) : []), [draft])
   const refining = !!progress && progress.phase !== 'done' && progress.phase !== 'error'
-  const g = tagGroupsOf(entry)
-  const recipe = recipes.find((r) => g.kind.some((k) => g.element.some((el) => r.tag === `${k}+${el}`))) ?? recipes.find((r) => entry.tags.includes(r.tag))
+  const recipe = useMemo(() => chooseRecipe(recipes, entry.tags), [recipes, entry.tags.join('|')])
+  // Generated effects against the learned ranges of the user's effects of this type (imported ones
+  // are the references themselves).
+  const fit = useMemo(() => (draft && entry.kind === 'generated' ? priorFit(draft, recipe) : null), [draft, recipe, entry.kind])
+  const fitToLibrary = () => {
+    if (!draft) return
+    const r = fitToPriors(draft, recipe, { all: true })
+    if (!r.applied.length) return
+    edit(r.effect)
+    actions.toast({ text: `${r.applied.length} value${r.applied.length === 1 ? '' : 's'} fitted to your ${recipe!.tag.replace('+', ' ')} effects`, kind: 'ok', ms: 2600 })
+  }
+  const nameOf = (id: string) => entries.find((e) => e.id === id)?.name ?? id
 
   const rate = async (r: 'up' | 'down') => {
     try {
@@ -365,6 +376,28 @@ function Detail({ entry, progress, recipes, live, onClose, onTrashed }: { entry:
         </ul>
       )}
 
+      {fit && fit.issues.length > 0 && (
+        <div className="vfx-fit" data-testid="vfx-library-fit">
+          <div className="row">
+            <Icon name="memory" size={11} />
+            <span className="grow note">
+              {fit.issues.length} of {fit.checks} values outside your {recipe!.tag.replace('+', ' ')} effects ({recipe!.samples} learned)
+            </span>
+            <button className="btn small" onClick={fitToLibrary} title="Move these values to the middle of what your own effects of this type use">
+              Fit to my library
+            </button>
+          </div>
+          <ul>
+            {fit.issues.slice(0, 4).map((i) => (
+              <li key={`${i.node}|${i.prop}`} className={i.far ? 'far' : ''}>
+                {i.message}
+              </li>
+            ))}
+            {fit.issues.length > 4 && <li className="faint">and {fit.issues.length - 4} more</li>}
+          </ul>
+        </div>
+      )}
+
       <div className="seg vfx-tabs" role="tablist">
         {draft && (
           <button role="tab" aria-selected={tab === 'params'} className={tab === 'params' ? 'on' : ''} onClick={() => setTab('params')}>
@@ -408,6 +441,32 @@ function Detail({ entry, progress, recipes, live, onClose, onTrashed }: { entry:
             </dd>
             <dt>origin</dt>
             <dd className="mono">{entry.origin}</dd>
+            {!!entry.basedOn?.length && (
+              <>
+                <dt>made from</dt>
+                <dd data-testid="vfx-made-from">
+                  {entry.basedOn.map(nameOf).join(', ')}
+                  {!!entry.makeNotes?.length && (
+                    <ul className="vfx-import-notes">
+                      {entry.makeNotes.map((n) => (
+                        <li key={n} className="note">
+                          {n}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </dd>
+              </>
+            )}
+            {entry.pick && (
+              <>
+                <dt>variations</dt>
+                <dd className="note">
+                  kept {String.fromCharCode(65 + entry.pick.chosen)} of {entry.pick.of} ({entry.pick.by === 'critic' ? 'the critic' : 'the code checks'}: {entry.pick.why})
+                  {entry.pick.scores && <span className="faint mono"> · {entry.pick.scores.map((x, i) => `${String.fromCharCode(65 + i)} ${x.toFixed(1)}`).join(' · ')}</span>}
+                </dd>
+              </>
+            )}
             {entry.modelNote && (
               <>
                 <dt>model</dt>
@@ -523,6 +582,8 @@ export function VfxLabPage() {
   const [scope, setScope] = useState<VfxScope>('user')
   const [prompt, setPrompt] = useState('')
   const [iters, setIters] = useState(4)
+  // Variations per Make: the critic (or the library-fit checks) keeps one.
+  const [variations, setVariations] = usePersisted<number>('vfx.variations', 3)
   const [threshold, setThreshold] = useState(7.5)
   const [making, setMaking] = useState(false)
   // single: one burst of layers (draft spec); sequence: multi-stage timeline script with the kit.
@@ -727,14 +788,14 @@ export function VfxLabPage() {
         // Restate first: the confirmed reading of the brief goes into compose (null = cancelled).
         const g = await restate.gate(what)
         if (!g) return
-        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
+        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, variations, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
         if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the timeline did not compile')
         await load()
         setSelected(r.entry.id)
         if (r.entry.modelNote) actions.toast({ text: `${r.entry.name}: drafted without a model`, detail: r.entry.modelNote, kind: 'err', ms: 12_000 })
         if (r.warnings.length) actions.toast({ text: `${r.entry.name}: ${r.warnings.length} timeline warning${r.warnings.length === 1 ? '' : 's'}`, detail: r.warnings.slice(0, 2).join(' · '), kind: 'info', ms: 4000 })
       } else {
-        const entry = await h.vfxMake(what, { maxIterations: iters, threshold })
+        const entry = await h.vfxMake(what, { maxIterations: iters, threshold, variations })
         await load()
         setSelected(entry.id)
         if (entry.modelNote) actions.toast({ text: `${entry.name}: drafted without a model`, detail: entry.modelNote, kind: 'err', ms: 12_000 })
@@ -864,6 +925,16 @@ export function VfxLabPage() {
                 ))}
               </div>
             </label>
+            <label className="art-opt" title="Make this many versions and keep the best (the critic looks at frames of each; without a critic model the library-fit checks pick)">
+              <span>variations</span>
+              <div className="seg" data-testid="vfx-variations">
+                {[1, 3].map((k) => (
+                  <button type="button" key={k} className={variations === k ? 'on' : ''} onClick={() => setVariations(k)} aria-pressed={variations === k}>
+                    {k}
+                  </button>
+                ))}
+              </div>
+            </label>
             <label className="art-opt">
               <span>stop at</span>
               <input className="input vfx-thr mono" type="number" min={1} max={10} step={0.5} value={threshold} onChange={(e) => setThreshold(Math.min(10, Math.max(1, Number(e.target.value) || 7.5)))} aria-label="Score threshold" />
@@ -986,7 +1057,7 @@ export function VfxLabPage() {
               (current.video ? (
                 <RefDetail key={current.id} lab="vfx" entry={current} onClose={() => setSelected(null)} onMade={(id) => void load().then(() => setSelected(id))} onPin={(r) => (setPin(r), setMode('sequence'))} />
               ) : (
-                <Detail key={current.id} entry={current} progress={progress[current.id]} recipes={recipes} live={live} onClose={() => setSelected(null)} onTrashed={trashed} />
+                <Detail key={current.id} entry={current} entries={entries} progress={progress[current.id]} recipes={recipes} live={live} onClose={() => setSelected(null)} onTrashed={trashed} />
               ))}
           </div>
         )}

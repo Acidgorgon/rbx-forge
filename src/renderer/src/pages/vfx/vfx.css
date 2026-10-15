@@ -227,3 +227,7 @@ select.vfx-live-opt { height: 26px; font-size: 11px; }
 .vfx-import-notes .note { font-size: 11px; margin: 0; }
 .vfx-roles { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; font-size: 12px; }
 .vfx-roles .mono { color: var(--text); }
+.vfx-fit { display: flex; flex-direction: column; gap: 4px; padding: 6px 8px; border: 1px solid var(--line-strong); border-radius: var(--r-lg); font-size: 11.5px; }
+.vfx-fit .row { display: flex; align-items: center; gap: 6px; }
+.vfx-fit ul { list-style: none; margin: 0; padding: 0 0 0 17px; display: flex; flex-direction: column; gap: 2px; color: var(--fg-muted); }
+.vfx-fit li.far { color: var(--warn); }

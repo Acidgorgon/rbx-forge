@@ -121,7 +121,7 @@ export function words(text: string): string[] {
     .filter(Boolean)
 }
 
-const KIND_WORDS: Record<string, RegExp> = {
+export const KIND_WORDS: Record<string, RegExp> = {
   slash: /^(slash\w*|swing|cut|sword|blade|katana|swipe|crescent|slice)$/,
   impact: /^(impact\w*|hit|punch|strike|smash|slam|landing|stomp)$/,
   dash: /^(dash\w*|blink|rush|lunge|teleport)$/,
@@ -135,7 +135,7 @@ const KIND_WORDS: Record<string, RegExp> = {
   burst: /^(burst|pop)$/,
   'ground-crack': /^(crack\w*|fissure|crater|quake|ground)$/
 }
-const ELEMENT_WORDS: Record<string, RegExp> = {
+export const ELEMENT_WORDS: Record<string, RegExp> = {
   fire: /^(fire\w*|flame\w*|burn\w*|blaze|inferno|ember\w*|magma|lava|sun|solar|heat|hot|pyro)$/,
   water: /^(water|splash\w*|aqua|bubble\w*|rain|droplet\w*|drop|drops|ripple\w*|tide|ocean|hydro)$/,
   electric: /^(electric\w*|lightning|thunder|bolt|zap|volt|plasma)$/,
@@ -314,4 +314,25 @@ export function changedGroups(before: TagGroups, after: TagGroups): TagGroup[] {
 export function recipeKeys(e: { tags: string[]; tagGroups?: Partial<TagGroups> }): string[] {
   const g = tagGroupsOf(e)
   return [...g.kind, ...g.kind.flatMap((k) => g.element.map((el) => `${k}+${el}`))]
+}
+
+// A request ("purple sword slash with sparks") -> tag groups, with the same word lists the auto-tagger
+// reads names with (sword -> slash, fireball -> projectile + fire, lightning -> electric), plus tags
+// named directly. Timing: "loop" / "aura" style words -> loop, sequences stay with the caller.
+export function requestTagGroups(text: string): TagGroups {
+  const ws = words(text)
+  const g = emptyGroups()
+  const add = (k: TagGroup, t: string) => {
+    if (!g[k].includes(t)) g[k].push(t)
+  }
+  for (const w of ws) {
+    for (const [tag, re] of Object.entries(KIND_WORDS)) if (re.test(w)) add('kind', tag)
+    for (const [tag, re] of Object.entries(ELEMENT_WORDS)) if (re.test(w)) add('element', tag)
+    const c = classifyTag(w)
+    if (c && c[0] !== 'custom') add(c[0], c[1])
+  }
+  // "fireball": a projectile made of fire.
+  if (ws.some((w) => /^fireball/.test(w))) add('element', 'fire')
+  if (ws.some((w) => /^(loop\w*|idle|ambient|passive|constant|looping)$/.test(w))) add('timing', 'loop')
+  return g
 }

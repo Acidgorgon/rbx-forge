@@ -3,6 +3,7 @@
 // critic, so the VFX Lab page renders without Electron, Lune or a model.
 import type { HarnessEvents, VfxApi, VfxEffect, VfxEntry, VfxIteration, VfxRecipe } from '@shared/types'
 import { draftSpec } from '@shared/vfx/draft'
+import { ground, pickByCode, singleCandidates } from '@shared/vfx/ground'
 import { effectFromSpec, applyChanges } from '@shared/vfx/spec'
 import { describeEffect, effectColors, effectStats, perfWarnings } from '@shared/vfx/analyze'
 import { extractRecipes } from '@shared/vfx/recipes'
@@ -379,7 +380,12 @@ export function vfxMock(emit: Emit): VfxApi {
     async vfxMake(prompt, opts) {
       emit('vfx:progress', { entryId: 'pending', iteration: 0, phase: 'create' })
       await delay(500)
-      const e = add(entryFor(prompt, { kind: 'generated', scope: 'project', quality: undefined, origin: `Make: ${prompt}`, thumbs: ['thumbs/0.png'] }))
+      // The real grounded pipeline (remix the closest effect, finish against the library, pick).
+      const g = ground(prompt, { entries, recipes })
+      const cands = singleCandidates(prompt, g, Math.max(1, Math.min(3, opts?.variations ?? 1)))
+      const best = cands.length > 1 ? pickByCode(cands, g) : null
+      const c = cands[best?.index ?? 0]
+      const e = add(entryFor(prompt, { kind: 'generated', scope: 'project', quality: undefined, origin: `Make: ${prompt}`, thumbs: ['thumbs/0.png'], effect: c.effect, stats: effectStats(c.effect), name: c.effect.name, basedOn: c.basedOn, makeNotes: c.notes, ...(best ? { pick: { of: cands.length, chosen: best.index, by: 'code' as const, why: `best library fit ${best.scores[best.index].total}/10`, scores: best.scores.map((x) => x.total) } } : {}) }))
       changed()
       void refine(e, opts?.maxIterations ?? 3)
       return e

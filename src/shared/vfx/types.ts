@@ -170,6 +170,24 @@ export interface VfxEntry {
   refId?: string
   // "Restate first": the reading of the brief the user confirmed (compose prompt + critic judge against it).
   restatement?: Restatement
+  // Generated effects: the library effects it was remixed from / grounded on (ratings on it teach
+  // which effects make good starting points; shared/vfx/retrieve.ts feedback).
+  basedOn?: string[]
+  // Generated effects: what Make / compose did (remixed from, recoloured, textures reused, values
+  // pulled into the learned ranges).
+  makeNotes?: string[]
+  // Generated effects made as several variations: which one was kept and who chose it.
+  pick?: VfxPick
+}
+
+export interface VfxPick {
+  of: number
+  // 0-based index of the kept variation.
+  chosen: number
+  by: 'critic' | 'code'
+  why: string
+  // Code score per variation (0..10).
+  scores?: number[]
 }
 
 // Result of running a timeline script (vfx_run_script, the Script tab, vfx_compose).
@@ -334,6 +352,8 @@ export interface VfxRefineOptions {
   maxIterations?: number
   threshold?: number
   frames?: number
+  // Make / compose: how many variations to make (1-3); the critic (or the code checks) keeps one.
+  variations?: number
 }
 
 export interface VfxRefineProgress {

@@ -6,6 +6,7 @@
 
 import { allNodes } from './analyze.ts'
 import { cf, isCFrame } from './cframe.ts'
+import { effectPlacement } from './placement.ts'
 import { KIT, KIT_OPTION_KEYS, kitKind, type KitCue, type KitOpts } from './kit.ts'
 import { prop } from './schema.ts'
 import { fromHex } from './sequence.ts'
@@ -383,13 +384,18 @@ export function compileTimeline(base: VfxEffect, ops: RecordedOp[], script: stri
   }
 
   // Part rigs spawned "at a parent": shift them (and their own motion) to where the parent is then.
+  // A parent from the effect the script builds on (not a rig) is placed with its anchor at the root
+  // when the effect plays (placement.ts): measure it there too.
   if (located.length) {
     const tl = new Timeline({ roots, cues })
+    const placed = effectPlacement({ roots, space: 'local' })
     for (const l of located) {
       const parent = allNodes(roots).find((n) => n.id === l.parent)!
       const base = isCFrame(parent.props.CFrame) ? (parent.props.CFrame as CFrameArr) : cf()
       const p = tl.value<CFrameArr>(parent.id, 'CFrame', base, l.at)
-      const pos = tl.has(parent.id, 'Position') ? tl.value<number[]>(parent.id, 'Position', base.slice(0, 3), l.at) : p.slice(0, 3)
+      const raw = tl.has(parent.id, 'Position') ? tl.value<number[]>(parent.id, 'Position', base.slice(0, 3), l.at) : p.slice(0, 3)
+      const off = placed.moved.has(parent.id) ? placed.anchor : [0, 0, 0]
+      const pos = [raw[0] - off[0], raw[1] - off[1], raw[2] - off[2]]
       const shift = (c: number[]) => [c[0] + pos[0], c[1] + pos[1], c[2] + pos[2], ...c.slice(3)]
       const own = isCFrame(l.node.props.CFrame) ? (l.node.props.CFrame as CFrameArr) : cf()
       l.node.props.CFrame = shift(own)

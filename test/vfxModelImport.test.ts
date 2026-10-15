@@ -96,12 +96,13 @@ test('EmitCount / EmitDelay / EmitDuration drive the cues (inherited from the Mo
   assert.deepEqual(smoke.windows, [[0.2, 1.2]])
 })
 
-test('emitters sit at their real positions: Part x Attachment, nested Bones, re-centred on the parts', () => {
+test('emitters sit at their real positions: Part x Attachment, nested Bones, re-centred on the emitter parts', () => {
   const effect: VfxEffect = { ...effectFromNodes('Burst', readRbxmx(FIXTURE)), anchor: [0, 0, 0] }
   const p = prepareEffect(effect)
-  // Part centre: mean of Core (10,5,0), Ring (14,5,0), Ramp (12,3,0) and the hidden part (12,0,0)? No:
-  // the hidden part is pruned (fully transparent, nothing inside) -> mean of the three = (12, 13/3, 0).
-  const c = [12, 13 / 3, 0]
+  // Anchor: the bounds centre of the parts that carry emitters, Core (10,5,0) and Ring (14,5,0) ->
+  // (12, 5, 0). The Ramp wedge (12,3,0) is geometry only; the hidden part is pruned (fully
+  // transparent, nothing inside).
+  const c = [12, 5, 0]
   const at = (id: string) => p.emitters.find((e) => e.id === id)!.parentAt(0).slice(0, 3)
   // Core is rotated 90 degrees about Y: its attachment at local +1 X lands at world -1 Z.
   assert.ok(near(at('EA'), [10 - c[0], 5 - c[1], -1]), `Flash at ${at('EA')}`)

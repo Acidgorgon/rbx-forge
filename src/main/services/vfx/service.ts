@@ -26,6 +26,7 @@ import { timelineSummary } from '../../../shared/vfx/timeline.ts'
 import { promptTags } from '../../../shared/vfx/draft.ts'
 import { luauModule, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
 import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
+import { centreEffect } from '../../../shared/vfx/placement.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeMatches, recipeSkill } from '../../../shared/vfx/recipes.ts'
 import { applyChanges, compactEffect, effectFromSpec, safeName, shortTitle, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
 import type { VfxChange, VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxPick, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
@@ -964,7 +965,9 @@ export class VfxService {
   async exportFiles(entry: VfxEntry, dir: string): Promise<{ path: string; content: string; role: string; owned?: (current: string) => boolean; onlyIfExists?: boolean }[]> {
     if (!entry.effect) throw new VfxError(`"${entry.name}" is a media reference; there is nothing to export`)
     // Custom textures: forgetex:// -> rbxassetid:// (uploaded) or a built-in fallback (not yet).
-    const fx = await this.exportTextures(entry.effect)
+    // Centred like the preview (placement.ts): the template and the module play the effect with
+    // its anchor at the target, also when it was imported with its place's world positions.
+    const fx = centreEffect(await this.exportTextures(entry.effect))
     const out: { path: string; content: string; role: string; owned?: (current: string) => boolean; onlyIfExists?: boolean }[] = [
       { path: `${dir}/init.luau`, content: luauModule(fx, { description: entry.description }), role: 'effect module' },
       { path: `${dir}/Effect.rbxmx`, content: writeRbxmx(fx.roots), role: 'effect model' }

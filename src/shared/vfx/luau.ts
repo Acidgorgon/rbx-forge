@@ -4,6 +4,7 @@
 // the template is missing), places it, runs the timeline (Emit bursts, Enabled toggles) and cleans up.
 
 import { allNodes } from './analyze.ts'
+import { centreEffect } from './placement.ts'
 import { RUNTIME_MODULE } from './runtime.ts'
 import { SCHEMA } from './schema.ts'
 import { fmt, luauColorSequence, luauNumberSequence } from './sequence.ts'
@@ -95,7 +96,11 @@ function goalsTable(node: VfxNode, props: Record<string, PropValue>): string {
   return `{ ${goals.join(', ')} }`
 }
 
-export function luauModule(effect: VfxEffect, opts: { description?: string; templateName?: string } = {}): string {
+// The module plays the effect with its anchor at the target (placement.ts): an effect imported with
+// the world positions of its place is moved to the origin here, as in the preview. The Effect.rbxmx
+// template written next to the module must come from the same centred copy (centreEffect).
+export function luauModule(authored: VfxEffect, opts: { description?: string; templateName?: string } = {}): string {
+  const effect = centreEffect(authored)
   const nodes = allNodes(effect.roots)
   const vars = new Map<string, string>()
   nodes.forEach((n, i) => vars.set(n.id, `i${i}`))
@@ -172,6 +177,11 @@ ${refs.join('\n')}
 end
 
 local function place(model: Model, target: any)
+\t-- The effect's anchor is at the model's origin: play it there (a new Model's pivot would be the
+\t-- centre of its bounding box).
+\tif not model.PrimaryPart then
+\t\tmodel.WorldPivot = CFrame.new()
+\tend
 \tif typeof(target) == "CFrame" then
 \t\tmodel:PivotTo(target)
 \telseif typeof(target) == "Instance" and target:IsA("Attachment") then
@@ -313,6 +323,9 @@ function Effect.play(target: any, parent: Instance?, options: { onStage: ((strin
 \tlocal root = model:FindFirstChild("Root")
 \tif root and root:IsA("BasePart") then
 \t\tmodel.PrimaryPart = root
+\telseif not model.PrimaryPart then
+\t\t-- No Root part: the effect's anchor is at the model's origin.
+\t\tmodel.WorldPivot = CFrame.new()
 \tend
 \tmodel:PivotTo(pivot(target))
 \tlocal fx = ${RUNTIME_MODULE}.new(model, { spawns = SPAWNS, onStage = options and options.onStage })

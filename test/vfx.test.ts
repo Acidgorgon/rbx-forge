@@ -414,6 +414,60 @@ test('service refine renders, critiques with the vision model, stops at the thre
   assert.ok(progress.includes('critique') && progress.at(-1) === 'done')
 })
 
+// Make returns at once and refines in the background. With no model set up the critique is the
+// numbers-only check, so no frames are rendered for it: each render loads the preview in an offscreen
+// window, and four of them right after Make starved the app under load (e2e vfx-studio-import).
+test('service refine without a model set up renders no frames and runs the numbers-only check', async () => {
+  const png = Buffer.from('89504e470d0a1a0a0000', 'hex')
+  let captures = 0
+  let asked = 0
+  const vision = async () => {
+    asked++
+    throw new Error('Sign in with Claude or add an Anthropic API key in Settings > Accounts.')
+  }
+  const capture = async (req: { times: number[] }) => (captures++, req.times.map(() => png))
+  const { svc } = await service({ capture, vision: () => vision, visionReady: async () => false })
+  const { entry } = await svc.create(SLASH)
+  const r = await svc.refine(entry.id, { maxIterations: 3, threshold: 9.9, frames: 3 })
+  assert.equal(captures, 0, 'no offscreen renders')
+  assert.equal(asked, 0, 'the model is not called')
+  assert.ok(r.iterations.length >= 1)
+  const saved = await svc.get(entry.id)
+  assert.ok(saved.iterations!.length >= 1)
+  assert.deepEqual(saved.iterations![0].frames, [])
+  assert.match(saved.iterations![0].critique!.summary, /numbers|no vision model/i)
+  assert.deepEqual(saved.thumbs, entry.thumbs)
+  // Make, refined in the background (waited for here): nothing rendered either.
+  const made = await svc.make('orange slash', { variations: 3, wait: true })
+  assert.equal(made.entry.origin, 'orange slash')
+  assert.ok((await svc.get(made.entry.id)).iterations!.length >= 1)
+  assert.equal(captures, 0)
+  // A provider set up: frames are rendered for the critic again.
+  const { svc: ready } = await service({ capture, vision: () => vision, visionReady: async () => true })
+  const { entry: e2 } = await ready.create(SLASH)
+  await ready.refine(e2.id, { maxIterations: 1, frames: 2 })
+  assert.equal(captures, 1)
+})
+
+// A list read that overlaps a save must not cache what it read before the save (the new entry
+// stayed missing from vfxList for the cache's lifetime after Make).
+test('VfxStore: a list read that overlaps a save does not hide the saved entry', async () => {
+  const dir = await tmp('store-race')
+  const store = new VfxStore('user', dir)
+  for (let i = 0; i < 40; i++) await store.save(entryFrom({ ...effectFromSpec(SLASH), name: `Fx${i}` }))
+  for (let round = 0; round < 5; round++) {
+    const reading = store.list()
+    const added = entryFrom({ ...effectFromSpec(SLASH), name: `New${round}` })
+    await store.save(added)
+    await reading
+    assert.ok((await store.list()).some((e) => e.id === added.id), `round ${round}: the saved entry is listed`)
+  }
+  // Concurrent lists share one read.
+  const [a, b] = await Promise.all([store.list(), store.list()])
+  assert.equal(a.length, 45)
+  assert.equal(b.length, 45)
+})
+
 test('rating down a generated effect marks it avoid and writes an avoid note', async () => {
   const { memory, calls } = fakeMemory()
   const { svc } = await service({ memory })

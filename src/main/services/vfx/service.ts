@@ -76,6 +76,9 @@ export interface VfxServiceDeps {
   capture?: (req: CaptureRequest) => Promise<Buffer[]>
   // Per-task tier (shared/labModels.ts): 'critic' for frame critique, 'default' for drafting/compose.
   vision?: (tier?: LabTier) => VisionFn | null
+  // Whether a vision call could reach a model at all (a provider is set up). False: the critic is
+  // not asked and no frames are rendered for it. Absent: assumed true when `vision` is set.
+  visionReady?: () => Promise<boolean>
   memory?: MemoryLike
   rojo?: { running(): boolean; start(): Promise<void> }
   fetch?: typeof fetch
@@ -1058,13 +1061,14 @@ export class VfxService {
     return { ...c, overall: blendMatch(c.overall, match), match, matchNotes: fromCritic?.notes ?? numeric.notes }
   }
 
-  async critique(entry: VfxEntry, effect: VfxEffect, frames: Buffer[], times: number[], iteration: number, previous: VfxCritique | null): Promise<VfxCritique> {
+  // model: false skips the vision model (the numbers-only check), e.g. when none is set up.
+  async critique(entry: VfxEntry, effect: VfxEffect, frames: Buffer[], times: number[], iteration: number, previous: VfxCritique | null, opts: { model?: boolean } = {}): Promise<VfxCritique> {
     const tags = entry.tags
     const refs = await this.references(tags, entry.origin, entry.id)
     const recipe = await this.recipeFor(tags)
     const refNames = refs.map((r) => r.name)
     const pinned = entry.refId ? await this.pinnedRef(entry.refId).catch(() => null) : null
-    const vision = this.deps.vision?.('critic')
+    const vision = opts.model === false ? undefined : this.deps.vision?.('critic')
     const weights = await this.principleWeights()
     const request = criticBrief(entry.origin || entry.description, entry.restatement)
     // Richness against the user's closest effects; critic changes that would hide a layer are not
@@ -1097,6 +1101,12 @@ export class VfxService {
     }
   }
 
+  // A critic model that can be asked: set (vision) and its provider set up (visionReady).
+  async criticReady(): Promise<boolean> {
+    if (!this.deps.vision?.('critic')) return false
+    return this.deps.visionReady ? this.deps.visionReady().catch(() => true) : true
+  }
+
   cancel(id: string): void {
     const r = this.running.get(id)
     if (r) r.cancelled = true
@@ -1126,13 +1136,18 @@ export class VfxService {
     const threshold = opts.threshold ?? DEFAULT_THRESHOLD
     const maxIt = Math.max(1, Math.min(10, Math.floor(opts.maxIterations ?? DEFAULT_MAX_ITERATIONS)))
     const stopAfter = new Map<number, boolean>()
+    // No model to ask: the numbers-only check reads the effect, not frames, so none are rendered
+    // (each render loads the preview in an offscreen window, seconds of CPU and GPU per iteration).
+    let critic = false
     try {
+      critic = await this.criticReady()
       const result = await refineLoop(
         hit.entry.effect,
         {
           render: async (effect, n) => {
             this.progress({ entryId: id, iteration: base + n, phase: 'render' })
             this.deps.onDraft?.(id, base + n, effect)
+            if (!critic) return []
             const { times, frames } = await this.renderEffect(effect, nFrames)
             timesByIt.set(n, times)
             pngs.set(n, frames)
@@ -1147,10 +1162,10 @@ export class VfxService {
           critique: async (effect, _files, n, previous) => {
             this.progress({ entryId: id, iteration: base + n, phase: 'critique' })
             const gate = this.deps.gate
-            const g = gate ? await gate.beforeCritique({ lab: 'vfx', entryId: id, iteration: base + n, frames: pngs.get(n) ?? [], previousScore: previous?.overall ?? null, changes: previous?.changes.length ?? 0, threshold }) : null
+            const g = gate && critic ? await gate.beforeCritique({ lab: 'vfx', entryId: id, iteration: base + n, frames: pngs.get(n) ?? [], previousScore: previous?.overall ?? null, changes: previous?.changes.length ?? 0, threshold }) : null
             if (g?.skip && previous) return skippedCritique(previous, g.reason)
             const current = (await hit.store.read(id)) ?? hit.entry
-            const c = await this.critique(current, effect, pngs.get(n) ?? [], timesByIt.get(n) ?? [], base + n, previous)
+            const c = await this.critique(current, effect, pngs.get(n) ?? [], timesByIt.get(n) ?? [], base + n, previous, { model: critic })
             if (gate) stopAfter.set(n, (await gate.afterCritique({ lab: 'vfx', entryId: id, iteration: base + n, score: c.overall, threshold, remaining: maxIt - n, changes: c.changes.length, summary: c.summary })).stop)
             return c
           },
@@ -1175,7 +1190,8 @@ export class VfxService {
         ...current,
         effect: bestEffect,
         stats: effectStats(bestEffect),
-        thumbs: [bestFrames[Math.min(bestFrames.length - 1, 1)] ?? bestFrames[0], ...current.thumbs.filter((t) => !t.startsWith('frames/'))].filter(Boolean).slice(0, 6),
+        // (No frames rendered: the thumbnails stay as they were.)
+        thumbs: bestFrames.length ? [bestFrames[Math.min(bestFrames.length - 1, 1)] ?? bestFrames[0], ...current.thumbs.filter((t) => !t.startsWith('frames/'))].filter(Boolean).slice(0, 6) : current.thumbs,
         updatedAt: this.now()
       })
       if (entry.written || (this.deps.projectRoot() && !String(entry.origin ?? '').startsWith('example:'))) entry = await this.writeProjectFiles(entry)
@@ -1284,7 +1300,7 @@ export class VfxService {
 
   private async criticPick(cands: Candidate[], text: string, g?: Grounding): Promise<{ index: number; why: string } | null> {
     const vision = this.deps.vision?.('critic')
-    if (!vision || !this.deps.capture) return null
+    if (!vision || !this.deps.capture || !(await this.criticReady())) return null
     const images: ImagePayload[] = []
     for (const c of cands) {
       const { frames } = await this.renderEffect(c.effect, 2)

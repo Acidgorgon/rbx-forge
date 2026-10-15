@@ -144,7 +144,9 @@ export async function dismissToasts(page: Page): Promise<void> {
   for (let i = 0; i < 10; i++) {
     const x = page.locator('.toast button[aria-label="Dismiss"]').first()
     if (!(await x.count())) return
-    await x.click().catch(() => undefined)
+    // Short timeout: a toast that times out between count() and click() would otherwise hold the
+    // click for Playwright's default 30 s.
+    await x.click({ timeout: 2000 }).catch(() => undefined)
     await page.waitForTimeout(250)
   }
 }

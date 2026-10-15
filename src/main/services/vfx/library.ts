@@ -39,6 +39,10 @@ export class VfxStore {
   readonly scope: VfxScope
   readonly dir: string
   private cache: { at: number; entries: VfxEntry[] } | null = null
+  // Bumped by every write: a list read that overlapped a write is not cached (it may miss the write).
+  private gen = 0
+  // The read in flight for the current generation (concurrent list() calls share it).
+  private reading: { gen: number; entries: Promise<VfxEntry[]> } | null = null
   private queue: Promise<unknown> = Promise.resolve()
 
   constructor(scope: VfxScope, dir: string) {
@@ -67,6 +71,27 @@ export class VfxStore {
 
   async list(): Promise<VfxEntry[]> {
     if (this.cache && Date.now() - this.cache.at < 1500) return this.cache.entries
+    if (this.reading?.gen === this.gen) return this.reading.entries
+    const gen = this.gen
+    const entries = this.readAll().then((out) => {
+      if (gen === this.gen) this.cache = { at: Date.now(), entries: out }
+      return out
+    })
+    const reading = { gen, entries }
+    this.reading = reading
+    const clear = () => {
+      if (this.reading === reading) this.reading = null
+    }
+    entries.then(clear, clear)
+    return entries
+  }
+
+  private changed(): void {
+    this.gen++
+    this.cache = null
+  }
+
+  private async readAll(): Promise<VfxEntry[]> {
     let names: string[] = []
     try {
       names = await readdir(this.dir)
@@ -80,7 +105,6 @@ export class VfxStore {
       if (e) out.push(e)
     }
     out.sort((a, b) => b.updatedAt - a.updatedAt || a.name.localeCompare(b.name))
-    this.cache = { at: Date.now(), entries: out }
     return out
   }
 
@@ -102,7 +126,7 @@ export class VfxStore {
       const tmp = join(dir, `${ENTRY_FILE}.${process.pid}.${randomBytes(3).toString('hex')}.tmp`)
       await writeFile(tmp, JSON.stringify(e, null, 1), 'utf8')
       await renameRetry(tmp, join(dir, ENTRY_FILE))
-      this.cache = null
+      this.changed()
       return e
     })
   }
@@ -147,7 +171,7 @@ export class VfxStore {
         await renameRetry(dir, join(to, id))
         moved.push(id)
       }
-      this.cache = null
+      this.changed()
       return moved
     })
   }
@@ -171,7 +195,7 @@ export class VfxStore {
         back.push(id)
       }
       await rm(from, { recursive: true, force: true }).catch(() => undefined)
-      this.cache = null
+      this.changed()
       return back
     })
   }
@@ -191,7 +215,7 @@ export class VfxStore {
         () => false
       )
       if (ok) await rm(dir, { recursive: true, force: true })
-      this.cache = null
+      this.changed()
       return ok
     })
   }

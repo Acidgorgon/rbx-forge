@@ -354,6 +354,16 @@ run()
 
 -- ---------------------------------------------------------------- scenarios
 
+-- Waits (up to 60 s) for the test to drop a marker file next to the plugin (the run's cwd).
+local function waitForMarker(name)
+	local waited = 0
+	while not fs.isFile(name) and waited < 60 do
+		task.wait(0.1)
+		waited += 0.1
+	end
+	print("MARKER " .. name .. (if fs.isFile(name) then "" else " (timed out)"))
+end
+
 local function rojoBuildsClient()
 	-- What Rojo's Studio plugin creates for StarterPlayerScripts.Client ($path src/client).
 	local client = new("Folder", "Client", nil)
@@ -444,6 +454,50 @@ elseif scenario == "studio-delete" then
 	end
 	print(if loose.Parent == nil then "LOOSE DELETED" else "LOOSE STILL THERE")
 	task.wait(2)
+elseif scenario == "cutscene" or scenario == "duplicate-rename" then
+	-- GenTree's onboarding: the ModuleScript OnboardingController holds cutscene modules with child
+	-- modules of their own. None of it is on disk yet.
+	local _, script = rojoBuildsClient()
+	local controllers = methods.FindFirstChild(script, "Controllers")
+	local onboarding = new("ModuleScript", "OnboardingController", nil, "return {}")
+	local trainer = new("ModuleScript", "TrainerCutscene", onboarding, "return 'trainer'")
+	new("ModuleScript", "Shots", trainer, "return 'shots'")
+	new("ModuleScript", "Body", trainer, "return 'trainer body'")
+	if scenario == "cutscene" then
+		local wake = new("ModuleScript", "WakeUpCutscene", onboarding, "return 'wake'")
+		for _, n in { "Body", "Lens", "Motion", "Overlay", "Sfx", "Title" } do
+			new("ModuleScript", n, wake, "return '" .. n .. "'")
+		end
+		local props = new("ModuleScript", "Props", wake, "return 'props'")
+		new("ModuleScript", "Toon", props, "return 'toon'")
+		onboarding.Parent = controllers
+		-- Forge's side (the test): "Disk wins", rojo held, "Pull to disk".
+		waitForMarker("pulled")
+		-- Live: one more child module of WakeUpCutscene.
+		new("ModuleScript", "Vignette", wake, "return 'vignette'")
+		waitForMarker("vignette")
+	else
+		onboarding.Parent = controllers
+		waitForMarker("synced")
+		-- Ctrl+D on TrainerCutscene (a copy with the same name, children included), then rename it.
+		local copy = new("ModuleScript", "TrainerCutscene", nil, "return 'trainer'")
+		new("ModuleScript", "Shots", copy, "return 'shots'")
+		new("ModuleScript", "Body", copy, "return 'trainer body'")
+		copy.Parent = onboarding
+		task.wait(1)
+		copy.Name = "WakeUpCutscene"
+		task.wait(1)
+		methods.FindFirstChild(copy, "Body").Source = "return 'wake body'"
+		methods.FindFirstChild(trainer, "Shots").Source = "return 'trainer shots 2'"
+		task.wait(1)
+		new("ModuleScript", "Lens", copy, "return 'lens'")
+		waitForMarker("renamed")
+		-- Then the copy is deleted again; the original keeps syncing.
+		copy:Destroy()
+		task.wait(1)
+		methods.FindFirstChild(trainer, "Body").Source = "return 'trainer body 2'"
+		waitForMarker("deleted")
+	end
 end
 
 print("SCENARIO DONE")

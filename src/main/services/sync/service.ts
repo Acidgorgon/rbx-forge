@@ -18,11 +18,12 @@ import type {
   SyncEntry,
   SyncNotice,
   SyncPlace,
+  StudioOnlyScript,
   SyncRef,
   SyncStatus,
   UnlinkedPlace
 } from '../../../shared/sync/types.ts'
-import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
+import { STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import { PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
@@ -54,6 +55,10 @@ export interface SyncEngineLike {
   leftInStudio?(placeKey: string): string[][]
   saveTarget?(placeKey: string, path: string[]): Promise<{ file: string } | { reason: string }>
   saveToRepo?(placeKey: string, path: string[]): Promise<SyncEntry>
+  // Scripts only in Studio that Rojo would delete on connect (and whether they hold rojo serve), and
+  // "Pull to disk" for them.
+  studioOnly?(placeKey: string): { items: StudioOnlyScript[]; holds: boolean }
+  pullStudioOnly?(placeKey: string): Promise<SyncEntry[]>
 }
 
 export interface PlaceMapLike {
@@ -215,6 +220,8 @@ interface PlaceState {
   treeVersion?: number | null
   // Last "left in Studio" line logged, so it is logged once per change.
   leftNote?: string
+  // Same for the Studio-only scripts line.
+  studioOnlyNote?: string
   // Mapped roots the last snapshot did not have (instance paths).
   missingRoots: string[][]
 }
@@ -245,10 +252,13 @@ export function engineSetting(settings: { get<T>(key: string, fallback: T): T })
   }
 }
 
-export function gateDetail(gate: GateState, conflicts: number): string | undefined {
+export function gateDetail(gate: GateState, conflicts: number, studioOnly = 0): string | undefined {
   if (gate === 'checking') return 'Waiting for Studio sync check'
-  if (gate === 'blocked') return `${conflicts} conflict${conflicts === 1 ? '' : 's'}: resolve or serve anyway`
-  return undefined
+  if (gate !== 'blocked') return undefined
+  const parts: string[] = []
+  if (conflicts || !studioOnly) parts.push(`${conflicts} conflict${conflicts === 1 ? '' : 's'}`)
+  if (studioOnly) parts.push(`${studioOnly} Studio-only script${studioOnly === 1 ? '' : 's'} not on disk`)
+  return `${parts.join(', ')}: ${studioOnly ? (conflicts ? 'resolve, pull to disk' : 'pull to disk') : 'resolve'} or serve anyway`
 }
 
 // "Studio edits: Attack.luau, Dash.luau and 3 more"
@@ -660,6 +670,19 @@ export class SyncService {
     return entry
   }
 
+  // "Pull to disk": writes the place's Studio-only scripts Forge can write, so Rojo never offers to
+  // delete them from Studio.
+  async pullStudioOnly(placeKey: string): Promise<SyncStatus> {
+    const engine = this.requireEngine()
+    if (!engine.pullStudioOnly) throw new Error('Pull to disk is not available in this build')
+    const entries = await this.serial(() => engine.pullStudioOnly!(placeKey))
+    await this.record(placeKey, entries, true)
+    const written = entries.filter((e) => e.action === 'created').length
+    this.deps.log?.(`sync: pulled ${written} Studio-only file${written === 1 ? '' : 's'} to disk for ${placeKey}`)
+    this.refresh()
+    return this.status()
+  }
+
   async serveAnyway(placeKey: string): Promise<SyncStatus> {
     const state = this.placeStates.get(placeKey)
     if (!state) throw new Error(`No Studio session for ${placeKey}`)
@@ -744,13 +767,18 @@ export class SyncService {
   gateFor(projectFile: string): { gate: GateState; detail?: string } {
     let gate: GateState = 'idle'
     let conflicts = 0
+    let studioOnly = 0
     for (const state of this.placeStates.values()) {
       if (state.projectFile !== projectFile) continue
       const g = this.gate(state.placeKey)
       if (GATE_RANK[g] > GATE_RANK[gate]) gate = g
-      if (g === 'blocked') conflicts += this.conflictsFor(state.placeKey).length
+      if (g === 'blocked') {
+        conflicts += this.conflictsFor(state.placeKey).length
+        const only = this.deps.engine?.studioOnly?.(state.placeKey)
+        if (only?.holds) studioOnly += only.items.length
+      }
     }
-    return { gate, detail: gateDetail(gate, conflicts) }
+    return { gate, detail: gateDetail(gate, conflicts, studioOnly) }
   }
 
   places(): PlaceSyncStatus[] {
@@ -767,6 +795,7 @@ export class SyncService {
         ...(state.lastSnapshot ? { lastSnapshot: state.lastSnapshot } : {}),
         counts: { ...state.counts },
         conflicts: this.conflictsFor(state.placeKey).length,
+        ...this.studioOnlyLine(state),
         ...this.leftLine(state),
         ...(state.lastSnapshot && state.missingRoots.length ? { missingRoots: state.missingRoots.map((r) => r.join('.')) } : {})
       })
@@ -863,7 +892,7 @@ export class SyncService {
         ...(v < PLUGIN_VERSION ? { action: 'restart-studio' as const } : {})
       }
     }
-    if (v > 0 && v < PLUGIN_VERSION) return { level: 'info', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (syncs folders Rojo creates after Studio opened, and Script Editor text in unpublished places).` }
+    if (v > 0 && v < PLUGIN_VERSION) return { level: 'info', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (syncs folders Rojo creates after Studio opened, Script Editor text in unpublished places, and Ctrl+D copies of scripts).` }
     return undefined
   }
 
@@ -1059,6 +1088,21 @@ export class SyncService {
       this.deps.log?.(`sync: ${state.projectFile}: ${note}`)
     }
     return { leftInStudio: { count, examples, note } }
+  }
+
+  private studioOnlyLine(state: PlaceState): { studioOnly?: PlaceSyncStatus['studioOnly'] } {
+    const only = this.active() ? this.deps.engine?.studioOnly?.(state.placeKey) : undefined
+    if (!only?.items.length) {
+      state.studioOnlyNote = undefined
+      return {}
+    }
+    const { items, holds } = only
+    const note = `${items.length} Studio-only script${items.length === 1 ? '' : 's'} not on disk${holds ? ' (rojo serve held)' : ''}: ${items.slice(0, 3).map((i) => i.instancePath.join('.')).join(', ')}${items.length > 3 ? ', …' : ''}`
+    if (state.studioOnlyNote !== note) {
+      state.studioOnlyNote = note
+      this.deps.log?.(`sync: ${state.projectFile}: ${note}`, 'stderr')
+    }
+    return { studioOnly: { count: items.length, pullable: items.filter((i) => i.canPull).length, holds, items: items.slice(0, STUDIO_ONLY_MAX) } }
   }
 
   // ---- internals ----

@@ -75,7 +75,9 @@ export function syncSummary(status: SyncStatus): { state: ServiceState; detail: 
   if (checking.length) return { state: 'starting', detail: `Forge Sync: checking ${checking.map((p) => p.projectFile.replace(/\.project\.json$/, '')).join(', ')}` }
   if (blocked.length) {
     const n = blocked.reduce((sum, p) => sum + p.conflicts, 0)
-    return { state: 'running', detail: `Forge Sync: ${n} conflict${n === 1 ? '' : 's'} held` }
+    const only = blocked.reduce((sum, p) => sum + (p.studioOnly?.holds ? p.studioOnly.count : 0), 0)
+    const parts = [...(n || !only ? [`${n} conflict${n === 1 ? '' : 's'} held`] : []), ...(only ? [`${only} Studio-only script${only === 1 ? '' : 's'} not on disk`] : [])]
+    return { state: 'running', detail: `Forge Sync: ${parts.join(', ')}` }
   }
   // Studio edits are not reaching disk (no plugin, place refused, mapped folders missing ...): not green.
   if (status.notice?.level === 'warn') return { state: 'starting', detail: status.notice.text }
@@ -133,6 +135,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     syncResolveAll: (placeKey: string, take: 'studio' | 'disk', reason?: string) =>
       need().resolveAll(String(placeKey), take, reason === 'first-run' || reason === 'both-changed' || reason === 'deleted-vs-edited' ? reason : undefined),
     syncServeAnyway: (placeKey: string) => need().serveAnyway(String(placeKey)),
+    syncPullStudioOnly: (placeKey: string) => need().pullStudioOnly(String(placeKey)),
     syncLinkPlace: (id: string, projectFile?: string) => need().linkPlace(String(id), typeof projectFile === 'string' && projectFile ? projectFile : undefined),
     syncCommitStudioEdits: (message?: string): Promise<SyncCommitResult> => need().commitStudioEdits(message),
     syncDisableLegacyPlugin: () => need().disableLegacyPlugin(),

@@ -77,7 +77,7 @@ export function buildDigest(input: DigestInputs): Digest {
   }
   for (const place of input.syncStatus?.places ?? []) {
     if (place.gate !== 'blocked') continue
-    items.push({ id: `blocked:${place.placeKey}`, kind: 'blocker', text: `rojo serve is held for ${place.place?.name ?? place.projectFile}`, detail: `${plural(place.conflicts, 'conflict')} to decide`, target: { kind: 'side', view: 'sync' } })
+    items.push({ id: `blocked:${place.placeKey}`, kind: 'blocker', text: `rojo serve is held for ${place.place?.name ?? place.projectFile}`, detail: place.conflicts || !place.studioOnly?.holds ? `${plural(place.conflicts, 'conflict')} to decide` : `${plural(place.studioOnly.count, 'Studio-only script')} not on disk: pull to disk`, target: { kind: 'side', view: 'sync' } })
   }
   for (const file of input.gitConflicts) items.push({ id: `git-conflict:${file}`, kind: 'blocker', text: `Git merge conflict: ${base(file)}`, detail: file, target: { kind: 'side', view: 'sync' } })
   if (input.syncStatus?.pendingStudioEdits?.length) {

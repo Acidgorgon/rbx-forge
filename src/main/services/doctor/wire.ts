@@ -145,7 +145,7 @@ export function createDoctorWiring(deps: DoctorWiringDeps): { service: DoctorSer
     portBusy: (port) => portBusy(port),
     sync: async () => {
       const s = await deps.syncStatus()
-      return { engine: s.engine, places: s.places.map((p) => ({ projectFile: p.projectFile, gate: p.gate, conflicts: p.conflicts, connected: p.connected })), pendingStudioEdits: s.pendingStudioEdits.length }
+      return { engine: s.engine, places: s.places.map((p) => ({ projectFile: p.projectFile, gate: p.gate, conflicts: p.conflicts, connected: p.connected, ...(p.studioOnly ? { studioOnly: p.studioOnly.count } : {}) })), pendingStudioEdits: s.pendingStudioEdits.length }
     },
     keys: async () => {
       const def = deps.defaultProvider()

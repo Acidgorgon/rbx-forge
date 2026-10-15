@@ -27,7 +27,7 @@ const GATE: Record<GateState, { cls: string; label: string; hint: string }> = {
   idle: { cls: '', label: 'no studio', hint: 'No Studio session for this place yet: Rojo serves normally.' },
   checking: { cls: 'info', label: 'checking', hint: 'Reading Studio first. Rojo waits so it cannot overwrite teammate edits.' },
   clear: { cls: 'ok', label: 'clear', hint: 'Studio and disk agree. Rojo serves.' },
-  blocked: { cls: 'warn', label: 'held', hint: 'Conflicts held. Rojo waits until you pick a side (or serve anyway).' }
+  blocked: { cls: 'warn', label: 'held', hint: 'Conflicts or Studio-only scripts held. Rojo waits until you pick a side or pull them to disk (or serve anyway).' }
 }
 
 const ACTION: Partial<Record<SyncAction, { letter: string; cls: string; label: string }>> = {
@@ -62,6 +62,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
   const [busy, setBusy] = useState<string | null>(null)
   const [showPending, setShowPending] = useState(false)
   const [showRefs, setShowRefs] = useState(false)
+  const [showOnly, setShowOnly] = useState<string | null>(null)
 
   if (!status || status.engine !== 'forge') return null
   const conflicts = state.studioConflicts.filter((c) => c.placeKey)
@@ -162,7 +163,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
             <div className="lrow static" title={`${p.projectFile}${p.place?.placeId ? ` · place ${p.place.placeId}` : ''}\n${g.hint}`}>
               <span className={`fs-dot${p.connected ? ' on' : ''}`} title={p.connected ? 'Studio connected' : 'Studio not connected'} />
               <span className="grow ellipsis">{placeName(p)}</span>
-              <span className={`tag ${g.cls}`}>{p.gate === 'blocked' ? `${p.conflicts} held` : g.label}</span>
+              <span className={`tag ${g.cls}`}>{p.gate === 'blocked' ? (p.conflicts || !p.studioOnly?.holds ? `${p.conflicts} held` : `${p.studioOnly.count} not on disk`) : g.label}</span>
             </div>
             <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}</div>
             {p.leftInStudio && (
@@ -176,6 +177,40 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
               </div>
             )}
 
+            {p.studioOnly && (
+              <div className="callout warn fs-callout fs-studio-only" role="alert">
+                <div>
+                  {p.studioOnly.count} script{p.studioOnly.count === 1 ? ' exists' : 's exist'} only in Studio, not on disk yet. Rojo would delete {p.studioOnly.count === 1 ? 'it' : 'them'} from Studio when it connects
+                  {p.studioOnly.holds && p.gate === 'blocked' ? ', so rojo serve is held.' : '.'}
+                  {p.studioOnly.pullable < p.studioOnly.count ? ` ${p.studioOnly.count - p.studioOnly.pullable} cannot be written as they are (see the list).` : ''}
+                </div>
+                <div className="row">
+                  {p.studioOnly.pullable > 0 && (
+                    <button
+                      className="mini-btn hot"
+                      disabled={!!busy}
+                      title="Write the Studio copies to disk (they become new files to commit)"
+                      onClick={() => void act(`pull:${p.placeKey}`, () => window.harness.syncPullStudioOnly(p.placeKey), `Pulled ${p.studioOnly!.pullable} Studio-only script${p.studioOnly!.pullable === 1 ? '' : 's'} to disk`)}
+                    >
+                      Pull to disk ({p.studioOnly.pullable})
+                    </button>
+                  )}
+                  <button className="link-btn" onClick={() => setShowOnly(showOnly === p.placeKey ? null : p.placeKey)}>{showOnly === p.placeKey ? 'hide' : 'list'}</button>
+                </div>
+                {showOnly === p.placeKey && (
+                  <div className="fs-refs-list">
+                    {p.studioOnly.items.map((i) => (
+                      <div key={i.instancePath.join('.')} className="lrow" onClick={() => actions.revealInstance(i.instancePath)} title={`${i.instancePath.join('.')}\n${i.file ? `${i.file}\n` : ''}${i.reason}`}>
+                        <span className="grow ellipsis mono">{i.instancePath.slice(-2).join('.')}</span>
+                        <span className="sub">{i.canPull ? 'pull' : 'rename in Studio'}</span>
+                      </div>
+                    ))}
+                    {p.studioOnly.count > p.studioOnly.items.length && <div className="fs-sub note">and {p.studioOnly.count - p.studioOnly.items.length} more</div>}
+                  </div>
+                )}
+              </div>
+            )}
+
             {firstRun.length > 0 && (
               <div className="callout info fs-callout">
                 <div>
@@ -183,7 +218,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
                 </div>
                 <div className="row">
                   <button className="mini-btn hot" disabled={!!busy} onClick={() => void act(`all:${p.placeKey}`, () => window.harness.syncResolveAll(p.placeKey, 'studio', 'first-run'), 'Studio versions written to disk')}>Studio wins</button>
-                  <button className="mini-btn" disabled={!!busy} onClick={() => void act(`all:${p.placeKey}`, () => window.harness.syncResolveAll(p.placeKey, 'disk', 'first-run'), 'Kept the disk versions')}>Disk wins</button>
+                  <button className="mini-btn" disabled={!!busy} title="Keep the disk versions (Rojo pushes them). Scripts only Studio has are not deleted: they stay listed (and rojo held) until you pull them to disk or serve anyway." onClick={() => void act(`all:${p.placeKey}`, () => window.harness.syncResolveAll(p.placeKey, 'disk', 'first-run'), 'Kept the disk versions')}>Disk wins</button>
                 </div>
               </div>
             )}
@@ -199,7 +234,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
 
             {p.gate === 'blocked' && (
               <div className="row fs-actions">
-                <button className="mini-btn" disabled={!!busy} title="Rojo serves now; Studio edits in the held files may be overwritten" onClick={() => void act(`serve:${p.placeKey}`, () => window.harness.syncServeAnyway(p.placeKey))}>Serve anyway</button>
+                <button className="mini-btn" disabled={!!busy} title="Rojo serves now; Studio edits in the held files may be overwritten, and Rojo may offer to delete Studio-only scripts" onClick={() => void act(`serve:${p.placeKey}`, () => window.harness.syncServeAnyway(p.placeKey))}>Serve anyway</button>
               </div>
             )}
           </div>

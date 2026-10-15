@@ -4,7 +4,7 @@
 // check states with no Studio.
 
 import { createHash } from 'node:crypto'
-import { readFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync } from 'node:fs'
 import { join } from 'node:path'
 import { loadPlaces, placeFor } from '../../../src/main/services/sync/mapping.ts'
 import { studioFromDisk } from '../../syncFixture.ts'
@@ -19,6 +19,17 @@ const PLACE_ID = 123
 // The plugin's node ids are short hashes.
 const short = (id: string) => createHash('sha1').update(id).digest('hex').slice(0, 16)
 const INVENTORY_PATH = ['ServerScriptService', 'Server', 'Features', 'Inventory', 'InventoryService']
+// A cutscene module with child modules under the client's InventoryController module (the shape of the
+// GenTree bug report: OnboardingController.WakeUpCutscene).
+const CUTSCENE = ['StarterPlayer', 'StarterPlayerScripts', 'Client', 'Client', 'Controllers', 'InventoryController', 'Cutscene']
+const CUTSCENE_DIR = 'src/client/Client/Controllers/InventoryController/Cutscene'
+const CUTSCENE_NODES = [
+  { id: 'cut', path: CUTSCENE, className: 'ModuleScript', source: 'return "cutscene"\n' },
+  { id: 'cut-body', path: [...CUTSCENE, 'Body'], className: 'ModuleScript', source: 'return "body"\n' },
+  { id: 'cut-props', path: [...CUTSCENE, 'Props'], className: 'ModuleScript', source: 'return "props"\n' },
+  { id: 'cut-toon', path: [...CUTSCENE, 'Props', 'Toon'], className: 'ModuleScript', source: 'return "toon"\n' }
+]
+const CUTSCENE_FILES = ['init.luau', 'Body.luau', 'Props/init.luau', 'Props/Toon.luau'].map((f) => `${CUTSCENE_DIR}/${f}`)
 
 async function json(url: string, body?: unknown): Promise<Record<string, unknown>> {
   const r = await fetch(url, body === undefined ? undefined : { method: 'POST', body: JSON.stringify(body) })
@@ -107,7 +118,38 @@ export const syncFlows: Flow[] = [
       await page.locator('aside.side .fs-commit button', { hasText: /Commit teammate edits \(0\)/ }).waitFor({ timeout: 10_000 })
       const log = git(root, 'log', '-1', '--name-only', '--format=%s')
       check(log.includes(INVENTORY_SERVICE), `last commit does not hold the Studio edit: ${log}`)
-      note(`gate ${await gateText(page)}; commit "${log.split('\n')[0]}"`)
+
+      // A cutscene module with child modules created in Studio: written to disk live.
+      const [cut, ...cutKids] = CUTSCENE_NODES
+      const added = await json(`${BASE}/sync/changes`, { session, place: { placeId: PLACE_ID }, changes: [{ kind: 'added', node: cut, descendants: cutKids }] })
+      check(added.ok === true, `changes: ${JSON.stringify(added)}`)
+      for (let i = 0; i < 40 && !CUTSCENE_FILES.every((f) => existsSync(join(root, f))); i++) await page.waitForTimeout(100)
+      check(CUTSCENE_FILES.every((f) => existsSync(join(root, f))), 'the Studio-made module tree did not reach disk')
+      // The disk loses it while Studio is closed (a branch switch); Studio reopens with it: rojo is held
+      // and the section offers "Pull to disk" instead of letting Rojo delete it from Studio.
+      rmSync(join(root, CUTSCENE_DIR), { recursive: true })
+      const again = await json(`${BASE}/sync/config?placeId=${PLACE_ID}&gameId=9&place=E2E%20Place`)
+      const withCutscene = [...studio.map((n) => (n.path.join('/') === INVENTORY_PATH.join('/') ? { ...n, source: text } : n)), ...CUTSCENE_NODES]
+      for (let i = 0, seq = 0; i < withCutscene.length; i += chunk, seq++) {
+        const r2 = await json(`${BASE}/sync/snapshot`, { session: String(again.sessionToken), place: { placeId: PLACE_ID, gameId: 9 }, seq, final: i + chunk >= withCutscene.length, nodes: withCutscene.slice(i, i + chunk) })
+        check(r2.ok === true, `snapshot chunk ${seq}: ${JSON.stringify(r2)}`)
+      }
+      const callout = page.locator('aside.side .vsec.fs .fs-studio-only')
+      await callout.waitFor({ state: 'visible', timeout: 10_000 })
+      await waitText(page, /4 scripts exist only in Studio, not on disk yet\. Rojo would delete them from Studio when it connects, so rojo serve is held/, { within: 'aside.side .vsec.fs' })
+      check(/4 not on disk/i.test(await gateText(page)), `gate pill shows "${await gateText(page)}", expected "4 not on disk"`)
+      await callout.locator('button', { hasText: 'Pull to disk (4)' }).click()
+      await page.waitForFunction(() => /clear/.test(document.querySelector('aside.side .vsec.fs .fs-place .tag')?.textContent ?? ''), undefined, { timeout: 10_000 }).catch(async () => {
+        throw new Error(`gate pill shows "${await gateText(page)}" after Pull to disk, expected "clear"`)
+      })
+      check(CUTSCENE_FILES.every((f) => existsSync(join(root, f))), 'Pull to disk did not write the module tree')
+      check(readFileSync(join(root, `${CUTSCENE_DIR}/Props/Toon.luau`), 'utf8') === 'return "toon"\n', 'Pull to disk wrote the wrong text')
+      check((await callout.count()) === 0, 'the Studio-only callout stayed after Pull to disk')
+      const commitPulled = page.locator('aside.side .fs-commit button', { hasText: /Commit teammate edits \(4\)/ })
+      await commitPulled.waitFor({ state: 'visible', timeout: 10_000 })
+      await commitPulled.click()
+      await page.locator('aside.side .fs-commit button', { hasText: /Commit teammate edits \(0\)/ }).waitFor({ timeout: 10_000 })
+      note(`gate ${await gateText(page)}; commit "${log.split('\n')[0]}"; Studio-only cutscene pulled to disk`)
     }
   },
   {

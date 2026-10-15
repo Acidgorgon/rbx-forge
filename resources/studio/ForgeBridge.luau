@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 8
+-- forge-bridge-template: 9
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -29,6 +29,10 @@
 -- id per plugin run (probe) and, for an unpublished place, the ServerStorage attribute ForgeSyncLink.
 -- When the user links an unpublished place in Forge, the config answer carries stampLink: the plugin
 -- sets that attribute (saved with the place) and asks again. Nothing else is written.
+-- Version 9: a renamed, moved or removed instance carries exactly its own subtree in the sync stream.
+-- Earlier versions re-pathed and forgot by path, so after Studio's Ctrl+D (a same-name copy) and a
+-- rename of the copy the original's scripts were tracked under the copy's new name: edits to them
+-- reached disk late or not at all, and the copy's children never did.
 --
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
@@ -1185,29 +1189,36 @@ local function startSync(): string
 	return "ok"
 end
 
--- Moves known paths under oldKey to newPath (a renamed or moved subtree).
-local function rebase(oldKey: string, oldDepth: number, newPath: { string })
-	for _, k in sync.known do
-		if underKey(k.key, oldKey) then
-			local path = table.clone(newPath)
-			for i = oldDepth + 1, #k.path do
-				table.insert(path, k.path[i])
-			end
-			k.path = path
-			k.key = pathKey(path)
+-- Re-paths a renamed or moved instance and its descendants. By instance, not by path: a same-name
+-- sibling (Studio's Ctrl+D copy) shares the old path and keeps its own.
+local function rebase(inst: Instance, newPath: { string })
+	local k = sync.known[inst]
+	if k then
+		k.path = newPath
+		k.key = pathKey(newPath)
+	end
+	for _, d in inst:GetDescendants() do
+		local dk = sync.known[d]
+		local path = if dk then syncPath(d) else nil
+		if dk and path then
+			dk.path = path
+			dk.key = pathKey(path)
 		end
 	end
 end
 
-local function forget(oldKey: string)
+-- Forgets a removed instance and what was known below it: everything under its old path that is no
+-- longer in a mapped root, or that still descends from it. A same-name sibling at that path (and its
+-- subtree) is still in Studio and stays known.
+local function forget(inst: Instance, oldKey: string)
 	local gone = {}
-	for inst, k in sync.known do
-		if underKey(k.key, oldKey) then
-			table.insert(gone, inst)
+	for other, k in sync.known do
+		if other == inst or (underKey(k.key, oldKey) and (other:IsDescendantOf(inst) or not syncPath(other))) then
+			table.insert(gone, other)
 		end
 	end
-	for _, inst in gone do
-		unregister(inst)
+	for _, other in gone do
+		unregister(other)
 	end
 end
 
@@ -1294,13 +1305,13 @@ local function flush()
 			table.insert(changes, { kind = "added", node = node, descendants = if #descendants > 0 then descendants else nil })
 		elseif was and not path then
 			table.insert(changes, { kind = "removed", id = was.id, path = was.path })
-			forget(was.key)
+			forget(inst, was.key)
 		elseif was and path then
 			local key = pathKey(path)
 			if key ~= was.key then
 				local from = was.path
 				local sameParent = #path == #from and pathKey(path, #path - 1) == pathKey(from, #from - 1)
-				rebase(was.key, #from, path)
+				rebase(inst, path)
 				if next(sync.refs) then
 					sync.refsDirty = true -- reported paths under it changed
 				end

@@ -101,7 +101,7 @@ export interface DoctorInputs {
   rojo: 'running' | 'starting' | 'stopped' | 'crashed' | 'missing' | null
   sync: {
     engine: 'forge' | 'project' | 'off'
-    places: { projectFile: string; gate: string; conflicts: number; connected: boolean }[]
+    places: { projectFile: string; gate: string; conflicts: number; connected: boolean; studioOnly?: number }[]
     pendingStudioEdits: number
   } | null
   keys: { provider: string; label: string; set: boolean; isDefault: boolean; local?: boolean }[]

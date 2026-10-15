@@ -1,8 +1,8 @@
 // Browser-preview mock of SyncApi (Forge Sync): an FSF-like project with two places (match =
 // default.project.json, menu = menu.project.json) that cross-mount src/skills, teammate edits pulled
 // from Studio, a held conflict and a first-run place.
-// ?forgesync=blocked (default) | firstrun | clear | checking | project | off
-import type { ForgeSyncSettings, HarnessEvents, StudioConflict, SyncApi, SyncConflictInfo, SyncEntry, SyncStatus, PlaceSyncStatus } from '@shared/types'
+// ?forgesync=blocked (default) | firstrun | studioonly | clear | checking | project | off
+import type { ForgeSyncSettings, HarnessEvents, StudioConflict, StudioOnlyScript, SyncApi, SyncConflictInfo, SyncEntry, SyncStatus, PlaceSyncStatus } from '@shared/types'
 import { collapseInstancePaths } from '@shared/explorerSelection'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
@@ -85,11 +85,20 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
     'src/skills/Server/Moves/Uppercut/init.luau'
   ]
   const served = new Set<string>()
+  // ?forgesync=studioonly: a cutscene module (and its children) only Studio has; rojo is held for it.
+  const WAKE = ['StarterPlayer', 'StarterPlayerScripts', 'Client', 'Controllers', 'OnboardingController', 'WakeUpCutscene']
+  const WAKE_DIR = 'src/client/Controllers/OnboardingController/WakeUpCutscene'
+  let studioOnly: StudioOnlyScript[] = mode !== 'studioonly' ? [] : [
+    { instancePath: WAKE, file: `${WAKE_DIR}/init.luau`, reason: 'its file was removed from disk (or "Disk" was chosen for it) while Studio kept it', canPull: true },
+    ...['Body', 'Lens', 'Motion'].map((n) => ({ instancePath: [...WAKE, n], file: `${WAKE_DIR}/${n}.luau`, reason: 'its file was removed from disk (or "Disk" was chosen for it) while Studio kept it', canPull: true })),
+    { instancePath: [...WAKE.slice(0, -1), 'init'], reason: 'Forge cannot write it: unsafe name: "init" is a Rojo file convention', canPull: false }
+  ]
 
   const places = (): PlaceSyncStatus[] => {
     const held = (key: string) => conflicts.filter((c) => c.placeKey === key).length
+    const only = (key: string) => (key === MATCH && studioOnly.length ? { studioOnly: { count: studioOnly.length, pullable: studioOnly.filter((i) => i.canPull).length, holds: true, items: studioOnly } } : {})
     const gate = (key: string, fallback: PlaceSyncStatus['gate']): PlaceSyncStatus['gate'] =>
-      mode === 'checking' && key === MATCH ? 'checking' : held(key) && !served.has(key) ? 'blocked' : fallback
+      mode === 'checking' && key === MATCH ? 'checking' : (held(key) || only(key).studioOnly) && !served.has(key) ? 'blocked' : fallback
     return [
       {
         placeKey: MATCH,
@@ -99,7 +108,8 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
         connected: true,
         ...(mode === 'checking' ? {} : { lastSnapshot: t - 42_000 }),
         counts: mode === 'checking' ? {} : { same: 318, pulled: 3, created: 3, renamed: 1, trashed: 1, ...(held(MATCH) ? { conflict: held(MATCH) } : { merged: 1 }) },
-        conflicts: held(MATCH)
+        conflicts: held(MATCH),
+        ...only(MATCH)
       },
       {
         placeKey: MENU,
@@ -189,6 +199,16 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
     },
     async syncLinkPlace(id) {
       log(`linked ${id}`)
+      changed()
+      return status()
+    },
+    async syncPullStudioOnly(placeKey) {
+      await delay(300)
+      const pulled = studioOnly.filter((i) => i.canPull)
+      studioOnly = studioOnly.filter((i) => !i.canPull)
+      recent = [...pulled.map((i): SyncEntry => ({ file: i.file!, action: 'created', instancePath: i.instancePath, at: Date.now(), note: 'pulled to disk (only Studio had it)' })), ...recent]
+      pending = [...new Set([...pending, ...pulled.map((i) => i.file!)])].sort()
+      log(`pulled ${pulled.length} Studio-only scripts of ${placeKey} to disk`)
       changed()
       return status()
     },

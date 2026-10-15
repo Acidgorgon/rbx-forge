@@ -11,6 +11,7 @@ import { measureClip, speedCurve } from './measure.ts'
 import { clipRig, samplePose } from './sample.ts'
 import { r15View } from './convert.ts'
 import { videoHintNote, videoHints } from '../videoref/prompt.ts'
+import { buildPriors, priorsGuide } from './priors.ts'
 
 // Move types the Lab knows (tags), with the words that suggest them.
 export const MOVE_TAGS: Record<string, RegExp> = {
@@ -207,6 +208,9 @@ export function buildProfile(tag: string, entries: AnimEntry[]): AnimStyleProfil
     if (top && easeTotal) notes.push(`Most keys ease ${top[0]} (${Math.round((top[1] / easeTotal) * 100)}%).`)
   }
   const avoid = bad.slice(0, 8).map((e) => `${e.name}${e.notes ? `: ${e.notes.slice(0, 140)}` : e.description ? `: ${e.description.slice(0, 120)}` : ''}`)
+  // Motion priors per move type (not for the all-moves profile, which mixes kinds of moves). Liked
+  // clips count twice here too.
+  const priors = tag === '*' ? null : buildPriors(weighted.map((w) => w.e.clip))
   return {
     tag,
     samples: pos.length,
@@ -218,7 +222,8 @@ export function buildProfile(tag: string, entries: AnimEntry[]): AnimStyleProfil
     easing: [...easing.entries()].sort((a, b) => b[1] - a[1]).slice(0, 6).map(([style, n]) => ({ style, share: round(n / Math.max(1, easeTotal), 3) })),
     poses,
     notes,
-    avoid
+    avoid,
+    ...(priors ? { priors } : {})
   }
 }
 
@@ -286,7 +291,8 @@ export function profileText(p: AnimStyleProfile): string {
     p.easing.length ? `- easing: ${p.easing.map((e) => `${e.style} ${Math.round(e.share * 100)}%`).join(', ')}` : '',
     ...p.notes.map((n) => `- ${n}`),
     p.poses.length ? `- pose vocabulary (use with a:pose("learned:<id>")): ${p.poses.map((x) => `${x.id} (phase ${x.phase}, ${x.count} keys)`).join(', ')}` : '',
-    p.avoid.length ? `- the user disliked (never copy these): ${p.avoid.join(' | ')}` : ''
+    p.avoid.length ? `- the user disliked (never copy these): ${p.avoid.join(' | ')}` : '',
+    priorsGuide(p)
   ]
   return lines.filter(Boolean).join('\n')
 }

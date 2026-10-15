@@ -12,7 +12,7 @@ import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { readdir, readFile, stat, mkdir, writeFile } from 'node:fs/promises'
 import { basename, extname, join, resolve, sep } from 'node:path'
 import type { AnimClipRef } from '../../../shared/anim/types.ts'
-import type { AnimCheckReport, AnimClip, AnimCritique, AnimEntry, AnimExportResult, AnimImportResult, AnimIteration, AnimLabStatus, AnimRefineOptions, AnimRefineProgress, AnimScope, AnimScriptResult, AnimStyle, AnimStyleProfile, AnimUploadResult, LearnedPose, RigType } from '../../../shared/anim/model.ts'
+import type { AnimCheckReport, AnimClip, AnimCritique, AnimEntry, AnimExportResult, AnimImportResult, AnimIteration, AnimIterationScore, AnimLabStatus, AnimRefineOptions, AnimRefineProgress, AnimScope, AnimScriptResult, AnimStyle, AnimStyleProfile, AnimUploadResult, LearnedPose, RigType } from '../../../shared/anim/model.ts'
 import type { AnimCoverage, AnimImportOptions, AnimImportPreview, AnimMoveSets, AnimRetagResult } from '../../../shared/animTypes.ts'
 import type { LabTier } from '../../../shared/labModels.ts'
 import type { LabGate } from '../../../shared/gating/hooks.ts'
@@ -47,6 +47,9 @@ import { criticBrief, restatementBlock } from '../../../shared/restate/prompt.ts
 import { normalizeRestatement, type Restatement } from '../../../shared/restate/types.ts'
 import { adjustRemixOps, applyRemix, describeRemixOp, dominantSide, heuristicRemixPlan, libraryScore, normalizeRemixPlan, parseRemixPlan, remixCandidates, remixPlanPrompt, REMIX_SYSTEM, type RemixCandidate, type RemixOp, type RemixOrigin } from '../../../shared/anim/remix.ts'
 import type { AnimRemixMode, AnimRemixOptions } from '../../../shared/animTypes.ts'
+import { intentText, motionIntent, type MotionIntent } from '../../../shared/anim/intent.ts'
+import { bestIteration, clampCriticWeight, DEFAULT_CRITIC_WEIGHT, guardedApply, iterationScore, type QualityContext } from '../../../shared/anim/quality.ts'
+import { DIGEST_NOTE, keyframeDigest } from '../../../shared/anim/digest.ts'
 
 export interface ImagePayload {
   mime: string
@@ -505,7 +508,85 @@ export class AnimService {
 
   async checks(id: string): Promise<AnimCheckReport> {
     const e = needClip(await this.get(id))
-    return runChecks(e.clip, profileFor(await this.style(), e.tags, clipRig(e.clip)), { request: e.kind === 'generated' ? e.origin : '', tags: e.tags })
+    const ctx = await this.qualityContext(e)
+    return runChecks(e.clip, ctx.profile ?? null, { intent: ctx.intent })
+  }
+
+  // ------------------------------------------------------------ quality (intent, priors, calibration)
+
+  // The nearest real clips of a request's move: imported clips of its move type first, then ones the
+  // user liked; never "avoid" clips, video references or the clip itself.
+  private realRefs(all: AnimEntry[], request: string, tags: string[], set: ResolvedMoveSet, rig: RigType, exclude?: string): AnimEntry[] {
+    const cands = remixCandidates(all, `${request} ${tags.join(' ')}`, set, { rig, limit: 12, exclude })
+    const byId = new Map(all.map((e) => [e.id, e]))
+    const liked = (e: AnimEntry) => e.rating === 'up' || e.quality === 'good' || e.quality === 'reference'
+    const real = cands.map((c) => byId.get(c.id)!).filter((e) => e && e.kind === 'imported')
+    const good = cands.map((c) => byId.get(c.id)!).filter((e) => e && e.kind !== 'imported' && liked(e))
+    return [...real, ...good].slice(0, 3)
+  }
+
+  // What a clip is judged by: the motion intent (lead limb from the request's words, else the nearest
+  // real clips), the move type's profile with its learned priors, and the learned critic weight.
+  // Imported clips are judged by their tags only (their own side is right by definition).
+  async qualityContext(e: Pick<AnimEntry, 'id' | 'kind' | 'origin' | 'tags' | 'clip'> | { request: string; tags: string[]; rig: RigType; exclude?: string }): Promise<QualityContext & { refs: AnimEntry[]; tags: string[]; request: string }> {
+    const generated = 'request' in e || e.kind === 'generated'
+    const request = 'request' in e ? e.request : e.kind === 'generated' ? e.origin : ''
+    const tags = e.tags
+    const rig = 'request' in e ? e.rig : clipRig(e.clip)
+    const exclude = 'request' in e ? e.exclude : e.id
+    const refs = generated ? this.realRefs(await this.list(), request, tags, await this.moveSet(), rig, exclude) : []
+    const intent: MotionIntent = motionIntent(request, tags, refs.map((r) => r.clip))
+    return { intent, profile: profileFor(await this.style(), tags, rig), criticWeight: await this.criticWeight(), refs, tags, request }
+  }
+
+  private calibrationFile(): string {
+    return join(this.deps.userDir, 'calibration.json')
+  }
+
+  private async readCalibration(): Promise<{ criticWeight: number; events: { at: number; kind: string; delta: number; entry: string }[] }> {
+    try {
+      const v = JSON.parse(await readFile(this.calibrationFile(), 'utf8')) as { criticWeight?: unknown; events?: unknown }
+      return { criticWeight: clampCriticWeight(v.criticWeight), events: Array.isArray(v.events) ? (v.events as never[]).slice(-50) : [] }
+    } catch {
+      return { criticWeight: DEFAULT_CRITIC_WEIGHT, events: [] }
+    }
+  }
+
+  // How much the critic's score counts against the code metrics when ranking rounds (0.25..0.75).
+  async criticWeight(): Promise<number> {
+    return (await this.readCalibration()).criticWeight
+  }
+
+  // Feedback learning: when the user's choice (a kept round, a rating) agrees with the code metrics
+  // against the critic, the critic counts less next time, and the other way round.
+  private async calibrate(kind: string, entry: string, delta: number): Promise<number> {
+    const cur = await this.readCalibration()
+    const next = clampCriticWeight(Math.round((cur.criticWeight + delta) * 1000) / 1000)
+    if (next === cur.criticWeight) return next
+    await mkdir(this.deps.userDir, { recursive: true })
+    await writeFile(this.calibrationFile(), JSON.stringify({ criticWeight: next, events: [...cur.events, { at: this.now(), kind, delta, entry }].slice(-50) }, null, 2), 'utf8')
+    return next
+  }
+
+  // "Use #n": the round's clip becomes the clip, and the choice teaches the critic weight when it
+  // differs from the round the ranking picked.
+  async useIteration(id: string, n: number): Promise<AnimEntry> {
+    const hit = await this.find(id)
+    if (!hit) throw new AnimError(`no animation "${id}"`)
+    if (this.running.has(id)) throw new AnimError('this clip is being refined; cancel the refinement first')
+    const its = hit.entry.iterations ?? []
+    const chosen = its.find((it) => it.n === Number(n))
+    if (!chosen) throw new AnimError(`no iteration #${n}`)
+    const best = bestIteration(its)
+    if (best && best !== chosen && chosen.score && best.score) {
+      const c = chosen.score
+      const b = best.score
+      // The user overruled the ranking: whichever signal agreed with them gains weight.
+      if (c.critic > b.critic && c.objective < b.objective) await this.calibrate('keep', id, 0.05)
+      else if (c.objective > b.objective && c.critic < b.critic) await this.calibrate('keep', id, -0.05)
+    }
+    const saved = await this.update(id, { clip: chosen.clip })
+    return saved
   }
 
   // ------------------------------------------------------------ contract (Ability Composer)
@@ -771,6 +852,7 @@ export class AnimService {
     if (!e.quality) delete e.quality
     const saved = await hit.store.save(e)
     await this.recordPrinciples(saved, rating).catch((err) => this.deps.log?.(`anim: principle feedback: ${(err as Error).message}`, 'stderr'))
+    if (rating) await this.calibrateFromRating(saved, rating).catch((err) => this.deps.log?.(`anim: calibration: ${(err as Error).message}`, 'stderr'))
     await this.relearn().catch(() => undefined)
     if (this.deps.memory && rating) {
       const style = await this.style()
@@ -784,6 +866,20 @@ export class AnimService {
     }
     this.changed()
     return saved
+  }
+
+  // A rating of a refined clip: when the critic and the code metrics disagreed about the round the
+  // clip uses, the one the user agrees with gains weight.
+  private async calibrateFromRating(e: AnimEntry, rating: 'up' | 'down'): Promise<void> {
+    if (e.kind !== 'generated' || !e.iterations?.length) return
+    const it = e.iterations.find((x) => JSON.stringify(x.clip.tracks) === JSON.stringify(e.clip.tracks)) ?? bestIteration(e.iterations)
+    const s = it?.score
+    if (!s) return
+    const v = rating === 'up' ? 1 : -1
+    const sc = Math.sign(s.critic - 6.5)
+    const so = Math.sign(s.objective - 6.5)
+    if (sc === v && so !== v) await this.calibrate(`rate-${rating}`, e.id, 0.04)
+    else if (so === v && sc !== v) await this.calibrate(`rate-${rating}`, e.id, -0.04)
   }
 
   // Ratings teach the principle weights: the clip's per-principle scores (its last critique, else the
@@ -864,7 +960,7 @@ export class AnimService {
     return allProfiles(style).flatMap((p) => p.poses)
   }
 
-  async recordScript(script: string, opts: { name?: string; patches?: AnimClip['patches']; rig?: RigType; request?: string } = {}): Promise<AnimScriptResult> {
+  async recordScript(script: string, opts: { name?: string; patches?: AnimClip['patches']; rig?: RigType; request?: string; intent?: MotionIntent | null } = {}): Promise<AnimScriptResult> {
     const text = String(script ?? '')
     if (!text.trim()) return { ok: false, error: { message: 'the script is empty' }, prints: [], warnings: [], summary: '' }
     if (text.length > 60_000) return { ok: false, error: { message: 'the script is too long (60 KB max)' }, prints: [], warnings: [], summary: '' }
@@ -872,7 +968,7 @@ export class AnimService {
     const run = finishAnimRun(rec, text, { name: opts.name, learned: await this.learnedPoses(), patches: opts.patches, rig: await this.rigFor(opts.rig) })
     if (!run.ok || !run.clip) return { ok: false, ...(run.error ? { error: run.error } : {}), prints: run.prints, warnings: run.warnings, summary: '' }
     const tags = await this.tagsFor(run.clip.name)
-    const checks = runChecks(run.clip, profileFor(await this.style(), tags, clipRig(run.clip)), { request: opts.request ?? '', tags })
+    const checks = runChecks(run.clip, profileFor(await this.style(), tags, clipRig(run.clip)), opts.intent ? { intent: opts.intent } : { request: opts.request ?? '', tags })
     return { ok: true, prints: run.prints, warnings: run.warnings, summary: clipSummary(run.clip), clip: run.clip, checks }
   }
 
@@ -956,6 +1052,9 @@ export class AnimService {
     let script = opts.script?.trim() ? opts.script : ''
     const writer = this.model('default')
     let modelError: string | undefined
+    // The lead limb (words, else the nearest real clips) and those clips' keyframe digests.
+    const qctx = await this.qualityContext({ request: text, tags, rig })
+    const intent = qctx.intent ?? null
     if (!script && writer) {
       const all = await this.list()
       const refs = await this.references(tags, text, undefined, rig)
@@ -970,7 +1069,9 @@ export class AnimService {
         restatementBlock(restatement),
         `Rig: ${rig}${rig === 'R6' ? ' (start the script with a:rig("R6"); no waist, elbows, wrists, knees or ankles)' : ''}`,
         moveType,
+        intentText(intent),
         profile ? profileText(profile) : 'No learned style for this move type yet: use strong anticipation, a fast action and a settling recovery.',
+        qctx.refs.length ? [`The closest real clips of this move in the user's library (start from their timing and key poses; this is what the user wants it to look like):`, ...qctx.refs.slice(0, 2).map((e) => keyframeDigest(e.clip, { name: e.name, tags: e.tags })), DIGEST_NOTE].join('\n') : '',
         ...refs.filter((e) => e !== scripted).map((e) => `Library reference "${e.name}" (${e.tags.join(', ')}): ${e.description.slice(0, 300)}`),
         scripted ? `The user liked this related clip ("${scripted.origin}"); reuse what fits:\n\`\`\`lua\n${scripted.clip.script!.slice(0, 4000)}\n\`\`\`` : `An example script (${ex.name}):\n\`\`\`lua\n${ex.script}\`\`\``,
         avoid.length ? `The user marked these as bad; do not repeat them: ${avoid.join(' | ')}` : '',
@@ -988,7 +1089,7 @@ export class AnimService {
           check: async (raw): Promise<AttemptResult<{ s: string; r: AnimScriptResult }>> => {
             const s = extractAnimScript(raw)
             if (!s) return { ok: false, kind: 'no-script', message: 'no script in the answer' }
-            const r = await this.recordScript(s, { name: animScriptName(s, text), rig, request: text })
+            const r = await this.recordScript(s, { name: animScriptName(s, text), rig, request: text, intent })
             if (r.ok) return { ok: true, value: { s, r } }
             const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
             return { ok: false, kind: 'script-error', message: `${r.error?.message ?? 'the script failed'}${where}` }
@@ -1007,7 +1108,7 @@ export class AnimService {
     if (!result) {
       if (!script) script = draftAnimScript(text, profile, rig, set)
       else source = 'model'
-      result = await this.recordScript(script, { name: animScriptName(script, text), rig, request: text })
+      result = await this.recordScript(script, { name: animScriptName(script, text), rig, request: text, intent })
       if (!result.ok && opts.script) return { ...result, source }
       if (!result.ok) throw new AnimError(`could not record the draft script: ${result.error?.message}`)
     }
@@ -1068,6 +1169,7 @@ export class AnimService {
           base: { id: base.id, name: base.name, tags: base.tags, description: base.description, clip: base.clip },
           others: others.map((o) => ({ id: o.id, name: o.name, tags: o.tags, description: o.description, duration: o.clip.duration })),
           side: dominantSide(base.clip),
+          intent: intentText(motionIntent(request, base.tags, [base.clip])),
           ...(ctx.current ? { current: ctx.current } : {}),
           ...(ctx.critique ? { critique: ctx.critique } : {})
         })
@@ -1117,8 +1219,8 @@ export class AnimService {
     const tags = [...new Set([...base.tags.filter((t) => t !== 'example' && t !== 'video'), ...setPromptTags(text, set)])]
     const description = `${text || 'Remix'}. Remix of "${base.name}"${ops.length ? `: ${ops.map((o) => describeRemixOp(o, names)).join('; ')}` : ' (unchanged)'}. ${describeClip(clip)}`.slice(0, 600)
     const entry = await this.saveClip(clip, { prompt: text || `remix of ${base.name}`, description, tags, scope: opts.scope, remix: origin, ...(restatement ? { restatement } : {}) })
-    const tagsFor = entry.tags
-    const checks = runChecks(clip, profileFor(await this.style(), tagsFor, clipRig(clip)), { request: text, tags: tagsFor })
+    const qctx = await this.qualityContext(entry)
+    const checks = runChecks(clip, qctx.profile ?? null, { intent: qctx.intent })
     const warnings = [...planned.rejected.map((x) => `plan: ${x.reason}`), ...r.skipped.map((x) => `${x.op.op}: ${x.reason}`)]
     const out: AnimScriptResult & { refined?: Promise<unknown> } = { ok: true, prints: [], warnings, summary: clipSummary(clip), clip, checks, entry, source: 'remix' }
     if (opts.refine !== false && this.deps.capture) {
@@ -1214,11 +1316,12 @@ export class AnimService {
     return { ...c, overall: blendMatch(c.overall, match), match, matchNotes: fromCritic?.notes ?? numeric.notes }
   }
 
-  async critique(entry: AnimEntry, clip: AnimClip, frames: Buffer[], times: number[], iteration: number, previous: AnimCritique | null): Promise<AnimCritique> {
-    const style = await this.style()
+  // ctx: the refinement's quality context (computed once per run); best: the best round so far.
+  async critique(entry: AnimEntry, clip: AnimClip, frames: Buffer[], times: number[], iteration: number, previous: AnimCritique | null, ctxIn?: Awaited<ReturnType<AnimService['qualityContext']>>, best?: { n: number; score: AnimIterationScore; critique: AnimCritique } | null): Promise<AnimCritique> {
+    const ctx = ctxIn ?? (await this.qualityContext(entry))
     const rig = clipRig(clip)
-    const profile: AnimStyleProfile | null = profileFor(style, entry.tags, rig)
-    const checks = runChecks(clip, profile, { request: entry.kind === 'generated' ? entry.origin : '', tags: entry.tags })
+    const profile: AnimStyleProfile | null = ctx.profile ?? null
+    const checks = runChecks(clip, profile, { intent: ctx.intent })
     const set = await this.moveSet()
     const typed = entry.tags.filter((t) => set.tags.some((d) => d.tag === t))
     const refs = await this.references(entry.tags, entry.origin, entry.id, rig)
@@ -1235,7 +1338,8 @@ export class AnimService {
       return done(pinned ? this.withMatch(c, clip, pinned) : c)
     }
     const moveType = typed.length && (set.id !== 'combat' || set.tags.some((t) => t.custom && typed.includes(t.tag))) ? `\nMove type (${set.name}):\n${moveSetGuide(set, typed)}` : ''
-    const prompt = `${animCritiquePrompt({ request: criticBrief(entry.origin, entry.restatement) + moveType, clip, frameTimes: times, checks, profile, references: refs.map((r) => ({ name: r.name, description: r.description })), iteration, previous })}\n\n${animCriticPrinciples(clip, request, { weights, focus: previous?.focus, checks })}`
+    const bestNote = best ? { n: best.n, quality: best.score.quality, critic: best.score.critic, summary: best.critique.summary } : null
+    const prompt = `${animCritiquePrompt({ request: criticBrief(entry.origin, entry.restatement) + moveType, clip, frameTimes: times, checks, profile, references: refs.map((r) => ({ name: r.name, description: r.description })), iteration, previous, intent: ctx.intent, best: bestNote })}\n\n${animCriticPrinciples(clip, request, { weights, focus: previous?.focus, checks })}`
     // Pinned reference: its key frames follow the rendered frames (compared side by side).
     const images = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...(pinned?.images ?? [])]
     try {
@@ -1307,6 +1411,7 @@ export class AnimService {
     const maxIt = Math.max(1, Math.min(10, Math.floor(opts.maxIterations ?? ANIM_DEFAULT_MAX_ITERATIONS)))
     const stopAfter = new Map<number, boolean>()
     const remixer = await this.remixAdjuster(hit.entry)
+    const ctx = await this.qualityContext(hit.entry)
     try {
       const result = await animRefineLoop(
         hit.entry.clip,
@@ -1325,24 +1430,34 @@ export class AnimService {
             }
             return { frames: files, times }
           },
-          critique: async (clip, _files, times, n, previous) => {
+          critique: async (clip, _files, times, n, previous, best) => {
             this.progress({ entryId: id, iteration: base + n, phase: 'critique' })
             const gate = this.deps.gate
             const g = gate && pngs.get(n)?.length ? await gate.beforeCritique({ lab: 'anim', entryId: id, iteration: base + n, frames: pngs.get(n) ?? [], previousScore: previous?.overall ?? null, changes: previous?.changes.length ?? 0, threshold }) : null
             if (g?.skip && previous) return skippedCritique(previous, g.reason)
             const current = (await hit.store.read(id)) ?? hit.entry
-            const c = await this.critique(current, clip, pngs.get(n) ?? [], times, base + n, previous)
+            const c = await this.critique(current, clip, pngs.get(n) ?? [], times, base + n, previous, ctx, best ? { n: base + best.n, score: best.score, critique: best.critique } : null)
             if (gate) stopAfter.set(n, (await gate.afterCritique({ lab: 'anim', entryId: id, iteration: base + n, score: c.overall, threshold, remaining: maxIt - n, changes: c.changes.length, summary: c.summary })).stop)
             return c
           },
           shouldStop: async (_c, n) => stopAfter.get(n) ?? false,
           ...(remixer ? { adjust: remixer.adjust } : {}),
-          onIteration: async (it) => {
+          // Every round is ranked on the critic and the code metrics; the critic's edits are guarded.
+          score: (clip, c) => iterationScore(c, clip, ctx),
+          apply: (clip, changes) => guardedApply(clip, changes, ctx),
+          onIteration: async (it, best) => {
             const current = (await hit.store.read(id)) ?? hit.entry
             const ops = remixer?.opsOf(it.clip)
-            const iteration: AnimIteration = { n: base + it.n, at: this.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique, ...(ops ? { ops } : {}) }
-            await hit.store.save({ ...current, iterations: [...(current.iterations ?? []), iteration].slice(-8), updatedAt: this.now() })
-            this.progress({ entryId: id, iteration: base + it.n, phase: 'adjust', score: it.critique.overall, message: it.critique.summary })
+            const iteration: AnimIteration = { n: base + it.n, at: this.now(), clip: it.clip, frames: it.frames, times: it.times, critique: it.critique, score: it.score, ...(it.rejected.length ? { guarded: it.rejected.slice(0, 8) } : {}), ...(ops ? { ops } : {}) }
+            // Keep the best round even when it is older than the last eight.
+            const all = [...(current.iterations ?? []), iteration]
+            const top = bestIteration(all)
+            const kept = all.slice(-8)
+            const iterations = top && !kept.includes(top) ? [top, ...all.slice(-7)] : kept
+            // The best round so far is the clip (the preview and the default), never the last one.
+            const bestOps = remixer?.opsOf(best.clip)
+            await hit.store.save({ ...current, iterations, clip: best.clip, stats: measureClip(best.clip), ...(bestOps && current.remix ? { remix: { ...current.remix, ops: bestOps } } : {}), updatedAt: this.now() })
+            this.progress({ entryId: id, iteration: base + it.n, phase: 'adjust', score: it.score.quality, message: `${it.score.accepted ? '' : `Not kept (${it.score.regressed}); continuing from #${base + best.n}. `}${it.critique.summary}`, best: { n: base + best.n, quality: best.score.quality } })
             this.changed()
           },
           cancelled: () => token.cancelled
@@ -1354,14 +1469,14 @@ export class AnimService {
       const bestOps = remixer?.opsOf(result.best.clip)
       let entry = await hit.store.save({
         ...current,
-        ...(bestOps && current.remix ? { remix: { ...current.remix, ops: bestOps, source: JSON.stringify(bestOps) === JSON.stringify(current.remix.ops) ? current.remix.source : 'critic' } } : {}),
+        ...(bestOps && current.remix ? { remix: { ...current.remix, ops: bestOps, source: JSON.stringify(bestOps) === JSON.stringify(hit.entry.remix?.ops) ? hit.entry.remix?.source ?? current.remix.source : 'critic' } } : {}),
         clip: result.best.clip,
         stats: measureClip(result.best.clip),
         thumbs: bestFrames.length ? [bestFrames[Math.min(bestFrames.length - 1, 2)], ...current.thumbs.filter((t) => !t.startsWith('frames/'))].slice(0, 6) : current.thumbs,
         updatedAt: this.now()
       })
       if (entry.written) entry = await this.writeProjectFiles(entry)
-      this.progress({ entryId: id, iteration: base + result.iterations.length, phase: 'done', score: result.best.critique.overall, message: `stopped: ${result.stop}` })
+      this.progress({ entryId: id, iteration: base + result.iterations.length, phase: 'done', score: result.best.score.quality, message: `stopped: ${result.stop}; using #${base + result.best.n} (the best round)`, best: { n: base + result.best.n, quality: result.best.score.quality } })
       this.changed()
       return { entry, stop: result.stop, score: result.best.critique.overall }
     } catch (e) {

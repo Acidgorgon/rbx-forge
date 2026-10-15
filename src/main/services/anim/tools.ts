@@ -137,7 +137,7 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
     {
       name: 'anim_critique',
       description:
-        'Critique a clip (by id): the automatic checks, plus frames of the R15 dummy at its key beats sent to the critic model with a rubric (silhouette, timing, weight, arcs, appeal, cleanliness) against the learned style and library references. With refine: true, applies the suggested changes and repeats until the score reaches threshold (default 7.5) or max_iterations (default 4), keeping the best iteration.',
+        'Critique a clip (by id): the automatic checks, plus frames of the R15 dummy at its key beats sent to the critic model with a rubric (silhouette, timing, weight, arcs, appeal, cleanliness) against the learned style and library references. With refine: true, applies the suggested changes (guarded: edits that shrink the lead limb or break a requirement are refused) and repeats until the score reaches threshold (default 7.5) or max_iterations (default 4). Every round is ranked on the critic plus code metrics (checks, lead limb, learned priors, smoothness); a round that regresses is not kept, and the clip ends on the best round.',
       inputSchema: { id: z.string().min(1), refine: z.boolean().optional(), max_iterations: z.number().int().min(1).max(8).optional(), threshold: z.number().min(1).max(10).optional() },
       handler: (args: { id: string; refine?: boolean; max_iterations?: number; threshold?: number }) =>
         guard(async () => {
@@ -146,7 +146,7 @@ export function animTools(service: AnimService): { read: AnimTool[]; write: Anim
             const its = r.entry.iterations ?? []
             return [
               `refined ${r.entry.name} (${r.entry.id}), stopped: ${r.stop}, best ${r.score}/10`,
-              ...its.slice(-6).map((it) => `#${it.n} ${it.critique?.overall ?? '?'}/10: ${it.critique?.summary ?? ''}`),
+              ...its.slice(-6).map((it) => `#${it.n} ${it.score ? `${it.score.quality.toFixed(1)}/10 (critic ${it.score.critic.toFixed(1)}, code ${it.score.objective.toFixed(1)})${it.score.accepted ? '' : ` not kept: ${it.score.regressed}`}` : `${it.critique?.overall ?? '?'}/10`}: ${it.critique?.summary ?? ''}`),
               'The user can rate it on the Animation Lab page.'
             ].join('\n')
           }

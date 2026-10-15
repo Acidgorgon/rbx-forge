@@ -5,7 +5,8 @@
 import type { AnimChange, AnimClip, AnimKey, R15Joint } from './model.ts'
 import { POSE_EASING_DIRECTIONS, POSE_EASING_STYLES, R15_JOINTS } from './model.ts'
 import { cfToXf, eulerDegOf, qeulerDeg, qmul, xfToCf } from './math.ts'
-import { clampToLimits, JOINT_LIMITS_R6, penetration, runChecks } from './checks.ts'
+import { clampToLimits, JOINT_LIMITS, JOINT_LIMITS_R6, penetration, runChecks, type LimitTable } from './checks.ts'
+import type { AnimCheckReport } from './model.ts'
 import { plantPass, trackRecord, tracksOf } from './passes.ts'
 import { forwardKinematics } from './r15.ts'
 import { clipRig, normalizeKeys, samplePose, sampleTrack } from './sample.ts'
@@ -74,7 +75,14 @@ const near = (keys: AnimKey[], t: number, tol = 0.06) => {
   return best
 }
 
-function applyOne(clip: AnimClip, ch: AnimChange, r6 = false): AnimClip {
+// Context for the automatic fixes: the checks that find sliding feet (with the motion intent, so the
+// lead foot working the ball is not planted) and the joint limits (widened by the learned priors).
+export interface PatchContext {
+  checks?: (clip: AnimClip) => AnimCheckReport
+  limits?: LimitTable
+}
+
+function applyOne(clip: AnimClip, ch: AnimChange, r6 = false, ctx: PatchContext = {}): AnimClip {
   switch (ch.kind) {
     case 'offset': {
       const keys = [...(clip.tracks[ch.joint] ?? [])]
@@ -121,20 +129,20 @@ function applyOne(clip: AnimClip, ch: AnimChange, r6 = false): AnimClip {
         for (const [j, keys] of Object.entries(clip.tracks) as [R15Joint, AnimKey[]][]) {
           tracks[j] = keys.map((k) => {
             const x = cfToXf(k.cf)
-            return { ...k, cf: xfToCf({ p: x.p, q: qeulerDeg(clampToLimits(j, eulerDegOf(x.q), r6 ? JOINT_LIMITS_R6 : undefined)) }) }
+            return { ...k, cf: xfToCf({ p: x.p, q: qeulerDeg(clampToLimits(j, eulerDegOf(x.q), ctx.limits ?? (r6 ? JOINT_LIMITS_R6 : JOINT_LIMITS))) }) }
           })
         }
         return { ...clip, tracks }
       }
       if (ch.check === 'sliding') {
-        const report = runChecks(clip)
+        const report = ctx.checks ? ctx.checks(clip) : runChecks(clip)
         const slides = report.issues.filter((i) => i.check === 'sliding' && i.at !== undefined)
         if (!slides.length) return clip
         const tracks = tracksOf(clip.tracks)
         for (const s of slides) {
           const foot = s.joint === 'LeftFoot' ? 'Left' : 'Right'
-          // Plant from where the slide starts until the foot leaves the floor (or 0.6 s later).
-          const end = Math.min(clip.duration, (s.at ?? 0) + 0.6)
+          // Plant from where the slide starts until it stops (the foot lifts or holds), else 0.6 s later.
+          const end = Math.min(clip.duration, s.to !== undefined ? s.to + 1 / 30 : (s.at ?? 0) + 0.6)
           plantPass(tracks, foot, s.at ?? 0, end)
         }
         return { ...clip, tracks: trackRecord(tracks) }
@@ -167,15 +175,15 @@ function applyOne(clip: AnimClip, ch: AnimChange, r6 = false): AnimClip {
 // Applies changes in order; bad ones are rejected with a reason, the rest still apply. R6 clips are
 // edited through their R15 view (R6 joint names map onto Root, Neck, shoulders and hips) and turned
 // back into R6 tracks; changes to joints R6 does not have are rejected.
-export function applyAnimChanges(clip: AnimClip, changes: unknown[]): { clip: AnimClip; applied: AnimChange[]; rejected: { change: unknown; reason: string }[] } {
+export function applyAnimChanges(clip: AnimClip, changes: unknown[], ctx: PatchContext = {}): { clip: AnimClip; applied: AnimChange[]; rejected: { change: unknown; reason: string }[] } {
   if (clipRig(clip) === 'R6') {
-    const r = applyR15(r15View(clip), changes, true)
+    const r = applyR15(r15View(clip), changes, true, ctx)
     return { ...r, clip: { ...r.clip, rig: 'R6', tracks: r6TracksFromView(r.clip.tracks) } }
   }
-  return applyR15(clip, changes, false)
+  return applyR15(clip, changes, false, ctx)
 }
 
-function applyR15(clip: AnimClip, changes: unknown[], r6: boolean): { clip: AnimClip; applied: AnimChange[]; rejected: { change: unknown; reason: string }[] } {
+function applyR15(clip: AnimClip, changes: unknown[], r6: boolean, ctx: PatchContext): { clip: AnimClip; applied: AnimChange[]; rejected: { change: unknown; reason: string }[] } {
   let out = clip
   const applied: AnimChange[] = []
   const rejected: { change: unknown; reason: string }[] = []
@@ -183,7 +191,7 @@ function applyR15(clip: AnimClip, changes: unknown[], r6: boolean): { clip: Anim
     try {
       const ch = normalizeChange(raw)
       if (r6 && 'joint' in ch && ch.joint && !R6_OF_R15[ch.joint]) throw new AnimPatchError(`${ch.joint}: R6 has no such joint (use RootJoint, Neck, Left/Right Shoulder, Left/Right Hip)`)
-      out = applyOne(out, ch, r6)
+      out = applyOne(out, ch, r6, ctx)
       applied.push(ch)
     } catch (e) {
       rejected.push({ change: raw, reason: (e as Error).message })

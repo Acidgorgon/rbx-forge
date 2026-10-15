@@ -4,7 +4,7 @@
 // repeats until the score passes the threshold. Model and renderer are injected (tests use fakes).
 // Without a vision model, a numbers-only critique from the checks and the profile drives the loop.
 
-import type { AnimChange, AnimCheckReport, AnimClip, AnimCritique, AnimRubricKey, AnimStyleProfile } from './model.ts'
+import type { AnimChange, AnimCheckReport, AnimClip, AnimCritique, AnimIterationScore, AnimRubricKey, AnimStyleProfile } from './model.ts'
 import { ANIM_RUBRIC_KEYS } from './model.ts'
 import { runChecks } from './checks.ts'
 import { clipSummary } from './compile.ts'
@@ -12,6 +12,12 @@ import { measureClip, phases } from './measure.ts'
 import { applyAnimChanges } from './patch.ts'
 import { profileText } from './style.ts'
 import { missingParts, partMustFix } from './bodyparts.ts'
+import { dampChanges, judgeRound } from './quality.ts'
+import { amplifyAt, peakOf, priorsText } from './priors.ts'
+import { r15View } from './convert.ts'
+import type { PartMotion } from './bodyparts.ts'
+import type { R15Joint } from './model.ts'
+import { intentText, limbRanges, type MotionIntent } from './intent.ts'
 
 export const ANIM_RUBRIC_WEIGHTS: Record<AnimRubricKey, number> = { silhouette: 0.2, timing: 0.2, weight: 0.16, arcs: 0.12, appeal: 0.14, cleanliness: 0.18 }
 export const ANIM_DEFAULT_THRESHOLD = 7.5
@@ -33,6 +39,8 @@ Then propose at most 6 concrete changes that raise the lowest scores. Change kin
 {"kind":"retime","from":0.0,"to":0.3,"scale":1.4,"why":"..."}  stretch (scale > 1) or squash a span of time
 {"kind":"ease","at":0.3,"joint":"RightShoulder"?,"style":"CubicV2|Linear|Constant|Elastic|Bounce","dir":"In|Out|InOut","why":"..."}  easing of the keys at that time (toward the next key)
 {"kind":"fix","check":"limits|sliding|penetration","why":"..."}  automatic fix
+Edit only what is broken: target the must-fix items, the violated learned priors and the lowest rubric scores, at the joints and times they name, and leave everything that already works alone (no rewrites, no tidying a pose that reads). Start every change's "why" with what it fixes: [must-fix], [prior:<id>] or [rubric:<key>]. Never shrink the swing of the limb that leads the move.
+Score the clip in front of you on its own merits; a later round is not better because it changed something.
 Joints: Root Waist Neck LeftShoulder LeftElbow LeftWrist RightShoulder RightElbow RightWrist LeftHip LeftKnee LeftAnkle RightHip RightKnee RightAnkle.
 Answer with JSON only:
 {"scores":{"silhouette":n,"timing":n,"weight":n,"arcs":n,"appeal":n,"cleanliness":n},"summary":"two sentences","changes":[...]}`
@@ -83,6 +91,11 @@ export interface AnimCritiqueInput {
   references: { name: string; description: string }[]
   iteration: number
   previous?: AnimCritique | null
+  // Motion intent (the lead limb) and the move type's learned priors measured on this clip.
+  intent?: MotionIntent | null
+  priorTag?: string
+  // The best round so far (score, its summary), so the critic knows the bar.
+  best?: { n: number; quality: number; critic: number; summary: string } | null
 }
 
 export function animCritiquePrompt(input: AnimCritiqueInput): string {
@@ -97,9 +110,13 @@ export function animCritiquePrompt(input: AnimCritiqueInput): string {
     `Automatic checks (${input.checks.overall}/10): ${Object.entries(input.checks.scores).map(([k, v]) => `${k} ${v}`).join(', ')}`,
     ...input.checks.issues.slice(0, 10).map((i) => `- ${i.severity}: ${i.message}`)
   ]
+  const intent = intentText(input.intent, input.intent?.lead ? limbRanges(input.clip) : undefined)
+  if (intent) parts.push('', intent)
+  if (input.checks.priors?.length) parts.push('', priorsText(input.checks.priors, input.priorTag ?? input.profile?.tag ?? 'this move'))
   if (input.profile) parts.push('', profileText(input.profile))
   if (input.references.length) parts.push('', 'Closest library references:', ...input.references.slice(0, 3).map((r) => `- ${r.name}: ${r.description.slice(0, 200)}`))
   if (input.previous) parts.push('', `Previous critique (${input.previous.overall}/10): ${input.previous.summary}`)
+  if (input.best && input.best.n !== input.iteration) parts.push('', `Best round so far: #${input.best.n} (critic ${input.best.critic.toFixed(1)}, overall ${input.best.quality.toFixed(1)}): ${input.best.summary.slice(0, 240)} If this round looks worse than that, score it lower and say what regressed.`)
   return parts.join('\n')
 }
 
@@ -147,7 +164,15 @@ export function parseAnimCritique(raw: string, checks: AnimCheckReport, referenc
     scores[k] = Number.isFinite(v) ? Math.max(0, Math.min(10, v)) : 5
   }
   scores.cleanliness = Math.min(scores.cleanliness, cleanScore(checks) + 0.5)
-  const changes = Array.isArray(data.changes) ? (data.changes as AnimChange[]).filter((c) => c && typeof c === 'object' && typeof (c as { kind?: unknown }).kind === 'string').slice(0, 8) : []
+  const changes = Array.isArray(data.changes)
+    ? (data.changes as AnimChange[])
+        .filter((c) => c && typeof c === 'object' && typeof (c as { kind?: unknown }).kind === 'string')
+        .slice(0, 8)
+        .map((c) => {
+          const m = /\[prior:([\w-]+)\]/i.exec(String(c.why ?? ''))
+          return m && !c.prior ? { ...c, prior: m[1].toLowerCase() } : c
+        })
+    : []
   return withMustFix({ scores, overall: animOverall(scores), summary: String(data.summary ?? '').slice(0, 600), changes, checks, references })
 }
 
@@ -159,6 +184,10 @@ export function heuristicAnimCritique(clip: AnimClip, checks: AnimCheckReport, p
   if (checks.scores.limits < 8) changes.push({ kind: 'fix', check: 'limits', why: 'joints past natural limits', principle: 'solid-posing' })
   if (checks.scores.sliding < 8) changes.push({ kind: 'fix', check: 'sliding', why: 'feet slide while planted', principle: 'solid-posing' })
   if (checks.scores.penetration < 8) changes.push({ kind: 'fix', check: 'penetration', why: 'arms cut into the body', principle: 'solid-posing' })
+  // Named / lead parts that barely move come first: swing their widest joint further at its peak.
+  const swing = (checks.motion ?? []).filter((m) => !m.ok || m.rangeDeg < m.warnDeg).map((m) => partSwingFix(clip, m)).filter((c): c is AnimChange => !!c)
+  changes.unshift(...swing)
+  for (const p of checks.priors ?? []) if (!p.ok && p.fix && p.fix.kind === 'offset' && !changes.some((c) => c.kind === 'offset' && c.joint === (p.fix as { joint: string }).joint)) changes.push(p.fix)
   const ph = phases(clip)
   if (profile && profile.samples > 0) {
     const want = profile.timing.anticipation.median
@@ -194,6 +223,32 @@ export function heuristicAnimCritique(clip: AnimClip, checks: AnimCheckReport, p
   })
 }
 
+// A concrete edit for a part that barely moves: scale its widest joint's pose at its peak toward the
+// part's target swing; a part that does not move at all gets a plain forward swing at the clip's peak.
+const DEFAULT_SWING: Partial<Record<string, { joint: R15Joint; rot: [number, number, number] }>> = {
+  RightLeg: { joint: 'RightHip', rot: [35, 0, 0] },
+  LeftLeg: { joint: 'LeftHip', rot: [35, 0, 0] },
+  leg: { joint: 'RightHip', rot: [35, 0, 0] },
+  RightArm: { joint: 'RightShoulder', rot: [50, 0, 0] },
+  LeftArm: { joint: 'LeftShoulder', rot: [50, 0, 0] },
+  arm: { joint: 'RightShoulder', rot: [50, 0, 0] },
+  head: { joint: 'Neck', rot: [-20, 0, 0] },
+  torso: { joint: 'Waist', rot: [-10, 15, 0] }
+}
+
+export function partSwingFix(clip: AnimClip, m: PartMotion): AnimChange | null {
+  const view = r15View(clip)
+  const why = `[must-fix] the ${m.label} swings ${m.rangeDeg.toFixed(0)}°; it needs about ${m.warnDeg}°`
+  if (m.joint && m.rangeDeg >= 3) {
+    const at = peakOf(view, m.joint)
+    const rot = amplifyAt(view, m.joint, at, Math.max(1.3, Math.min(2.5, m.warnDeg / Math.max(1, m.rangeDeg))))
+    if (rot && Math.hypot(...rot) > 3) return { kind: 'offset', joint: m.joint, at, rot: rot.map((x) => Math.max(-40, Math.min(40, x))) as [number, number, number], why, principle: 'exaggeration' }
+  }
+  const d = DEFAULT_SWING[m.part]
+  if (!d) return null
+  return { kind: 'offset', joint: d.joint, at: Math.round(phases(view).peakTime * 100) / 100 || Math.round(view.duration * 50) / 100, rot: d.rot, why, principle: 'exaggeration' }
+}
+
 // ------------------------------------------------------------------ loop
 
 export interface AnimRefineIteration {
@@ -202,13 +257,17 @@ export interface AnimRefineIteration {
   frames: string[]
   times: number[]
   critique: AnimCritique
+  // The critic's changes after this round that were not applied (invalid, or refused by the guard).
   rejected: { change: unknown; reason: string }[]
+  // How the round ranks (quality.ts) and whether it was kept as a step forward.
+  score: AnimIterationScore
 }
 
 export interface AnimRefineDeps {
   render(clip: AnimClip, iteration: number): Promise<{ frames: string[]; times: number[] }>
-  critique(clip: AnimClip, frames: string[], times: number[], iteration: number, previous: AnimCritique | null): Promise<AnimCritique>
-  onIteration?(it: AnimRefineIteration): void | Promise<void>
+  critique(clip: AnimClip, frames: string[], times: number[], iteration: number, previous: AnimCritique | null, best: AnimRefineIteration | null): Promise<AnimCritique>
+  // best: the best round so far (after this one is ranked).
+  onIteration?(it: AnimRefineIteration, best: AnimRefineIteration): void | Promise<void>
   cancelled?(): boolean
   // Lab gating (services/gating): true after a critique below the threshold with rounds left ends
   // the loop now (score plateau).
@@ -216,16 +275,45 @@ export interface AnimRefineDeps {
   // Replaces applying the critic's key changes: remixed clips re-plan their edit ops from the critique
   // and re-apply them to the base clip (remix.ts). applied 0 ends the loop ("no-changes").
   adjust?(clip: AnimClip, critique: AnimCritique, iteration: number): Promise<{ clip: AnimClip; applied: number; rejected?: { change: unknown; reason: string }[] }>
+  // Ranks a round (quality.ts iterationScore). Default: the critic's score, the checks as the code side.
+  score?(clip: AnimClip, critique: AnimCritique): AnimIterationScore | Promise<AnimIterationScore>
+  // Applies the critic's changes (default applyAnimChanges; the service guards them, quality.ts).
+  apply?(clip: AnimClip, changes: AnimChange[]): { clip: AnimClip; applied: AnimChange[]; rejected: { change: unknown; reason: string }[] }
 }
 
-export type AnimStopReason = 'threshold' | 'max-iterations' | 'no-changes' | 'cancelled' | 'plateau'
+export type AnimStopReason = 'threshold' | 'max-iterations' | 'no-changes' | 'cancelled' | 'plateau' | 'regressed'
 
+// Without a scorer: the critic's score, the checks' overall as the code side.
+export function defaultIterationScore(critique: AnimCritique): AnimIterationScore {
+  const objective = critique.checks?.overall ?? critique.overall
+  return { quality: critique.overall, critic: critique.overall, objective, parts: { checks: objective, intent: 8, priors: 7, smooth: 10 }, failures: missingParts(critique.checks?.motion).length, criticWeight: 1, accepted: true }
+}
+
+// Rounds in a row that may regress before the loop gives up (each retry starts from the best with the
+// critic's changes at half the size of the last try).
+export const MAX_BACKTRACK = 3
+
+const clipKey = (c: AnimClip) => JSON.stringify([c.duration, c.tracks])
+
+// Keep-best refinement: every round is scored (critic + code metrics) and judged against the best
+// (quality.ts judgeRound). A round that regresses is kept in the history as not kept and the next round
+// starts from the best again, first with the best round's changes at half size (backtracking), then
+// with the rejected round's own suggestions applied to the best. A round close to the best is a step to
+// continue from without becoming the best. The result is always the best round, never the last.
 export async function animRefineLoop(initial: AnimClip, deps: AnimRefineDeps, opts: { maxIterations?: number; threshold?: number } = {}): Promise<{ best: AnimRefineIteration; iterations: AnimRefineIteration[]; stop: AnimStopReason }> {
   const max = Math.max(1, Math.min(10, Math.floor(opts.maxIterations ?? ANIM_DEFAULT_MAX_ITERATIONS)))
   const threshold = opts.threshold ?? ANIM_DEFAULT_THRESHOLD
   const iterations: AnimRefineIteration[] = []
+  const apply = deps.apply ?? ((clip: AnimClip, changes: AnimChange[]) => applyAnimChanges(clip, changes))
   let clip = initial
   let previous: AnimCritique | null = null
+  let best: AnimRefineIteration | null = null
+  // The highest code score of the kept rounds (judgeRound).
+  let anchor = -Infinity
+  // The widest lead-limb swing of the kept rounds.
+  let leadAnchor: number | undefined
+  let backtracks = 0
+  const seen = new Set<string>([clipKey(initial)])
   let stop: AnimStopReason = 'max-iterations'
   for (let n = 1; n <= max; n++) {
     if (deps.cancelled?.()) {
@@ -233,43 +321,68 @@ export async function animRefineLoop(initial: AnimClip, deps: AnimRefineDeps, op
       break
     }
     const { frames, times } = await deps.render(clip, n)
-    const critique = await deps.critique(clip, frames, times, n, previous)
-    const it: AnimRefineIteration = { n, clip, frames, times, critique, rejected: [] }
+    const critique = await deps.critique(clip, frames, times, n, previous, best)
+    const score = { ...(deps.score ? await deps.score(clip, critique) : defaultIterationScore(critique)) }
+    const it: AnimRefineIteration = { n, clip, frames, times, critique, rejected: [], score }
+    let promote = !best
+    if (best) {
+      const v = judgeRound(best.score, score, anchor, leadAnchor)
+      score.accepted = v.accepted
+      promote = v.promote
+      if (v.reason) score.regressed = v.reason
+    }
     iterations.push(it)
+    if (score.accepted) {
+      anchor = Math.max(anchor, score.objective)
+      if (score.lead !== undefined) leadAnchor = Math.max(leadAnchor ?? 0, score.lead)
+    }
+    if (promote) best = it
+    const top = best!
     previous = critique
-    const passed = critique.overall >= threshold && !critique.mustFix?.length
+    backtracks = score.accepted ? 0 : backtracks + 1
+    const passed = score.accepted && critique.overall >= threshold && !critique.mustFix?.length
     if (passed || n === max) {
-      await deps.onIteration?.(it)
+      await deps.onIteration?.(it, top)
       stop = passed ? 'threshold' : 'max-iterations'
       break
     }
+    if (backtracks >= MAX_BACKTRACK) {
+      await deps.onIteration?.(it, top)
+      stop = 'regressed'
+      break
+    }
     if (await deps.shouldStop?.(critique, n, max - n)) {
-      await deps.onIteration?.(it)
+      await deps.onIteration?.(it, top)
       stop = 'plateau'
       break
     }
+    // Where the next round starts: this round when it was accepted, else the best.
+    const from = score.accepted ? it : top
     if (deps.adjust) {
-      const a = await deps.adjust(clip, critique, n)
+      let a = await deps.adjust(from.clip, critique, n)
+      if (!score.accepted && (!a.applied || seen.has(clipKey(a.clip)))) a = await deps.adjust(from.clip, from.critique, n)
       it.rejected = a.rejected ?? []
-      await deps.onIteration?.(it)
-      if (!a.applied) {
-        stop = 'no-changes'
+      await deps.onIteration?.(it, top)
+      if (!a.applied || seen.has(clipKey(a.clip))) {
+        stop = score.accepted ? 'no-changes' : 'regressed'
         break
       }
       clip = a.clip
+      seen.add(clipKey(clip))
       continue
     }
-    const r = applyAnimChanges(clip, critique.changes)
+    let r = score.accepted ? apply(from.clip, critique.changes) : apply(from.clip, dampChanges(from.critique.changes, 0.5 ** backtracks))
+    if (!score.accepted && (!r.applied.length || seen.has(clipKey(r.clip)))) r = apply(from.clip, critique.changes)
     it.rejected = r.rejected
-    await deps.onIteration?.(it)
-    if (!r.applied.length) {
-      stop = 'no-changes'
+    await deps.onIteration?.(it, top)
+    if (!r.applied.length || seen.has(clipKey(r.clip))) {
+      stop = score.accepted ? 'no-changes' : 'regressed'
       break
     }
-    clip = { ...r.clip, patches: [...(clip.patches ?? []), ...r.applied] }
+    clip = { ...r.clip, patches: [...(from.clip.patches ?? []), ...r.applied] }
+    seen.add(clipKey(clip))
   }
-  if (!iterations.length) throw new Error('refinement was cancelled before the first render')
-  const best = iterations.reduce((a, b) => betterIteration(a, b), iterations[0])
+  if (!iterations.length || !best) throw new Error('refinement was cancelled before the first render')
   return { best, iterations, stop }
 }
 

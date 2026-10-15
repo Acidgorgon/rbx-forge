@@ -7,7 +7,7 @@ import { Icon } from '../../components/Icons'
 
 // Library files as data URLs, cached per kind + id + which + update time.
 const cache = new Map<string, string | null>()
-export function useThumbFile(kind: 'ref' | 'base' | 'thumb', id: string | undefined, which: 'image' | 's256' | 's160' = 'image', stamp = 0): string | null {
+export function useThumbFile(kind: 'ref' | 'base' | 'thumb' | 'ui', id: string | undefined, which: 'image' | 's256' | 's160' = 'image', stamp = 0): string | null {
   const key = id ? `${kind}/${id}/${which}@${stamp}` : ''
   const [url, setUrl] = useState<string | null>(key ? (cache.get(key) ?? null) : null)
   useEffect(() => {

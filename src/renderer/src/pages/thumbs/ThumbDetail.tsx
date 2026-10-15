@@ -95,6 +95,9 @@ export function ThumbDetail({ thumb, status, busy, onClose, onRefined }: { thumb
         <button className="btn small" onClick={() => void run('critique', () => h.thumbCritique(thumb.id))} disabled={!!working}>
           {working === 'critique' ? <span className="spinner" aria-hidden /> : <Icon name="eye" size={11} />} Critique
         </button>
+        <button className="btn small" onClick={() => void run('use as reference', () => h.thumbUseAsRef(thumb.id), 'Added to your references: put it in a style profile')} disabled={!!working} title="Add this variation to your references, so a style profile can carry its look into later thumbnails">
+          <Icon name="pin" size={11} /> Use as reference
+        </button>
       </div>
 
       {flags.length > 0 && (

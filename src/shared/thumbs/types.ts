@@ -161,6 +161,8 @@ export interface Thumb {
   parentId?: string
   round: number
   prompt: string
+  // The builder sections the prompt was made from (refine reuses them).
+  sections?: PromptSection[]
   model: string
   // What OpenAI was asked for (the image is then cropped / resized to 1920x1080).
   genSize: string
@@ -219,7 +221,7 @@ export interface ThumbStatus {
   perImageUsd: number
   spentTodayUsd: number
   dailyCapUsd: number
-  counts: { refs: number; profiles: number; bases: number; thumbs: number }
+  counts: { refs: number; profiles: number; bases: number; thumbs: number; ui?: number }
   settings: ThumbSettings
   models: string[]
   universeId?: number
@@ -229,6 +231,9 @@ export interface ThumbStatus {
 
 export interface ThumbGenerateInput {
   brief: string
+  // Prompt builder sections the user reviewed / edited (builder.ts). Without them the rule-based
+  // builder fills them from the brief, the style profile and the learned taste.
+  sections?: PromptSection[]
   profileId?: string
   baseIds?: string[]
   n?: number
@@ -297,5 +302,183 @@ export interface ThumbsApi {
   // thumbnails. Only after the user confirmed in the UI.
   thumbSetExperience(id: string, opts: { universeId: number; languageCode?: string }): Promise<Thumb>
   thumbTaste(): Promise<TasteView>
-  thumbFile(kind: 'ref' | 'base' | 'thumb', id: string, which?: 'image' | 's256' | 's160'): Promise<string | null>
+  thumbFile(kind: 'ref' | 'base' | 'thumb' | 'ui', id: string, which?: 'image' | 's256' | 's160'): Promise<string | null>
+  // A variation the user likes becomes a style reference (own game: no copy concern).
+  thumbUseAsRef(id: string): Promise<ThumbRef>
+  // Prompt builder: a short ask -> editable sections (rules; "model" expands them with the Labs model).
+  thumbBuildPrompt(input: BuildPromptInput): Promise<BuiltPrompt>
+  // UI art: buttons, panels, icons, icon sets, HUD mockups (transparent where it makes sense).
+  thumbUiEstimate(input: UiGenerateInput): Promise<ThumbEstimate>
+  thumbUiGenerate(input: UiGenerateInput): Promise<UiBatchResult>
+  thumbUiList(): Promise<UiAsset[]>
+  thumbUiRate(id: string, rating: 'up' | 'down' | null): Promise<UiAsset>
+  thumbUiKeep(id: string, keep: boolean): Promise<UiAsset>
+  thumbUiPin(id: string, pinned: boolean): Promise<UiAsset>
+  thumbUiCritique(id: string): Promise<{ id: string; asset: UiAsset }>
+  thumbUiDelete(id: string): Promise<boolean>
+  thumbUiKit(): Promise<UiKit>
+  thumbUiExport(id: string): Promise<{ path: string; luau: string }>
+  thumbUiUpload(id: string): Promise<UiAsset>
+}
+
+// ------------------------------------------------------------------ prompt builder
+
+export type UiAssetKind = 'button' | 'panel' | 'icon' | 'icon-set' | 'hud'
+export type PromptMode = 'thumbnail' | UiAssetKind
+export type SectionKey = 'subject' | 'composition' | 'camera' | 'lighting' | 'palette' | 'style' | 'text' | 'roblox' | 'output' | 'avoid'
+
+export interface PromptSection {
+  key: SectionKey
+  label: string
+  text: string
+  // Where it came from: the rules, the model, the style kit / profile, or the user's edit.
+  source?: 'rules' | 'model' | 'kit' | 'user'
+}
+
+export interface BuildPromptInput {
+  ask: string
+  mode: PromptMode
+  profileId?: string
+  baseIds?: string[]
+  // Icon set: the icons to draw (else read from the ask).
+  names?: string[]
+  // Ask the Labs model to expand the rule draft (falls back to the rules when there is none).
+  model?: boolean
+}
+
+export interface BuiltPrompt {
+  mode: PromptMode
+  sections: PromptSection[]
+  // The final prompt as it would be sent (sections + the fixed honesty / copy lines).
+  prompt: string
+  notes: string[]
+  warnings: string[]
+  by: 'rules' | 'model'
+  // Icon set names read from the ask.
+  names?: string[]
+}
+
+// ------------------------------------------------------------------ UI art
+
+export interface UiLook {
+  stroke: string
+  corners: string
+  shading: string
+  typography: string
+}
+
+export interface UiAssetStats {
+  width: number
+  height: number
+  // Share of visible (alpha > 128) pixels.
+  coverage: number
+  // Colours of the visible pixels only.
+  palette: { hex: string; share: number }[]
+  // Measured look: outline darker / lighter than the fill, corner radius (fraction of the short
+  // side), flat fill (0..1), lit from the top.
+  outline: 'dark' | 'light' | 'none'
+  corner: number
+  flatness: number
+  topLit: boolean
+}
+
+export interface UiSlice {
+  // Roblox ImageLabel.SliceCenter in pixels of the exported image (ScaleType = Slice).
+  x0: number
+  y0: number
+  x1: number
+  y1: number
+}
+
+export interface UiCritique {
+  at: number
+  overall: number
+  summary: string
+  scores: { brief: number; readability: number; consistency: number; clean: number }
+  changes: string[]
+  by: 'critic' | 'code'
+}
+
+export interface UiCheck {
+  id: string
+  label: string
+  score: number
+  note: string
+  fix?: string
+}
+
+export interface UiAsset {
+  id: string
+  batchId: string
+  scope: ThumbScope
+  kind: UiAssetKind
+  name: string
+  ask: string
+  // Icon sets: the set's name and this icon's place in it (0 = the anchor the rest follow).
+  setName?: string
+  setIndex?: number
+  prompt: string
+  sections?: PromptSection[]
+  model: string
+  genSize: string
+  quality: string
+  costUsd: number
+  transparent: boolean
+  // The model returned an opaque background and it was keyed out in code.
+  keyed?: boolean
+  file: string
+  width: number
+  height: number
+  stats: UiAssetStats
+  slice?: UiSlice
+  checks: UiCheck[]
+  critique?: UiCritique
+  look?: UiLook
+  rating?: 'up' | 'down'
+  keep?: boolean
+  // "Use as reference": attached to later UI prompts as an edit reference.
+  pinned?: boolean
+  // Assets that went in as references.
+  refIds: string[]
+  roblox?: { assetId: string; uri: string; uploadedAt: number; moderation?: string }
+  exportedTo?: string
+  createdAt: number
+  updatedAt: number
+}
+
+export interface UiGenerateInput {
+  ask: string
+  kind: UiAssetKind
+  // Candidates per asset (icon set: candidates for the first icon; the rest follow the best one).
+  n?: number
+  quality?: string
+  names?: string[]
+  // Panel shape.
+  shape?: 'square' | 'wide' | 'tall'
+  sections?: PromptSection[]
+  // Attach the learned kit (palette, look, pinned references). Default true.
+  useKit?: boolean
+  scope?: ThumbScope
+  source?: 'page' | 'agent'
+}
+
+export interface UiBatchResult {
+  id: string
+  assets: UiAsset[]
+  bestId?: string
+  // Icon set: the chosen anchor then one asset per remaining name, in order.
+  set?: string[]
+  notes: string[]
+}
+
+export interface UiKit {
+  // Kept / +1 assets it was learned from.
+  samples: number
+  palette: string[]
+  look: UiLook
+  // Pinned assets first, then the most recent kept ones (edit references).
+  refIds: string[]
+  // The lines that go into prompts.
+  lines: string[]
+  avoid: string[]
 }

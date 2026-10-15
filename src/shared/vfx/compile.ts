@@ -243,9 +243,22 @@ export function compileTimeline(base: VfxEffect, ops: RecordedOp[], script: stri
   let anchor: Vec3 | null = null
   let spawns = 0
 
+  // Nodes of the effect the script builds on (a library copy under a composed sequence): when a
+  // spawn takes one of their names, the base node gives way (renamed "<name>Lib"), so a script
+  // never fails because the copy happens to have a layer called "Wave" or "Smoke".
+  const baseIds = new Set(allNodes(roots).map((n) => n.id))
   const addNode = (node: VfxNode, line?: number) => {
     for (const n of allNodes([node])) {
-      if (byName.has(n.name)) throw new ScriptCompileError(`spawn: the name "${n.name}" is already used; pick another name`, line)
+      const prev = byName.get(n.name)
+      if (prev && baseIds.has(prev.id)) {
+        let k = 1
+        let alt = `${prev.name}Lib`
+        while (byName.has(alt)) alt = `${prev.name}Lib${++k}`
+        warnings.push(`the base layer "${prev.name}" is now "${alt}" (the script spawned a rig named "${prev.name}")`)
+        prev.name = alt
+        byName.set(alt, prev)
+        byName.delete(n.name)
+      } else if (prev) throw new ScriptCompileError(`spawn: the name "${n.name}" is already used; pick another name`, line)
       byName.set(n.name, n)
     }
   }

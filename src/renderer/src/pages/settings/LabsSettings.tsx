@@ -1,13 +1,13 @@
 // Settings > Labs: per-task model tiers shared by the VFX Lab, Animation Lab and Ability Composer
 // (stored in the settings store as labs.models). Empty = automatic. Style statistics never use a model.
 import { useEffect, useState } from 'react'
-import { LAB_TIERS, LAB_TIER_INFO, type LabModels, type LabTier } from '@shared/labModels'
+import { LAB_TIERS, LAB_TIER_INFO, smallModelHint, type LabModels, type LabTier } from '@shared/labModels'
 import { useStore } from '../../store'
 import { errorText } from '../../lib/format'
 import { GatingSettings } from '../gating/LabGating'
 
 export function LabsSettings() {
-  const { actions } = useStore()
+  const { state, actions } = useStore()
   const [saved, setSaved] = useState<LabModels | null>(null)
   const [draft, setDraft] = useState<LabModels>({})
 
@@ -38,11 +38,20 @@ export function LabsSettings() {
       </p>
       {LAB_TIERS.map((tier) => {
         const info = LAB_TIER_INFO[tier]
+        // What "auto" resolves to for the default tier is the chat model; the critic's auto is the
+        // provider's flagship (falls back to the chat model when the account has no flagship).
+        const effective = (saved?.[tier] ?? '').trim() || (tier === 'default' ? state.defaultModel?.model : '')
+        const hint = smallModelHint(tier, effective)
         return (
           <div className="set-row" key={tier}>
             <div className="set-text">
               <div className="set-title">{info.label}</div>
               <div className="note">{info.uses}</div>
+              {hint && (
+                <div className="note warn" role="note" data-testid={`labs-small-model-${tier}`}>
+                  {hint}
+                </div>
+              )}
             </div>
             <div className="set-ctl">
               <input

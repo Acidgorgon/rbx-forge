@@ -282,6 +282,7 @@ input[type="checkbox"]:not(.switch) { accent-color: var(--fg-muted); }
 .empty .i { color: var(--fg-faint); }
 .empty .row { justify-content: center; }
 .note { font-size: 11.5px; color: var(--fg-muted); line-height: 1.5; }
+.note.warn { color: var(--warn); }
 .err-text { color: var(--err); font-size: 11.5px; }
 .warn-text { color: var(--warn); font-size: 11.5px; }
 .ok-text { color: var(--ok); }

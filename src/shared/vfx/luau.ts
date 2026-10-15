@@ -248,6 +248,10 @@ function scriptedModule(effect: VfxEffect, p: ModuleParts): string {
     return `\t[${JSON.stringify(s)}] = {\n${mine.map((c) => `\t\t${cueTable(c, p.byId.get(c.target)!, 'dt', Math.max(0, c.at - (c.spawnAt ?? 0)))},`).join('\n')}\n\t},`
   })
   const cueLines = live.map((c) => `\t${cueTable(c, p.byId.get(c.target)!, 'at', c.at)},`)
+  // Cues of the effect the script was built on (a library copy under a composed sequence): the
+  // Timeline module only replays the script, so these run next to it.
+  const base = live.filter((c) => !c.script && !c.spawn)
+  const baseLines = base.map((c) => `\t${cueTable(c, p.byId.get(c.target)!, 'at', c.at)},`)
   const stages = (effect.stages ?? []).map((s) => `{ at = ${fmt(s.at)}, label = ${JSON.stringify(s.label)} }`)
   return `--!nonstrict
 -- ${name}: made with the RBX Forge VFX Lab (scripted timeline).${p.desc ? `\n-- ${p.desc.slice(0, 200)}` : ''}
@@ -280,7 +284,7 @@ ${spawns.join('\n')}
 local CUES = {
 ${cueLines.join('\n')}
 }
-
+${baseLines.length ? `\n-- The base effect's own cues (they play next to the Timeline module).\nlocal BASE_CUES = {\n${baseLines.join('\n')}\n}\n` : ''}
 local function build(): Model
 \tlocal template = script:FindFirstChild(${JSON.stringify(p.template)})
 \tif template then
@@ -316,7 +320,7 @@ function Effect.play(target: any, parent: Instance?, options: { onStage: ((strin
 \tmodel.Parent = parent or workspace
 \tlocal timeline = script:FindFirstChild("Timeline")
 \tif timeline then
-\t\tfx:run(require(timeline) :: any)
+${baseLines.length ? '\t\tfx:runCues(BASE_CUES)\n' : ''}\t\tfx:run(require(timeline) :: any)
 \telse
 \t\tfx:runCues(CUES, Effect.Stages)
 \tend

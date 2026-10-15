@@ -100,6 +100,8 @@ export interface VfxMatch {
   score: number
   kindMatch: boolean
   elementMatch: boolean
+  // A request word is in the effect's name ("hollow purple but red" -> "Hollow Purple").
+  nameMatch: boolean
   why: string[]
 }
 
@@ -137,9 +139,10 @@ export function nearestEffects(request: VfxRequest | string, entries: VfxEntry[]
     const layerWords = new Set(allNodes(e.effect.roots).flatMap((n) => words(n.name)))
     const desc = e.description.toLowerCase()
     const hit: string[] = []
+    let named = 0
     for (const w of req.words) {
       let ws = 0
-      if (nameWords.has(w)) ws += 2
+      if (nameWords.has(w)) (ws += 2), named++
       if (e.tags.includes(w)) ws += 2
       if (layerWords.has(w)) ws += 0.5
       if (desc.includes(w)) ws += 0.5
@@ -147,28 +150,35 @@ export function nearestEffects(request: VfxRequest | string, entries: VfxEntry[]
       s += ws
     }
     if (hit.length) why.push(`words ${hit.slice(0, 4).join(', ')}`)
+    // The effect named by name: "hollow purple" is that effect, whatever its tags say.
+    const ownName = new Set(words(e.name).filter((w) => w.length > 2 && !STOP.has(w)))
+    const nameMatch = named > 0 && (named >= 2 || named >= ownName.size)
+    if (nameMatch) s += 3
     if (s <= 0) continue
     const kindMatch = !req.groups.kind.length || kinds.length > 0
-    if (!kindMatch) s *= 0.35
+    if (!kindMatch && !nameMatch) s *= 0.35
     // Liked effects first; generated ones nobody rated are not the user's own work.
     if (e.rating === 'up') s *= 1.3
     else if (e.kind === 'generated' && e.quality !== 'good') s *= 0.7
     const boost = feedbackBoost(opts.feedback, e.id)
     if (boost !== 1) why.push(boost > 1 ? 'liked remixes' : 'disliked remixes')
     s *= boost
-    out.push({ entry: e, score: Math.round(s * 100) / 100, kindMatch, elementMatch: !req.groups.element.length || elements.length > 0, why })
+    out.push({ entry: e, score: Math.round(s * 100) / 100, kindMatch, elementMatch: !req.groups.element.length || elements.length > 0, nameMatch, why })
   }
   return out.sort((a, b) => b.score - a.score || b.entry.updatedAt - a.entry.updatedAt).slice(0, opts.limit ?? 5)
 }
 
 // Close enough to start from it (remix) instead of drafting from scratch: same kind (when the
-// request names one) and a real overlap beyond that.
+// request names one) and a real overlap beyond that; or the effect named by name ("like Hollow
+// Purple but red") whatever the request's kind words say.
 export const REMIX_MIN_SCORE = 6
 export function remixable(m: VfxMatch | undefined, req: VfxRequest): m is VfxMatch {
   if (!m) return false
+  if (!m.entry.effect || emitterCount(m.entry.effect) <= 0) return false
+  if (m.nameMatch && m.score >= REMIX_MIN_SCORE) return true
   if (req.groups.kind.length && !m.kindMatch) return false
   if (!req.groups.kind.length && !req.groups.element.length) return false
-  return m.score >= REMIX_MIN_SCORE && emitterCount(m.entry.effect!) > 0
+  return m.score >= REMIX_MIN_SCORE
 }
 
 function emitterCount(e: VfxEffect): number {

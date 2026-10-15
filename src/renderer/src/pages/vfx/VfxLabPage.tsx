@@ -585,6 +585,8 @@ export function VfxLabPage() {
   const [iters, setIters] = useState(4)
   // Variations per Make: the critic (or the library-fit checks) keeps one.
   const [variations, setVariations] = usePersisted<number>('vfx.variations', 3)
+  // From scratch: Make never copies or remixes a library effect (the library is a style guide only).
+  const [fromScratch, setFromScratch] = usePersisted<boolean>('vfx.fromScratch', false)
   const [threshold, setThreshold] = useState(7.5)
   const [making, setMaking] = useState(false)
   // single: one burst of layers (draft spec); sequence: multi-stage timeline script with the kit.
@@ -795,14 +797,14 @@ export function VfxLabPage() {
         // Restate first: the confirmed reading of the brief goes into compose (null = cancelled).
         const g = await restate.gate(what)
         if (!g) return
-        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, variations, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
+        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, variations, ...(fromScratch ? { fromScratch: true } : {}), ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
         if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the timeline did not compile')
         await load()
         setSelected(r.entry.id)
         if (r.entry.modelNote) actions.toast({ text: `${r.entry.name}: drafted without a model`, detail: r.entry.modelNote, kind: 'err', ms: 12_000 })
         if (r.warnings.length) actions.toast({ text: `${r.entry.name}: ${r.warnings.length} timeline warning${r.warnings.length === 1 ? '' : 's'}`, detail: r.warnings.slice(0, 2).join(' · '), kind: 'info', ms: 4000 })
       } else {
-        const entry = await h.vfxMake(what, { maxIterations: iters, threshold, variations })
+        const entry = await h.vfxMake(what, { maxIterations: iters, threshold, variations, ...(fromScratch ? { fromScratch: true } : {}) })
         await load()
         setSelected(entry.id)
         if (entry.modelNote) actions.toast({ text: `${entry.name}: drafted without a model`, detail: entry.modelNote, kind: 'err', ms: 12_000 })
@@ -916,6 +918,16 @@ export function VfxLabPage() {
                 sequence
               </button>
             </div>
+            <button
+              type="button"
+              className={`btn small vfx-scratch${fromScratch ? ' on' : ' ghost'}`}
+              aria-pressed={fromScratch}
+              data-testid="vfx-from-scratch"
+              onClick={() => setFromScratch(!fromScratch)}
+              title="From scratch: never copy or remix one of your effects; build new layers and use your library only as a style guide (ranges, textures, palettes, richness)"
+            >
+              from scratch
+            </button>
             <button className="btn primary" disabled={!prompt.trim() || making}>
               {making && !restate.waiting ? <span className="spinner" aria-hidden /> : <Icon name="play" size={11} />} Make
             </button>

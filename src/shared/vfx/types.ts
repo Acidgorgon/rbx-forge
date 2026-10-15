@@ -203,7 +203,7 @@ export interface VfxScriptResult {
   // Saved entry (when the run was saved / composed).
   entry?: VfxEntry
   // vfx_compose: who wrote the script.
-  source?: 'model' | 'draft' | 'example'
+  source?: 'model' | 'draft' | 'example' | 'library'
   // vfx_compose with source 'draft': why the model's script was not used (the actual error).
   modelError?: string
 }
@@ -354,6 +354,9 @@ export interface VfxRefineOptions {
   frames?: number
   // Make / compose: how many variations to make (1-3); the critic (or the code checks) keeps one.
   variations?: number
+  // Make / compose: never copy or remix a library effect (no copy at impact, no remix, no script
+  // reuse); the library is only a style guide (ranges, textures, palettes, richness, notes).
+  fromScratch?: boolean
 }
 
 export interface VfxRefineProgress {

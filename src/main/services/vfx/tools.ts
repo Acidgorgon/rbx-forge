@@ -172,11 +172,12 @@ export function vfxTools(service: VfxService, opts: { chatImage?: (absPath: stri
         script: z.string().max(60000).optional(),
         refine: z.boolean().optional(),
         reference: z.string().max(120).optional().describe('id of a video reference (ref_list / ref_import): "make it like this"; its beats, palette, glow, vision summary and key frames guide the script and the critic scores the match'),
-        variations: z.number().int().min(1).max(3).optional().describe('draft this many scripts (1-3) and keep the one the critic (or the library-fit checks) prefers; default 1')
+        variations: z.number().int().min(1).max(3).optional().describe('draft this many scripts (1-3) and keep the one the critic (or the library-fit checks) prefers; default 1'),
+        fromScratch: z.boolean().optional().describe("never copy or remix one of the user's library effects (no library copy, no reuse of their scripts); build every layer from kit rigs and use the library only as a style guide (ranges, textures, palettes, richness). Default false: a request naming a library effect (or close to one) builds on it, a scripted one through its script")
       },
-      handler: (args: { request: string; script?: string; refine?: boolean; reference?: string; variations?: number }) =>
+      handler: (args: { request: string; script?: string; refine?: boolean; reference?: string; variations?: number; fromScratch?: boolean }) =>
         guard(async () => {
-          const r = await service.compose(args.request, { script: args.script, refine: args.refine, reference: args.reference, variations: args.variations })
+          const r = await service.compose(args.request, { script: args.script, refine: args.refine, reference: args.reference, variations: args.variations, ...(args.fromScratch ? { fromScratch: true } : {}) })
           return scriptReport(r, args.script) + (r.ok && r.refined ? '\nrefining in the background (watch the VFX Lab, or call vfx_refine to wait for it)' : '')
         })
     },

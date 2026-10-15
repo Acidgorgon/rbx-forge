@@ -143,6 +143,64 @@ export function remixEffect(base: VfxEntry, req: VfxRequest, name: string): Remi
   return { effect, base, notes }
 }
 
+// ------------------------------------------------------------------ scripted effects
+
+// The hue turn (degrees) that brings the effect's main hue onto `hue`; 0 when it is already within
+// 18 degrees or the effect has no saturated colour.
+export function hueDelta(effect: VfxEffect, hue: number): number {
+  const from = mainHue(effect)
+  if (from === null) return 0
+  const delta = (((hue - from) % 360) + 540) % 360 - 180
+  return Math.abs(delta) < 18 ? 0 : Math.round(delta)
+}
+
+// One colour turned by `delta` degrees (whites, greys and blacks keep their colour).
+export function turnRgb(c: Rgb, delta: number): Rgb {
+  const [h, s, v] = rgbToHsv(c)
+  if (s < SATURATED * 0.6) return c
+  return hsvToRgb([(h + delta + 360) % 360, s, v])
+}
+
+const NUM = String.raw`(-?\d+(?:\.\d+)?)`
+const COLOR3 = new RegExp(String.raw`Color3\.(fromRGB|new)\(\s*${NUM}\s*,\s*${NUM}\s*,\s*${NUM}\s*\)`, 'g')
+const COLOR3_HEX = /Color3\.fromHex\(\s*(["'])#?([0-9a-fA-F]{6})\1\s*\)/g
+const SIZE_OPT = new RegExp(String.raw`\b(size|width|radius)(\s*=\s*)${NUM}`, 'g')
+
+// A timeline script's colour literals (Color3.fromRGB / Color3.new / Color3.fromHex) turned by
+// `delta` degrees: the script stays the source of the look, so a re-run keeps the new colours.
+export function recolorScript(script: string, delta: number): { script: string; changed: number } {
+  if (!delta) return { script, changed: 0 }
+  let changed = 0
+  const r3 = (x: number) => Math.round(x * 1000) / 1000
+  let out = script.replace(COLOR3, (all, kind: string, a: string, b: string, c: string) => {
+    const k = kind === 'fromRGB' ? 255 : 1
+    const rgb = [Number(a), Number(b), Number(c)].map((x) => Math.max(0, Math.min(1, x / k))) as Rgb
+    const t = turnRgb(rgb, delta)
+    if (t.every((x, i) => Math.abs(x - rgb[i]) < 1e-3)) return all
+    changed++
+    return kind === 'fromRGB' ? `Color3.fromRGB(${t.map((x) => Math.round(x * 255)).join(', ')})` : `Color3.new(${t.map(r3).join(', ')})`
+  })
+  out = out.replace(COLOR3_HEX, (all, q: string, h: string) => {
+    const rgb = fromHex(`#${h}`)
+    const t = turnRgb(rgb, delta)
+    if (t.every((x, i) => Math.abs(x - rgb[i]) < 1e-3)) return all
+    changed++
+    return `Color3.fromHex(${q}#${t.map((x) => Math.round(x * 255).toString(16).padStart(2, '0')).join('')}${q})`
+  })
+  return { script: out, changed }
+}
+
+// A timeline script's spawn sizes (size / width / radius options) scaled by k.
+export function rescaleScript(script: string, k: number): { script: string; changed: number } {
+  if (Math.abs(k - 1) < 1e-3) return { script, changed: 0 }
+  let changed = 0
+  const out = script.replace(SIZE_OPT, (_all, key: string, eq: string, v: string) => {
+    changed++
+    return `${key}${eq}${Math.round(Number(v) * k * 100) / 100}`
+  })
+  return { script: out, changed }
+}
+
 export function hexHue(h: string): number {
   return rgbToHsv(fromHex(h))[0]
 }

@@ -299,7 +299,10 @@ local function setParent(inst, parent)
 	if signal then
 		signal:Fire()
 	end
-	fireIfAny(inst, "Changed", "Parent")
+	-- ValueBase.Changed fires only for Value (with the new value), as in Roblox.
+	if not isA(d.ClassName, "ValueBase") then
+		fireIfAny(inst, "Changed", "Parent")
+	end
 end
 
 local function firstChild(inst, name: string)
@@ -363,7 +366,7 @@ InstanceMT.__newindex = function(self, key, value)
 	end
 	if key == "Value" and isA(d.ClassName, "ValueBase") then
 		fireIfAny(self, "Changed", value)
-	else
+	elseif not isA(d.ClassName, "ValueBase") then
 		fireIfAny(self, "Changed", key)
 	end
 end

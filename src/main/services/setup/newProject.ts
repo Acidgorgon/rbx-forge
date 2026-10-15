@@ -200,15 +200,6 @@ export function githubTemplateFetcher(options: GithubFetcherOptions = {}): Templ
   }
 }
 
-// Copies a local folder (tests, or a template kept on disk).
-export function localTemplateFetcher(source: string, fs: { cp: (from: string, to: string) => Promise<void> }): TemplateFetcher {
-  return async (dest, report) => {
-    report(`Copying ${source}`)
-    await fs.cp(source, dest)
-    return 'local'
-  }
-}
-
 // An empty Rojo project, the same shape `rojo init` makes, plus a rokit.toml pinning rojo.
 export function emptyProjectFiles(name: string, rojoVersion = '7.7.0'): Record<string, string> {
   const project = {

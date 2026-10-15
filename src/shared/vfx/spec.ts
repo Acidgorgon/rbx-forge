@@ -176,6 +176,28 @@ function newId(prefix: string): string {
   return `${prefix}-${idCounter.toString(36)}`
 }
 
+// A short title for a request, for names when no model named the effect: the first few words up to
+// the first connector ("quick dash forward with a wind streak trail ..." -> "DashForward"), filler
+// words dropped, at most three words.
+const TITLE_SKIP = new Set(['make', 'me', 'create', 'please', 'a', 'an', 'the', 'some', 'effect', 'effects', 'vfx', 'quick', 'simple', 'cool', 'nice', 'small', 'little', 'big', 'very', 'really', 'kind', 'sort', 'like', 'my', 'new'])
+const TITLE_STOP = new Set(['with', 'and', 'that', 'which', 'at', 'to', 'for', 'of', 'on', 'in', 'into', 'from', 'when', 'where', 'while', 'then', 'plus', 'as', 'by', 'after', 'before', 'but', 'or'])
+
+export function shortTitle(prompt: string, fallback = 'Effect'): string {
+  const words = String(prompt ?? '').toLowerCase().split(/[^a-z0-9]+/).filter(Boolean)
+  const picked: string[] = []
+  for (const w of words) {
+    if (TITLE_STOP.has(w)) {
+      if (picked.length) break
+      continue
+    }
+    if (TITLE_SKIP.has(w)) continue
+    picked.push(w)
+    if (picked.length === 3) break
+  }
+  const name = safeName(picked.join(' '))
+  return picked.length && name !== 'Effect' ? name.slice(0, 24) : fallback
+}
+
 export function safeName(name: string): string {
   const s = name.replace(/[^A-Za-z0-9]+(.)?/g, (_, c: string | undefined) => (c ? c.toUpperCase() : '')).replace(/^[^A-Za-z]+/, '')
   return (s.charAt(0).toUpperCase() + s.slice(1)).slice(0, 40) || 'Effect'
@@ -302,8 +324,12 @@ export function editProp(effect: VfxEffect, nodeId: string, propName: string, va
 }
 
 // Effect -> compact JSON-able description (non-default props only), for prompts and the agent.
-export function compactEffect(effect: VfxEffect): Record<string, unknown> {
+// keys: layers whose name repeats in the effect (imported packs name layers "1SP" over and over)
+// are listed by node id, with the name as `label`, so changes can point at one of them.
+export function compactEffect(effect: VfxEffect, opts: { keys?: boolean } = {}): Record<string, unknown> {
   const layers: Record<string, unknown>[] = []
+  const nameCount = new Map<string, number>()
+  if (opts.keys) for (const n of allNodes(effect.roots)) nameCount.set(n.name, (nameCount.get(n.name) ?? 0) + 1)
   for (const n of allNodes(effect.roots)) {
     // Scripted effects: visible kit parts (orb spheres, shockwave shells) are layers too.
     if (!LAYER_CLASSES.has(n.className) && !(n.kit === 'rig' && n.className === 'Part' && Number(n.props.Transparency ?? 0) < 1)) continue
@@ -315,7 +341,8 @@ export function compactEffect(effect: VfxEffect): Record<string, unknown> {
       if (spec.default !== undefined && JSON.stringify(spec.default) === JSON.stringify(v)) continue
       props[k] = compactValue(spec.kind, v)
     }
-    const layer: Record<string, unknown> = { name: n.name, class: n.className, props }
+    const dup = opts.keys && (nameCount.get(n.name) ?? 0) > 1
+    const layer: Record<string, unknown> = dup ? { name: n.id, label: n.name, class: n.className, props } : { name: n.name, class: n.className, props }
     const emits = effect.cues.filter((c) => c.target === n.id && c.action === 'emit').map((c) => ({ at: c.at, count: c.count }))
     if (emits.length) layer.emit = emits
     const en = effect.cues.filter((c) => c.target === n.id && (c.action === 'enable' || c.action === 'disable'))

@@ -2,7 +2,7 @@
 // find and parse the diff and apply it to file text. The guest never writes; the host's write path
 // (agent/group/patches.ts) applies it when the user clicks Apply. Pure.
 
-import type { PatchFile } from '../groupTypes.ts'
+import type { PatchFile } from './types.ts'
 
 export interface Hunk {
   oldStart: number

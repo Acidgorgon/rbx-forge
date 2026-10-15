@@ -175,7 +175,6 @@ HarnessApi (IPC `harness:<name>`):
 ```ts
 startOrchestration(chatId: string, text: string, choice?: ModelChoice): Promise<BoardView>  // or via sendChat when auto mode picks team
 getOrchestrations(): Promise<BoardView[]>
-getOrchestration(runId: string): Promise<BoardView | null>
 getTaskTranscript(runId: string, taskId: string): Promise<ChatMessage[]>   // on demand only
 cancelOrchestration(runId: string): Promise<void>
 cancelOrchestrationTask(runId: string, taskId: string): Promise<void>

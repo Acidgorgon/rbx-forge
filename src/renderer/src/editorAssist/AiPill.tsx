@@ -5,6 +5,7 @@ import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { setEditorAssist, useEditorAssist } from './state'
 import { completionNote, onCompletionNote } from './inline'
+import { showSettingsSection } from '../pages/settings/settingsNav'
 
 export function AiCompletionsPill() {
   const { state, actions } = useStore()
@@ -21,7 +22,7 @@ export function AiCompletionsPill() {
   const click = () => {
     if (!ready) {
       actions.openPage('settings')
-      setTimeout(() => document.getElementById('set-providers')?.scrollIntoView({ block: 'start' }), 80)
+      showSettingsSection('providers')
       return
     }
     void setEditorAssist({ aiCompletions: !on }).catch((e) => actions.toast({ text: 'Could not change AI completions', detail: (e as Error).message, kind: 'err' }))

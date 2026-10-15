@@ -14,7 +14,7 @@ import {
   type RestateSettings,
   type Restatement
 } from '../../shared/restate/types.ts'
-import type { RestateBriefResult, RestateConfirmInput, RestateConfirmResult } from '../../shared/restateTypes.ts'
+import type { RestateBriefResult, RestateConfirmInput, RestateConfirmResult } from '../../shared/restate/api.ts'
 
 export const CORRECTIONS_SETTING = 'restate.corrections'
 const MAX_CORRECTIONS = 20

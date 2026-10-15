@@ -30,18 +30,6 @@ export function ago(t?: number | string | null): string {
   return new Date(ms).toLocaleDateString()
 }
 
-// Compact age for narrow rows: "now", "5m", "3h", "2d", "1w".
-export function ageShort(t?: number | string | null): string {
-  if (t === undefined || t === null) return ''
-  const ms = typeof t === 'string' ? Date.parse(t) : t
-  const s = Math.max(0, Math.round((Date.now() - ms) / 1000))
-  if (s < 60) return 'now'
-  if (s < 3600) return `${Math.round(s / 60)}m`
-  if (s < 86400) return `${Math.round(s / 3600)}h`
-  if (s < 604800) return `${Math.round(s / 86400)}d`
-  return `${Math.round(s / 604800)}w`
-}
-
 export function fmtTokens(n: number | undefined | null): string {
   if (!n) return '0'
   if (n < 1000) return String(n)
@@ -61,11 +49,6 @@ export function fmtNum(n: number | null | undefined, digits = 0): string {
   if (abs >= 1_000_000) return `${(n / 1_000_000).toFixed(abs >= 10_000_000 ? 1 : 2)}M`
   if (abs >= 10_000) return `${(n / 1000).toFixed(abs >= 100_000 ? 0 : 1)}k`
   return n.toLocaleString(undefined, { maximumFractionDigits: digits })
-}
-
-export function fmtPct(n: number | null | undefined, digits = 1): string {
-  if (n === null || n === undefined || !Number.isFinite(n)) return '—'
-  return `${(n * 100).toFixed(digits)}%`
 }
 
 export function fmtDuration(ms: number): string {

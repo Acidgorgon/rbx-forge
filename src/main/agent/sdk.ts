@@ -7,6 +7,8 @@ import type { ChatMessage } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import { bundledClaudeExecutable } from '../services/sdkBinary.ts'
 import { extractImageMarkers, imageMarker } from './chatImages.ts'
+import { classifyAuthError, isAuthError } from '../accounts/authErrors.ts'
+import { modelLabel } from '../../shared/modelResolve.ts'
 
 export const DEFAULT_MODEL = 'claude-opus-5-5'
 export const STUDIO_SERVER = 'studio'
@@ -153,7 +155,8 @@ export class SubagentChips {
 
 // Maps one SDK message to zero or more ChatMessages. Subagent traffic (parent_tool_use_id set)
 // only updates that subagent's chip (`subs`); without `subs` it is skipped.
-export function toChatMessages(m: SDKMessage, agentId: string, subs?: SubagentChips): ChatMessage[] {
+// opts.model: the model the turn ran on (named when the account cannot use it).
+export function toChatMessages(m: SDKMessage, agentId: string, subs?: SubagentChips, opts: { model?: string } = {}): ChatMessage[] {
   if (m.type === 'assistant') {
     if (m.parent_tool_use_id) {
       const calls = (m.message.content as any[]).filter((b) => b?.type === 'tool_use').length
@@ -161,7 +164,7 @@ export function toChatMessages(m: SDKMessage, agentId: string, subs?: SubagentCh
       return chip ? [chip] : []
     }
     const out: ChatMessage[] = []
-    if (m.error) out.push(msg(agentId, 'system', errorText(m.error)))
+    if (m.error) out.push(msg(agentId, 'system', errorText(m.error, m.message?.content as unknown, opts.model)))
     const text: string[] = []
     for (const block of m.message.content as any[]) {
       if (block.type === 'text' && block.text?.trim()) text.push(block.text)
@@ -198,6 +201,8 @@ export function toChatMessages(m: SDKMessage, agentId: string, subs?: SubagentCh
     const detail = m.subtype === 'success' ? m.result : m.errors?.join('; ') || m.subtype
     // The assistant message already carried a friendly auth error; don't repeat the raw one.
     if (isAuthError(String(detail ?? ''))) return []
+    // A 403 on this model without the CLI's auth wording: say so instead of the raw error.
+    if (classifyAuthError(String(detail ?? ''), (m as { api_error_status?: unknown }).api_error_status) === 'rejected') return [msg(agentId, 'system', modelRejectedHelp(opts.model))]
     return [msg(agentId, 'system', `Error: ${detail}`)]
   }
   if (m.type === 'auth_status' && m.error) return [msg(agentId, 'system', `Auth: ${m.error}`)]
@@ -206,14 +211,35 @@ export function toChatMessages(m: SDKMessage, agentId: string, subs?: SubagentCh
 
 export const AUTH_HELP = 'Claude sign-in failed or expired. Open Settings > Accounts and click Sign in with Claude (or use an API key there).'
 
-export function isAuthError(text: string): boolean {
-  return /Failed to authenticate|OAuth session|authentication_failed|invalid x-api-key/i.test(text)
+export { isAuthError }
+
+// A 403 on one model (classifyAuthError 'rejected'): the account cannot use it, the sign-in is fine.
+export function modelRejectedHelp(model?: string): string {
+  const name = model?.trim() ? (/^claude-/.test(model.trim()) ? `${modelLabel(model.trim())} (${model.trim()})` : model.trim()) : 'this model'
+  return `Your account can't use ${name}. Pick another model in the model menu.`
 }
 
-function errorText(code: string): string {
+// The chat message for an Anthropic auth-shaped error, or null when it is not one: a per-model
+// 403 names the model; a real auth failure (401, expired / revoked sign-in) gets the sign-in help.
+export function authHelpFor(text: string, model?: string, status?: unknown): string | null {
+  const kind = classifyAuthError(text, status)
+  if (kind === 'rejected') return modelRejectedHelp(model)
+  if (kind === 'auth' && isAuthError(text)) return AUTH_HELP
+  return null
+}
+
+// Both texts above, for "already shown" checks.
+export function isAuthHelp(text: string): boolean {
+  return text === AUTH_HELP || /^Your account can't use .+\. Pick another model in the model menu\.$/.test(text)
+}
+
+// content: the assistant message's blocks (the CLI puts the API error text there).
+function errorText(code: string, content?: unknown, model?: string): string {
   switch (code) {
-    case 'authentication_failed':
-      return AUTH_HELP
+    case 'authentication_failed': {
+      const text = Array.isArray(content) ? content.map((c: any) => (c?.type === 'text' ? String(c.text ?? '') : '')).join(' ') : ''
+      return classifyAuthError(text) === 'rejected' ? modelRejectedHelp(model) : AUTH_HELP
+    }
     case 'billing_error':
       return 'Billing error on the Anthropic account.'
     case 'rate_limit':

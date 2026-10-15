@@ -17,6 +17,8 @@
     "start": "electron-vite preview",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "test": "node --test --experimental-strip-types test/*.test.ts",
+    "eval:anim": "node --experimental-strip-types test/animEval.ts",
+    "eval:vfx": "node --experimental-strip-types --no-warnings test/vfxEval/run.ts",
     "test:app": "electron-vite build && xvfb-run -a -s \"-screen 0 1920x1080x24\" node --experimental-strip-types test/e2e-app/run.ts",
     "sdk-binaries": "node build/sdk-binaries.mjs",
     "rokit-binaries": "node build/rokit-binaries.mjs",

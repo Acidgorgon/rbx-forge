@@ -816,7 +816,7 @@ Operations (params are clamped to the ranges):
 {"op":"transplant","clip":"<id>","part":"..."}  take that body part's motion from another clip
 Use as few ops as the request needs (often 1-3); an empty list keeps the clip as is. Answer with JSON only: {"ops":[...],"why":"one sentence"}`
 
-export function remixPlanPrompt(input: { request: string; base: { id: string; name: string; tags: string[]; description: string; clip: AnimClip }; others: { id: string; name: string; tags: string[]; description: string; duration: number }[]; side?: 'left' | 'right' | null; current?: RemixOp[]; critique?: Pick<AnimCritique, 'overall' | 'summary' | 'mustFix' | 'changes'> | null }): string {
+export function remixPlanPrompt(input: { request: string; base: { id: string; name: string; tags: string[]; description: string; clip: AnimClip }; others: { id: string; name: string; tags: string[]; description: string; duration: number }[]; side?: 'left' | 'right' | null; current?: RemixOp[]; critique?: Pick<AnimCritique, 'overall' | 'summary' | 'mustFix' | 'changes'> | null; intent?: string }): string {
   const c = input.base.clip
   const ph = phases(c)
   const lines = [
@@ -824,7 +824,8 @@ export function remixPlanPrompt(input: { request: string; base: { id: string; na
     '',
     `Base clip "${input.base.name}" (${input.base.tags.join(', ') || 'no tags'}): ${input.base.description.slice(0, 300)}`,
     `${clipRig(c)}, ${c.duration.toFixed(2)} s${c.looped ? ', looped' : ''}; anticipation until ${ph.actionStart.toFixed(2)} s, action ${ph.actionStart.toFixed(2)}–${ph.actionEnd.toFixed(2)} s (peak ${ph.peakTime.toFixed(2)} s), recovery after${input.side ? `; the ${input.side} side does the move` : ''}.`,
-    c.markers.length ? `Markers: ${c.markers.map((m) => `${m.name} @ ${m.t.toFixed(2)} s`).join(', ')}` : ''
+    c.markers.length ? `Markers: ${c.markers.map((m) => `${m.name} @ ${m.t.toFixed(2)} s`).join(', ')}` : '',
+    input.intent ? `${input.intent} Do not scale the lead limb down (amplitude below 1 on it) unless the request asks for a smaller move.` : ''
   ]
   if (input.others.length) lines.push('', 'Other library clips (for blend / transplant):', ...input.others.slice(0, 6).map((o) => `- ${o.id}: "${o.name}" (${o.tags.join(', ')}; ${o.duration.toFixed(2)} s) ${o.description.slice(0, 140)}`))
   if (input.current) lines.push('', `Current ops: ${JSON.stringify(input.current)}`)

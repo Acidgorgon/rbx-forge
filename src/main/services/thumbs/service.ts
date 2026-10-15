@@ -19,7 +19,8 @@ import { selectPrinciples } from '../../../shared/principles/select.ts'
 import type { PrincipleCheck, PrincipleHooks } from '../../../shared/principles/types.ts'
 import { codeOverall, thumbChecks } from '../../../shared/thumbs/checks.ts'
 import { ctrLabels, normalizeCtr } from '../../../shared/thumbs/ctr.ts'
-import { copyGuardFlags, criticPrompt, CRITIC_SYSTEM, forbiddenTerms, generationPrompt, parseCritique, refinePrompt, textCheck } from '../../../shared/thumbs/prompt.ts'
+import { copyGuardFlags, criticPrompt, CRITIC_SYSTEM, forbiddenTerms, generationPrompt, parseCritique, refinePrompt, scrubBrief, textCheck } from '../../../shared/thumbs/prompt.ts'
+import { analyzeAsk, buildSections, EXPAND_SYSTEM, expandPrompt, isUiKind, lintSections, mergeExpansion, normalizeSections, uiPrompt } from '../../../shared/thumbs/builder.ts'
 import { batchOf, genSizeFor, thumbId } from '../../../shared/thumbs/size.ts'
 import { fitWithin, imageStats, smallSizeReport, toThumbnail } from '../../../shared/thumbs/stats.ts'
 import { aggregateProfile, cardFromStats, parseStyleCard, profileSummary, STYLE_PROMPT, STYLE_SYSTEM } from '../../../shared/thumbs/style.ts'
@@ -37,8 +38,13 @@ import {
   type ThumbRef,
   type ThumbScope,
   type ThumbSettings,
-  type ThumbStatus
+  type ThumbStatus,
+  type BuildPromptInput,
+  type BuiltPrompt,
+  type PromptSection,
+  type UiAsset
 } from '../../../shared/thumbs/types.ts'
+import { UiArtService } from './uiart.ts'
 import { uploadExperienceThumbnail } from './experience.ts'
 import { codexBackend, type CodexImages } from '../art/imageBackend.ts'
 import { CODEX_IMAGE_MODEL, type ImageBackend } from '../../../shared/artTypes.ts'
@@ -102,11 +108,36 @@ export class ThumbService {
   private deps: ThumbServiceDeps
   private projectStore: { root: string; store: ThumbStore } | null = null
   private now: () => number
+  // UI art (buttons, panels, icons, icon sets, HUD mockups) on the same backend, budget and stores.
+  readonly ui: UiArtService
 
   constructor(deps: ThumbServiceDeps) {
     this.deps = deps
     this.user = new ThumbStore('user', deps.userDir)
     this.now = deps.now ?? Date.now
+    this.ui = new UiArtService({
+      stores: () => this.stores(),
+      storeFor: (scope) => this.storeFor(scope, 'ui'),
+      decode: (bytes) => this.decode(bytes),
+      settings: () => this.settings(),
+      codex: () => this.codex(),
+      openAiKey: async () => (await this.deps.openAiKey?.().catch(() => null)) ?? null,
+      cap: () => this.cap(),
+      spentToday: () => this.spentToday(),
+      vision: (tier) => this.deps.vision?.(tier) ?? null,
+      gameName: () => this.deps.gameName?.(),
+      projectRoot: () => this.deps.projectRoot(),
+      robloxKey: async () => (await this.deps.robloxKey?.().catch(() => null)) ?? null,
+      creator: () => this.deps.creator?.() ?? {},
+      chargeImage: deps.chargeImage,
+      memory: deps.memory,
+      fetch: deps.fetch,
+      sleep: deps.sleep,
+      now: () => this.now(),
+      changed: () => this.changed(),
+      progress: (b, stage, detail, extra) => this.progress(b, stage, detail, extra),
+      log: (text, stream) => this.deps.log?.(text, stream)
+    })
   }
 
   get userLibraryDir(): string {
@@ -199,7 +230,7 @@ export class ThumbService {
 
   async spentToday(): Promise<number> {
     const today = dayOf(this.now())
-    const mine = (await this.all<Thumb>('thumbs')).filter((t) => dayOf(t.createdAt) === today).reduce((s, t) => s + (t.costUsd || 0), 0)
+    const mine = [...(await this.all<Thumb>('thumbs')), ...(await this.all<UiAsset>('ui'))].filter((t) => dayOf(t.createdAt) === today).reduce((s, t) => s + (t.costUsd || 0), 0)
     const art = (await this.deps.artSpentToday?.().catch(() => 0)) ?? 0
     return round(mine + art)
   }
@@ -232,7 +263,7 @@ export class ThumbService {
       perImageUsd: estimateImageUsd(s.model, s.quality, genSize),
       spentTodayUsd: await this.spentToday(),
       dailyCapUsd: this.cap(),
-      counts: { refs: (await this.all('refs')).length, profiles: (await this.all('profiles')).length, bases: (await this.all('bases')).length, thumbs: (await this.all('thumbs')).length },
+      counts: { refs: (await this.all('refs')).length, profiles: (await this.all('profiles')).length, bases: (await this.all('bases')).length, thumbs: (await this.all('thumbs')).length, ui: (await this.all('ui')).length },
       settings: s,
       models: [...THUMB_MODELS],
       ...(this.universeId() ? { universeId: this.universeId() } : {})
@@ -555,7 +586,9 @@ export class ThumbService {
     const forbidden = await this.forbidden()
     const taste = await this.taste()
     const gameName = this.deps.gameName?.()
-    const { prompt, removed } = generationPrompt({ brief, style: profile?.summary, bases: baseHits.length, styleRefs: refHits.length, gameName, restatement: input.restatement, taste: tasteLines(taste) }, forbidden)
+    // The user's reviewed sections, else the rule-based builder (brief + profile + taste).
+    const sections = normalizeSections(input.sections) ?? buildSections({ ask: scrubBrief(brief, forbidden, gameName ? [gameName] : []).text, mode: 'thumbnail', gameName, profile, taste: tasteLines(taste), bases: baseHits.length })
+    const { prompt, removed } = generationPrompt({ brief, style: profile?.summary, bases: baseHits.length, styleRefs: refHits.length, gameName, restatement: input.restatement, taste: tasteLines(taste), sections }, forbidden)
     if (removed.length) this.deps.log?.(`thumbs: kept reference names out of the prompt: ${removed.join(', ')}`)
     const batchId = newBatchId(this.now())
     const store = this.storeFor(input.scope, 'thumbs')
@@ -594,6 +627,7 @@ export class ThumbService {
             baseIds: baseHits.map((b) => b.item.id),
             round: 0,
             prompt,
+            sections,
             model: codex ? CODEX_IMAGE_MODEL : q.model,
             genSize: codex ? 'auto' : q.genSize,
             quality: codex ? 'auto' : q.quality,
@@ -677,7 +711,7 @@ export class ThumbService {
       const hit = await this.must<Thumb>('thumbs', cur.id)
       const bases = (await Promise.all(cur.baseIds.slice(0, MAX_BASES).map((b) => this.find<ThumbBase>('bases', b)))).filter((b): b is { item: ThumbBase; store: ThumbStore } => !!b)
       const changes = cur.critique?.changes.length ? cur.critique.changes : cur.critique?.principles.filter((p) => p.fix && p.score < 8).map((p) => p.fix!) ?? []
-      const { prompt } = refinePrompt({ brief: cur.brief, style: profile?.summary, bases: bases.length, gameName: this.deps.gameName?.(), restatement: cur.restatement, changes, ...(r === 0 && opts.note ? { note: opts.note } : {}) }, forbidden)
+      const { prompt } = refinePrompt({ brief: cur.brief, style: profile?.summary, bases: bases.length, gameName: this.deps.gameName?.(), restatement: cur.restatement, changes, ...(cur.sections?.length ? { sections: cur.sections } : {}), ...(r === 0 && opts.note ? { note: opts.note } : {}) }, forbidden)
       const images = [await this.imageData(hit.store, 'thumbs', cur.id, cur.file, 1920, 1088), ...(await Promise.all(bases.map((b) => this.imageData(b.store, 'bases', b.item.id, b.item.file, 1536, 1536))))]
       this.progress(cur.batchId, 'refining', `round ${r + 1}/${rounds}`)
       let res
@@ -692,7 +726,7 @@ export class ThumbService {
       if (!codex) this.deps.chargeImage?.(est)
       const siblings = (await this.all<Thumb>('thumbs')).filter((t) => t.batchId === cur.batchId)
       const k = Math.max(0, ...siblings.map((t) => Number(t.id.split('-').pop()) || 0)) + 1
-      const next = await this.saveVariation(hit.store, res.images[0], { k, batchId: cur.batchId, name: `${cur.brief.slice(0, 40)} ${k}`, brief: cur.brief, ...(cur.restatement ? { restatement: cur.restatement } : {}), ...(cur.profileId ? { profileId: cur.profileId } : {}), baseIds: cur.baseIds, parentId: cur.id, round: cur.round + 1, prompt, model: codex ? CODEX_IMAGE_MODEL : s.model, genSize: codex ? 'auto' : genSize, quality: codex ? 'auto' : s.quality, costUsd: est })
+      const next = await this.saveVariation(hit.store, res.images[0], { k, batchId: cur.batchId, name: `${cur.brief.slice(0, 40)} ${k}`, brief: cur.brief, ...(cur.restatement ? { restatement: cur.restatement } : {}), ...(cur.profileId ? { profileId: cur.profileId } : {}), baseIds: cur.baseIds, parentId: cur.id, round: cur.round + 1, prompt, ...(cur.sections ? { sections: cur.sections } : {}), model: codex ? CODEX_IMAGE_MODEL : s.model, genSize: codex ? 'auto' : genSize, quality: codex ? 'auto' : s.quality, costUsd: est })
       const critiqued = await this.critique(next.id).then((x) => x.thumb).catch(() => next)
       made.push(critiqued)
       cur = critiqued
@@ -833,9 +867,78 @@ export class ThumbService {
     return this.update(id, (x) => ({ ...x, experience: { universeId, mediaAssetId: r.mediaAssetId, at: this.now(), languageCode } }))
   }
 
+  // ------------------------------------------------------------ prompt builder
+
+  // A short ask -> editable sections + the prompt as it would be sent. Rules always; with
+  // `model: true` the cheap Labs tier expands the draft (the rules stand when it is missing or fails).
+  async buildPrompt(input: BuildPromptInput): Promise<BuiltPrompt> {
+    const mode = isUiKind(input?.mode) ? input.mode : 'thumbnail'
+    const forbidden = await this.forbidden()
+    const gameName = this.deps.gameName?.()
+    const allow = gameName ? [gameName] : []
+    const { text: ask, removed } = scrubBrief(String(input?.ask ?? '').trim().slice(0, 2000), forbidden, allow)
+    const notes: string[] = removed.length ? [`Kept reference names out of the prompt: ${removed.join(', ')}.`] : []
+    let sections: PromptSection[]
+    let names: string[] | undefined
+    let profile: ThumbStyleProfile | undefined
+    let bases = 0
+    let kitRefs = 0
+    if (mode === 'thumbnail') {
+      profile = input.profileId ? (await this.find<ThumbStyleProfile>('profiles', input.profileId))?.item : undefined
+      bases = (await Promise.all((input.baseIds ?? []).slice(0, MAX_BASES).map((id) => this.find<ThumbBase>('bases', id)))).filter(Boolean).length
+      sections = buildSections({ ask, mode, gameName, profile, taste: tasteLines(await this.taste()), bases })
+      if (profile) notes.push(`Style profile "${profile.name}" is in the composition, camera, palette and text sections.`)
+    } else {
+      const kit = await this.ui.kit(mode)
+      const usable = kit.samples + kit.refIds.length > 0 ? kit : null
+      const built = this.ui.sections({ ask, kind: mode, names: input.names, kit: usable })
+      sections = built.sections
+      names = mode === 'icon-set' ? built.names : undefined
+      kitRefs = Math.min(2, usable?.refIds.length ?? 0)
+      const info = analyzeAsk(ask)
+      if (!info.quoted.length && info.caps.length && mode !== 'hud') notes.push(`No text is drawn by default (a Roblox TextLabel localises it). To bake the word into the art, quote it: "${info.caps[0]}".`)
+      if (usable) notes.push(`Your UI kit (${kit.samples} kept) is attached: ${kit.lines.slice(0, 3).join(', ')}${kitRefs ? `, plus ${kitRefs} reference image${kitRefs === 1 ? '' : 's'}` : ''}.`)
+    }
+    let by: BuiltPrompt['by'] = 'rules'
+    if (input.model) {
+      const vision = this.deps.vision?.('cheap') ?? this.deps.vision?.('default') ?? null
+      if (!vision) notes.push('No Labs model is set up: the rules built this prompt.')
+      else {
+        try {
+          const raw = await vision(EXPAND_SYSTEM, expandPrompt(ask, mode, sections), [])
+          const merged = mergeExpansion(sections, raw, { scrub: (s) => scrubBrief(s, forbidden, allow).text, allowText: analyzeAsk(ask).quoted.length > 0 })
+          if (merged) (sections = merged), (by = 'model')
+          else notes.push('The model did not improve the draft; showing the rules.')
+        } catch (e) {
+          notes.push(`The model could not expand it (${(e as Error).message.slice(0, 120)}); showing the rules.`)
+        }
+      }
+    }
+    const refsN = mode === 'thumbnail' && profile && this.settings().sendRefs ? Math.min(2, profile.refIds.length) : 0
+    const prompt = mode === 'thumbnail' ? generationPrompt({ brief: ask, bases, styleRefs: refsN, gameName, sections }, forbidden).prompt : uiPrompt(sections, { kind: mode, gameName, icon: names?.[0], kitRefs })
+    return { mode, sections, prompt, notes, warnings: lintSections(sections, mode, names), by, ...(names ? { names } : {}) }
+  }
+
+  // A variation the user likes becomes a style reference for later profiles (it is the user's own
+  // game, so it carries no game name to forbid).
+  async useAsRef(id: string): Promise<ThumbRef> {
+    const { item, store } = await this.must<Thumb>('thumbs', id)
+    const img = decodePng(await store.readFile('thumbs', id, item.file))
+    const now = this.now()
+    const refStore = this.storeFor(undefined, 'refs')
+    const name = `kept ${item.brief.slice(0, 40)}`.trim()
+    const ref: ThumbRef = { id: newId('ref', name), scope: refStore.scope, name, source: 'file', file: 'image.png', width: img.width, height: img.height, stats: item.stats, tags: ['own'], createdAt: now, updatedAt: now }
+    await refStore.writeFile('refs', ref.id, 'image.png', await store.readFile('thumbs', id, item.file))
+    const saved = await refStore.save('refs', ref)
+    this.changed()
+    void this.analyzeRef(saved.id).catch((e) => this.deps.log?.(`thumbs: analyse ${saved.id}: ${(e as Error).message}`, 'stderr'))
+    return saved
+  }
+
   // ------------------------------------------------------------ files
 
-  async file(kind: 'ref' | 'base' | 'thumb', id: string, which: 'image' | 's256' | 's160' = 'image'): Promise<string | null> {
+  async file(kind: 'ref' | 'base' | 'thumb' | 'ui', id: string, which: 'image' | 's256' | 's160' = 'image'): Promise<string | null> {
+    if (kind === 'ui') return this.ui.file(id)
     const k: ThumbKind = kind === 'ref' ? 'refs' : kind === 'base' ? 'bases' : 'thumbs'
     const hit = await this.find<{ file: string; small?: { s256: string; s160: string } }>(k, id).catch(() => null)
     if (!hit) return null

@@ -40,7 +40,8 @@ export function isGroup(chat: ChatSession | undefined): boolean {
   return !!chat?.guests?.length
 }
 
-function fmtTokens(n: number): string {
+// Compact token count for the group chat chrome: 950, 1.2k, 34k.
+export function fmtTokens(n: number): string {
   if (n < 1000) return String(n)
   return n < 100_000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`
 }

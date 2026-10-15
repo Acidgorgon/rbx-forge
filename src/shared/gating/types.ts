@@ -144,6 +144,8 @@ export interface GatingView {
 
 export interface GatingEvents {
   'labs:gating': { lab?: LabId; entryId?: string; at: number }
+  // A Labs model call failed (the lab then falls back to its built-in draft or numbers-only check).
+  'labs:modelError': { lab?: LabId; tier: 'cheap' | 'default' | 'critic'; message: string; at: number }
 }
 
 export interface GatingApi {

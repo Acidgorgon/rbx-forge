@@ -15,14 +15,9 @@ import { MemoryProposals } from '../pages/memory/MemoryProposals'
 import { Composer } from './AssistantPanel'
 import { MessageList } from './Thread'
 import { EffortPicker, RouteSummary } from './EffortPicker'
-import { accentOf, ChecklistCard, participants } from './GroupChat'
+import { accentOf, ChecklistCard, fmtTokens, participants } from './GroupChat'
 import { BoardPanel, ConsultSettings, fmtUsd } from './GroupCards'
 import './groupspage.css'
-
-function fmtTokens(n: number): string {
-  if (n < 1000) return String(n)
-  return n < 100_000 ? `${(n / 1000).toFixed(1)}k` : `${Math.round(n / 1000)}k`
-}
 
 function lastActivity(chat: ChatSession, messages: ChatMessage[] | undefined): number {
   const last = messages?.[messages.length - 1]?.at

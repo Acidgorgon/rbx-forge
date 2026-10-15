@@ -55,7 +55,6 @@ export function createAbilityWiring(deps: AbilityWireDeps): AbilityWiring {
   const handlers: Record<string, (...args: any[]) => unknown> = {
     abilityStatus: () => service.status(),
     abilityList: () => service.list(),
-    abilityGet: (id: string) => service.get(String(id ?? '')),
     abilitySave: (ability: Ability, opts?: { id?: string; origin?: string; scope?: AbilityScope }) => service.save(ability, { id: opts?.id ? String(opts.id) : undefined, origin: opts?.origin ? String(opts.origin) : undefined, scope: scope(opts?.scope) }),
     abilityDelete: (id: string) => service.remove(String(id ?? '')),
     abilityRate: (id: string, r: unknown) => service.rate(String(id ?? ''), r === 'up' || r === 'down' ? r : null),
@@ -63,12 +62,10 @@ export function createAbilityWiring(deps: AbilityWireDeps): AbilityWiring {
     abilityCompose: (request: string, opts?: { restatement?: Restatement }) => service.compose(String(request ?? ''), { restatement: opts?.restatement }),
     abilityCritique: (id: string, opts?: { vision?: boolean; apply?: boolean }) => service.critique(String(id ?? ''), { vision: opts?.vision, apply: !!opts?.apply }),
     abilityExport: (id: string) => service.export(String(id ?? '')),
-    abilityExamples: async () => service.examples(),
     abilityAddExample: (key: string) => service.addExample(String(key ?? '')),
     abilityFile: (id: string, file: string) => service.file(String(id ?? ''), String(file ?? '')),
     abilitySaveThumb: (id: string, url: string) => service.saveThumb(String(id ?? ''), String(url ?? '')),
-    abilityChooseSounds: async () => (deps.chooseSounds ? deps.chooseSounds() : []),
-    abilitySoundUrl: (path: string) => service.soundUrl(String(path ?? ''))
+    abilityChooseSounds: async () => (deps.chooseSounds ? deps.chooseSounds() : [])
   }
   let tools: { read: AbilityTool[]; write: AbilityTool[] } | null = null
   return { service, handlers, tools: () => (tools ??= abilityTools(service)) }

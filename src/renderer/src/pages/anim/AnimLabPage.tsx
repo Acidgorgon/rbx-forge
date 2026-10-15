@@ -14,7 +14,7 @@ import type { AnimClip, AnimCoverage, AnimEntry, AnimImportPreview, AnimLabStatu
 import type { AnimMoveSets, AnimRemixMode, RemixCandidate } from '@shared/animTypes'
 import { describeRemixOp, REMIX_OPS, REMIX_PARAMS, REMIX_PART_LABEL, REMIX_PARTS, type RemixOp, type RemixOpKind, type RemixPart } from '@shared/anim/remix'
 import { MOVE_SETS, thinLabels, type ResolvedMoveSet } from '@shared/anim/movesets'
-import { missingParts } from '@shared/anim/bodyparts'
+import { bestIteration } from '@shared/anim/quality'
 import { ANIM_RUBRIC_KEYS } from '@shared/anim/model'
 import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
 import { clipRig } from '@shared/anim/sample'
@@ -50,10 +50,10 @@ const KNOWN_TAGS = Object.keys(MOVE_TAGS)
 // Tag suggestions: the active move set's tags first (AnimLabPage provides them).
 const TagsContext = createContext<string[]>(KNOWN_TAGS)
 
-// Best iteration: fewer failed requirements (a named body part that stopped moving) first, then the score.
-function bestOf<T extends { critique?: AnimIteration['critique'] }>(its: T[]): T {
-  const fails = (it: T) => missingParts(it.critique?.checks?.motion).length
-  return its.reduce((a, b) => (fails(b) !== fails(a) ? (fails(b) < fails(a) ? b : a) : (b.critique?.overall ?? 0) > (a.critique?.overall ?? 0) ? b : a), its[0])
+// Best iteration (quality.ts): rounds that regressed are never best; fewer failed requirements (a
+// named or lead body part that stopped moving) first, then the critic + code score.
+function bestOf<T extends { critique?: AnimIteration['critique']; score?: AnimIteration['score'] }>(its: T[]): T {
+  return bestIteration(its) ?? its[0]
 }
 type AnimIteration = NonNullable<AnimEntry['iterations']>[number]
 
@@ -383,16 +383,41 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
   const weights = usePrincipleWeights()
   if (!its.length) return <div className="empty">No iterations yet. Refine renders the key beats, critiques them against your style and the checks, applies the changes and keeps each step here.</div>
   const best = bestOf(its)
+  const current = JSON.stringify(entry.clip.tracks)
+  const using = [...its].reverse().find((it) => JSON.stringify(it.clip.tracks) === current)
+  const weight = its[its.length - 1]?.score?.criticWeight
   return (
     <div className="vfx-iters" role="list">
+      <p className="anim-iters-note faint">
+        Every round is ranked on the critic {weight != null && weight < 1 ? `(${Math.round(weight * 100)}%) ` : ''}plus code checks (lead limb, learned priors, smoothness); a round that scores below the best is not kept and the next one starts from the best.
+        {best ? ` The clip uses ${using ? `#${using.n}` : 'your edit'}${using === best ? ' (best so far)' : `; best so far is #${best.n}`}.` : ''}
+      </p>
       {its.map((it) => (
-        <article key={it.n} className={`vfx-iter${it === best ? ' best' : ''}`} role="listitem">
+        <article key={it.n} className={`vfx-iter${it === best ? ' best' : ''}${it.score && !it.score.accepted ? ' anim-iter-rejected' : ''}`} role="listitem">
           <header className="vfx-iter-head">
             <span className="mono">#{it.n}</span>
-            {it === best && <span className="tag ok">best</span>}
+            {it === best && <span className="tag ok">best so far</span>}
+            {it.score && !it.score.accepted && (
+              <span className="tag warn" title={it.score.regressed}>
+                not kept
+              </span>
+            )}
+            {it === using && it !== best && <span className="tag info">in use</span>}
             <span className="grow" />
-            {it.critique && <span className="vfx-score mono">{it.critique.overall.toFixed(1)}</span>}
+            {it.score ? (
+              <span className="vfx-score mono" title={`critic ${it.score.critic.toFixed(1)} · code ${it.score.objective.toFixed(1)} (checks ${it.score.parts.checks.toFixed(1)}, lead limb ${it.score.parts.intent.toFixed(1)}, priors ${it.score.parts.priors.toFixed(1)}, smooth ${it.score.parts.smooth.toFixed(1)}${it.score.parts.feet != null ? `, feet ${it.score.parts.feet.toFixed(1)}` : ''})`}>
+                {it.score.quality.toFixed(1)}
+              </span>
+            ) : (
+              it.critique && <span className="vfx-score mono">{it.critique.overall.toFixed(1)}</span>
+            )}
           </header>
+          {it.score && (
+            <div className="anim-iter-split mono faint">
+              critic {it.score.critic.toFixed(1)} · code {it.score.objective.toFixed(1)}
+              {it.score.regressed ? <span className="anim-iter-why"> · {it.score.regressed}</span> : null}
+            </div>
+          )}
           {it.frames.length > 0 ? (
             <div className="vfx-frames">
               {it.frames.slice(0, 4).map((f) => (
@@ -432,6 +457,18 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
                 </ul>
               ) : null}
               <p className="vfx-iter-sum">{it.critique.summary.replace(/^Must fix:[^]*?\.\s/, '')}</p>
+              {it.guarded?.length ? (
+                <details className="vfx-changes">
+                  <summary>
+                    {it.guarded.length} edit{it.guarded.length === 1 ? '' : 's'} refused
+                  </summary>
+                  <ul>
+                    {it.guarded.map((g, i) => (
+                      <li key={i}>{g.reason}</li>
+                    ))}
+                  </ul>
+                </details>
+              ) : null}
               {it.critique.changes.length > 0 && (
                 <details className="vfx-changes">
                   <summary>
@@ -440,7 +477,7 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
                   <ul>
                     {it.critique.changes.map((c, i) => (
                       <li key={i}>
-                        <span className="mono">{c.kind === 'offset' ? `${c.joint} @${c.at.toFixed(2)}` : c.kind === 'retime' ? `retime ${c.from.toFixed(2)}–${c.to.toFixed(2)} ×${c.scale}` : c.kind === 'ease' ? `ease ${c.style} @${c.at.toFixed(2)}` : `fix ${c.check}`}</span> {c.principle && <span className="pr-chg mono">{principleLabel(c.principle)}</span>} {c.why ?? ''}
+                        <span className="mono">{c.kind === 'offset' ? `${c.joint} @${c.at.toFixed(2)}` : c.kind === 'retime' ? `retime ${c.from.toFixed(2)}–${c.to.toFixed(2)} ×${c.scale}` : c.kind === 'ease' ? `ease ${c.style} @${c.at.toFixed(2)}` : `fix ${c.check}`}</span> {c.principle && <span className="pr-chg mono">{principleLabel(c.principle)}</span>} {c.prior && <span className="pr-chg mono">prior: {c.prior}</span>} {c.why ?? ''}
                       </li>
                     ))}
                   </ul>
@@ -448,9 +485,12 @@ function Iterations({ entry, onRestore }: { entry: AnimEntry; onRestore: (clip: 
               )}
             </>
           )}
-          <button className="btn small ghost" onClick={() => onRestore(it.clip, it.n)}>
-            <Icon name="undo" size={11} /> Use #{it.n}
-          </button>
+          {it !== using && (
+            <button className="btn small ghost" onClick={() => onRestore(it.clip, it.n)}>
+              <Icon name="undo" size={11} /> Use #{it.n}
+              {it === best ? ' (best)' : ''}
+            </button>
+          )}
         </article>
       ))}
     </div>
@@ -486,6 +526,21 @@ function Checks({ entry }: { entry: AnimEntry }) {
       <p className="mono note">
         overall {report.overall}/10 · slide {report.slideStuds.toFixed(2)} studs · worst limit {report.worstLimitDeg.toFixed(0)}° · overlap {report.penetrationStuds.toFixed(2)} studs · spread {report.spread.toFixed(2)}×
       </p>
+      {report.motion?.length || report.priors?.length ? (
+        <div className="anim-motion-tags" aria-label="Motion intent and learned priors">
+          {report.motion?.map((m) => (
+            <span key={`m-${m.part}`} className={`tag ${!m.ok ? 'err' : m.rangeDeg < m.warnDeg || m.outmovedBy ? 'warn' : 'ok'}`} title={`${m.lead ? 'Leads the move' : 'Named in the request'} ("${m.source.replace(/^tag:/, '')}"): needs ${m.minDeg}°${m.refDeg ? `, references ${m.refDeg}°` : ''}${m.outmovedBy ? `; the ${m.outmovedBy.label} moves ${m.outmovedBy.rangeDeg.toFixed(0)}°` : ''}`}>
+              {m.lead ? 'lead ' : ''}
+              {m.label} {m.rangeDeg.toFixed(0)}°
+            </span>
+          ))}
+          {report.priors?.map((p) => (
+            <span key={`p-${p.id}`} className={`tag ${p.ok ? 'ok' : 'warn'}`} title={`${p.message} (references: ${p.expected})`}>
+              {p.id} {p.measured}
+            </span>
+          ))}
+        </div>
+      ) : null}
       {report.issues.length ? (
         <ul className="vfx-warn">
           {report.issues.map((i, n) => (
@@ -757,6 +812,7 @@ function Detail({ entry, entries, progress, status, onClose, onOpen }: { entry: 
             <span className="vfx-progress mono" aria-live="polite">
               <span className="spinner" aria-hidden /> #{progress!.iteration} {progress!.phase}
               {progress!.score != null ? ` · ${progress!.score.toFixed(1)}` : ''}
+              {progress!.best ? ` · best so far #${progress!.best.n} (${progress!.best.quality.toFixed(1)})` : ''}
               {progress!.message ? ` · ${progress!.message.slice(0, 80)}` : ''}
             </span>
             <button className="btn small" onClick={() => void h.animCancel(entry.id)}>
@@ -829,7 +885,7 @@ function Detail({ entry, entries, progress, status, onClose, onOpen }: { entry: 
       {tab === 'studio' && <StudioCheckPanel kind="anim" id={entry.id} />}
       {tab === 'iterations' && entry.refId && <PinnedCompare entry={entry} />}
       {comparing && <AnimCompare entry={entry} onClose={() => setComparing(false)} onUse={(c, label) => void h.animUpdate(entry.id, { clip: c }).then(() => actions.toast({ text: `Using ${label}`, kind: 'ok', ms: 2000 }))} />}
-      {tab === 'iterations' && <Iterations entry={entry} onRestore={(c, n) => void h.animUpdate(entry.id, { clip: c }).then(() => actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }))} />}
+      {tab === 'iterations' && <Iterations entry={entry} onRestore={(_c, n) => void h.animUseIteration(entry.id, n).then(() => actions.toast({ text: `Using iteration #${n}`, kind: 'ok', ms: 2000 }), (e) => actions.toast({ text: 'Could not switch iterations', detail: errorText(e), kind: 'err' }))} />}
       {tab === 'iterations' && <LabDecisions lab="anim" entryId={entry.id} />}
       {tab === 'info' && (
         <div className="vfx-info">
@@ -1201,6 +1257,7 @@ export function AnimLabPage() {
         ? await h.animRemix(what, { maxIterations: iters, threshold, scope, rig, base: autoBase!.id, ...(g.restatement ? { restatement: g.restatement } : {}) })
         : await h.animCompose(what, { maxIterations: iters, threshold, scope, rig, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
       if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the script did not compile')
+      if (r.modelError) actions.toast({ text: `${r.entry.name}: drafted without a model`, detail: r.modelError, kind: 'err', ms: 12_000 })
       await load()
       setSelected(r.entry.id)
       setView('library')

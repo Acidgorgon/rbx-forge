@@ -11,7 +11,10 @@ import { jointWorld, PARTS, type R15Part } from './r15.ts'
 import { clipRig, sampleR6, sampleTrack } from './sample.ts'
 import { r15View } from './convert.ts'
 import { r6ForwardKinematics, r6LimbEnd, r6LowestFoot, r6Wording } from './r6.ts'
-import { measureParts, partMustFix, requestedParts } from './bodyparts.ts'
+import { measureParts, partMustFix } from './bodyparts.ts'
+import { motionIntent, type MotionIntent } from './intent.ts'
+import { learnedLimits, priorChecks } from './priors.ts'
+import { phases } from './measure.ts'
 
 // ------------------------------------------------------------------ joint limits
 
@@ -185,26 +188,57 @@ const score = (v: number) => Math.round(Math.max(0, Math.min(10, v)) * 10) / 10
 // break) and the issues are worded with R6 names (Right Shoulder, Left Leg, Torso...).
 // opts.request / opts.tags: the request and move-type tags; the body parts they name must move
 // (bodyparts.ts). A named part that barely moves is an error issue ("motion") and costs the overall
-// score 2 points per part.
-export function runChecks(clip: AnimClip, profile?: AnimStyleProfile | null, opts: { request?: string; tags?: string[] } = {}): AnimCheckReport {
-  const base = runChecksRig(clip, profile)
-  const parts = opts.request || opts.tags?.length ? requestedParts(opts.request ?? '', opts.tags ?? []) : []
-  if (!parts.length) return base
-  const motion = measureParts(clip, parts)
+// score 2 points per part. opts.intent (intent.ts, with the lead limb from the references) replaces
+// what the words alone give. With a lead leg, its foot may travel along the floor during the action
+// (it works the ball: an elastico, a drag-back) without counting as sliding. The profile's learned
+// priors (priors.ts) widen the joint limits to what the user's clips do and are measured into
+// report.priors (violations are "prior" issues; they do not change the overall).
+export function runChecks(clip: AnimClip, profile?: AnimStyleProfile | null, opts: { request?: string; tags?: string[]; intent?: MotionIntent | null } = {}): AnimCheckReport {
+  const intent = opts.intent ?? (opts.request || opts.tags?.length ? motionIntent(opts.request ?? '', opts.tags ?? []) : null)
+  const lead = intent?.lead
+  const side = lead?.limb.startsWith('Left') ? 'left' : 'right'
+  const priors = profile?.priors
+  let exempt: SlideExempt | undefined
+  const parts = intent?.parts ?? []
+  const motion = parts.length ? measureParts(clip, parts, lead) : []
+  // Only a lead leg that does the move may work the ball along the floor.
+  if (lead && lead.limb.endsWith('Leg') && motion.find((m) => m.lead)?.rangeDeg! >= lead.minDeg) {
+    const ph = phases(clip)
+    if (ph.actionEnd > ph.actionStart) exempt = { foot: lead.limb === 'LeftLeg' ? 'LeftFoot' : 'RightFoot', from: Math.max(0, ph.actionStart - 0.15), to: ph.actionEnd + 0.15 }
+  }
+  const base = runChecksRig(clip, profile, { exempt, ...(priors ? { learned: (t: LimitTable) => learnedLimits(priors, t, side) } : {}) })
+  const pc = profile ? priorChecks(clip, profile, intent) : []
+  if (!parts.length && !pc.length) return base
   const issues = [...base.issues]
+  for (const c of pc) if (!c.ok) issues.push({ check: 'prior', severity: c.id === 'lead-swing' ? 'warn' : 'info', message: `prior:${c.id}: ${c.message}`, ...(c.joint ? { joint: c.joint } : {}), ...(c.at !== undefined ? { at: c.at } : {}) })
+  if (!parts.length) return { ...base, issues, priors: pc }
   let missing = 0
   for (const m of motion) {
     if (!m.ok) {
       missing++
       issues.unshift({ check: 'motion', severity: 'error', message: `Must fix: ${partMustFix(m)}`, ...(m.joint ? { joint: m.joint } : {}) })
     } else if (m.rangeDeg < m.warnDeg) issues.push({ check: 'motion', severity: 'warn', message: `the ${m.label} ("${m.source.replace(/^tag:/, '')}") moves only ${m.rangeDeg.toFixed(0)}°; push its key poses further`, ...(m.joint ? { joint: m.joint } : {}) })
+    else if (m.outmovedBy) issues.push({ check: 'motion', severity: 'warn', message: `the ${m.outmovedBy.label} moves more than the ${m.label} (${m.outmovedBy.rangeDeg.toFixed(0)}° vs ${m.rangeDeg.toFixed(0)}°); the ${m.label} should lead`, ...(m.joint ? { joint: m.joint } : {}) })
   }
-  return { ...base, issues, motion, overall: Math.max(0, Math.round((base.overall - missing * 2) * 10) / 10) }
+  return { ...base, issues, motion, ...(pc.length ? { priors: pc } : {}), overall: Math.max(0, Math.round((base.overall - missing * 2) * 10) / 10) }
 }
 
-function runChecksRig(clip: AnimClip, profile?: AnimStyleProfile | null): AnimCheckReport {
+// A foot that may travel along the floor in a time window (the lead foot working the ball).
+interface SlideExempt {
+  foot: 'LeftFoot' | 'RightFoot'
+  from: number
+  to: number
+}
+
+interface RigOpts {
+  exempt?: SlideExempt
+  // The limit table widened by the learned priors (given the rig's base table).
+  learned?: (base: LimitTable) => LimitTable
+}
+
+function runChecksRig(clip: AnimClip, profile?: AnimStyleProfile | null, o: RigOpts = {}): AnimCheckReport {
   if (clipRig(clip) === 'R6') {
-    const r = runChecksR15(r15View(clip), profile, JOINT_LIMITS_R6)
+    const r = runChecksR15(r15View(clip), profile, o.learned ? o.learned(JOINT_LIMITS_R6) : JOINT_LIMITS_R6)
     // Sliding is measured on the real R6 legs (their hip pivots sit at the Torso's outer edge, unlike
     // R15's), the rest on the R15 view.
     const slide = r6Sliding(clip)
@@ -212,7 +246,7 @@ function runChecksRig(clip: AnimClip, profile?: AnimStyleProfile | null): AnimCh
     const scores = { ...r.scores, sliding: score(10 - slide.total * 14) }
     return { ...r, scores, overall: overallOf(scores), issues, slideStuds: Math.round(slide.total * 1000) / 1000 }
   }
-  return runChecksR15(clip, profile)
+  return runChecksR15(clip, profile, o.learned ? o.learned(JOINT_LIMITS) : JOINT_LIMITS, o.exempt)
 }
 
 const overallOf = (scores: AnimCheckReport['scores']) => Math.round(((scores.sliding + scores.limits + scores.penetration) * 0.2 + scores.readability * 0.22 + scores.timing * 0.18) * 10) / 10
@@ -254,11 +288,12 @@ function r6Sliding(clip: AnimClip): { total: number; issues: AnimCheckIssue[] } 
   return { total, issues }
 }
 
-function runChecksR15(clip: AnimClip, profile?: AnimStyleProfile | null, limits: LimitTable = JOINT_LIMITS): AnimCheckReport {
+function runChecksR15(clip: AnimClip, profile?: AnimStyleProfile | null, limits: LimitTable = JOINT_LIMITS, exempt?: SlideExempt): AnimCheckReport {
   const frames = sampleFrames(clip, 30)
   const issues: AnimCheckIssue[] = []
   // Sliding: a foot on the floor in two frames in a row should not move sideways.
   let slide = 0
+  let worked = 0
   for (const foot of ['LeftFoot', 'RightFoot'] as const) {
     let window: { from: number; dist: number } | null = null
     for (let i = 1; i < frames.length; i++) {
@@ -270,16 +305,22 @@ function runChecksR15(clip: AnimClip, profile?: AnimStyleProfile | null, limits:
       const low = (parts: (typeof frames)[number]['parts']) => jointWorld(parts, ankle)[1] < 0.42
       const planted = a.y < FOOT_PLANTED_Y && b.y < FOOT_PLANTED_Y && low(frames[i - 1].parts) && low(frames[i].parts)
       const d = Math.hypot(b.at[0] - a.at[0], b.at[2] - a.at[2])
-      if (planted && d > 0.01) {
+      if (planted && d > 0.01 && exempt?.foot === foot && frames[i].t >= exempt.from && frames[i - 1].t <= exempt.to) {
+        worked += d
+        if (window) {
+          if (window.dist > 0.08) issues.push({ check: 'sliding', severity: window.dist > 0.3 ? 'error' : 'warn', message: `${foot} slides ${window.dist.toFixed(2)} studs while planted (${window.from.toFixed(2)}-${frames[i].t.toFixed(2)} s); plant it (a:plant) or lift it`, joint: foot, at: window.from, to: frames[i].t })
+          window = null
+        }
+      } else if (planted && d > 0.01) {
         slide += d
         window ??= { from: frames[i - 1].t, dist: 0 }
         window.dist += d
       } else if (window) {
-        if (window.dist > 0.08) issues.push({ check: 'sliding', severity: window.dist > 0.3 ? 'error' : 'warn', message: `${foot} slides ${window.dist.toFixed(2)} studs while planted (${window.from.toFixed(2)}-${frames[i].t.toFixed(2)} s); plant it (a:plant) or lift it`, joint: foot, at: window.from })
+        if (window.dist > 0.08) issues.push({ check: 'sliding', severity: window.dist > 0.3 ? 'error' : 'warn', message: `${foot} slides ${window.dist.toFixed(2)} studs while planted (${window.from.toFixed(2)}-${frames[i].t.toFixed(2)} s); plant it (a:plant) or lift it`, joint: foot, at: window.from, to: frames[i].t })
         window = null
       }
     }
-    if (window && window.dist > 0.08) issues.push({ check: 'sliding', severity: window.dist > 0.3 ? 'error' : 'warn', message: `${foot} slides ${window.dist.toFixed(2)} studs while planted (from ${window.from.toFixed(2)} s)`, joint: foot, at: window.from })
+    if (window && window.dist > 0.08) issues.push({ check: 'sliding', severity: window.dist > 0.3 ? 'error' : 'warn', message: `${foot} slides ${window.dist.toFixed(2)} studs while planted (from ${window.from.toFixed(2)} s)`, joint: foot, at: window.from, to: clip.duration })
   }
   // Limits: every key and the frames between them.
   let worstLimit = 0
@@ -309,6 +350,7 @@ function runChecksR15(clip: AnimClip, profile?: AnimStyleProfile | null, limits:
       deepestPair = p.pair
     }
   }
+  if (worked > 0.08) issues.push({ check: 'sliding', severity: 'info', message: `${exempt!.foot} travels ${worked.toFixed(2)} studs along the floor during the action (the lead foot working the ball; not counted as sliding)`, joint: exempt!.foot, at: exempt!.from })
   if (deepest > 0.12) issues.push({ check: 'penetration', severity: deepest > 0.35 ? 'error' : 'warn', message: `${deepestPair} overlap by ${deepest.toFixed(2)} studs at ${deepestAt.toFixed(2)} s`, at: deepestAt })
   // Readability: the strongest pose should open the silhouette well past standing.
   const rest = restSpreadValue()

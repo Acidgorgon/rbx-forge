@@ -8,7 +8,7 @@ initAppearance()
 async function boot(): Promise<void> {
   // Browser preview (no Electron preload): install the mock API first.
   if (!window.harness) {
-    await import('./mock')
+    await import('./mocks')
   }
   // Offscreen capture window for the preview_ui agent tool: only the UI preview stage.
   if (new URLSearchParams(location.search).has('uipreview-capture')) {

@@ -7,10 +7,6 @@ export function normalise(text: string): string {
   return text.replace(/\r\n/g, '\n').replace(/\n+$/, '')
 }
 
-export function sameText(a: string, b: string): boolean {
-  return normalise(a) === normalise(b)
-}
-
 // Text as it should be written over `like` (the current file, if any): one trailing newline and
 // the file's line endings kept (a CRLF file stays CRLF).
 export function toFileText(text: string, like?: string | null): string {

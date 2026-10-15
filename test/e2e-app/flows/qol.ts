@@ -91,6 +91,48 @@ export const qolFlows: Flow[] = [
     }
   },
   {
+    name: 'thumbnail-lab-ui-art',
+    title: 'Thumbnail Lab UI art: switch mode, build a button prompt, edit a section, no-backend message',
+    async run({ page, shot, note }) {
+      await openPage(page, 'Thumbnail Lab')
+      const lab = page.locator(`${CENTER} .page-inner.th`).first()
+      await lab.waitFor({ state: 'visible', timeout: 10_000 })
+      await lab.locator('.th-mode').getByRole('tab', { name: /UI art/ }).click()
+      const make = lab.locator('.th-ui-make')
+      await make.waitFor({ state: 'visible', timeout: 10_000 })
+      await make.locator('.th-kinds').getByRole('radio', { name: 'Button' }).click()
+      await make.getByLabel('UI asset to make').fill('a green BUY button, glossy simulator style')
+      // Build: rules only, no model, works with no backend.
+      await make.getByRole('button', { name: /^Build$/ }).click()
+      const sections = make.locator('.th-section')
+      await sections.first().waitFor({ state: 'visible', timeout: 10_000 })
+      check((await sections.count()) >= 5, `only ${await sections.count()} prompt sections`)
+      const subject = make.getByLabel('Subject section')
+      check(/button/i.test(await subject.inputValue()), 'the subject section does not describe the button')
+      // The ALL-CAPS label gets the "quote it" note (no text drawn by default).
+      check(/"BUY"/.test(await make.locator('.th-builder-notes').innerText()), 'no note about quoting the BUY label')
+      // Editing a section marks it as yours and the preview follows.
+      await subject.fill('a chunky green BUY button with a coin icon')
+      await make.locator('.th-section.src-user').first().waitFor({ state: 'visible', timeout: 5000 })
+      check(/with your edits/.test(await make.locator('.th-builder-state').innerText()), 'the builder does not say it will send your edits')
+      check((await make.locator('.th-prompt').textContent())?.includes('chunky green BUY button') ?? false, 'the "as sent" preview did not follow the edit')
+      const status = await page.evaluate(() => window.harness.thumbStatus())
+      if (!status.openaiKey && !status.codex) {
+        check(await lab.locator('.callout', { hasText: /No image backend/ }).count(), 'no "No image backend" message')
+        check(await make.locator('form .btn.primary').isDisabled(), 'Make is enabled with no image backend')
+        note('no backend: message shown, Make disabled, builder works')
+      }
+      await shot('builder')
+      await lab.locator('.vfx-view').getByRole('tab', { name: /^kit/ }).click()
+      await lab.locator('.empty', { hasText: /No UI kit yet/ }).or(lab.locator('.th-kit')).first().waitFor({ state: 'visible', timeout: 5000 })
+      const o = await horizontalOverflow(page)
+      check(o.doc <= o.win + 1 && !o.offenders.length, `the UI art view overflows: ${o.offenders.slice(0, 3).join(', ')}`)
+      // Leave the lab in thumbnail mode for later flows.
+      await lab.locator('.th-mode').getByRole('tab', { name: /thumbnails/ }).click()
+      await lab.locator('.th-ui-make').waitFor({ state: 'detached', timeout: 5000 })
+    }
+  },
+  {
     name: 'ui-motion-lab',
     title: 'UI Motion Lab renders',
     async run({ page, shot }) {
@@ -224,10 +266,13 @@ export const qolFlows: Flow[] = [
       await openPage(page, 'VFX Lab')
       await closeBottom(page)
       const detail = page.locator(`${CENTER} .vfx-detail`).first()
-      if (!(await detail.count())) {
-        await page.locator(`${CENTER} .vfx-card`, { hasText: /HollowPurple|Hollow Purple/ }).first().click()
-        await detail.waitFor({ state: 'visible', timeout: 10_000 })
-      }
+      // Open Hollow Purple itself, whatever is open. Earlier flows leave another effect open: after
+      // vfx-studio-import trashes the effect it made, studio-check opens the first card, which is the
+      // "Jab" labs-make-no-key made with Ability Composer, already in the project (no new files).
+      const card = page.locator(`${CENTER} .vfx-card`, { hasText: /HollowPurple|Hollow Purple/ }).first()
+      if (!(await card.evaluate((el: Element) => el.classList.contains('on')))) await card.click()
+      await page.locator(`${CENTER} .vfx-card.on`, { hasText: /HollowPurple|Hollow Purple/ }).waitFor({ timeout: 10_000 })
+      await detail.waitFor({ state: 'visible', timeout: 10_000 })
       // Adding the example put it in the library only: nothing in the project yet.
       const dir = join(root, 'src', 'shared', 'VFX', 'HollowPurple')
       check(!existsSync(dir), 'adding the VFX example already wrote src/shared/VFX/HollowPurple')
@@ -240,6 +285,8 @@ export const qolFlows: Flow[] = [
       }
       // First time: every file is new; write them.
       await open()
+      const heading = (await a2g.innerText()).split('\n')[0]
+      check(/HollowPurple|Hollow Purple/.test(heading), `Add to game opened for another effect: "${heading}"`)
       const files = await a2g.locator('.a2g-file .a2g-path').allInnerTexts()
       check(files.length > 0, 'Add to game lists no files')
       check((await a2g.locator('.a2g-file.new').count()) > 0, 'no file is listed as new for an unwritten example')

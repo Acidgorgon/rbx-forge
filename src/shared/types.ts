@@ -1,7 +1,7 @@
 // Contract shared by the main process, the preload bridge and the renderer.
 // Every IPC channel the renderer can call is listed in HarnessApi.
 
-import type { PathChange } from './fileOps.ts'
+import type { PathChange, TrashBatchResult } from './fileOps.ts'
 import type { IntegrationApi, IntegrationEvents, OrchestrateMode, UsageSummary } from './integrationTypes.ts'
 import type { AccountsApi, AccountsEvents } from './accountTypes.ts'
 import type { TerminalApi, TerminalEvents } from './terminalTypes.ts'
@@ -11,8 +11,8 @@ export type * from './uiPreviewTypes.ts'
 export type * from './artTypes.ts'
 import type { SetupApi, SetupEvents } from './setupTypes.ts'
 import type { ChatExtrasApi, ChatImage, EffortChoice, ModelMeta, NewChatOptions } from './chatTypes.ts'
-import type { BoardItem, ConclusionData, GroupApi, PatchProposal, ReviewData } from './groupTypes.ts'
-export type * from './groupTypes.ts'
+import type { BoardItem, ConclusionData, GroupApi, PatchProposal, ReviewData } from './group/types.ts'
+export type * from './group/types.ts'
 // Collab, release, tests, analytics, usage, orchestrator and feature-rename IPC types.
 export type * from './integrationTypes.ts'
 import type { MemoryApi, MemoryEvents } from './memoryTypes.ts'
@@ -30,25 +30,25 @@ import type { VfxTextureApi, VfxTextureEvents } from './vfxTextureTypes.ts'
 export type * from './vfxTextureTypes.ts'
 import type { AnimApi, AnimEvents } from './animTypes.ts'
 export type * from './animTypes.ts'
-import type { AbilityApi, AbilityEvents } from './abilityTypes.ts'
-export type * from './abilityTypes.ts'
+import type { AbilityApi, AbilityEvents } from './ability/api.ts'
+export type * from './ability/api.ts'
 import type { UiMotionApi, UiMotionEvents } from './uiMotionTypes.ts'
 export type * from './uiMotionTypes.ts'
 import type { StudioApi, StudioEvents } from './studio/types.ts'
 export type * from './studio/types.ts'
-import type { RefApi, RefEvents } from './refTypes.ts'
-export type * from './refTypes.ts'
-import type { PrincipleApi, PrincipleEvents } from './principleTypes.ts'
-export type * from './principleTypes.ts'
+import type { RefApi, RefEvents } from './videoref/api.ts'
+export type * from './videoref/api.ts'
+import type { PrincipleApi, PrincipleEvents } from './principles/api.ts'
+export type * from './principles/api.ts'
 import type { SyncApi, SyncEvents } from './sync/api.ts'
 export type * from './sync/api.ts'
 export type * from './sync/types.ts'
 import type { GatingApi, GatingEvents } from './gating/types.ts'
 export type * from './gating/types.ts'
-import type { RestateApi, RestateCard } from './restateTypes.ts'
+import type { RestateApi, RestateCard } from './restate/api.ts'
 import type { ChatModesApi } from './chatModesApi.ts'
 import type { ChatMode, ChatTodo, DiffCardData, PlanCardData } from './chatModes.ts'
-export type * from './restateTypes.ts'
+export type * from './restate/api.ts'
 import type { ThumbsApi, ThumbsEvents } from './thumbs/types.ts'
 export type * from './thumbs/types.ts'
 import type { QolApi, QolEvents } from './qol/types.ts'
@@ -247,7 +247,7 @@ export interface ChatMessage {
   // 'restate' = "Restate first": Forge's reading of a big request, waiting for a yes or an edit.
   card?: 'plan' | 'checklist' | 'restate' | 'conclusion' | 'patch' | 'review'
   restate?: RestateCard
-  // Group chat v2 cards (groupTypes.ts): consult conclusion, guest patch proposal, cross-check review.
+  // Group chat v2 cards (group/types.ts): consult conclusion, guest patch proposal, cross-check review.
   conclusion?: ConclusionData
   patch?: PatchProposal
   review?: ReviewData
@@ -356,7 +356,7 @@ export interface ChatSession {
   lastAt?: number
   // Team (orchestrator) mode for this chat; default 'auto'.
   orchestrate?: OrchestrateMode
-  // Orchestrator runs started from this chat, oldest first (see getOrchestration).
+  // Orchestrator runs started from this chat, oldest first (see getOrchestrations).
   orchestrations?: string[]
   // Chat mode (Ask / Plan / Edit with approval / Auto-accept); unset = 'edit'.
   chatMode?: ChatMode
@@ -558,7 +558,6 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   // Provider readiness/keys/models changed (a key was saved, a base URL edited...).
   'providers:changed': ProviderInfo[]
   // Codex sign-in progress (url: the login page, for when the browser did not open).
-  'codex:signin': { url?: string; message?: string }
   // JSON-RPC message from luau-lsp (or a harness/lsp* bridge notification), see lsp/index.ts.
   'lsp:message': unknown
   // events.blink (or an import) was re-parsed or re-checked.
@@ -583,6 +582,9 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   renamePath(path: string, name: string, isDir?: boolean): Promise<PathChange>
   // Explorer: moves a file or folder (an init script's folder) to the OS trash.
   trashPath(path: string, isDir?: boolean): Promise<PathChange>
+  // Explorer multi-select: moves several files / folders to the OS trash with one Rojo pause and one
+  // tree refresh. An entry inside another listed folder goes with it; failures are listed, not thrown.
+  trashPaths(entries: { path: string; isDir?: boolean }[]): Promise<TrashBatchResult>
 
   // Services
   getServices(): Promise<ServiceStatus[]>
@@ -633,16 +635,6 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   setChatModel(sessionId: string, provider: ProviderId, model: string): Promise<void>
   getDefaultModel(): Promise<ModelChoice>
   setDefaultModel(provider: ProviderId, model: string): Promise<void>
-  // Opt-in: let the anthropic provider fall back to an existing Claude Code login
-  // (or CLAUDE_CODE_OAUTH_TOKEN) when no API key is set. Personal use only.
-  getAnthropicUseClaudeLogin(): Promise<boolean>
-  setAnthropicUseClaudeLogin(on: boolean): Promise<void>
-  // Codex (ChatGPT plan): the CLI's sign-in. signIn runs `codex login` (opens the browser) and resolves
-  // when it finishes; signOut runs `codex logout`. Forge never sees the credentials.
-  codexStatus(refresh?: boolean): Promise<CodexAccount>
-  codexSignIn(): Promise<{ ok: boolean; message?: string }>
-  codexCancelSignIn(): Promise<void>
-  codexSignOut(): Promise<CodexAccount>
 
   // Test agents
   getAgents(): Promise<TestAgent[]>

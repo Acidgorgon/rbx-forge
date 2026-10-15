@@ -18,10 +18,6 @@ export const MAX_IMAGE_BYTES = 20 * 1024 * 1024
 const EXT: Record<ImageMime, string> = { 'image/png': 'png', 'image/jpeg': 'jpg', 'image/webp': 'webp', 'image/gif': 'gif' }
 const ID = /^[a-f0-9-]{36}$/
 
-export function isImageMime(v: string): v is ImageMime {
-  return (IMAGE_MIMES as readonly string[]).includes(v)
-}
-
 // Image type from the file's magic bytes (the extension or a data: URL header can lie).
 export function sniffMime(b: Uint8Array): ImageMime | null {
   if (b.length >= 8 && b[0] === 0x89 && b[1] === 0x50 && b[2] === 0x4e && b[3] === 0x47) return 'image/png'

@@ -10,6 +10,13 @@ export interface PathChange {
   isDir: boolean
 }
 
+// Result of an Explorer multi-select delete (HarnessApi.trashPaths): what went to the trash, and
+// what did not with why. Entries inside another listed folder are not tried on their own.
+export interface TrashBatchResult {
+  changes: PathChange[]
+  failed: { path: string; error: string }[]
+}
+
 // Rojo script suffixes, longest first: the part a rename keeps.
 const SCRIPT_SUFFIX = /(\.server\.luau|\.client\.luau|\.server\.lua|\.client\.lua|\.luau|\.lua)$/
 const INIT_FILE = /^init(\.server|\.client)?\.luau?$/

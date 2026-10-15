@@ -12,7 +12,6 @@ import { Providers } from '../src/main/agent/providers.ts'
 import { planSpawn } from '../src/main/services/tools.ts'
 import { runCli, extractUrl, stripAnsi } from '../src/main/accounts/cli.ts'
 import {
-  ClaudeAccount,
   claudeCliEnv,
   claudeSignInStatus,
   CLAUDE_LOGIN_ARGS,

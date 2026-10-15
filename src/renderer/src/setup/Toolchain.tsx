@@ -89,7 +89,7 @@ function ToolRow({ name, sub, version, step, tag, action }: { name: string; sub:
 // ---------------------------------------------------------------- first run
 
 export function ToolchainGate() {
-  const { state, actions } = useStore()
+  const { actions } = useStore()
   const tc = useToolchain()
   const [open, setOpen] = useState(false)
   const started = useRef(false)

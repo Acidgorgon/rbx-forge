@@ -6,7 +6,7 @@
 //
 // Pure loop over an injected `speak`, so tests drive it with fake models.
 
-import type { ConclusionData, GroupVoice } from '../../../shared/groupTypes.ts'
+import type { ConclusionData, GroupVoice } from '../../../shared/group/types.ts'
 import {
   checksFrom,
   conclusionPrompt,

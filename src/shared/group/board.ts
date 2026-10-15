@@ -2,7 +2,7 @@
 // plan cards, editable by the user, persisted with the chat, and handed to guests as a short block
 // in their context pack instead of long history. Pure.
 
-import type { BoardItem, BoardKind, ConclusionData } from '../groupTypes.ts'
+import type { BoardItem, BoardKind, ConclusionData } from './types.ts'
 
 export const BOARD_MAX_ITEMS = 60
 export const BOARD_TEXT_MAX = 400

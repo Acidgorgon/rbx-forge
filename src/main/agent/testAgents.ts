@@ -39,7 +39,6 @@ import { routeModel } from './budget/budget.ts'
 import { SdkUsageTracker } from './budget/usage.ts'
 import type { Meter } from './meter.ts'
 import { toSummary } from './meter.ts'
-import { withRules } from './projectRules.ts'
 import { defineTool, gentreeTools, mcpToolName, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
 
 const MAX_KEPT = 50
@@ -266,7 +265,7 @@ export class TestAgentRunner {
       let budgetStop: string | undefined
       try {
         for await (const m of queryFn({ prompt, options })) {
-          for (const cm of toChatMessages(m, run.agent.id)) this.push(run, cm)
+          for (const cm of toChatMessages(m, run.agent.id, undefined, { model: run.choice.model })) this.push(run, cm)
           if (meter) {
             meter.ledger.recordAll(tracker.onMessage(m), { agentId: run.agent.id })
             meter.setLive(run.agent.id, tracker.live())

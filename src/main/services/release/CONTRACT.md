@@ -30,7 +30,7 @@ tagging, so a rejected upload leaves no tag.
 | `types.ts` | All data types (mirror into shared types, below) and the injection interfaces `FetchLike`, `SecretStore`, `KeyValueStore` |
 | `openCloud.ts` | `lookupUniverseId(placeId)`, `publishPlace({...})`, `OpenCloudError` (`kind`: invalid-request/unauthorized/forbidden/not-found/conflict/rate-limited/server/network/invalid-input), `contentTypeFor`, `parseVersionNumber`, `looksLikeApiKey` |
 | `discord.ts` | `payload(embeds)`, `releaseEmbed`, `eventEmbed`, `clampEmbed` (all documented limits), `postWebhook` (429 `retry_after` handling, 404 = gone), `isWebhookUrl`, `redactWebhookUrl` |
-| `notify.ts` | `Notifier.notify(event)` / `.test(by)`, `NotificationTogglesSchema` (zod), `NOTIFY_EVENTS` (labels for the UI), `defaultToggles`, `parseToggles` |
+| `notify.ts` | `Notifier.notify(event)` / `.test(by)`, `NotificationTogglesSchema` (zod), `defaultToggles`, `parseToggles` |
 | `secrets.ts` | `secretKey(kind, root?)`, `readSecret` (project → global fallback), `MemorySecretStore`, `createEncryptedSecretStore(safeStorage, settings)` |
 | `version.ts` | semver parse/compare/bump, `suggestBump`, `listReleaseTags`, `lastReleaseTag`, `versionInfo`, `tagFor` |
 | `changelog.ts` | `buildChangelog(root, {since})`: commits since the last tag (conventional prefixes or verb guess, GenTree feature per commit, Forge auto-sync commits folded) + `.studio-sync/sync.log` activity → Markdown |
@@ -184,7 +184,7 @@ Opened from a **Release** button in the top bar (and the command palette: "Relea
      Add the universe-places API with Write for this experience. Stored encrypted on this computer only."
      Shown only for Rojo/file modes.
    - Discord webhook URL: password field, hint shows `webhookHint`, Save / Remove / "Send test".
-   - Notification toggles from `NOTIFY_EVENTS` (label + description), bound to `release:settings`.
+   - Notification toggles (labels in ReleasePage.tsx `NOTIFY_LABEL`), bound to `release:settings`.
 7. **Release button** → `release:run`; progress list from `release:step` (preflight, build, publish,
    version, tag, push, notify). On success in Studio mode show a prominent card with `nextAction` and a
    button "I've published it" → `release:markStudioPublished`. On failure show `error` and the failed

@@ -7,6 +7,7 @@
 .acct-check.ok { color: var(--ok); }
 .acct-check.err { color: var(--err); }
 .acct-actions { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; }
+.acct-actions .note.grow { flex: 1 1 180px; } /* wraps under the buttons in a narrow column instead of overflowing */
 .acct-alt { align-self: flex-start; font-size: 12px; }
 .acct-getkey { white-space: nowrap; font-size: 12px; }
 .acct-progress { display: flex; flex-direction: column; gap: 6px; padding: 8px 10px; border: 1px dashed var(--line-strong); border-radius: var(--r-md); }

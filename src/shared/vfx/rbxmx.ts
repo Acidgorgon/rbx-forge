@@ -399,6 +399,7 @@ export function writeRbxmx(roots: VfxNode[]): string {
       const l = writeProp(nd.className === 'Part' && key === 'Shape' ? 'shape' : key, spec.kind, value, refs, `${pad}\t\t`)
       if (l) lines.push(l)
     }
+    if (nd.attrs && Object.keys(nd.attrs).length) lines.push(`${pad}\t\t<BinaryString name="AttributesSerialize">${encodeAttributes(nd.attrs)}</BinaryString>`)
     if (nd.source !== undefined) lines.push(`${pad}\t\t<ProtectedString name="Source"><![CDATA[${nd.source.replace(/\]\]>/g, ']]]]><![CDATA[>')}]]></ProtectedString>`)
     lines.push(`${pad}\t</Properties>`)
     for (const c of nd.children) item(c, depth + 1)

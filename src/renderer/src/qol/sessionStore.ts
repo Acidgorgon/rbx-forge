@@ -48,10 +48,6 @@ export function loadSession(): Promise<SessionState> {
   return loading
 }
 
-export function session(): SessionState {
-  return state
-}
-
 export function setRoot(next: string | null): void {
   root = next
   changed(false)

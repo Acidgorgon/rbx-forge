@@ -26,7 +26,3 @@ export function registerPackSection(section: PackSection): () => void {
 export function packSections(): PackSection[] {
   return [...sections.values()]
 }
-
-export function packSection(id: string): PackSection | undefined {
-  return sections.get(id)
-}

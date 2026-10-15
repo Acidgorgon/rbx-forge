@@ -3,7 +3,7 @@
 // Claude Agent SDK and OpenAI-compatible loop adapters). See CONTRACT.md for the IPC/UI contract.
 
 import type { z, ZodRawShape } from 'zod'
-import type { ChatMessage, ProviderId } from '../../../shared/types.ts'
+import type { ProviderId } from '../../../shared/types.ts'
 
 export type Role = 'lead' | 'scout' | 'builder' | 'tester' | 'reviewer'
 export const ROLES: readonly Role[] = ['lead', 'scout', 'builder', 'tester', 'reviewer']
@@ -206,5 +206,3 @@ export interface OrchestratorSettings {
   hotFiles: string[]
   roles: Partial<Record<Role, RoleSettings>>
 }
-
-export type TranscriptMessage = ChatMessage

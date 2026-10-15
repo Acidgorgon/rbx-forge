@@ -3,6 +3,7 @@
 // parameter maps are lab-shaped (nodes by name, joints by name, events by label) so a diff reads
 // like the editor does. Pure code; other labs build their items with flattenParams the same way.
 
+import { bestIteration } from '../anim/quality.ts'
 import type { AnimClip, AnimEntry } from '../anim/model.ts'
 import type { Ability, AbilityEntry } from '../ability/types.ts'
 import type { ColorKey, NumKey, PropValue, VfxEffect, VfxEntry, VfxNode } from '../vfx/types.ts'
@@ -164,9 +165,13 @@ export interface AnimPayload {
 
 export function animCompareItems(entry: AnimEntry, library: AnimEntry[] = []): CompareItem<AnimPayload>[] {
   const its = entry.iterations ?? []
-  const best = its.filter((i) => i.critique).reduce<(typeof its)[number] | null>((x, y) => (!x || y.critique!.overall > x.critique!.overall ? y : x), null)
-  const last = its[its.length - 1]
-  const crit = last && JSON.stringify(last.clip) === JSON.stringify(entry.clip) ? last.critique : undefined
+  // The best round as the Animation Lab ranks it (critic + code metrics, regressed rounds excluded).
+  const best = bestIteration(its.filter((i) => i.critique))
+  // The current clip is the best round after a refinement, not necessarily the last one.
+  const cur = JSON.stringify(entry.clip)
+  const same = [...its].reverse().find((it) => JSON.stringify(it.clip) === cur)
+  const crit = same?.critique
+  const overallOf = (it: (typeof its)[number] | undefined) => it?.score?.quality ?? it?.critique?.overall
   const out: CompareItem<AnimPayload>[] = [
     {
       id: entry.id,
@@ -176,7 +181,7 @@ export function animCompareItems(entry: AnimEntry, library: AnimEntry[] = []): C
       sub: when(entry.updatedAt),
       at: entry.updatedAt,
       duration: entry.clip.duration,
-      overall: crit?.overall,
+      overall: crit ? overallOf(same) : undefined,
       scores: crit?.scores,
       principles: crit?.principles,
       principleScore: crit?.principleScore,
@@ -194,7 +199,7 @@ export function animCompareItems(entry: AnimEntry, library: AnimEntry[] = []): C
       sub: when(it.at),
       at: it.at,
       duration: it.clip.duration,
-      overall: it.critique?.overall,
+      overall: overallOf(it),
       scores: it.critique?.scores,
       principles: it.critique?.principles,
       principleScore: it.critique?.principleScore,

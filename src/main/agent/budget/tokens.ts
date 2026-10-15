@@ -86,11 +86,6 @@ export function estimateMessagesTokens(messages: readonly TokenMessage[]): numbe
   return n
 }
 
-// Approximate number of characters that fit in `tokens` (for slicing before a precise check).
-export function charsForTokens(tokens: number): number {
-  return Math.max(0, Math.floor(tokens * CODE_DIVISOR))
-}
-
 // Compact human form: 950, 1.2k, 34k, 1.5M.
 export function formatTokens(n: number): string {
   if (!Number.isFinite(n)) return '?'

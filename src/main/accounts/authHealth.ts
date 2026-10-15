@@ -5,9 +5,17 @@
 // query is watched (watchAnthropicAuth wraps the query function once in createAgentLayer): an
 // authentication error marks the credential failed, a successful turn or a passing Test connection
 // clears it. The record is kept in settings so the card still says "Sign-in expired" after a restart.
+//
+// A 403 is not always about the credential: the CLI words every 401 / 403 as "Failed to
+// authenticate. API Error: 403 ..." (and flags it authentication_failed), including a request for a
+// model the account cannot use. A 403 only counts as an auth failure when its text says the
+// credential is the problem (expired / revoked token, invalid key, not logged in, org not allowed),
+// or when a probe on another model fails too (probeAfterRejection); otherwise it is a per-model
+// rejection and the login stays as it was.
 
 import type { Options, SDKMessage } from '@anthropic-ai/claude-agent-sdk'
-import { isAuthError, type QueryFn } from '../agent/sdk.ts'
+import type { QueryFn } from '../agent/sdk.ts'
+import { classifyAuthError } from './authErrors.ts'
 
 export const AUTH_HEALTH_SETTING = 'anthropicAuthHealth'
 
@@ -27,16 +35,10 @@ export interface SettingsLike {
   setSetting(key: string, value: unknown): void
 }
 
-// Text of an Anthropic authentication failure (CLI and API wording).
-const AUTH_TEXT =
-  /failed to authenticate|authentication[_ ]failed|oauth (session|token) (has )?expired|could not be refreshed|invalid (x-)?api[- _]key|invalid bearer token|not logged in|please run \/login|login expired|token (has been )?revoked|\b401\b.*(unauthori[sz]ed|authentication)|unauthori[sz]ed.*\b401\b/i
+export { classifyAuthError, errorStatus, isAnthropicAuthError } from './authErrors.ts'
 
-// The chat's matcher (agent/sdk.ts isAuthError) plus CLI wording it does not cover.
-export function isAnthropicAuthError(text: unknown): boolean {
-  return typeof text === 'string' && (isAuthError(text) || AUTH_TEXT.test(text))
-}
-
-// SDK assistant-message error codes that mean the credential itself is the problem.
+// SDK assistant-message error codes that mean the credential itself is the problem (the CLI also
+// uses authentication_failed for a 403, see classifyAuthError).
 const AUTH_CODES = new Set(['authentication_failed', 'oauth_org_not_allowed'])
 
 export class AuthHealth {
@@ -84,35 +86,118 @@ export function viaOf(options: Pick<Options, 'env'> | undefined): AuthVia {
 }
 
 // What one SDK message says about authentication: 'failed' (with a reason), 'ok' or nothing.
-export function authSignal(m: SDKMessage): { ok: boolean; message?: string } | null {
+// rejected: a 403 that does not blame the credential (see classifyAuthError); it is not recorded,
+// watchAnthropicAuth probes another model instead.
+export function authSignal(m: SDKMessage): { ok: boolean; message?: string; rejected?: boolean } | null {
   const msg = m as any
   if (msg.type === 'assistant' && typeof msg.error === 'string' && AUTH_CODES.has(msg.error)) {
-    return { ok: false, message: msg.error }
+    if (msg.error === 'oauth_org_not_allowed') return { ok: false, message: msg.error }
+    const text = Array.isArray(msg.message?.content) ? msg.message.content.map((c: any) => (c?.type === 'text' ? String(c.text ?? '') : '')).join(' ').trim() : ''
+    return classifyAuthError(text) === 'rejected' ? { ok: false, message: text, rejected: true } : { ok: false, message: msg.error }
   }
   if (msg.type === 'result') {
     if (!msg.is_error && msg.subtype === 'success') return { ok: true }
     const text = typeof msg.result === 'string' ? msg.result : Array.isArray(msg.errors) ? msg.errors.join('; ') : ''
-    if (msg.api_error_status === 401 || isAnthropicAuthError(text)) return { ok: false, message: text || 'HTTP 401' }
+    const kind = classifyAuthError(text, msg.api_error_status)
+    if (kind === 'auth') return { ok: false, message: text || 'HTTP 401' }
+    if (kind === 'rejected') return { ok: false, message: text || 'HTTP 403', rejected: true }
   }
   return null
 }
 
+// The prompt of the probe that tells a per-model 403 from a dead credential.
+export const AUTH_PROBE_SYSTEM = 'Forge sign-in check. Reply with the single word OK.'
+const PROBE_TTL = 5 * 60_000
+
+// The model a probe uses instead of the rejected one (the cheap tier; Sonnet when Haiku was rejected).
+export function probeModelFor(rejected: string | undefined): string {
+  return /haiku/i.test(rejected ?? '') ? 'claude-sonnet-5-5' : 'claude-haiku-5-5'
+}
+
+export interface WatchOptions {
+  // Run a probe on another model after a per-model 403 (default true).
+  probe?: boolean
+  probeModel?: (rejected: string | undefined) => string
+  // Each probe's completion (tests wait on it).
+  onProbe?: (done: Promise<void>) => void
+}
+
+// After a 403 that does not blame the credential: one tiny request on another model. If that one
+// fails to authenticate too (401, credential wording, or another 403), the login really is the
+// problem and is marked failed; if it answers, the login works (recorded ok). Other outcomes
+// (overloaded, offline) record nothing. One probe per credential and model every few minutes.
+function probeAfterRejection(inner: QueryFn, health: AuthHealth, via: AuthVia, options: Options, message: string, opts: WatchOptions, recent: Map<string, number>): void {
+  if (opts.probe === false) return
+  const rejected = typeof options.model === 'string' ? options.model : undefined
+  const key = `${via}:${rejected ?? ''}`
+  const last = recent.get(key)
+  if (last !== undefined && Date.now() - last < PROBE_TTL) return
+  recent.set(key, Date.now())
+  const model = (opts.probeModel ?? probeModelFor)(rejected)
+  const done = (async () => {
+    let outcome: { ok: boolean; message?: string } | null = null
+    try {
+      for await (const m of inner({
+        prompt: 'OK?',
+        options: {
+          ...(options.cwd ? { cwd: options.cwd } : {}),
+          ...(options.env ? { env: options.env } : {}),
+          ...(options.pathToClaudeCodeExecutable ? { pathToClaudeCodeExecutable: options.pathToClaudeCodeExecutable } : {}),
+          model,
+          systemPrompt: AUTH_PROBE_SYSTEM,
+          mcpServers: {},
+          strictMcpConfig: true,
+          tools: [],
+          permissionMode: 'dontAsk',
+          settingSources: [],
+          persistSession: false,
+          maxTurns: 1
+        }
+      })) {
+        const s = authSignal(m)
+        if (s) outcome = s
+      }
+    } catch (e) {
+      const text = (e as Error)?.message
+      if (!outcome && classifyAuthError(text)) outcome = { ok: false, message: text }
+    }
+    if (!outcome) return
+    if (outcome.ok) health.record(via, true)
+    else health.record(via, false, `${message} (a check on ${model} failed too: ${outcome.message ?? 'auth error'})`)
+  })()
+  opts.onProbe?.(done)
+}
+
 // Wraps a query function so its outcomes feed AuthHealth. Messages pass through untouched.
-export function watchAnthropicAuth(inner: QueryFn, health: AuthHealth): QueryFn {
+export function watchAnthropicAuth(inner: QueryFn, health: AuthHealth, opts: WatchOptions = {}): QueryFn {
+  const recent = new Map<string, number>()
   return (params) => {
     const via = viaOf(params.options)
     const source = inner(params)
     return (async function* () {
+      // A per-model 403 seen in this query (probed once, after the query ends).
+      let rejected: string | null = null
+      let failed = false
       try {
         for await (const m of source) {
           const s = authSignal(m)
-          if (s) health.record(via, s.ok, s.message)
+          if (s?.rejected) rejected ??= s.message ?? 'HTTP 403'
+          else if (s) {
+            if (!s.ok) failed = true
+            health.record(via, s.ok, s.message)
+          }
           yield m
         }
       } catch (e) {
         const text = (e as Error)?.message
-        if (isAnthropicAuthError(text)) health.record(via, false, text)
+        const kind = classifyAuthError(text)
+        if (kind === 'auth') {
+          failed = true
+          health.record(via, false, text)
+        } else if (kind === 'rejected') rejected ??= text
         throw e
+      } finally {
+        if (rejected && !failed) probeAfterRejection(inner, health, via, params.options ?? {}, rejected, opts, recent)
       }
     })()
   }

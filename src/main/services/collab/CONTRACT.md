@@ -228,7 +228,6 @@ Add to `HarnessApi`:
   joinProject(input: JoinProjectInput): Promise<JoinResult>
   incomingChanges(options?: { summarize?: boolean }): Promise<IncomingChanges>
   activityFeed(query?: ActivityQuery): Promise<ActivityEntry[]>
-  blameFile(path: string): Promise<BlameResult>
   fileHistory(path: string, limit?: number): Promise<FileHistoryEntry[]>
   getForgeConfig(): Promise<ForgeProjectConfigRead>
   setForgeConfig(config: ForgeProjectConfig): Promise<ForgeProjectConfig>
@@ -239,16 +238,15 @@ Add to `HarnessApi`:
   claim(what: string, note?: string): Promise<ClaimView[]>
   releaseClaim(what: string): Promise<ClaimView[]>
   runLint(paths?: string[]): Promise<{ selene: ToolRun; stylua: ToolRun }>
-  formatFiles(paths: string[]): Promise<ToolRun>
   preSyncCheck(): Promise<PreSyncReport>
 ```
 
 ## 2. Add to `src/preload/index.ts` `methods`
 
 ```ts
-  'joinProject', 'incomingChanges', 'activityFeed', 'blameFile', 'fileHistory',
+  'joinProject', 'incomingChanges', 'activityFeed', 'fileHistory',
   'getForgeConfig', 'setForgeConfig', 'startFeatureBranch', 'openPullRequest', 'listOpenPRs',
-  'listClaims', 'claim', 'releaseClaim', 'runLint', 'formatFiles', 'preSyncCheck',
+  'listClaims', 'claim', 'releaseClaim', 'runLint', 'preSyncCheck',
 ```
 
 ## 3. Add to the `handlers` object in `src/main/index.ts`
@@ -275,7 +273,6 @@ const root = () => requireProject().root
       // summarize: options?.summarize ? (input) => summarizeWithModel(collab.incomingPrompt(input)) : undefined
     }),
   activityFeed: (query?: ActivityQuery) => collab.activityFeed(root(), query ?? { since: Date.now() - 14 * 864e5 }),
-  blameFile: (path: string) => collab.blame(root(), path),
   fileHistory: (path: string, limit?: number) => collab.fileHistory(root(), path, { limit }),
   getForgeConfig: () => collab.readProjectConfig(root()),
   setForgeConfig: (config: ForgeProjectConfig) => collab.writeProjectConfig(root(), config),
@@ -313,7 +310,6 @@ const root = () => requireProject().root
     selene: await collab.runSelene(root(), paths),
     stylua: await collab.runStylua(root(), paths, { check: true })
   }),
-  formatFiles: (paths: string[]) => collab.runStylua(root(), paths, { check: false }),
   preSyncCheck: () => collab.preSyncCheck(root()),
 ```
 

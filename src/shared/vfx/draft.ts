@@ -3,7 +3,7 @@
 // are pulled into the learned recipe's ranges. Deterministic, so it is testable.
 
 import { allNodes, emitterRole, KNOWN_TAGS } from './analyze.ts'
-import { safeName, type VfxLayerSpec, type VfxSpec } from './spec.ts'
+import { shortTitle, type VfxLayerSpec, type VfxSpec } from './spec.ts'
 import type { VfxEntry, VfxRecipe } from './types.ts'
 
 type Palette = { hot: string; mid: string; cool: string; smoke: string }
@@ -69,7 +69,7 @@ export function draftSpec(prompt: string, opts: { recipe?: VfxRecipe | null; tex
   const p = paletteFor(words)
   const rc = opts.recipe
   const tex = (role: string) => (opts.textures?.[role] ? { Texture: opts.textures[role] } : {})
-  const name = safeName(prompt.replace(/\b(make|a|an|the|effect|vfx|please)\b/gi, ' ')) || 'Effect'
+  const name = shortTitle(prompt)
   const sparks = (count: number, speed: number): VfxLayerSpec => ({
     name: 'Sparks',
     class: 'ParticleEmitter',

@@ -1,6 +1,8 @@
 // What a restart into an update would interrupt. Pure (tested in test/updater.test.ts): the
 // restart asks first when this returns anything, and never restarts on its own.
 
+import { plural } from '../lib/format.ts'
+
 export interface RestartInput {
   files: { path: string; current: string; saved: string }[]
   busy: Record<string, boolean>
@@ -10,7 +12,6 @@ export interface RestartInput {
 }
 
 const base = (path: string) => path.split(/[\\/]/).pop() ?? path
-const plural = (n: number, one: string, many: string) => `${n} ${n === 1 ? one : many}`
 
 export function restartBlockers(input: RestartInput): string[] {
   const out: string[] = []

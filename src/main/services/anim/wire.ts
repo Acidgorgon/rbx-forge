@@ -103,6 +103,7 @@ export function createAnimWiring(deps: AnimWireDeps): AnimWiring {
     animRefine: async (x: string, opts?: AnimRefineOptions) => {
       void service.refine(id(x), opts ?? {}).catch((e) => deps.log?.(`anim: refine: ${(e as Error).message}`, 'stderr'))
     },
+    animUseIteration: (x: string, n: unknown) => service.useIteration(id(x), Number(n)),
     animCancel: async (x: string) => service.cancel(id(x)),
     animChecks: (x: string) => service.checks(id(x)),
     animExamples: async () => service.examples(),

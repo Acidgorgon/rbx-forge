@@ -18,7 +18,7 @@
 import { randomUUID } from 'node:crypto'
 import { noProjectDir } from './noProjectDir.ts'
 import { z } from 'zod'
-import type { BoardItem, ChatImage, ChatMessage, GroupParticipant, GroupSettings, GroupUsage, ModelChoice, ProviderId, Speaker } from '@shared/types'
+import type { BoardItem, ChatImage, ChatMessage, GroupParticipant, GroupSettings, ModelChoice, ProviderId, Speaker } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import { fromAnthropicUsage, fromOpenAiUsage, priced, type Usage } from './budget/usage.ts'
 import type { Credentials } from './credentials.ts'
@@ -33,7 +33,7 @@ import { groupReadTools, guardReadOnly, type GroupIo } from './group/readTools.t
 import { runOpenAiLoop, type FetchFn } from './openaiLoop.ts'
 import { extraBody, type Providers } from './providers.ts'
 import { runResponsesLoop, usesResponsesApi } from './responsesLoop.ts'
-import { allowServer, AUTH_HELP, executableOption, isAuthError, sdkQuery, toChatMessages, type QueryFn } from './sdk.ts'
+import { allowServer, authHelpFor, executableOption, isAuthHelp, sdkQuery, toChatMessages, type QueryFn } from './sdk.ts'
 import { chatImageStore, hasChatImageStore } from './chatImages.ts'
 import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './imageParts.ts'
 import { supportsVision } from '../../shared/modelCaps.ts'
@@ -442,8 +442,8 @@ export class GroupChat {
             persistSession: false
           }
         })) {
-          for (const cm of toChatMessages(m, 'main')) {
-            if (cm.text === AUTH_HELP) authShown = true
+          for (const cm of toChatMessages(m, 'main', undefined, { model: p.model })) {
+            if (isAuthHelp(cm.text)) authShown = true
             emit(cm)
           }
           if (m.type === 'result') usage(fromAnthropicUsage(m.usage as any))
@@ -452,8 +452,9 @@ export class GroupChat {
         const text = (e as Error).message
         if (room.signal.aborted) {
           // stopped
-        } else if (isAuthError(text)) {
-          if (!authShown) emit({ id: randomUUID(), role: 'system', text: AUTH_HELP, at: Date.now(), agentId: 'main' })
+        } else if (authHelpFor(text, p.model)) {
+          // A per-model 403 names the model; a real auth failure gets the sign-in help.
+          if (!authShown) emit({ id: randomUUID(), role: 'system', text: authHelpFor(text, p.model)!, at: Date.now(), agentId: 'main' })
         } else emit({ id: randomUUID(), role: 'system', text: `${p.label}: ${text}`, at: Date.now(), agentId: 'main' })
       } finally {
         room.signal.removeEventListener('abort', onAbort)

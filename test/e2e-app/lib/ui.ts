@@ -121,8 +121,14 @@ export async function palette(page: Page, query: string): Promise<void> {
   await input.fill(`>${query}`)
 }
 
+// Settings shows one category at a time: click a section in the left rail (Appearance, Editor, Usage...).
+export async function settingsSection(page: Page, label: string): Promise<void> {
+  await page.locator('nav.set-nav button', { hasText: label }).first().click()
+}
+
 // Settings > Appearance > Theme (Dark / Light / System).
 export async function setTheme(page: Page, label: 'Dark' | 'Light' | 'System'): Promise<void> {
+  await settingsSection(page, 'Appearance')
   await page.locator('#set-appearance [role="radio"]', { hasText: label }).first().click()
 }
 

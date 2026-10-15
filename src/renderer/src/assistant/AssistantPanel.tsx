@@ -2,7 +2,7 @@
 // messages (no avatars), group chat, orchestrator task board, and the "> Type a message" composer.
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { useChatDraft, useChatScroll, rememberChatScroll } from '../qol/chatSession'
-import type { BoardView, ChatImage, ChatMessage, OrchestrateMode, TaskView } from '@shared/types'
+import type { BoardView, ChatImage, OrchestrateMode, TaskView } from '@shared/types'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'

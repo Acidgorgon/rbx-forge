@@ -313,7 +313,6 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
         ...(options?.summarize && deps.summarize ? { summarize: (input: collab.IncomingSummaryInput) => deps.summarize!(collab.incomingPrompt(input)) } : {})
       }),
     activityFeed: (query?: ActivityQuery) => collab.activityFeed(root(), query ?? { since: Date.now() - 14 * 864e5 }),
-    blameFile: (path: string) => collab.blame(root(), String(path)),
     fileHistory: (path: string, limit?: number) => collab.fileHistory(root(), String(path), { limit }),
     getForgeConfig: () => collab.readProjectConfig(root()),
     setForgeConfig: (config: ForgeProjectConfig) => collab.writeProjectConfig(root(), config),
@@ -351,7 +350,6 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
       const r = root()
       return { selene: await collab.runSelene(r, paths), stylua: await collab.runStylua(r, paths, { check: true }) }
     },
-    formatFiles: (paths: string[]) => collab.runStylua(root(), Array.isArray(paths) ? paths : [], { check: false }),
     preSyncCheck: () => collab.preSyncCheck(root()),
 
     // Release
@@ -442,7 +440,6 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     },
     analyticsOverview: (options?: { range?: string; metrics?: string[] }) => analytics.overview(options ?? {}),
     analyticsSeries: (query: AnalyticsSeriesQuery) => analytics.series(query),
-    analyticsCompare: (options: { metrics: string[]; a: string; b?: string }) => analytics.compare(options),
     analyticsAcquisition: (options?: { range?: string }) => analytics.acquisition(options ?? {}),
     analyticsImportCsv: (input: { path: string; metricHint?: string }) => analytics.importCsv({ path: String(input?.path ?? ''), metricHint: input?.metricHint }),
     analyticsRemoveImport: async (input: { metric: string; breakdown?: Record<string, string> }) => (await analytics.importStore()).remove(String(input?.metric ?? ''), input?.breakdown),

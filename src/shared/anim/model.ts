@@ -9,6 +9,7 @@ import type { PrincipleScore } from '../principles/types.ts'
 import type { Restatement } from '../restate/types.ts'
 import type { PartMotion } from './bodyparts.ts'
 import type { RemixOp, RemixOrigin } from './remix.ts'
+import type { MotionPriors, PriorCheck } from './priors.ts'
 
 export type { R6Joint }
 
@@ -177,6 +178,8 @@ export interface AnimStyleProfile {
   avoid: string[]
   // Timing (median seconds per beat) from video references with this tag; never poses.
   video?: { samples: number; beats: Record<string, number> }
+  // Learned motion priors (priors.ts): contact timing, lead limb, joint envelope, smoothness.
+  priors?: MotionPriors
 }
 
 export interface AnimStyle {
@@ -192,11 +195,14 @@ export interface AnimStyle {
 
 export interface AnimCheckIssue {
   // motion: a body part the request names barely moves (anim/bodyparts.ts).
-  check: 'sliding' | 'limits' | 'penetration' | 'readability' | 'timing' | 'motion'
+  // prior: a learned motion prior the clip violates (priors.ts).
+  check: 'sliding' | 'limits' | 'penetration' | 'readability' | 'timing' | 'motion' | 'prior'
   severity: 'info' | 'warn' | 'error'
   message: string
   joint?: string
   at?: number
+  // End of the span the issue covers (sliding: when the foot stops sliding or lifts).
+  to?: number
 }
 
 export interface AnimCheckReport {
@@ -211,6 +217,8 @@ export interface AnimCheckReport {
   spread: number
   // The body parts the request (and its move-type tags) name, and how far each moves.
   motion?: PartMotion[]
+  // The learned motion priors of the move type, measured on this clip (priors.ts).
+  priors?: PriorCheck[]
 }
 
 // ------------------------------------------------------------------ critique and refine
@@ -220,11 +228,12 @@ export type AnimRubricKey = (typeof ANIM_RUBRIC_KEYS)[number]
 
 // A change the critic (or an automatic check) proposes, applied on top of the script's clip.
 // principle: the principle the change raises (shared/principles), when the critic named one.
+// prior: the learned motion prior the change fixes (priors.ts), when the critic cited one.
 export type AnimChange =
-  | { kind: 'offset'; joint: R15Joint; at: number; rot: [number, number, number]; why?: string; principle?: string }
-  | { kind: 'retime'; from: number; to: number; scale: number; why?: string; principle?: string }
-  | { kind: 'ease'; at: number; joint?: R15Joint; style: PoseEasingStyle; dir?: PoseEasingDirection; why?: string; principle?: string }
-  | { kind: 'fix'; check: 'limits' | 'sliding' | 'penetration'; why?: string; principle?: string }
+  | { kind: 'offset'; joint: R15Joint; at: number; rot: [number, number, number]; why?: string; principle?: string; prior?: string }
+  | { kind: 'retime'; from: number; to: number; scale: number; why?: string; principle?: string; prior?: string }
+  | { kind: 'ease'; at: number; joint?: R15Joint; style: PoseEasingStyle; dir?: PoseEasingDirection; why?: string; principle?: string; prior?: string }
+  | { kind: 'fix'; check: 'limits' | 'sliding' | 'penetration'; why?: string; principle?: string; prior?: string }
 
 export interface AnimCritique {
   scores: Record<AnimRubricKey, number>
@@ -246,6 +255,26 @@ export interface AnimCritique {
   mustFix?: string[]
 }
 
+// How an iteration ranks (quality.ts): the critic's score blended with the code metrics, so a critic
+// that likes a later round more cannot hide a measured regression.
+export interface AnimIterationScore {
+  // Composite 0..10: criticWeight x critic + (1 - criticWeight) x objective.
+  quality: number
+  critic: number
+  // Code metrics 0..10 (checks, motion intent, learned priors, smoothness, planted feet).
+  objective: number
+  parts: { checks: number; intent: number; priors: number; smooth: number; feet?: number }
+  // Failed hard requirements (a named / lead body part that barely moves).
+  failures: number
+  // Swing of the lead limb (degrees), when the move has one, and the references' swing.
+  lead?: number
+  leadRef?: number
+  criticWeight: number
+  // False when the round regressed below the best so far (the loop went back to the best).
+  accepted: boolean
+  regressed?: string
+}
+
 export interface AnimIteration {
   n: number
   at: number
@@ -255,6 +284,9 @@ export interface AnimIteration {
   critique?: AnimCritique
   // Remixed clips: the ops that produced this iteration's clip.
   ops?: RemixOp[]
+  score?: AnimIterationScore
+  // Changes the guard refused to apply after this round (they shrank the lead limb, broke a limit...).
+  guarded?: { change: unknown; reason: string }[]
 }
 
 export interface AnimRefineOptions {
@@ -269,6 +301,8 @@ export interface AnimRefineProgress {
   phase: 'render' | 'critique' | 'adjust' | 'done' | 'error'
   score?: number
   message?: string
+  // The best iteration so far and its composite score.
+  best?: { n: number; quality: number }
 }
 
 export interface AnimScriptResult {
@@ -281,6 +315,8 @@ export interface AnimScriptResult {
   checks?: AnimCheckReport
   entry?: AnimEntry
   source?: 'model' | 'draft' | 'example' | 'remix'
+  // compose with source 'draft': "Drafted without a model because: <error>".
+  modelError?: string
 }
 
 export interface AnimImportResult {

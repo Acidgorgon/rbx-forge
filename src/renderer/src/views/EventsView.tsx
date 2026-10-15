@@ -2,7 +2,7 @@
 // direction, type and data; diagnostics; copy usage; generated outputs read-only; new event form.
 import { useMemo, useState, type MouseEvent } from 'react'
 import type { BlinkEvent, BlinkModel } from '@shared/types'
-import { blinkUsage } from '@shared/blinkUsage'
+import { blinkUsage } from '@shared/blink/usage'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { ClassIcon } from '../components/ClassIcon'

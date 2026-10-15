@@ -521,13 +521,6 @@ export function gentreeTools(ctx: HarnessContext, opts: GentreeToolOptions = {})
 
 // Wraps tools in a fresh in-process MCP server. Create one per query: an McpServer instance
 // connects to a single transport, so concurrent queries must not share one.
-export function createGentreeServer(
-  ctx: HarnessContext,
-  opts: GentreeToolOptions & { extraTools?: GentreeTool<any>[] } = {}
-): McpSdkServerConfigWithInstance {
-  return wrapInSdkServer([...gentreeTools(ctx, opts), ...(opts.extraTools ?? [])])
-}
-
 export function wrapInSdkServer(tools: GentreeTool<any>[]): McpSdkServerConfigWithInstance {
   return createSdkMcpServer({
     name: SERVER_NAME,

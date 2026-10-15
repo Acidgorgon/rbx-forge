@@ -4,7 +4,7 @@
 // Luau module and .rbxmx) and the iteration history side by side.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { usePersisted } from '../../qol/sessionStore'
-import type { VfxEffect, VfxEntry, VfxLabStatus, VfxRecipe, VfxRefineProgress, VfxScope } from '@shared/types'
+import type { LiveStatus, VfxEffect, VfxEntry, VfxImportResult, VfxImportScan, VfxLabStatus, VfxRecipe, VfxRefineProgress, VfxScope, VfxStudioPack } from '@shared/types'
 import { RUBRIC_KEYS } from '@shared/vfx/types'
 import { dedupeWarnings, IMPORT_VERSION, layerRoles, perfWarnings } from '@shared/vfx/analyze'
 import { useStore } from '../../store'
@@ -26,8 +26,14 @@ import { CompareButton, VfxCompare } from '../compare/LabCompare'
 import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
 import { AddToGameButton } from '../qolc/AddToGame'
+import { EffectImportReview, importProgressText, useImportProgress } from './EffectImport'
+import { DuplicatesPanel, LiveControls, liveLine, matchesTagFilter, TagFilters, TagGroupEditor, type TagFilter } from './LibraryTools'
+import { tagGroupsOf } from '@shared/vfx/tags'
+import { chooseRecipe, fitToPriors, priorFit } from '@shared/vfx/priors'
 
-const IMPORT_HINT = '.rbxm · .rbxmx · folders · png/jpg · video refs: mp4/webm/mov/gif'
+const IMPORT_HINT = '.rbxm · .rbxmx · .rbxl places · folders · png/jpg · video refs: mp4/webm/mov/gif'
+// After a bulk import of more than this many effects the lab offers to learn from them.
+const LEARN_OFFER_MIN = 10
 const SUGGESTIONS = ['sword slash', 'fire aura', 'lightning impact', 'heal burst', 'dash trail', 'energy beam']
 const SEQ_SUGGESTIONS = ['fireball that charges and explodes', 'charged lightning slash', 'ground slam shockwave', 'teleport blink', 'dragon breath sweep']
 const EXAMPLES = [
@@ -62,11 +68,14 @@ function useEntryFile(id: string, file: string | undefined, stamp = 0): string |
 const qualityTag = (e: VfxEntry) => (e.quality === 'avoid' ? <span className="tag err">avoid</span> : e.quality === 'good' ? <span className="tag ok">good</span> : e.quality === 'reference' ? <span className="tag info">ref</span> : null)
 const kindLabel = (e: VfxEntry) => (e.kind === 'media' ? (e.media?.[0]?.mime.startsWith('video') ? 'video' : 'image') : e.kind === 'generated' ? 'made' : 'model')
 
-function Card({ entry, selected, progress, onSelect }: { entry: VfxEntry; selected: boolean; progress?: VfxRefineProgress; onSelect: () => void }) {
+function Card({ entry, selected, checked, selecting, progress, onSelect }: { entry: VfxEntry; selected: boolean; checked?: boolean; selecting?: boolean; progress?: VfxRefineProgress; onSelect: (e: React.MouseEvent) => void }) {
   const thumb = entry.thumbs[0] ?? (entry.kind === 'media' && entry.media?.[0]?.mime.startsWith('image') ? entry.media[0].file : undefined)
   const url = useEntryFile(entry.id, thumb, entry.updatedAt)
+  const g = tagGroupsOf(entry)
+  const shown = [...g.kind, ...g.element, ...g.custom, ...g.timing].slice(0, 4)
   return (
-    <button className={`vfx-card${selected ? ' on' : ''}`} onClick={onSelect} aria-pressed={selected} title={entry.description || entry.name}>
+    <button className={`vfx-card${selected ? ' on' : ''}${checked ? ' checked' : ''}`} onClick={onSelect} aria-pressed={selecting ? !!checked : selected} title={entry.description || entry.name} data-testid="vfx-card">
+      {selecting && <span className={`vfx-check${checked ? ' on' : ''}`} aria-hidden>{checked ? <Icon name="check" size={10} /> : null}</span>}
       <div className="vfx-thumb">
         {url ? <img src={url} alt="" loading="lazy" draggable={false} /> : <Icon name="sparkle" size={22} className="vfx-thumb-ph" />}
         {progress && progress.phase !== 'done' && progress.phase !== 'error' && (
@@ -81,7 +90,7 @@ function Card({ entry, selected, progress, onSelect }: { entry: VfxEntry; select
         <span className="faint mono">{kindLabel(entry)}</span>
       </div>
       <div className="vfx-tags">
-        {entry.tags.slice(0, 4).map((t) => (
+        {shown.map((t) => (
           <span key={t} className="vfx-tag">
             {t}
           </span>
@@ -164,13 +173,12 @@ function Media({ entry }: { entry: VfxEntry }) {
   return <div className="vfx-media">{url ? m.mime.startsWith('video') ? <video src={url} controls loop muted playsInline /> : <img src={url} alt={entry.name} /> : <span className="spinner" />}</div>
 }
 
-function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progress?: VfxRefineProgress; recipes: VfxRecipe[]; onClose: () => void }) {
+function Detail({ entry, entries, progress, recipes, live, onClose, onTrashed }: { entry: VfxEntry; entries: VfxEntry[]; progress?: VfxRefineProgress; recipes: VfxRecipe[]; live: LiveStatus | null; onClose: () => void; onTrashed: (batch: string, n: number) => void }) {
   const { actions } = useStore()
   const h = window.harness
   const [tab, setTab] = useState<'params' | 'script' | 'iterations' | 'studio' | 'info'>(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info')
   const [draft, setDraft] = useState<VfxEffect | undefined>(entry.effect)
   const [saving, setSaving] = useState(false)
-  const [tags, setTags] = useState(entry.tags.join(', '))
   const [comparing, setComparing] = useState(false)
   const timer = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const pendingRef = useRef<VfxEffect | null>(null)
@@ -180,7 +188,6 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
   // A new entry, or a server-side update (refine wrote a better version) while no edit is pending.
   useEffect(() => {
     if (!pendingRef.current) setDraft(entry.effect)
-    setTags(entry.tags.join(', '))
   }, [entry.id, entry.updatedAt])
   useEffect(() => setTab(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info'), [entry.id])
 
@@ -206,9 +213,35 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
     timer.current = setTimeout(() => void flush(), 600)
   }
 
+  // Live in Studio / Loop: Studio gets the effect as it is here (edits included; main debounces).
+  const liveOn = !!live && live.state !== 'off'
+  useEffect(() => {
+    if (liveOn && draft) void h.vfxLiveSet({ key: entry.id, effect: draft, label: entry.name }).catch(() => undefined)
+  }, [liveOn, entry.id, draft])
+  const looping = liveOn && live?.pinned === entry.id
+  const loop = async () => {
+    try {
+      if (looping) await h.vfxLiveStop({ loop: true })
+      else if (draft) await h.vfxLiveStart({ pin: entry.id, current: { key: entry.id, effect: draft, label: entry.name } })
+    } catch (e) {
+      actions.toast({ text: 'Loop in Studio failed', detail: errorText(e), kind: 'err' })
+    }
+  }
+
   const warnings = useMemo(() => (draft ? dedupeWarnings(perfWarnings(draft)) : []), [draft])
   const refining = !!progress && progress.phase !== 'done' && progress.phase !== 'error'
-  const recipe = recipes.find((r) => entry.tags.includes(r.tag))
+  const recipe = useMemo(() => chooseRecipe(recipes, entry.tags), [recipes, entry.tags.join('|')])
+  // Generated effects against the learned ranges of the user's effects of this type (imported ones
+  // are the references themselves).
+  const fit = useMemo(() => (draft && entry.kind === 'generated' ? priorFit(draft, recipe) : null), [draft, recipe, entry.kind])
+  const fitToLibrary = () => {
+    if (!draft) return
+    const r = fitToPriors(draft, recipe, { all: true })
+    if (!r.applied.length) return
+    edit(r.effect)
+    actions.toast({ text: `${r.applied.length} value${r.applied.length === 1 ? '' : 's'} fitted to your ${recipe!.tag.replace('+', ' ')} effects`, kind: 'ok', ms: 2600 })
+  }
+  const nameOf = (id: string) => entries.find((e) => e.id === id)?.name ?? id
 
   const rate = async (r: 'up' | 'down') => {
     try {
@@ -257,9 +290,13 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
     }
   }
   const remove = async () => {
-    if (!confirm(`Delete ${entry.name} from the ${entry.scope} library?`)) return
-    await h.vfxDelete(entry.id).catch((e) => actions.toast({ text: 'Delete failed', detail: errorText(e), kind: 'err' }))
-    onClose()
+    try {
+      const r = await h.vfxTrash([entry.id])
+      onTrashed(r.batch, r.removed.length)
+      onClose()
+    } catch (e) {
+      actions.toast({ text: 'Delete failed', detail: errorText(e), kind: 'err' })
+    }
   }
 
   return (
@@ -317,6 +354,9 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
           <button className="btn small" onClick={() => void studio()} title="Write src/shared/VFX/<Name>, sync with Rojo, copy a command-bar line">
             <Icon name="studio" size={11} /> Test in Studio
           </button>
+          <button className={`btn small${looping ? ' on' : ''}`} aria-pressed={looping} onClick={() => void loop()} title={looping ? 'Stop the loop (removes what it spawned in Studio)' : 'Replay it in Studio every duration + gap until Stop or another effect is picked (Forge Bridge plugin; the camera stays where you put it)'} data-testid="vfx-loop">
+            <Icon name={looping ? 'stop' : 'restart'} size={11} /> {looping ? 'Stop loop' : 'Loop'}
+          </button>
           {entry.effect && <AddToGameButton lab="vfx" id={entry.id} />}
           {entry.written && <span className="note mono vfx-written" title={`${entry.written.module}\n${entry.written.model}`}>{entry.written.module}</span>}
           <span className="grow" />
@@ -334,6 +374,28 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
             </li>
           ))}
         </ul>
+      )}
+
+      {fit && fit.issues.length > 0 && (
+        <div className="vfx-fit" data-testid="vfx-library-fit">
+          <div className="row">
+            <Icon name="memory" size={11} />
+            <span className="grow note">
+              {fit.issues.length} of {fit.checks} values outside your {recipe!.tag.replace('+', ' ')} effects ({recipe!.samples} learned)
+            </span>
+            <button className="btn small" onClick={fitToLibrary} title="Move these values to the middle of what your own effects of this type use">
+              Fit to my library
+            </button>
+          </div>
+          <ul>
+            {fit.issues.slice(0, 4).map((i) => (
+              <li key={`${i.node}|${i.prop}`} className={i.far ? 'far' : ''}>
+                {i.message}
+              </li>
+            ))}
+            {fit.issues.length > 4 && <li className="faint">and {fit.issues.length - 4} more</li>}
+          </ul>
+        </div>
       )}
 
       <div className="seg vfx-tabs" role="tablist">
@@ -375,10 +437,44 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
           <dl className="vfx-meta">
             <dt>tags</dt>
             <dd>
-              <input className="input" value={tags} onChange={(e) => setTags(e.target.value)} onBlur={() => tags !== entry.tags.join(', ') && void h.vfxUpdate(entry.id, { tags: tags.split(',').map((t) => t.trim().toLowerCase()).filter(Boolean) })} aria-label="Tags" />
+              <TagGroupEditor entry={entry} />
             </dd>
             <dt>origin</dt>
             <dd className="mono">{entry.origin}</dd>
+            {!!entry.basedOn?.length && (
+              <>
+                <dt>made from</dt>
+                <dd data-testid="vfx-made-from">
+                  {entry.basedOn.map(nameOf).join(', ')}
+                  {!!entry.makeNotes?.length && (
+                    <ul className="vfx-import-notes">
+                      {entry.makeNotes.map((n) => (
+                        <li key={n} className="note">
+                          {n}
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </dd>
+              </>
+            )}
+            {entry.pick && (
+              <>
+                <dt>variations</dt>
+                <dd className="note">
+                  kept {String.fromCharCode(65 + entry.pick.chosen)} of {entry.pick.of} ({entry.pick.by === 'critic' ? 'the critic' : 'the code checks'}: {entry.pick.why})
+                  {entry.pick.scores && <span className="faint mono"> · {entry.pick.scores.map((x, i) => `${String.fromCharCode(65 + i)} ${x.toFixed(1)}`).join(' · ')}</span>}
+                </dd>
+              </>
+            )}
+            {entry.modelNote && (
+              <>
+                <dt>model</dt>
+                <dd className="note vfx-model-note" role="note">
+                  {entry.modelNote}
+                </dd>
+              </>
+            )}
             {!!entry.importNotes?.length && (
               <>
                 <dt>import</dt>
@@ -444,7 +540,7 @@ function Detail({ entry, progress, recipes, onClose }: { entry: VfxEntry; progre
               <>
                 <dt>recipe</dt>
                 <dd>
-                  <span className="mono">vfx-recipe-{recipe.tag}</span> <span className="faint">· {recipe.samples} samples</span>
+                  <span className="mono">vfx-recipe-{recipe.tag.replace(/[^a-z0-9-]+/gi, '-')}</span> <span className="faint">· {recipe.samples} samples</span>
                 </dd>
               </>
             )}
@@ -471,10 +567,23 @@ export function VfxLabPage() {
   // Selection and library tab survive restarts (qol/sessionStore).
   const [selected, setSelected] = usePersisted<string | null>('vfx.selected', null)
   const [query, setQuery] = useState('')
-  const [tag, setTag] = useState<string | null>(null)
+  const [tagFilter, setTagFilter] = useState<TagFilter>({})
+  // Bulk import review (files or Studio), the learn offer after a big import, library selection.
+  const [scan, setScan] = useState<VfxImportScan | null>(null)
+  const [learnOffer, setLearnOffer] = useState<number | null>(null)
+  const [selecting, setSelecting] = useState(false)
+  const [checked, setChecked] = useState<Set<string>>(new Set())
+  const [anchor, setAnchor] = useState<string | null>(null)
+  const [showDups, setShowDups] = useState(false)
+  const importProgress = useImportProgress()
+  // Live in Studio (persisted toggle) and the loop state from main.
+  const [liveOn, setLiveOn] = usePersisted<boolean>('vfx.live', false)
+  const [live, setLive] = useState<LiveStatus | null>(null)
   const [scope, setScope] = useState<VfxScope>('user')
   const [prompt, setPrompt] = useState('')
   const [iters, setIters] = useState(4)
+  // Variations per Make: the critic (or the library-fit checks) keeps one.
+  const [variations, setVariations] = usePersisted<number>('vfx.variations', 3)
   const [threshold, setThreshold] = useState(7.5)
   const [making, setMaking] = useState(false)
   // single: one burst of layers (draft spec); sequence: multi-stage timeline script with the kit.
@@ -509,36 +618,139 @@ export function VfxLabPage() {
       if (p.phase === 'error') actions.toast({ text: 'Refine stopped', detail: p.message, kind: 'err' })
       if (p.phase === 'done') actions.toast({ text: `Refine finished${p.score != null ? ` · ${p.score.toFixed(1)}/10` : ''}`, detail: p.message, kind: 'ok', ms: 3500 })
     })
-    return () => (off1(), off2())
+    const off3 = h.on('vfx:live', (st) => {
+      setLive(st)
+      if (st.error && st.state !== 'looping') actions.toast({ text: 'Live in Studio', detail: st.error, kind: 'err', ms: 5000 })
+      // Forge gave up (Studio kept failing to start it): the toggle goes off with it.
+      if (st.state === 'off' && st.error) setLiveOn(false)
+    })
+    return () => (off1(), off2(), off3())
   }, [load])
-
-  const allTags = useMemo(() => {
-    const count = new Map<string, number>()
-    for (const e of entries) for (const t of e.tags) count.set(t, (count.get(t) ?? 0) + 1)
-    return [...count.entries()].sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0])).slice(0, 18)
-  }, [entries])
+  // The header toggle starts / stops the live loop (a Loop on one entry stops with it too).
+  useEffect(() => {
+    void (liveOn ? h.vfxLiveStart({}) : h.vfxLiveStop({ follow: true }))
+      .then(setLive)
+      .catch(() => undefined)
+  }, [liveOn])
 
   const shown = useMemo(() => {
     const words = query.toLowerCase().split(/\s+/).filter(Boolean)
-    return entries.filter((e) => (!tag || e.tags.includes(tag)) && words.every((w) => `${e.name} ${e.description} ${e.tags.join(' ')}`.toLowerCase().includes(w)))
-  }, [entries, query, tag])
+    return entries.filter((e) => matchesTagFilter(e, tagFilter) && words.every((w) => `${e.name} ${e.description} ${e.tags.join(' ')}`.toLowerCase().includes(w)))
+  }, [entries, query, tagFilter])
 
   const current = entries.find((e) => e.id === selected) ?? null
 
+  // Deleted entries go to the library trash until the next start: Undo for 10 s.
+  const trashed = (batch: string, n: number) => {
+    if (!n) return
+    setChecked(new Set())
+    actions.toast({
+      text: `Deleted ${n} effect${n === 1 ? '' : 's'}`,
+      kind: 'info',
+      ms: 10_000,
+      action: {
+        label: 'Undo',
+        run: () =>
+          void h
+            .vfxRestore(batch)
+            .then((r) => actions.toast({ text: `Restored ${r.restored.length}`, kind: 'ok', ms: 2500 }))
+            .catch((e) => actions.toast({ text: 'Undo failed', detail: errorText(e), kind: 'err' }))
+      }
+    })
+  }
+  const imported = async (r: VfxImportResult) => {
+    setScan(null)
+    await load()
+    if (r.added[0]) setSelected(r.added[0].id)
+    const models = r.added.filter((e) => e.kind === 'model').length
+    actions.toast({
+      text: `Imported ${r.added.length} effect${r.added.length === 1 ? '' : 's'}`,
+      detail:
+        [
+          r.duplicates?.length ? `${r.duplicates.length} already in the library (skipped)` : '',
+          r.meshes ? `meshes: ${r.meshes.loaded} of ${r.meshes.total} loaded` : '',
+          r.skipped.length ? `Skipped ${r.skipped.length}: ${r.skipped.slice(0, 3).map((s) => `${s.file.split(/[\\/]/).pop()} (${s.reason})`).join('; ')}` : '',
+          ...(r.notes ?? []).slice(0, 2).map((n) => `${n.file.split(/[\\/]/).pop()}: ${n.notes.join(' ')}`)
+        ]
+          .filter(Boolean)
+          .join('\n') || undefined,
+      kind: r.added.length ? 'ok' : 'info'
+    })
+    if (models > LEARN_OFFER_MIN) setLearnOffer(models)
+  }
+  // Files: scan first; one effect with nothing to decide imports at once, more open the review.
   const importPaths = async (paths: string[]) => {
     if (!paths.length) return
-    setBusy(`importing ${paths.length} item${paths.length === 1 ? '' : 's'}…`)
+    setBusy(`reading ${paths.length} item${paths.length === 1 ? '' : 's'}…`)
     try {
-      const r = await h.vfxImport(paths, scope)
-      await load()
-      if (r.added[0]) setSelected(r.added[0].id)
-      actions.toast({
-        text: `Imported ${r.added.length} effect${r.added.length === 1 ? '' : 's'}`,
-        detail: [r.skipped.length ? `Skipped ${r.skipped.length}: ${r.skipped.slice(0, 3).map((s) => `${s.file.split(/[\\/]/).pop()} (${s.reason})`).join('; ')}` : '', ...(r.notes ?? []).slice(0, 2).map((n) => `${n.file.split(/[\\/]/).pop()}: ${n.notes.join(' ')}`)].filter(Boolean).join('\n') || undefined,
-        kind: r.added.length ? 'ok' : 'info'
-      })
+      const sc = await h.vfxImportScan(paths)
+      const decide = sc.rows.length > 1 || sc.rows.some((r) => r.duplicates.some((d) => d.scope === scope) || r.sameAs)
+      if (decide) setScan(sc)
+      else if (sc.rows.length || sc.media.length) await imported(await h.vfxImportCommit({ scanId: sc.scanId, scope, rows: sc.rows.map((r) => ({ key: r.key, name: r.name })) }))
+      else actions.toast({ text: 'Nothing to import', detail: sc.skipped.slice(0, 3).map((s) => `${s.file.split(/[\\/]/).pop()} (${s.reason})`).join('; ') || undefined, kind: 'info' })
     } catch (e) {
       actions.toast({ text: 'Import failed', detail: errorText(e), kind: 'err' })
+    } finally {
+      setBusy(null)
+    }
+  }
+  const fromStudio = async (packs?: VfxStudioPack[]) => {
+    setBusy(packs ? 'reading the folders in Studio…' : 'reading the Studio selection…')
+    try {
+      const sc = await h.vfxStudioScan(packs ? { packs: packs.map((p) => p.path) } : {})
+      if (!sc.rows.length && !sc.packs?.length) actions.toast({ text: 'Nothing to import from Studio', detail: sc.notes.join(' ') || undefined, kind: 'info' })
+      else setScan(sc)
+    } catch (e) {
+      actions.toast({ text: 'Import from Studio failed', detail: errorText(e), kind: 'err' })
+    } finally {
+      setBusy(null)
+    }
+  }
+  const pick = (e: VfxEntry, ev: React.MouseEvent) => {
+    if (selecting || ev.ctrlKey || ev.metaKey || ev.shiftKey) {
+      setSelecting(true)
+      const next = new Set(checked)
+      if (ev.shiftKey && anchor) {
+        const a = shown.findIndex((x) => x.id === anchor)
+        const b = shown.findIndex((x) => x.id === e.id)
+        if (a >= 0 && b >= 0) for (const x of shown.slice(Math.min(a, b), Math.max(a, b) + 1)) next.add(x.id)
+      } else if (next.has(e.id)) next.delete(e.id)
+      else next.add(e.id)
+      setAnchor(e.id)
+      setChecked(next)
+      return
+    }
+    setSelected(e.id === selected ? null : e.id)
+  }
+  const deleteChecked = async () => {
+    try {
+      const r = await h.vfxTrash([...checked])
+      if (selected && checked.has(selected)) setSelected(null)
+      trashed(r.batch, r.removed.length)
+      setSelecting(false)
+    } catch (e) {
+      actions.toast({ text: 'Delete failed', detail: errorText(e), kind: 'err' })
+    }
+  }
+  const clearLibrary = async () => {
+    const n = entries.filter((e) => e.scope === scope).length
+    if (!n) return actions.toast({ text: `The ${scope === 'user' ? 'user' : 'project'} library is already empty`, kind: 'info' })
+    if (!confirm(`Clear the ${scope === 'user' ? 'user' : 'project'} library? This moves all ${n} effect${n === 1 ? '' : 's'} to the trash (Undo for 10 s; emptied when Forge restarts).`)) return
+    try {
+      const r = await h.vfxClear(scope)
+      setSelected(null)
+      trashed(r.batch, r.removed.length)
+    } catch (e) {
+      actions.toast({ text: 'Clear failed', detail: errorText(e), kind: 'err' })
+    }
+  }
+  const retag = async () => {
+    setBusy('re-tagging…')
+    try {
+      const r = await h.vfxRetag()
+      actions.toast({ text: `Re-tagged ${r.changed} of ${r.total}`, detail: 'Kind, element and timing come from names, layer roles and colours; tags you edited stay.', kind: 'ok', ms: 4000 })
+    } catch (e) {
+      actions.toast({ text: 'Re-tag failed', detail: errorText(e), kind: 'err' })
     } finally {
       setBusy(null)
     }
@@ -554,6 +766,7 @@ export function VfxLabPage() {
     void importPaths(paths)
   }
   const learn = async () => {
+    setLearnOffer(null)
     setBusy('learning recipes…')
     try {
       const r = await h.vfxLearn()
@@ -575,15 +788,17 @@ export function VfxLabPage() {
         // Restate first: the confirmed reading of the brief goes into compose (null = cancelled).
         const g = await restate.gate(what)
         if (!g) return
-        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
+        const r = await h.vfxCompose(what, { maxIterations: iters, threshold, variations, ...(pin ? { reference: pin.id } : {}), ...(g.restatement ? { restatement: g.restatement } : {}) })
         if (!r.ok || !r.entry) throw new Error(r.error ? `${r.error.line ? `line ${r.error.line}: ` : ''}${r.error.message}` : 'the timeline did not compile')
         await load()
         setSelected(r.entry.id)
+        if (r.entry.modelNote) actions.toast({ text: `${r.entry.name}: drafted without a model`, detail: r.entry.modelNote, kind: 'err', ms: 12_000 })
         if (r.warnings.length) actions.toast({ text: `${r.entry.name}: ${r.warnings.length} timeline warning${r.warnings.length === 1 ? '' : 's'}`, detail: r.warnings.slice(0, 2).join(' · '), kind: 'info', ms: 4000 })
       } else {
-        const entry = await h.vfxMake(what, { maxIterations: iters, threshold })
+        const entry = await h.vfxMake(what, { maxIterations: iters, threshold, variations })
         await load()
         setSelected(entry.id)
+        if (entry.modelNote) actions.toast({ text: `${entry.name}: drafted without a model`, detail: entry.modelNote, kind: 'err', ms: 12_000 })
       }
       setPrompt('')
     } catch (e) {
@@ -630,8 +845,30 @@ export function VfxLabPage() {
             <button className="btn" onClick={() => void learn()} disabled={!entries.length || !!busy} title="Turn the library into per-type recipes and save them as memory skills">
               <Icon name="memory" size={12} /> Learn
             </button>
+            <LiveControls live={live} enabled={liveOn} onToggle={setLiveOn} onSettings={(st) => void h.vfxLiveSettings(st).then(setLive)} />
           </div>
         </div>
+        {liveLine(live) && (
+          <div className="callout row vfx-live-line" role="status" data-testid="vfx-live-line">
+            <span className={`vfx-live-dot ${live!.state}`} aria-hidden />
+            <span className="grow note">{liveLine(live)}</span>
+            <button className="btn small" onClick={() => (setLiveOn(false), void h.vfxLiveStop().then(setLive))}>
+              <Icon name="stop" size={11} /> Stop
+            </button>
+          </div>
+        )}
+        {learnOffer && (
+          <div className="callout row" role="status" data-testid="vfx-learn-offer">
+            <Icon name="memory" size={12} />
+            <span className="grow note">Imported {learnOffer} effects. Learn recipes (per kind, and per kind + element) from them now?</span>
+            <button className="btn small primary" onClick={() => void learn()} disabled={!!busy}>
+              Learn from these now
+            </button>
+            <button className="btn small ghost" onClick={() => setLearnOffer(null)} aria-label="Not now">
+              <Icon name="x" size={11} />
+            </button>
+          </div>
+        )}
 
         {status && (!status.lune.available || !status.vision) && (
           <div className="callout row">
@@ -683,6 +920,16 @@ export function VfxLabPage() {
               <div className="seg">
                 {[1, 2, 4, 6].map((k) => (
                   <button type="button" key={k} className={iters === k ? 'on' : ''} onClick={() => setIters(k)} aria-pressed={iters === k}>
+                    {k}
+                  </button>
+                ))}
+              </div>
+            </label>
+            <label className="art-opt" title="Make this many versions and keep the best (the critic looks at frames of each; without a critic model the library-fit checks pick)">
+              <span>variations</span>
+              <div className="seg" data-testid="vfx-variations">
+                {[1, 3].map((k) => (
+                  <button type="button" key={k} className={variations === k ? 'on' : ''} onClick={() => setVariations(k)} aria-pressed={variations === k}>
                     {k}
                   </button>
                 ))}
@@ -740,7 +987,7 @@ export function VfxLabPage() {
               >
                 {busy ? (
                   <>
-                    <span className="spinner" aria-hidden /> {busy}
+                    <span className="spinner" aria-hidden /> {importProgressText(importProgress) ?? busy}
                   </>
                 ) : (
                   <>
@@ -748,19 +995,48 @@ export function VfxLabPage() {
                   </>
                 )}
               </div>
+              <div className="tex-imp-bar vfx-lib-bar">
+                <button className="btn small" disabled={!!busy} onClick={() => void fromStudio()} title={status?.studio ? 'Import the effects selected in Roblox Studio (nothing selected: pick a VFX folder). Read-only.' : 'Open the place in Roblox Studio with the Forge Bridge plugin on (Studio tab)'} data-testid="vfx-import-studio">
+                  <Icon name="studio" size={11} /> Import from Studio
+                </button>
+                <span className="grow" />
+                {selecting ? (
+                  <>
+                    <span className="note mono">{checked.size} selected</span>
+                    <button className="btn small ghost" onClick={() => setChecked(new Set(shown.map((e) => e.id)))}>
+                      all shown
+                    </button>
+                    <button className="btn small danger" disabled={!checked.size} onClick={() => void deleteChecked()} data-testid="vfx-delete-selected">
+                      <Icon name="trash" size={11} /> Delete selected
+                    </button>
+                    <button className="btn small ghost" onClick={() => (setSelecting(false), setChecked(new Set()))}>
+                      Done
+                    </button>
+                  </>
+                ) : (
+                  <>
+                    <button className="btn small ghost" disabled={!entries.length} onClick={() => setSelecting(true)} title="Select effects (or Ctrl / Shift-click cards) to delete several at once">
+                      Select
+                    </button>
+                    <button className="btn small ghost" disabled={!entries.length} onClick={() => setShowDups(true)} title="Effects imported more than once (same content)">
+                      Find duplicates
+                    </button>
+                    <button className="btn small ghost" disabled={!entries.length || !!busy} onClick={() => void retag()} title="Recompute kind / element / timing tags from names, layer roles and colours (your edits stay)">
+                      Re-tag library
+                    </button>
+                    <button className="btn small ghost danger" disabled={!entries.length} onClick={() => void clearLibrary()} title="Move every effect of the library chosen above (your library / this project) to the trash">
+                      Clear library…
+                    </button>
+                  </>
+                )}
+              </div>
+              {scan && <EffectImportReview scan={scan} scope={scope} projectOpen={!!status?.projectRoot} onClose={() => setScan(null)} onDone={(r) => void imported(r)} onRescan={(packs) => void fromStudio(packs)} />}
+              {showDups && <DuplicatesPanel onClose={() => setShowDups(false)} onRemoved={(batch, n) => (setShowDups(false), trashed(batch, n))} />}
               <div className="row vfx-lib-head">
                 <input className="input grow" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search name, tag or description" aria-label="Search library" />
                 <span className="note">{shown.length} shown</span>
               </div>
-              {allTags.length > 0 && (
-                <div className="vfx-chips" role="group" aria-label="Filter by tag">
-                  {allTags.map(([t, n]) => (
-                    <button key={t} className={`badge-o${tag === t ? ' hot' : ''}`} aria-pressed={tag === t} onClick={() => setTag(tag === t ? null : t)}>
-                      {t} <span className="faint">{n}</span>
-                    </button>
-                  ))}
-                </div>
-              )}
+              <TagFilters entries={entries} filter={tagFilter} onChange={setTagFilter} />
               {!entries.length && status && (
                 <div className="empty">
                   <Icon name="sparkle" size={22} className="i" />
@@ -772,7 +1048,7 @@ export function VfxLabPage() {
                   e.video ? (
                     <RefCard key={e.id} lab="vfx" entry={e} selected={e.id === selected} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
                   ) : (
-                    <Card key={e.id} entry={e} selected={e.id === selected} progress={progress[e.id]} onSelect={() => setSelected(e.id === selected ? null : e.id)} />
+                    <Card key={e.id} entry={e} selected={e.id === selected} selecting={selecting} checked={checked.has(e.id)} progress={progress[e.id]} onSelect={(ev) => pick(e, ev)} />
                   )
                 )}
               </div>
@@ -781,7 +1057,7 @@ export function VfxLabPage() {
               (current.video ? (
                 <RefDetail key={current.id} lab="vfx" entry={current} onClose={() => setSelected(null)} onMade={(id) => void load().then(() => setSelected(id))} onPin={(r) => (setPin(r), setMode('sequence'))} />
               ) : (
-                <Detail key={current.id} entry={current} progress={progress[current.id]} recipes={recipes} onClose={() => setSelected(null)} />
+                <Detail key={current.id} entry={current} entries={entries} progress={progress[current.id]} recipes={recipes} live={live} onClose={() => setSelected(null)} onTrashed={trashed} />
               ))}
           </div>
         )}

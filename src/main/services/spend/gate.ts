@@ -11,10 +11,6 @@ export function setSpendCap(s: SpendService | null): void {
   current = s
 }
 
-export function spendCap(): SpendService | null {
-  return current
-}
-
 export function chargeSpend(c: { provider: string; source: SpendSource; costUsd: number | undefined; at?: number }): void {
   if (!current) return
   try {

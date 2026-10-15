@@ -20,7 +20,7 @@ import type { ProjectConfig, ConfigIssue } from '../main/services/collab/config.
 import type { JoinProgress, JoinResult } from '../main/services/collab/join.ts'
 import type { IncomingChanges } from '../main/services/collab/incoming.ts'
 import type { ActivityEntry } from '../main/services/collab/activity.ts'
-import type { BlameResult, FileHistoryEntry } from '../main/services/collab/blame.ts'
+import type { FileHistoryEntry } from '../main/services/collab/blame.ts'
 import type { StartBranchResult, PullRequestInput, PullRequestResult, OpenPullRequest } from '../main/services/collab/branches.ts'
 import type { ClaimView } from '../main/services/collab/claims.ts'
 import type { ToolRun, PreSyncReport } from '../main/services/collab/quality.ts'
@@ -160,7 +160,7 @@ export type {
 } from '../main/services/analytics/service.ts'
 export type { Snippet as AnalyticsSnippet, SnippetKind as AnalyticsSnippetKind, SnippetOptions as AnalyticsSnippetOptions } from '../main/services/analytics/snippets.ts'
 import type { AnalyticsStatus, CatalogItem, CsvImportResult, Granularity, MetricFilter, PublicSnapshot, SeriesSource } from '../main/services/analytics/types.ts'
-import type { AcquisitionResult, CompareResult, OverviewResult, SeriesResult } from '../main/services/analytics/service.ts'
+import type { AcquisitionResult, OverviewResult, SeriesResult } from '../main/services/analytics/service.ts'
 import type { Snippet, SnippetKind, SnippetOptions } from '../main/services/analytics/snippets.ts'
 
 export interface AnalyticsSeriesQuery {
@@ -247,7 +247,6 @@ export interface IntegrationApi {
   joinProject(input: JoinProjectInput): Promise<JoinResult>
   incomingChanges(options?: { summarize?: boolean }): Promise<IncomingChanges>
   activityFeed(query?: ActivityQuery): Promise<ActivityEntry[]>
-  blameFile(path: string): Promise<BlameResult>
   fileHistory(path: string, limit?: number): Promise<FileHistoryEntry[]>
   getForgeConfig(): Promise<ForgeProjectConfigRead>
   // Rejects values that look like secrets (webhook URLs, API keys).
@@ -259,7 +258,6 @@ export interface IntegrationApi {
   claim(what: string, note?: string): Promise<ClaimView[]>
   releaseClaim(what: string): Promise<ClaimView[]>
   runLint(paths?: string[]): Promise<{ selene: ToolRun; stylua: ToolRun }>
-  formatFiles(paths: string[]): Promise<ToolRun>
   preSyncCheck(): Promise<PreSyncReport>
 
   // Release (main/services/release). Secrets are write-only from the renderer.
@@ -294,7 +292,6 @@ export interface IntegrationApi {
   analyticsSetExperience(ids: { placeId?: number; universeId?: number }): Promise<AnalyticsStatus>
   analyticsOverview(options?: { range?: string; metrics?: string[] }): Promise<OverviewResult>
   analyticsSeries(query: AnalyticsSeriesQuery): Promise<SeriesResult>
-  analyticsCompare(options: { metrics: string[]; a: string; b?: string }): Promise<CompareResult>
   analyticsAcquisition(options?: { range?: string }): Promise<AcquisitionResult>
   analyticsImportCsv(input: { path: string; metricHint?: string }): Promise<CsvImportResult>
   analyticsRemoveImport(input: { metric: string; breakdown?: Record<string, string> }): Promise<boolean>
@@ -312,7 +309,6 @@ export interface IntegrationApi {
   // Multi-agent orchestration (main/agent/orchestrator)
   startOrchestration(chatId: string, text: string, choice?: ModelChoice): Promise<BoardView>
   getOrchestrations(): Promise<BoardView[]>
-  getOrchestration(runId: string): Promise<BoardView | null>
   getTaskTranscript(runId: string, taskId: string): Promise<ChatMessage[]>
   cancelOrchestration(runId: string): Promise<void>
   cancelOrchestrationTask(runId: string, taskId: string): Promise<void>

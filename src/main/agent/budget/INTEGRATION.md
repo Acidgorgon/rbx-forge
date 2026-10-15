@@ -26,7 +26,8 @@ Create it where the HarnessContext is built (main/index.ts or agent/index.ts) an
 project closes:
 
 ```ts
-import { ProjectMap, mapSource, realmLookup } from './budget/index.ts'
+import { ProjectMap } from './budget/projectMap.ts'
+import { mapSource, realmLookup } from './budget/tools.ts'
 const projectMap = new ProjectMap(mapSource(ctx))   // stat-based incremental refresh
 void projectMap.refresh()                            // warm it; tools call refresh() themselves
 // On Project.watch() change events with change.scripts === true: void projectMap.refresh()
@@ -102,7 +103,8 @@ Minimum cacheable prefix on current Claude models: 512 tokens; OpenAI GPT-5.6+: 
 ### Shared ledger
 
 ```ts
-import { UsageLedger, BudgetGuard, readLimits } from './budget/index.ts'
+import { UsageLedger } from './budget/usage.ts'
+import { BudgetGuard, readLimits } from './budget/budget.ts'
 const ledger = new UsageLedger(ctx)                       // persists under the 'usage' setting, 1s debounce
 const guard = new BudgetGuard(ledger, () => readLimits(ctx.getSetting.bind(ctx)))
 ledger.onRecord((r) => ctx.emit('usage:changed', snapshotFor(r)))   // see §7

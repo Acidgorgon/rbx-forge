@@ -159,7 +159,8 @@ test('config hands out a session and the place roots, skipping Packages', async 
   assert.deepEqual(cfg.roots, [['ReplicatedStorage', 'Skills']])
   const match = await service.handler.config({ placeId: 111 })
   assert.deepEqual(match.roots, [['ReplicatedStorage', 'Skills']])
-  assert.deepEqual(match.skip, [['ReplicatedStorage', 'Packages']])
+  // Packages, and the VFX Lab's live Studio preview folder.
+  assert.deepEqual(match.skip, [['ReplicatedStorage', 'Packages'], ['Workspace', 'ForgeLivePreview']])
   // A published place no project lists (a test copy, another game): not synced into this project.
   const other = await service.handler.config({ placeId: 999 })
   assert.equal(other.enabled, false)

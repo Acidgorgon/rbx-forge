@@ -247,7 +247,7 @@ export const labFlows: Flow[] = [
   },
   {
     name: 'vfx-studio-import',
-    title: 'VFX Lab: Import from Studio (fake plugin) -> review -> import, learn offer, select + delete + undo, duplicates, Make remixes an imported effect',
+    title: 'VFX Lab: Import from Studio (fake plugin) -> review (named from tags) -> import, learn offer, select + delete + undo, duplicates, Make remixes an imported effect',
     needs: ['bridgePort'],
     timeoutMs: 120_000,
     async run({ page, shot, note }) {
@@ -272,7 +272,17 @@ export const labFlows: Flow[] = [
       await rows.first().waitFor({ state: 'visible', timeout: 15_000 })
       check((await rows.count()) === 14, `review rows: ${await rows.count()}`)
       const names = await rows.locator('input[aria-label="Name"]').evaluateAll((els: HTMLInputElement[]) => els.map((e) => e.value))
-      check(names.includes('Slash (3)') && names.includes('Impact (2)') && names.includes('Trail'), `review names: ${names.join(', ')}`)
+      // Named from their tags by default ("AuraImpact" -> "Aura Impact"; the loose "Trail" part is its
+      // own row), duplicate original names numbered; the original name shows as "from: ...".
+      check(names.includes('Slash (3)') && names.includes('Impact (2)') && names.includes('Aura Impact') && names.some((x: string) => /Trail$/.test(x)), `review names: ${names.join(', ')}`)
+      check(await rows.filter({ hasText: 'from: AuraImpact' }).count() === 1, 'the review does not show the original name')
+      // The toggle switches the review to the original names and back.
+      const tagToggle = page.locator(`${CENTER} [data-testid="vfx-import-tagnames"]`)
+      check(await tagToggle.isChecked(), '"Name effects from tags" is off by default')
+      await tagToggle.uncheck()
+      check((await rows.locator('input[aria-label="Name"]').evaluateAll((els: HTMLInputElement[]) => els.map((e) => e.value))).includes('AuraImpact'), 'toggle off keeps the tag names')
+      await tagToggle.check()
+      check((await rows.locator('input[aria-label="Name"]').evaluateAll((els: HTMLInputElement[]) => els.map((e) => e.value))).includes('Aura Impact'), 'toggle on does not name from tags')
       check(await rows.filter({ hasText: /same effect as/ }).count() === 1, 'the repeated effect is not marked')
       await shot('review')
       await page.locator(`${CENTER} [data-testid="vfx-import-commit"]`).click()
@@ -280,8 +290,12 @@ export const labFlows: Flow[] = [
       const after = (await page.evaluate(() => window.harness.vfxList())).length
       check(after - before === 13, `imported ${after - before} (expected 13)`)
       note(`library ${before} -> ${after}`)
+      const aura = (await page.evaluate(() => window.harness.vfxList())).find((e: { sourceName?: string }) => e.sourceName === 'AuraImpact') as { name: string; nameFrom?: string } | undefined
+      check(aura?.name === 'Aura Impact' && aura.nameFrom === 'tags', `AuraImpact imported as ${JSON.stringify(aura)}`)
+      check(await page.locator(`${CENTER} [data-testid="vfx-card-from"]`, { hasText: 'from: AuraImpact' }).count() === 1, 'the card does not show the original name')
       await dismissToasts(page)
-      // Select two cards (Ctrl-click), delete them, undo.
+      // Select two cards (Ctrl-click), delete them, undo. "Extra1".. are named from their tags now:
+      // the search finds them by their original names.
       const cards = page.locator(`${CENTER} .vfx-card`)
       await page.locator(`${CENTER} .vfx-lib-head input`).fill('Extra')
       await page.waitForTimeout(300)

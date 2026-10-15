@@ -19,7 +19,7 @@ import { genRef } from '@shared/vfx/tex/textures'
 import { withVfxPrinciples } from '@shared/principles/attach'
 import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
 import { effectHash } from '@shared/vfx/fingerprint'
-import { autoTagGroups, autoTags, flatTags, groupsFromTags, tagGroupsOf } from '@shared/vfx/tags'
+import { autoTagGroups, autoTags, baseName, flatTags, groupsFromTags, isGenericName, nameFromTags, tagGroupsOf, uniqueName } from '@shared/vfx/tags'
 import { normalizeLiveSettings, type LiveStatus } from '@shared/vfx/live'
 import type { VfxImportRow, VfxImportScan } from '@shared/types'
 
@@ -169,6 +169,7 @@ function mockRun(script: string, base: VfxEffect): VfxScriptResult {
 }
 
 let recipes: VfxRecipe[] = extractRecipes(entries)
+let nameFromTagsOn = true
 
 // Browser preview of the bulk import: a pack shaped like a Studio VFX folder (Models plus a loose
 // Part, duplicate names), the trash, and the live loop state.
@@ -189,6 +190,7 @@ export function vfxMock(emit: Emit): VfxApi {
     const prompts = new Map<string, string>()
     const first = new Map<string, string>()
     const counts = new Map<string, number>()
+    const used = new Set(entries.map((e) => e.name.toLowerCase()))
     const rows: VfxImportRow[] = names.map((n, i) => {
       const c = (counts.get(n) ?? 0) + 1
       counts.set(n, c)
@@ -201,13 +203,15 @@ export function vfxMock(emit: Emit): VfxApi {
       const key = `r${i}`
       prompts.set(key, prompt)
       const dup = index.get(hash)
-      const row: VfxImportRow = { key, name, origin: source === 'studio' ? `Workspace.VFX.${n}` : `vfx-pack.rbxm`, source: source === 'studio' ? 'studio' : 'file', stats: { emitters: st.emitters, beams: st.beams, trails: st.trails, lights: st.lights, meshes: st.meshes, scripts: st.scripts, parts: n === 'Trail' ? 1 : 2 }, notes: [], hash, duplicates: dup ? [{ scope: dup.scope, id: dup.id, name: dup.name }] : [], ...(first.has(hash) ? { sameAs: first.get(hash) } : {}) }
+      const tagBase = nameFromTags(autoTagGroups(effect, n).groups, '')
+      const tagName = tagBase && tagBase.toLowerCase() !== n.toLowerCase() ? uniqueName(tagBase, used) : undefined
+      const row: VfxImportRow = { key, name, ...(tagName ? { tagName } : {}), origin: source === 'studio' ? `Workspace.VFX.${n}` : `vfx-pack.rbxm`, source: source === 'studio' ? 'studio' : 'file', stats: { emitters: st.emitters, beams: st.beams, trails: st.trails, lights: st.lights, meshes: st.meshes, scripts: st.scripts, parts: n === 'Trail' ? 1 : 2 }, notes: [], hash, duplicates: dup ? [{ scope: dup.scope, id: dup.id, name: dup.name }] : [], ...(first.has(hash) ? { sameAs: first.get(hash) } : {}) }
       if (!first.has(hash)) first.set(hash, key)
       return row
     })
     const scanId = `scan-${(seq++).toString(36)}`
     scans.set(scanId, { rows, prompts })
-    return { scanId, source, rows, media: [], skipped: [], notes: [] }
+    return { scanId, source, rows, media: [], skipped: [], notes: [], nameFromTags: nameFromTagsOn }
   }
   const find = (id: string) => {
     const e = entries.find((x) => x.id === id)
@@ -229,7 +233,7 @@ export function vfxMock(emit: Emit): VfxApi {
   }
   return {
     async vfxStatus() {
-      return { projectRoot: '/Users/you/games/Bladefall', lune: { available: true, version: '0.11.0' }, vision: true, rojo: true, entries: { user: entries.filter((e) => e.scope === 'user').length, project: entries.filter((e) => e.scope === 'project').length }, recipes: recipes.length }
+      return { projectRoot: '/Users/you/games/Bladefall', lune: { available: true, version: '0.11.0' }, vision: true, rojo: true, entries: { user: entries.filter((e) => e.scope === 'user').length, project: entries.filter((e) => e.scope === 'project').length }, recipes: recipes.length, nameFromTags: nameFromTagsOn }
     },
     async vfxList() {
       return [...entries].sort((a, b) => (a.scope === b.scope ? b.updatedAt - a.updatedAt : a.scope === 'project' ? -1 : 1))
@@ -269,6 +273,7 @@ export function vfxMock(emit: Emit): VfxApi {
         const row = s.rows.find((x) => x.key === r.key)!
         const e = add(entryFor(s.prompts.get(r.key)!.toLowerCase(), { scope: input.scope, origin: row.origin }))
         e.name = r.name
+        if (r.name !== row.name) Object.assign(e, { sourceName: row.name, nameFrom: r.name === row.tagName ? 'tags' : 'user' })
         const g = autoTagGroups(e.effect!, r.name).groups
         e.tagGroups = g
         e.tags = flatTags(g)
@@ -317,6 +322,28 @@ export function vfxMock(emit: Emit): VfxApi {
       }
       changed()
       return { changed: n, total: n }
+    },
+    async vfxNameFromTags(ids, opts) {
+      const out = { renamed: [] as VfxEntry[], kept: 0, unchanged: 0, noTags: 0, total: 0 }
+      const used = new Set(entries.map((e) => e.name.toLowerCase()))
+      for (const e of entries.filter((x) => x.effect && (ids ? ids.includes(x.id) : x.kind === 'model'))) {
+        out.total++
+        const base = nameFromTags(tagGroupsOf(e), '')
+        if (!opts?.force && (e.nameFrom === 'user' || e.kind !== 'model') && !isGenericName(e.name)) out.kept++
+        else if (!base) out.noTags++
+        else if (baseName(e.name).toLowerCase() === base.toLowerCase()) out.unchanged++
+        else {
+          used.delete(e.name.toLowerCase())
+          Object.assign(e, { sourceName: e.sourceName ?? e.name, nameFrom: 'tags', name: uniqueName(base, used) })
+          out.renamed.push(e)
+        }
+      }
+      if (out.renamed.length) changed()
+      return out
+    },
+    async vfxSetNameFromTags(on) {
+      nameFromTagsOn = on
+      return on
     },
     async vfxLiveStart(opts) {
       const settings = normalizeLiveSettings({ ...live.settings, ...(opts?.settings ?? {}) })

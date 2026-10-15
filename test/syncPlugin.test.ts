@@ -216,7 +216,7 @@ async function until<T>(what: string, fn: () => Promise<T | undefined | null | f
   }
 }
 
-test('plugin: an unlinked place writes nothing and holds nothing; once linked, its first sync waits for a side', { skip }, async () => {
+test('plugin: an unlinked place writes nothing and holds no conflicts (rojo serve waits for a linked check); once linked, its first sync waits for a side', { skip }, async () => {
   let before: Record<string, string> = {}
   let checked = false
   const { root, out } = await runStudio(
@@ -229,8 +229,10 @@ test('plugin: an unlinked place writes nothing and holds nothing; once linked, i
       assert.equal(unlinked.canLink, true)
       await new Promise((r) => setTimeout(r, 1500))
       let status = await service.status()
-      assert.ok(status.places.every((p) => p.gate === 'idle' && !p.conflicts && !p.lastSnapshot), JSON.stringify(status.places))
-      assert.equal(service.gateFor('default.project.json').gate, 'idle')
+      // No conflicts or snapshot from it; the project's place waits for a linked check, saying why.
+      assert.ok(status.places.every((p) => p.gate === 'waiting' && p.waitReason === 'unlinked' && !p.conflicts && !p.lastSnapshot), JSON.stringify(status.places))
+      assert.equal(service.gateFor('default.project.json').gate, 'waiting')
+      assert.match(service.gateFor('default.project.json').detail ?? '', /Studio has "Place1" open, but it isn't linked to this project/)
       assert.deepEqual(service.conflicts(), [])
       assert.deepEqual(diskState(service.root), before)
       // No base state for any place either.

@@ -4,7 +4,7 @@
 // file builds before they land. No electron imports.
 
 import type { StudioConflict } from '../../../shared/types.ts'
-import type { SyncStatus, GateState } from '../../../shared/sync/types.ts'
+import type { SyncStatus, GateState, WaitReason } from '../../../shared/sync/types.ts'
 import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING } from '../../../shared/sync/types.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import type { ServiceState } from '../../../shared/types.ts'
@@ -17,14 +17,14 @@ export interface SyncWireDeps {
   emit: (event: 'sync:status' | 'sync:entry' | 'studio:conflicts', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   supervisor: {
-    setGate(file: string, gate: GateState, detail?: string): void
+    setGate(file: string, gate: GateState, detail?: string, reason?: WaitReason): void
     applyGates(): void
     setSyncSummary(state: ServiceState, detail: string): void
   }
   pluginsDir: () => string | null
   studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
-  // Every Studio window polling the bridge right now.
-  studios?: () => { placeId?: number; place?: string }[]
+  // Every Studio window polling the bridge right now (and its plugin version).
+  studios?: () => { placeId?: number; place?: string; pluginVersion?: number }[]
   plugin?: () => Promise<{ installed: boolean; version?: number } | null>
   // The engine worker's SyncEngine and mapping.ts (loadPlaces / placeFor). Absent: Forge Sync stays
   // off for the plugin and every place serves normally.
@@ -81,6 +81,8 @@ export function syncSummary(status: SyncStatus): { state: ServiceState; detail: 
   }
   // Studio edits are not reaching disk (no plugin, place refused, mapped folders missing ...): not green.
   if (status.notice?.level === 'warn') return { state: 'starting', detail: status.notice.text }
+  const waiting = status.places.filter((p) => p.gate === 'waiting')
+  if (waiting.length) return { state: 'starting', detail: `Forge Sync: rojo serve waits for Studio's first sync check (${waiting.map((p) => p.projectFile.replace(/\.project\.json$/, '')).join(', ')})` }
   return { state: 'running', detail: live.length ? `Forge Sync: ${live.length} Studio session${live.length === 1 ? '' : 's'}` : 'Forge Sync: waiting for Studio' }
 }
 
@@ -135,6 +137,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     syncResolveAll: (placeKey: string, take: 'studio' | 'disk', reason?: string) =>
       need().resolveAll(String(placeKey), take, reason === 'first-run' || reason === 'both-changed' || reason === 'deleted-vs-edited' ? reason : undefined),
     syncServeAnyway: (placeKey: string) => need().serveAnyway(String(placeKey)),
+    syncServeWithoutCheck: (projectFile?: string) => need().serveWithoutCheck(typeof projectFile === 'string' && projectFile ? projectFile : undefined),
     syncPullStudioOnly: (placeKey: string) => need().pullStudioOnly(String(placeKey)),
     syncLinkPlace: (id: string, projectFile?: string) => need().linkPlace(String(id), typeof projectFile === 'string' && projectFile ? projectFile : undefined),
     syncCommitStudioEdits: (message?: string): Promise<SyncCommitResult> => need().commitStudioEdits(message),
@@ -187,7 +190,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
         studio: deps.studio,
         studios: deps.studios,
         plugin: deps.plugin,
-        onGate: (file, gate, detail) => deps.supervisor.setGate(file, gate, detail),
+        onGate: (file, gate, detail, reason) => deps.supervisor.setGate(file, gate, detail, reason),
         emit,
         log: deps.log,
         onStudioTree: deps.onStudioTree

@@ -51,7 +51,7 @@ export function ForgeSyncSettings() {
         <div className="set-row">
           <div className="set-text">
             <div className="set-title">Check Studio before Rojo serves</div>
-            <div className="note">Rojo waits for a place until Forge has pulled that place's Studio edits, so connecting Rojo never reverts a teammate's work. Conflicts hold it until you pick a side.</div>
+            <div className="note">Rojo serve waits until Forge has checked the place open in Studio (a place linked to this project, with the current Forge Bridge plugin), so connecting Rojo never reverts a teammate's work or deletes scripts that exist only in Studio. Conflicts and Studio-only scripts hold it until you pick a side or pull them to disk. Off: Rojo serves without a Studio check.</div>
           </div>
           <div className="set-ctl">
             <input type="checkbox" className="switch" checked={s.gateRojo} onChange={(e) => void save({ gateRojo: e.target.checked })} aria-label="Check Studio before Rojo serves" />

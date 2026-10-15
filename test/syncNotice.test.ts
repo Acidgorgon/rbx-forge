@@ -125,12 +125,14 @@ test('notice: a place the project does not list (servePlaceIds) says so; an old 
   const cfg = await service.handler.config({ placeId: 999, gameId: 5, place: 'Other' })
   assert.equal(cfg.enabled, false)
   const status = await service.status()
-  // Not linked: said once, as information (another game's place is not a sync failure).
-  assert.match(status.notice!.text, /Studio connected, "Other" is not linked to this project/)
-  assert.equal(status.notice!.level, 'info')
+  // Not linked: nothing from it syncs, and rojo serve waits for a linked place's check (Rojo would
+  // otherwise connect to it unchecked and offer to delete its Studio-only scripts).
+  assert.match(status.notice!.text, /Studio has "Other" open, but it isn't linked to this project.*rojo serve waits/)
+  assert.equal(status.notice!.level, 'warn')
   assert.deepEqual(status.unlinked?.map((u) => [u.name, u.placeId, u.canLink]), [['Other', 999, true]])
   assert.equal(status.places.length, 1)
-  assert.equal(status.places[0].gate, 'idle')
+  assert.equal(status.places[0].gate, 'waiting')
+  assert.equal(status.places[0].waitReason, 'unlinked')
 
   studio.placeId = 111
   studio.pluginVersion = PLUGIN_VERSION - 1
@@ -138,7 +140,16 @@ test('notice: a place the project does not list (servePlaceIds) says so; an old 
   assert.equal(ok.enabled, true)
   await service.handler.snapshot({ session: ok.sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: [{ id: '1', path: ['ReplicatedStorage', 'Shared'], className: 'Folder' }, { id: '2', path: ['StarterPlayer', 'StarterPlayerScripts', 'Client'], className: 'Folder' }] })
   const after = await service.status()
+  // v8 checked the place, but a check by a plugin older than SYNC_GATE_PLUGIN_VERSION does not clear
+  // rojo serve: restart Studio.
   assert.equal(after.notice?.action, 'restart-studio')
-  assert.equal(after.notice?.level, 'info')
+  assert.equal(after.notice?.level, 'warn')
+  assert.match(after.notice!.text, new RegExp(`Restart Studio to update the Forge Bridge plugin \\(v${PLUGIN_VERSION - 1} → v${PLUGIN_VERSION}\\)`))
+  assert.equal(after.places[0].gate, 'waiting')
+  assert.equal(after.places[0].waitReason, 'plugin')
+  assert.equal(service.gateFor('default.project.json').gate, 'waiting')
+  // Restarted Studio: the current plugin's check clears it.
+  studio.pluginVersion = PLUGIN_VERSION
+  assert.equal(service.gateFor('default.project.json').gate, 'clear')
   service.close()
 })

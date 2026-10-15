@@ -85,6 +85,8 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
     'src/skills/Server/Moves/Uppercut/init.luau'
   ]
   const served = new Set<string>()
+  // "Serve without Studio check" for place files no Studio check has cleared.
+  const unchecked = new Set<string>()
   // ?forgesync=studioonly: a cutscene module (and its children) only Studio has; rojo is held for it.
   const WAKE = ['StarterPlayer', 'StarterPlayerScripts', 'Client', 'Controllers', 'OnboardingController', 'WakeUpCutscene']
   const WAKE_DIR = 'src/client/Controllers/OnboardingController/WakeUpCutscene'
@@ -115,7 +117,13 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
         placeKey: MENU,
         projectFile: 'menu.project.json',
         place: { placeId: Number(MENU), gameId: 1600001, name: 'FSF Menu' },
-        gate: gate(MENU, mode === 'firstrun' ? 'clear' : 'idle'),
+        ...(mode === 'firstrun' || unchecked.has('menu.project.json')
+          ? { gate: gate(MENU, mode === 'firstrun' ? 'clear' : 'idle') }
+          : {
+              gate: gate(MENU, 'waiting'),
+              waitReason: 'unlinked' as const,
+              gateDetail: 'Studio has "DoubleFireSlashVFX" open, but it isn\'t linked to this project: link it in Studio sync so Forge checks it first, or serve without a Studio check. Rojo serve waits so Rojo cannot delete scripts that exist only in Studio'
+            }),
         connected: mode === 'firstrun',
         ...(mode === 'firstrun' ? { lastSnapshot: t - 8_000, counts: { same: 204, conflict: held(MENU) } } : { counts: {} }),
         conflicts: held(MENU)
@@ -209,6 +217,12 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
       recent = [...pulled.map((i): SyncEntry => ({ file: i.file!, action: 'created', instancePath: i.instancePath, at: Date.now(), note: 'pulled to disk (only Studio had it)' })), ...recent]
       pending = [...new Set([...pending, ...pulled.map((i) => i.file!)])].sort()
       log(`pulled ${pulled.length} Studio-only scripts of ${placeKey} to disk`)
+      changed()
+      return status()
+    },
+    async syncServeWithoutCheck(projectFile) {
+      for (const p of places()) if (!projectFile || p.projectFile === projectFile) unchecked.add(p.projectFile)
+      log(`serving ${projectFile ?? 'every place'} without a Studio check`)
       changed()
       return status()
     },

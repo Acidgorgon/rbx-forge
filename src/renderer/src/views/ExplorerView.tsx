@@ -18,6 +18,7 @@ import { clearKeys, clickSelect, EMPTY_SELECTION, moveFocus, planDelete, pruneSe
 import { sparks } from '../lib/sparks'
 import { shouldConfirmDelete } from '../lib/deleteConfirm'
 import { deleteFeature, deleteInStudio, deleteManyFromDisk, deleteManyInStudio, studioDeletable, trashName } from './deleteFlows'
+import { useForgeSync } from './ForgeSyncSection'
 
 type Mode = 'tree' | 'files' | 'features'
 
@@ -768,6 +769,15 @@ export function ExplorerView() {
     return n
   }, [state.tree])
   const rojo = state.services.find((s) => s.id === 'rojo')
+  // Why Studio-only instances may be missing from the Game view: Forge only reads linked places.
+  const [syncStatus] = useForgeSync()
+  const studioHint = useMemo(() => {
+    if (!syncStatus || syncStatus.engine !== 'forge') return null
+    const unlinked = syncStatus.unlinked?.[0]
+    if (unlinked) return `Studio has "${unlinked.name}" open, but it isn't linked to this project: Forge never reads an unlinked place, so instances that exist only in Studio are not shown here. Link it in Studio sync to see them.`
+    if (!studioCount && !syncStatus.places.some((p) => p.connected)) return 'Instances that exist only in Studio show here once Studio is connected with the Forge Bridge plugin and its place is checked.'
+    return null
+  }, [syncStatus, studioCount])
 
   // ---- render helpers
   const createRow = (c: Creating) => {
@@ -922,7 +932,11 @@ export function ExplorerView() {
         {mode !== 'features' && q && !rows.length && state.tree.length > 0 && (
           <div className="empty">
             <span>No {mode === 'tree' ? 'instances' : 'files'} match "{filter}".</span>
-            <button className="btn ghost" onClick={() => setFilter('')}>Clear filter</button>
+            {mode === 'tree' && studioHint && <span className="note">{studioHint}</span>}
+            <div className="row">
+              <button className="btn ghost" onClick={() => setFilter('')}>Clear filter</button>
+              {mode === 'tree' && studioHint && <button className="btn ghost" onClick={() => actions.showSide('sync')}>Studio sync</button>}
+            </div>
           </div>
         )}
         {mode === 'features' && (

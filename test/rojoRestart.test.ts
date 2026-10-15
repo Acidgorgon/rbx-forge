@@ -113,6 +113,20 @@ test('serve button: a held serve shows Held with resolve / serve anyway, not Sta
   assert.equal(serveView(undefined, 1).kind, 'stopped')
 })
 
+test('serve button and notices: waiting for the first Studio check, and why', () => {
+  const waiting = (reason: 'studio' | 'unlinked' | 'plugin') => status({ state: 'starting', detail: 'x (default.project.json)', hold: { gate: 'waiting', file: 'default.project.json', reason } })
+  assert.equal(serveView(waiting('studio'), 34872).kind, 'waiting')
+  assert.equal(serveView(waiting('studio'), 34872).label, 'Waiting')
+  assert.match(serveView(waiting('unlinked'), 1).title, /isn't linked to this project/)
+  assert.match(serveView(waiting('plugin'), 1).title, /restart Studio/)
+  // A loud notice only when Studio has a place open that Forge cannot check, once per reason.
+  const running = status({})
+  assert.equal(serveNotice(running, waiting('studio'), 0).notice, null)
+  assert.deepEqual(serveNotice(running, waiting('unlinked'), 0).notice, { kind: 'unchecked', file: 'default.project.json', reason: 'unlinked', detail: 'x' })
+  assert.equal(serveNotice(waiting('unlinked'), waiting('unlinked'), 0).notice, null)
+  assert.equal(serveNotice(waiting('unlinked'), waiting('plugin'), 0).notice?.kind, 'unchecked')
+})
+
 test('serve notices: restarted once per crash, gave up, held', () => {
   let announced = 0
   const step = (prev: ServiceStatus | undefined, next: ServiceStatus) => {

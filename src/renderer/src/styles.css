@@ -198,6 +198,7 @@ body.resizing .panel, body.resizing .bottom { transition: none !important; }
 .btn-forge.crashed, .btn-forge.failed { background: var(--err-fill); color: var(--err); border-color: var(--err-line); }
 .btn-forge.held { background: var(--warn-fill); color: var(--warn); border-color: var(--warn-line); animation: forge-held-pulse 1.6s ease-in-out infinite; }
 .btn-forge.checking { background: var(--warn-fill); color: var(--warn); border-color: var(--warn-line); }
+.btn-forge.waiting { background: var(--info-fill); color: var(--info); border-color: var(--info-line); }
 @keyframes forge-held-pulse { 50% { box-shadow: 0 0 0 3px var(--warn-fill); } }
 @media (prefers-reduced-motion: reduce) { .btn-forge.held { animation: none; } }
 .btn-forge.running { background: var(--ok-fill); color: var(--ok); border-color: var(--ok-line); }

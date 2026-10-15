@@ -115,16 +115,29 @@ export interface SyncConflictInfo {
 
 // ---- Gate: whether Rojo may serve a place ----
 export type GateState =
-  | 'idle' // no Studio session for this place yet: Rojo serves normally (nothing to overwrite)
-  | 'checking' // snapshot arriving / reconciling: Rojo held
+  | 'idle' // no Studio session for this place (the engine's view), or Forge Sync is not gating: Rojo serves
+  | 'waiting' // no checked Studio session for this place file (Studio not open, the open place is not
+  //           linked, or its Forge Bridge plugin is too old): Rojo held until Studio's first sync check
+  //           clears, or the user picks "Serve without Studio check"
+  | 'checking' // config / snapshot arriving / reconciling: Rojo held
   | 'clear' // reconciled: Rojo serves
   | 'blocked' // conflicts (or Studio-only scripts not on disk) held: Rojo held until resolved or "serve anyway"
+
+// Why a place file is 'waiting': no Studio check yet ('studio'), a Studio place is open that is not
+// linked to this project ('unlinked'), or Studio runs a Forge Bridge plugin older than the gate trusts
+// ('plugin': restart Studio to load the new one).
+export type WaitReason = 'studio' | 'unlinked' | 'plugin'
 
 export interface PlaceSyncStatus {
   placeKey: string // `${placeId}` (published) or `local:<linkId>` (unpublished, linked in Forge)
   projectFile: string // e.g. default.project.json
   place?: SyncPlace
   gate: GateState
+  // gate 'waiting': why, and the one-line text the UI shows.
+  waitReason?: WaitReason
+  gateDetail?: string
+  // The Forge Bridge plugin version this place's Studio runs (from its bridge poll), when known.
+  pluginVersion?: number
   connected: boolean
   lastSnapshot?: number
   counts: Partial<Record<SyncAction, number>>

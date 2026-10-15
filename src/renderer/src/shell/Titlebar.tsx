@@ -97,9 +97,37 @@ export function Titlebar() {
       actions.toast({ text: 'Could not serve anyway', detail: errorText(e), kind: 'err' })
     }
   }
+  // No Studio check has cleared the place ('waiting'): serve it anyway, the user's call.
+  const serveUnchecked = async (file: string) => {
+    try {
+      await window.harness.syncServeWithoutCheck(file)
+      actions.toast({ text: 'Serving without a Studio check', detail: "Check Rojo's dialog in Studio before you accept: it may offer to delete scripts that exist only in Studio.", kind: 'info', ms: 6000 })
+      await actions.refreshSync()
+    } catch (e) {
+      actions.toast({ text: 'Could not serve', detail: errorText(e), kind: 'err' })
+    }
+  }
   const heldMenu = (el: HTMLElement) => {
     const hold = rojo?.hold
     if (!hold) return
+    if (hold.gate === 'waiting') {
+      menu.openUnder(
+        el,
+        [
+          { header: `rojo serve waits for Studio's first sync check: ${hold.file}`, mono: true },
+          {
+            label: hold.reason === 'unlinked' ? 'Link the Studio place…' : 'Studio sync…',
+            icon: <Icon name="sync" />,
+            sub: hold.reason === 'unlinked' ? "Studio's open place isn't linked to this project" : hold.reason === 'plugin' ? 'Restart Studio to load the new Forge Bridge plugin' : 'Open the place in Studio with the Forge Bridge plugin',
+            onSelect: resolveHeld
+          },
+          { label: 'Serve without Studio check', icon: <Icon name="play" />, sub: 'Rojo may offer to delete scripts that exist only in Studio', onSelect: () => void serveUnchecked(hold.file) },
+          { label: 'Show log', icon: <Icon name="terminal" />, onSelect: () => actions.showBottom('output', ['rojo']) }
+        ],
+        { minWidth: 320 }
+      )
+      return
+    }
     menu.openUnder(
       el,
       [
@@ -122,6 +150,14 @@ export function Titlebar() {
     if (!notice) return
     if (notice.kind === 'restarted') actions.toast({ text: 'Rojo crashed, restarted', detail: 'Reconnect the Rojo plugin in Studio if it disconnected', kind: 'info', action: { label: 'Show log', run: () => actions.showBottom('output', ['rojo']) } })
     else if (notice.kind === 'gave-up') actions.toast({ text: 'Rojo keeps crashing', detail: notice.detail, kind: 'err', ms: 0, action: { label: 'Restart', run: () => void window.harness.startService('rojo') } })
+    else if (notice.kind === 'unchecked')
+      actions.toast({
+        text: notice.reason === 'unlinked' ? "Studio's place isn't linked: rojo serve waits" : 'Restart Studio: rojo serve waits',
+        detail: `${notice.detail}.`,
+        kind: 'hot',
+        ms: 20000,
+        action: { label: notice.reason === 'unlinked' ? 'Link…' : 'Open', run: resolveHeld }
+      })
     else actions.toast({ text: 'rojo serve is held', detail: `${notice.file}: ${notice.detail || 'Studio sync conflicts'}. Resolve them or serve anyway.`, kind: 'hot', ms: 15000, action: { label: 'Resolve', run: resolveHeld } })
   }, [rojo])
 
@@ -196,9 +232,9 @@ export function Titlebar() {
           onClick={() => void serve()}
           title={serveState === 'running' ? `${view.title} (${keyHint('mod+shift+r')})` : view.title}
           disabled={serveState === 'starting'}
-          aria-haspopup={serveState === 'held' || serveState === 'checking' ? 'menu' : undefined}
+          aria-haspopup={serveState === 'held' || serveState === 'checking' || serveState === 'waiting' ? 'menu' : undefined}
         >
-          {serveState === 'starting' || serveState === 'checking' ? <span className="spinner" /> : serveState === 'held' ? <Icon name="warn" size={12} /> : serveState === 'crashed' || serveState === 'failed' ? <Icon name="restart" size={12} /> : serveState === 'running' ? <span className="led ok" /> : <Icon name="play" size={12} />}
+          {serveState === 'starting' || serveState === 'checking' ? <span className="spinner" /> : serveState === 'held' || serveState === 'waiting' ? <Icon name="warn" size={12} /> : serveState === 'crashed' || serveState === 'failed' ? <Icon name="restart" size={12} /> : serveState === 'running' ? <span className="led ok" /> : <Icon name="play" size={12} />}
           {view.label}
           <span className="serve-port" style={{ opacity: 0.7, fontSize: 11 }}>:{port}</span>
         </button>

@@ -2,7 +2,7 @@ import { execFile, execFileSync, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { LogLine, PlaceInfo, ServiceId, ServiceState, ServiceStatus } from '@shared/types'
-import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState } from '../../shared/sync/types.ts'
+import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState, type WaitReason } from '../../shared/sync/types.ts'
 import { findBash, findPowerShell, findTool, run, spawnTool, toolEnv } from './tools.ts'
 import { gateAction, isRojoPanic, RestartPolicy, ROJO_STABLE_MS, secondsText, type RestartPolicyOptions } from './rojoRestart.ts'
 
@@ -95,11 +95,16 @@ export function rojoJobs(places: PlaceInfo[], active: string | null, serveAll: b
   return { jobs, skipped }
 }
 
-// Forge Sync gate: rojo serve for a place waits while its Studio snapshot is being reconciled
-// ('checking') or conflicts are held ('blocked'). 'idle' (no Studio session) and 'clear' serve.
+// Forge Sync gate: rojo serve for a place waits while no Studio check has cleared it ('waiting':
+// Studio not open, the open place not linked, or an old plugin), while its Studio snapshot is being
+// reconciled ('checking') and while conflicts or Studio-only scripts are held ('blocked'). 'clear'
+// serves, and so does 'idle' (Forge Sync not gating, or the user chose "Serve without Studio check").
 export function gateHolds(gate: GateState | undefined): boolean {
-  return gate === 'checking' || gate === 'blocked'
+  return gate === 'checking' || gate === 'blocked' || gate === 'waiting'
 }
+
+const WAITING_DETAIL = "Waiting for Studio's first sync check"
+
 
 export function syncEngineOf(getSetting: <T>(key: string, fallback: T) => T): 'forge' | 'project' | 'off' {
   const engine = getSetting<string>(SYNC_ENGINE_SETTING, 'forge')
@@ -123,7 +128,7 @@ export class Supervisor {
   private probeTimer: ReturnType<typeof setInterval> | null = null
   private lspPath: string | null = null
   // Forge Sync gate per project file (set by the SyncService).
-  private gates = new Map<string, { gate: GateState; detail?: string }>()
+  private gates = new Map<string, { gate: GateState; detail?: string; reason?: WaitReason }>()
 
   constructor(options: SupervisorOptions) {
     this.options = options
@@ -313,12 +318,13 @@ export class Supervisor {
     const file = this.servedPlace(key)
     const gate = file ? this.gates.get(file) : undefined
     if (!file || !gate || !gateHolds(gate.gate)) return null
-    return { file, detail: gate.detail || (gate.gate === 'blocked' ? 'Studio sync conflicts: resolve or serve anyway' : 'Waiting for Studio sync check') }
+    return { file, detail: gate.detail || (gate.gate === 'blocked' ? 'Studio sync conflicts: resolve or serve anyway' : gate.gate === 'waiting' ? WAITING_DETAIL : 'Waiting for Studio sync check') }
   }
 
   private holdView(file: string): ServiceStatus['hold'] {
-    const gate = this.gates.get(file)?.gate
-    return gate === 'blocked' || gate === 'checking' ? { gate, file } : undefined
+    const g = this.gates.get(file)
+    if (!g || !gateHolds(g.gate)) return undefined
+    return g.gate === 'waiting' ? { gate: 'waiting', file, reason: g.reason ?? 'studio' } : { gate: g.gate as 'checking' | 'blocked', file }
   }
 
   gateOf(file: string): GateState {
@@ -327,8 +333,8 @@ export class Supervisor {
 
   // Forge Sync gate for one place file. Holding stops a running serve of that place (a new Studio
   // session: stop, reconcile, restart); clearing starts a held one.
-  setGate(file: string, gate: GateState, detail?: string): void {
-    this.gates.set(file, { gate, detail })
+  setGate(file: string, gate: GateState, detail?: string, reason?: WaitReason): void {
+    this.gates.set(file, { gate, detail, ...(gate === 'waiting' && reason ? { reason } : {}) })
     this.applyGates()
   }
 
@@ -352,7 +358,9 @@ export class Supervisor {
       } else if (action === 'start') {
         proc.held = false
         if (key === 'rojo') this.update('rojo', { hold: undefined })
-        this.info('rojo', `${this.servedPlace(key)}: Studio sync clear; starting rojo serve`)
+        const file = this.servedPlace(key)
+        const why = file && this.gates.get(file)?.gate === 'clear' ? 'Studio sync clear' : this.gating() ? 'serving without a Studio check' : 'Studio sync gate off'
+        this.info('rojo', `${file}: ${why}; starting rojo serve`)
         void (async () => {
           const command = key === 'rojo' ? await this.command('rojo') : this.extraCommands.get(key) ?? null
           if (command && proc.wanted && !proc.child && !proc.held) this.spawnService(key, 'rojo', command)

@@ -2,6 +2,7 @@
 // and mapping SDK messages to ChatMessages.
 
 import { randomUUID } from 'node:crypto'
+import { query } from '@anthropic-ai/claude-agent-sdk'
 import type { McpStdioServerConfig, Options, SDKMessage, SDKUserMessage } from '@anthropic-ai/claude-agent-sdk'
 import type { ChatMessage } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
@@ -17,14 +18,10 @@ export const STUDIO_SERVER = 'studio'
 // A prompt with images uses the SDK's streaming input (an iterable of SDKUserMessage).
 export type QueryFn = (params: { prompt: string | AsyncIterable<SDKUserMessage>; options: Options }) => AsyncIterable<SDKMessage>
 
-export const sdkQuery: QueryFn = (params) => {
-  // Lazy import keeps the SDK out of module load for code paths that never query.
-  const iter = async function* () {
-    const { query } = await import('@anthropic-ai/claude-agent-sdk')
-    yield* query(params)
-  }
-  return iter()
-}
+// A static import, not import(): a quick update runs from userData/code/<version>, outside the app,
+// and finds the installed app's node_modules only through NODE_PATH (src/main/bootstrap.ts), which
+// require() honours and a dynamic import() does not.
+export const sdkQuery: QueryFn = (params) => query(params)
 
 // Packaged builds: the SDK's CLI binary is unpacked outside app.asar (see services/sdkBinary.ts).
 export function executableOption(): Pick<Options, 'pathToClaudeCodeExecutable'> {

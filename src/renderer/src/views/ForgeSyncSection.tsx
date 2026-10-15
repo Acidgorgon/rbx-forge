@@ -24,7 +24,8 @@ export function useForgeSync(): [SyncStatus | null, (s: SyncStatus) => void] {
 }
 
 const GATE: Record<GateState, { cls: string; label: string; hint: string }> = {
-  idle: { cls: '', label: 'no studio', hint: 'No Studio session for this place yet: Rojo serves normally.' },
+  idle: { cls: '', label: 'no check', hint: 'Rojo serves without a Studio check (the check is off in Settings > Sync, or you chose to serve without it).' },
+  waiting: { cls: 'info', label: 'waiting', hint: "Rojo waits for Studio's first sync check of this place, so it cannot delete scripts that exist only in Studio." },
   checking: { cls: 'info', label: 'checking', hint: 'Reading Studio first. Rojo waits so it cannot overwrite teammate edits.' },
   clear: { cls: 'ok', label: 'clear', hint: 'Studio and disk agree. Rojo serves.' },
   blocked: { cls: 'warn', label: 'held', hint: 'Conflicts or Studio-only scripts held. Rojo waits until you pick a side or pull them to disk (or serve anyway).' }
@@ -91,6 +92,12 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
     })
 
   const pending = status.pendingStudioEdits
+  // A Studio place is open that Forge cannot check (not linked, or an old plugin): rojo serve waits.
+  const blockedWait = status.places.find((p) => p.gate === 'waiting' && (p.waitReason === 'unlinked' || p.waitReason === 'plugin'))
+  const linkTarget = state.activePlace || 'default.project.json'
+  const linkTargetName = state.places.find((x) => x.file === linkTarget)?.name || state.project?.name || linkTarget.replace(/\.project\.json$/, '')
+  const serveUnchecked = (file?: string) =>
+    act(`nocheck:${file ?? '*'}`, () => window.harness.syncServeWithoutCheck(file), 'Rojo serves without a Studio check. Check its dialog in Studio before you accept: it may offer to delete Studio-only scripts.')
 
   return (
     <section className="vsec fs">
@@ -111,7 +118,29 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
           </button>
         </div>
       )}
-      {status.notice && (
+      {blockedWait && (
+        <div className="callout warn fs-callout fs-wait" role="alert">
+          <div>{blockedWait.gateDetail}.</div>
+          <div className="row">
+            {blockedWait.waitReason === 'unlinked' &&
+              status.unlinked?.filter((u) => u.canLink).map((u) => (
+                <button
+                  key={u.id}
+                  className="mini-btn hot"
+                  disabled={!!busy}
+                  title={`Sync this Studio place with ${linkTargetName} (${linkTarget}): Forge checks it first, then Rojo serves.`}
+                  onClick={() => void act(`link:${u.id}`, () => window.harness.syncLinkPlace(u.id, linkTarget), `Linked ${u.name} to ${linkTargetName}. Forge checks it before Rojo serves.`)}
+                >
+                  Link "{u.name}" and check
+                </button>
+              ))}
+            <button className="mini-btn" disabled={!!busy} title="Rojo serves now without a Studio check: its connect dialog may offer to delete scripts that exist only in Studio" onClick={() => void serveUnchecked()}>
+              Serve without Studio check
+            </button>
+          </div>
+        </div>
+      )}
+      {status.notice && !blockedWait && (
         <div className={`callout ${status.notice.level === 'warn' ? 'warn' : 'info'} fs-callout`} role="status">
           <div>{status.notice.text}</div>
           {status.notice.action === 'install-plugin' && (
@@ -166,6 +195,14 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
               <span className={`tag ${g.cls}`}>{p.gate === 'blocked' ? (p.conflicts || !p.studioOnly?.holds ? `${p.conflicts} held` : `${p.studioOnly.count} not on disk`) : g.label}</span>
             </div>
             <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}</div>
+            {p.gate === 'waiting' && !blockedWait && (
+              <div className="fs-sub note fs-waiting" title={p.gateDetail}>
+                Rojo waits for Studio's first sync check.{' '}
+                <button className="link-btn" disabled={!!busy} title="Rojo serves this place now without a Studio check: its connect dialog may offer to delete scripts that exist only in Studio" onClick={() => void serveUnchecked(p.projectFile)}>
+                  serve without check
+                </button>
+              </div>
+            )}
             {p.leftInStudio && (
               <div className="fs-sub note ellipsis" title={`${p.leftInStudio.note}\n\nRojo only manages what a $path maps; Studio-only instances outside it, or under $ignoreUnknownInstances, are place content and are never written to the repo on their own.`}>
                 {p.leftInStudio.note}
@@ -246,7 +283,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         const targetName = state.places.find((x) => x.file === target)?.name || state.project?.name || target.replace(/\.project\.json$/, '')
         return (
           <div key={u.id} className="fs-place fs-unlinked">
-            <div className="lrow static" title={`${u.why}.\n\nForge Sync only syncs Studio places linked to this project: a published place listed in servePlaceIds (or tools/studio-sync.json placeIds), or one you link here. Other places (VFX scratch places, other games) can stay open for Studio checks; nothing from them is written, trashed or held.`}>
+            <div className="lrow static" title={`${u.why}.\n\nForge Sync only syncs Studio places linked to this project: a published place listed in servePlaceIds (or tools/studio-sync.json placeIds), or one you link here. Other places (VFX scratch places, other games) can stay open for Studio checks; nothing from them is written or trashed. While no linked place has been checked, rojo serve waits.`}>
               <span className="fs-dot" />
               <span className="grow ellipsis">Not linked: {u.name}</span>
               <button
@@ -258,7 +295,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
                 Link
               </button>
             </div>
-            <div className="fs-sub note">Not synced: nothing from this place is written to disk or holds Rojo.{u.canLink ? ` Link it to sync it with ${targetName}.` : ` ${u.why}.`}</div>
+            <div className="fs-sub note">Not synced: nothing from this place is written to disk. Rojo serve waits until a linked place is checked.{u.canLink ? ` Link it to sync it with ${targetName}.` : ` ${u.why}.`}</div>
           </div>
         )
       })}

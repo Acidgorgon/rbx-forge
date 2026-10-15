@@ -120,7 +120,7 @@ test('matchPlace: published in config, published not in config, linked, unpublis
 
 // ---- the user's report: several Studio places open against a project with no servePlaceIds
 
-test('unlinked places (unpublished, local Place_<id>.rbxlx, unlisted published): no session, no disk writes, no conflicts, no rojo hold', async () => {
+test('unlinked places (unpublished, local Place_<id>.rbxlx, unlisted published): no session, no disk writes, no conflicts; rojo serve waits for a linked check', async () => {
   const root = project() // like TestGame: no servePlaceIds
   const before = diskState(root)
   const { service, gates } = make(root)
@@ -144,7 +144,10 @@ test('unlinked places (unpublished, local Place_<id>.rbxlx, unlisted published):
     assert.equal(ch.ok, false)
     await settle()
     const status = await service.status()
-    assert.deepEqual(status.places.map((p) => [p.projectFile, p.gate, p.connected, p.conflicts]), [['default.project.json', 'idle', false, 0]])
+    // Nothing from them is held as a conflict, but no linked place has been checked either: the
+    // project's place waits (Studio has places open Forge does not check), so Rojo cannot reach them.
+    assert.deepEqual(status.places.map((p) => [p.projectFile, p.gate, p.waitReason, p.connected, p.conflicts]), [['default.project.json', 'waiting', 'unlinked', false, 0]])
+    assert.match(status.places[0].gateDetail ?? '', /^Studio has "Place2", "DoubleFireSlashVFX" and 2 more open, but they aren't linked to this project/)
     assert.deepEqual(status.unlinked?.map((u) => [u.name, u.canLink]).sort(), [
       ['DoubleFireSlashVFX', true],
       ['FSF', true],
@@ -153,10 +156,17 @@ test('unlinked places (unpublished, local Place_<id>.rbxlx, unlisted published):
     ])
     assert.match(status.unlinked!.find((u) => u.name === 'Place_72187156382444.rbxlx')!.why, /Restart Studio/)
     assert.deepEqual(service.conflicts(), [])
-    assert.equal(service.gateFor('default.project.json').gate, 'idle')
-    assert.ok(gates.every(([, g]) => g === 'idle'), JSON.stringify(gates))
+    assert.deepEqual(service.gateFor('default.project.json').gate, 'waiting')
+    assert.equal(service.gateFor('default.project.json').reason, 'unlinked')
+    assert.ok(gates.every(([, g]) => g === 'waiting'), JSON.stringify(gates))
     assert.deepEqual(diskState(root), before)
     assert.deepEqual(status.pendingStudioEdits, [])
+    // "Serve without Studio check" (the user's call): rojo serves, still nothing synced or held.
+    await service.serveWithoutCheck()
+    await settle()
+    assert.equal(service.gateFor('default.project.json').gate, 'idle')
+    assert.deepEqual(gates.at(-1), ['default.project.json', 'idle'])
+    assert.deepEqual(diskState(root), before)
   } finally {
     service.close()
   }
@@ -307,18 +317,20 @@ test('project A sync state never appears or applies in project B', async () => {
   await wiring.onProjectOpen(b)
   gates.length = 0
   const status = (await wiring.handlers.syncStatus()) as Awaited<ReturnType<SyncService['status']>>
-  assert.ok(status.places.every((p) => p.placeKey !== '111' && p.gate === 'idle' && !p.connected), JSON.stringify(status.places))
+  // B's place has never been checked: it waits (rojo serve held), nothing of A's shows.
+  assert.ok(status.places.every((p) => p.placeKey !== '111' && p.gate === 'waiting' && !p.connected && !p.conflicts), JSON.stringify(status.places))
   assert.deepEqual(wiring.service()!.conflicts(), [])
   assert.equal((await wiring.handler.snapshot({ session: cfg.sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: FOREIGN })).ok, false)
   assert.equal((await wiring.handler.config({ placeId: 111, place: 'FSF' })).enabled, false)
   await settle()
-  assert.ok(gates.every(([, g]) => g === 'idle'), JSON.stringify(gates))
+  // Place 111 is not B's: it never gets a session in B, so B's gate only ever waits.
+  assert.ok(gates.every(([, g]) => g === 'waiting'), JSON.stringify(gates))
   assert.deepEqual(diskState(b), bBefore)
   assert.equal(existsSync(join(b, '.forge', 'sync', 'links.json')) ? Object.keys(JSON.parse(readFileSync(join(b, '.forge', 'sync', 'links.json'), 'utf8')).links).length : 0, 0)
   wiring.onProjectClose()
 })
 
-test('a place whose Studio went away is not live and does not hold rojo (never-connected: see the unlinked test)', async () => {
+test('a place whose Studio went away is not live and its conflicts stop holding rojo: it waits for the next Studio check (never-connected: see the unlinked test)', async () => {
   let t = 1_000_000
   let polling: { placeId?: number; place?: string }[] = [{ placeId: 111, place: 'TestGame' }]
   const root = project([111])
@@ -341,7 +353,8 @@ test('a place whose Studio went away is not live and does not hold rojo (never-c
     const status = await service.status()
     const p = status.places.find((x) => x.placeKey === '111')!
     assert.equal(p.connected, false)
-    assert.equal(p.gate, 'idle')
+    assert.equal(p.gate, 'waiting')
+    assert.equal(p.waitReason, 'studio')
     assert.deepEqual(service.conflicts(), [])
     // Its old token is gone: the plugin (if it comes back) starts over.
     assert.equal((await service.handler.changes({ session: cfg.sessionToken, place: { placeId: 111 }, changes: [] })).ok, false)

@@ -10,6 +10,11 @@
 
 export const PLUGIN_FILE = 'ForgeBridge.rbxmx'
 export const PLUGIN_VERSION = 9 // 2: Forge Sync (snapshot + change stream); 3: unsynced Instance-reference report; 4: viewport snapshot job (Thumbnail Lab); 5: Game-tab outline of the mapped services (Studio-only instances); 6: sync picks up mapped roots created after it started (Rojo connecting later) and Script Editor text in unpublished places; 7: the Game-tab outline keeps up with deletes, and Delete in Studio (the one, user-confirmed write; Ctrl+Z restores); 8: place linking (probe id per run, ForgeSyncLink attribute for unpublished places linked in Forge); 9: renames, moves and removes carry exactly their own subtree (same-name siblings, e.g. a Ctrl+D copy, keep theirs)
+// The oldest Forge Bridge plugin whose Studio check may clear the rojo gate (Forge Sync on). A Studio
+// still running an older one (not restarted after an update) keeps rojo serve waiting with "Restart
+// Studio": v9's snapshot and removes carry Studio-only scripts (and same-name copies) exactly, so Rojo
+// is never let in to delete what an older plugin reported wrongly. Bump only for safety fixes.
+export const SYNC_GATE_PLUGIN_VERSION = 9
 const VERSION_RE = /--\s*forge-bridge-version:\s*(\d+)/
 // The template's own version line (resources/studio/ForgeBridge.luau). Templates from before v7 have
 // none; they are v6 or older.

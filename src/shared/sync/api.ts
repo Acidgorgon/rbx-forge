@@ -28,6 +28,9 @@ export interface SyncApi {
   syncResolveAll(placeKey: string, take: 'studio' | 'disk', reason?: SyncConflictInfo['reason']): Promise<SyncStatus>
   // Lets rojo serve a blocked place now; the held conflicts stay listed.
   syncServeAnyway(placeKey: string): Promise<SyncStatus>
+  // Lets rojo serve place files no Studio check has cleared ('waiting': Studio not open, the open place
+  // not linked, or an old plugin), the given one or all, until a Studio session for one starts its check.
+  syncServeWithoutCheck(projectFile?: string): Promise<SyncStatus>
   // Writes the place's Studio-only scripts (PlaceSyncStatus.studioOnly, canPull) to disk, so Rojo
   // never offers to delete them from Studio.
   syncPullStudioOnly(placeKey: string): Promise<SyncStatus>

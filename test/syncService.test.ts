@@ -215,8 +215,11 @@ test('chunked snapshot: checking gate, then clear; files Forge wrote become pend
   assert.deepEqual(p.counts, { pulled: 1, created: 1, same: 1 })
   assert.deepEqual(status.recent.map((e) => e.action), ['created', 'pulled'])
   assert.deepEqual(status.pendingStudioEdits, ['src/skills/NewMove/init.luau', 'src/skills/Uppercut.luau'])
-  // The menu place has no session: idle, listed.
-  assert.equal(status.places.find((x) => x.projectFile === 'menu.project.json')?.gate, 'idle')
+  // The menu place has no session: listed, and rojo serve waits for its first Studio check.
+  const menu = status.places.find((x) => x.projectFile === 'menu.project.json')
+  assert.equal(menu?.gate, 'waiting')
+  assert.equal(menu?.waitReason, 'studio')
+  assert.equal(service.gateFor('menu.project.json').gate, 'waiting')
   const entryEvents = events.filter(([e]) => e === 'sync:entry')
   assert.equal(entryEvents.length, 1)
   assert.equal((entryEvents[0][1] as SyncEntry[]).length, 2)
@@ -432,7 +435,7 @@ test('unsynced references: collected over a chunked snapshot, replaced by change
   assert.equal((await service.status()).unsyncedRefs, undefined)
 })
 
-test('a snapshot that stalls releases the hold, also when Studio reopened and the new session never sent a chunk', async () => {
+test('a snapshot that stalls ends the session (back to waiting for a new Studio check), also when Studio reopened and the new session never sent a chunk', async () => {
   const { engine, service, gates } = setup({ staleMs: 30 })
   await service.start()
   const place = { placeId: 111, name: 'FSF Match' }
@@ -444,5 +447,35 @@ test('a snapshot that stalls releases the hold, also when Studio reopened and th
   await service.handler.config({ placeId: 111 })
   await new Promise((r) => setTimeout(r, 80))
   assert.ok(engine.calls.includes('end 111'))
-  assert.equal(gates.at(-1)?.[1], 'idle')
+  // Not 'checking' any more, and not 'clear' either: rojo serve waits for Studio's next check.
+  assert.equal(gates.at(-1)?.[1], 'waiting')
+  assert.equal(service.gateFor('default.project.json').reason, 'studio')
+})
+
+test('first Studio check: waiting before it, checking from the config on, "serve without check" lasts until the next check', async () => {
+  const { engine, service, gates } = setup()
+  await service.start()
+  // start() pushes every place file's gate before it returns (main starts rojo right after).
+  const last = (file: string) => gates.filter(([f]) => f === file).at(-1)
+  assert.equal(last('default.project.json')?.[1], 'waiting')
+  assert.match(last('default.project.json')?.[2] ?? '', /^Waiting for Studio's first sync check/)
+  assert.equal(last('menu.project.json')?.[1], 'waiting')
+  // The user's call for one place file.
+  await service.serveWithoutCheck('default.project.json')
+  await tick()
+  assert.equal(last('default.project.json')?.[1], 'idle')
+  assert.equal(last('menu.project.json')?.[1], 'waiting')
+  await assert.rejects(service.serveWithoutCheck('nope.project.json'), /No nope\.project\.json/)
+  // Studio asks for config: checking at once, before any snapshot chunk (a rojo still running stops).
+  const { sessionToken } = await service.handler.config({ placeId: 111, place: 'FSF Match' })
+  await tick()
+  assert.equal(last('default.project.json')?.[1], 'checking')
+  await service.handler.snapshot({ session: sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: [node(['ReplicatedStorage', 'Skills'])] })
+  await tick()
+  assert.equal(last('default.project.json')?.[1], 'clear')
+  // The check replaced the earlier choice: once this session is over, the place waits again.
+  engine.endSession('111')
+  await tick()
+  assert.equal(last('default.project.json')?.[1], 'waiting')
+  service.close()
 })

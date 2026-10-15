@@ -21,11 +21,12 @@ import type {
   StudioOnlyScript,
   SyncRef,
   SyncStatus,
-  UnlinkedPlace
+  UnlinkedPlace,
+  WaitReason
 } from '../../../shared/sync/types.ts'
 import { STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
-import { PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
+import { PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
 import { isLinkedKey, linkKey, matchPlace, PlaceLinks } from './links.ts'
 import { BaseStore } from './store.ts'
@@ -154,12 +155,14 @@ export interface SyncServiceDeps {
   pluginsDir: () => string | null
   // The Forge Bridge's view of Studio (the plugin long-polls), to show "connected" per place.
   studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
-  // Every Studio window polling the bridge right now (several places can be open at once).
-  studios?: () => { placeId?: number; place?: string }[]
+  // Every Studio window polling the bridge right now (several places can be open at once), with the
+  // Forge Bridge plugin version it runs.
+  studios?: () => { placeId?: number; place?: string; pluginVersion?: number }[]
   // The Forge Bridge plugin file in Studio's plugins folder (null: no plugins folder on this OS).
   plugin?: () => Promise<{ installed: boolean; version?: number } | null>
-  // Gate per project file, for the supervisor (rojo serve waits while 'checking' / 'blocked').
-  onGate?: (projectFile: string, gate: GateState, detail?: string) => void
+  // Gate per project file, for the supervisor (rojo serve waits while 'waiting' / 'checking' /
+  // 'blocked'; reason says why a file is 'waiting').
+  onGate?: (projectFile: string, gate: GateState, detail?: string, reason?: WaitReason) => void
   emit: (event: 'sync:status' | 'sync:entry', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   now?: () => number
@@ -190,7 +193,7 @@ const WRITTEN_FILE = join('.forge', 'sync', 'forge-written.json')
 const PACKAGES = /^(Server|Dev)?Packages(\/|$)/
 // Written from Studio: the file (and, for renames, its old path) is Forge's change, not the user's.
 const WRITES: SyncAction[] = ['pulled', 'merged', 'created', 'renamed', 'trashed']
-const GATE_RANK: Record<GateState, number> = { idle: 0, clear: 1, checking: 2, blocked: 3 }
+const GATE_RANK: Record<GateState, number> = { idle: 0, clear: 1, waiting: 2, checking: 3, blocked: 4 }
 
 interface Session {
   token: string
@@ -311,6 +314,9 @@ export class SyncService {
   // One-time note: sync state of never-linked places was dropped at startup.
   private discarded: { id: string; text: string } | undefined
   private expireTimer: ReturnType<typeof setInterval> | null = null
+  // Place files the user chose to serve without a Studio check ("Serve without Studio check"). Taken
+  // back as soon as a Studio session for that file starts its check.
+  private noCheck = new Set<string>()
 
   constructor(deps: SyncServiceDeps) {
     this.deps = deps
@@ -333,17 +339,23 @@ export class SyncService {
   }
 
   async start(): Promise<void> {
-    await this.loadWritten()
-    await this.links.load()
-    if (this.deps.mapping) {
-      this.maps = await this.deps.mapping.loadPlaces(this.root).catch(() => [])
-      await this.recoverUnlinked().catch((e) => this.deps.log?.(`sync: could not clean up unlinked places: ${(e as Error).message}`, 'stderr'))
-    }
-    await this.reload()
-    await this.checkLegacyPlugin()
-    if (!this.expireTimer && !this.closed) {
-      this.expireTimer = setInterval(() => this.expireSessions(), 15_000)
-      ;(this.expireTimer as { unref?: () => void }).unref?.()
+    try {
+      await this.loadWritten()
+      await this.links.load()
+      if (this.deps.mapping) {
+        this.maps = await this.deps.mapping.loadPlaces(this.root).catch(() => [])
+        await this.recoverUnlinked().catch((e) => this.deps.log?.(`sync: could not clean up unlinked places: ${(e as Error).message}`, 'stderr'))
+      }
+      await this.reload()
+      await this.checkLegacyPlugin()
+      if (!this.expireTimer && !this.closed) {
+        this.expireTimer = setInterval(() => this.expireSessions(), 15_000)
+        ;(this.expireTimer as { unref?: () => void }).unref?.()
+      }
+    } finally {
+      // The supervisor has every place file's gate before the project's services start (main awaits
+      // this before startAll), so rojo serve never starts ahead of the Studio check.
+      if (!this.closed) this.pushGates()
     }
   }
 
@@ -415,7 +427,8 @@ export class SyncService {
       changed = true
     }
     for (const [id, u] of this.unlinked) if (now - u.lastSeen > UNLINKED_SHOW_MS) this.unlinked.delete(id)
-    if (changed) this.refresh()
+    // Gates also follow the bridge's view of Studio (plugin version, unlinked places going away).
+    if (this.pushGates() || changed) this.refresh()
   }
 
   close(): void {
@@ -468,9 +481,15 @@ export class SyncService {
     const placeKey = match.placeKey
     for (const [token, s] of this.sessions) if (s.placeKey === placeKey) this.sessions.delete(token)
     const token = randomUUID()
+    // Unready until its snapshot is reconciled: the place is 'checking' from now on, so a rojo serve
+    // still running from an earlier session stops before Studio's Rojo plugin can (re)connect to it.
     this.sessions.set(token, { token, placeKey, nextSeq: 0, ready: false, rootsSeen: new Set() })
     const state = this.placeState(placeKey, map.projectFile, place)
     state.lastSeen = this.now()
+    state.override = false
+    // A Studio check starts: "Serve without Studio check" is over for this place file.
+    this.noCheck.delete(map.projectFile)
+    this.watchSnapshot(token, placeKey, false)
     const roots = map.roots.filter((r) => !PACKAGES.test(r.path)).map((r) => r.instance)
     // The VFX Lab's live Studio preview folder never syncs.
     const skip = [...map.roots.filter((r) => PACKAGES.test(r.path)).map((r) => r.instance), ['Workspace', LIVE_FOLDER]]
@@ -515,6 +534,7 @@ export class SyncService {
           session.ready = false
           session.rootsSeen = new Set()
           state.override = false
+          this.noCheck.delete(state.projectFile)
           state.counts = {}
           state.snapshotRefs = []
           await engine.beginSnapshot(session.placeKey, state.place, state.projectFile)
@@ -571,7 +591,7 @@ export class SyncService {
       // its first chunk nothing else would release the gate, so a missing token still releases it.
       if ([...this.sessions.values()].some((x) => x.placeKey === placeKey && x.ready)) return
       if (session) this.sessions.delete(token)
-      this.deps.log?.(`sync: Studio stopped sending the snapshot for ${placeKey}; rojo may serve again`, 'stderr')
+      this.deps.log?.(`sync: Studio stopped sending the snapshot for ${placeKey}; rojo serve waits for a new Studio check`, 'stderr')
       void this.serial(async () => {
         await this.deps.engine?.endSession?.(placeKey)
         this.refresh()
@@ -683,6 +703,18 @@ export class SyncService {
     return this.status()
   }
 
+  // "Serve without Studio check": rojo serves these place files (all of them without one) although no
+  // Studio check cleared them, until a Studio session for one starts its check. The user's call: an
+  // unchecked Studio place may get Rojo's "delete Studio-only scripts" dialog.
+  async serveWithoutCheck(projectFile?: string): Promise<SyncStatus> {
+    const files = projectFile ? [projectFile] : this.maps.map((m) => m.projectFile)
+    if (projectFile && !this.maps.some((m) => m.projectFile === projectFile)) throw new Error(`No ${projectFile} in this project`)
+    for (const file of files) this.noCheck.add(file)
+    this.deps.log?.(`sync: serving ${files.join(', ')} without a Studio check (you chose it); Rojo may offer to delete scripts that exist only in Studio, so check its dialog before you accept`, 'stderr')
+    this.refresh()
+    return this.status()
+  }
+
   async serveAnyway(placeKey: string): Promise<SyncStatus> {
     const state = this.placeStates.get(placeKey)
     if (!state) throw new Error(`No Studio session for ${placeKey}`)
@@ -759,38 +791,99 @@ export class SyncService {
   gate(placeKey: string): GateState {
     const state = this.placeStates.get(placeKey)
     if (!this.active() || !state) return 'idle'
+    // Config answered, snapshot not reconciled yet: checking (rojo stops before Studio's Rojo plugin
+    // can reach it).
+    if ([...this.sessions.values()].some((s) => s.placeKey === placeKey && !s.ready)) return 'checking'
     const gate = this.deps.engine!.gate(placeKey)
-    return state.override && gate === 'blocked' ? 'clear' : gate
+    if (state.override && gate === 'blocked') return 'clear'
+    // A check by a plugin older than the gate trusts does not clear it ("Restart Studio").
+    if (gate === 'clear' && !state.override && this.settings().gateRojo && this.pluginBehind(state.place)) return 'waiting'
+    return gate
   }
 
-  // Per project file: the strictest gate over the Studio sessions mapped to it.
-  gateFor(projectFile: string): { gate: GateState; detail?: string } {
+  // The Forge Bridge plugin version the Studio window of this place runs (its bridge poll), if known.
+  private pluginVersionOf(place: SyncPlace): number | undefined {
+    const hit = (this.deps.studios?.() ?? []).find((p) => this.isStudioPlace(p, place) && p.pluginVersion)
+    if (hit) return hit.pluginVersion
+    const single = this.deps.studio?.() ?? null
+    return single?.connected && this.isStudioPlace(single, place) ? single.pluginVersion : undefined
+  }
+
+  private pluginBehind(place: SyncPlace): number | null {
+    const v = this.pluginVersionOf(place)
+    return v !== undefined && v > 0 && v < SYNC_GATE_PLUGIN_VERSION ? v : null
+  }
+
+  // Per project file: the strictest gate over the Studio sessions mapped to it. With Forge Sync gating
+  // rojo, a file no Studio check has cleared (no session, session over, or an old plugin's) is
+  // 'waiting', unless the user chose "Serve without Studio check" for it.
+  gateFor(projectFile: string): { gate: GateState; detail?: string; reason?: WaitReason } {
     let gate: GateState = 'idle'
     let conflicts = 0
     let studioOnly = 0
+    let behind: number | null = null
     for (const state of this.placeStates.values()) {
       if (state.projectFile !== projectFile) continue
       const g = this.gate(state.placeKey)
       if (GATE_RANK[g] > GATE_RANK[gate]) gate = g
+      if (g === 'waiting') behind = this.pluginBehind(state.place) ?? behind
       if (g === 'blocked') {
         conflicts += this.conflictsFor(state.placeKey).length
         const only = this.deps.engine?.studioOnly?.(state.placeKey)
         if (only?.holds) studioOnly += only.items.length
       }
     }
+    if (gate === 'idle' || gate === 'waiting') {
+      if (!this.active() || !this.settings().gateRojo) return { gate: 'idle' }
+      if (this.noCheck.has(projectFile)) return { gate: 'idle', detail: 'Serving without a Studio check (your choice)' }
+      const wait = this.waitFor(behind)
+      return { gate: 'waiting', detail: wait.text, reason: wait.reason }
+    }
     return { gate, detail: gateDetail(gate, conflicts, studioOnly) }
+  }
+
+  // Why a place file waits for its Studio check, in one line.
+  private waitFor(behind: number | null): { reason: WaitReason; text: string } {
+    const polling = this.deps.studios?.() ?? []
+    const single = this.deps.studio?.() ?? null
+    const old = behind ?? [...polling, ...(single?.connected ? [single] : [])].map((p) => p.pluginVersion ?? 0).find((v) => v > 0 && v < SYNC_GATE_PLUGIN_VERSION) ?? null
+    if (old !== null) {
+      return { reason: 'plugin', text: `Restart Studio to update the Forge Bridge plugin (v${old} → v${PLUGIN_VERSION}): rojo serve waits so Rojo cannot delete scripts that exist only in Studio` }
+    }
+    const now = this.now()
+    const unlinked = [...this.unlinked.values()].filter((u) => now - u.lastSeen <= UNLINKED_SHOW_MS)
+    if (unlinked.length) {
+      const quoted = unlinked.map((u) => `"${u.name}"`)
+      const names = quoted.length <= 2 ? quoted.join(' and ') : `${quoted.slice(0, 2).join(', ')} and ${quoted.length - 2} more`
+      const one = unlinked.length === 1
+      return {
+        reason: 'unlinked',
+        text: `Studio has ${names} open, but ${one ? "it isn't" : "they aren't"} linked to this project: link ${one ? 'it' : "this project's place"} in Studio sync so Forge checks it first, or serve without a Studio check. Rojo serve waits so Rojo cannot delete scripts that exist only in Studio`
+      }
+    }
+    if (polling.length || single?.connected) return { reason: 'studio', text: "Waiting for Studio's first sync check (Studio is connected; its Forge Sync check has not started yet)" }
+    return { reason: 'studio', text: "Waiting for Studio's first sync check: open the place in Studio with the Forge Bridge plugin, or serve without a Studio check" }
   }
 
   places(): PlaceSyncStatus[] {
     const out: PlaceSyncStatus[] = []
     const studio = this.deps.studio?.() ?? null
+    // A place with no checked session shows its file's gate ('waiting' and why, or 'idle').
+    const shown = (gate: GateState, projectFile: string): Pick<PlaceSyncStatus, 'gate' | 'waitReason' | 'gateDetail'> => {
+      if (gate !== 'idle' && gate !== 'waiting') return { gate }
+      const file = this.gateFor(projectFile)
+      if (file.gate !== 'waiting') return { gate: 'idle', ...(file.detail ? { gateDetail: file.detail } : {}) }
+      return { gate: 'waiting', ...(file.reason ? { waitReason: file.reason } : {}), ...(file.detail ? { gateDetail: file.detail } : {}) }
+    }
     for (const state of this.placeStates.values()) {
       const viaBridge = !!studio?.connected && this.isStudioPlace(studio, state.place)
+      const pluginVersion = this.pluginVersionOf(state.place)
       out.push({
         placeKey: state.placeKey,
         projectFile: state.projectFile,
         place: state.place,
-        gate: this.gate(state.placeKey),
+        ...shown(this.gate(state.placeKey), state.projectFile),
+        ...(pluginVersion ? { pluginVersion } : {}),
         connected: viaBridge || this.now() - state.lastSeen < SEEN_MS,
         ...(state.lastSnapshot ? { lastSnapshot: state.lastSnapshot } : {}),
         counts: { ...state.counts },
@@ -800,11 +893,11 @@ export class SyncService {
         ...(state.lastSnapshot && state.missingRoots.length ? { missingRoots: state.missingRoots.map((r) => r.join('.')) } : {})
       })
     }
-    // Places no Studio session has opened yet (idle: rojo serves them normally).
+    // Places no Studio session has opened yet ('waiting' for one with Forge Sync gating rojo).
     for (const map of this.maps) {
       if (out.some((p) => p.projectFile === map.projectFile)) continue
       const placeId = map.placeIds[0] ?? 0
-      out.push({ placeKey: placeKeyOf({ placeId }, map.projectFile), projectFile: map.projectFile, gate: 'idle', connected: false, counts: {}, conflicts: 0 })
+      out.push({ placeKey: placeKeyOf({ placeId }, map.projectFile), projectFile: map.projectFile, ...shown('idle', map.projectFile), connected: false, counts: {}, conflicts: 0 })
     }
     return out.sort((a, b) => a.projectFile.localeCompare(b.projectFile))
   }
@@ -871,6 +964,9 @@ export class SyncService {
       // Not linked: not a sync failure, that place is simply not this project's.
       if (/not linked to this project/.test(cfg.reason)) {
         if (places.some((p) => p.connected)) return undefined
+        if (this.settings().gateRojo) {
+          return { level: 'warn', text: `Studio has ${name} open, but it isn't linked to this project: nothing from it is synced, and rojo serve waits so Rojo cannot delete scripts that exist only in Studio. Link it below so Forge checks it first, or serve without a Studio check.` }
+        }
         return { level: 'info', text: `Studio connected, ${name} is not linked to this project: nothing from it is synced. Link it in Source Control to sync it.` }
       }
       return { level: 'warn', text: `Studio connected, ${name} not synced: ${cfg.reason}.` }
@@ -891,6 +987,9 @@ export class SyncService {
           : `Studio connected; not synced in ${name}: ${list} (not in Studio yet). ${later}`,
         ...(v < PLUGIN_VERSION ? { action: 'restart-studio' as const } : {})
       }
+    }
+    if (v > 0 && v < SYNC_GATE_PLUGIN_VERSION && this.settings().gateRojo) {
+      return { level: 'warn', action: 'restart-studio', text: `Restart Studio to update the Forge Bridge plugin (v${v} → v${PLUGIN_VERSION}). Until then rojo serve waits: an older plugin's check could let Rojo delete scripts that exist only in Studio.` }
     }
     if (v > 0 && v < PLUGIN_VERSION) return { level: 'info', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (syncs folders Rojo creates after Studio opened, Script Editor text in unpublished places, and Ctrl+D copies of scripts).` }
     return undefined
@@ -966,15 +1065,19 @@ export class SyncService {
     })
   }
 
-  private pushGates(): void {
+  // Pushes changed per-file gates to the supervisor; true when one changed.
+  private pushGates(): boolean {
     const files = new Set([...this.maps.map((m) => m.projectFile), ...[...this.placeStates.values()].map((s) => s.projectFile)])
+    let changed = false
     for (const file of files) {
-      const { gate, detail } = this.gateFor(file)
-      const key = `${gate}|${detail ?? ''}`
+      const { gate, detail, reason } = this.gateFor(file)
+      const key = `${gate}|${detail ?? ''}|${reason ?? ''}`
       if (this.pushedGates.get(file) === key) continue
       this.pushedGates.set(file, key)
-      this.deps.onGate?.(file, gate, detail)
+      changed = true
+      this.deps.onGate?.(file, gate, detail, reason)
     }
+    return changed
   }
 
   // ---- Game tab ----

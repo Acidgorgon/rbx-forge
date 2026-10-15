@@ -90,14 +90,15 @@ export function layersCheck(effect: VfxEffect): PrincipleCheck | null {
   const has = { primary: roles.some((r) => PRIMARY.has(r)), secondary: roles.some((r) => SECONDARY.has(r)), tertiary: roles.some((r) => TERTIARY.has(r)) }
   const covered = Object.values(has).filter(Boolean).length
   const seq = (effect.stages?.length ?? 0) > 1
-  const crowded = !seq && visual > 10
+  // Imported packs layer 8-12 emitters on purpose; only past that is it clutter.
+  const crowded = !seq && visual > 14
   const score = s10(2.5 + covered * 2 + (visual >= 3 ? 1.5 : visual === 2 ? 0.5 : 0) - (crowded ? 1.5 : 0))
   const missing = Object.entries(has).filter(([, v]) => !v).map(([k]) => k)
   return {
     id: 'fx-layers',
     score,
     note: `${visual} visual layer${visual === 1 ? '' : 's'} (${[...new Set(roles)].join(', ')}); ${missing.length ? `missing ${missing.join(' and ')}` : 'primary, secondary and tertiary covered'}${crowded ? '; crowded' : ''}`,
-    ...(score < 7 ? { fix: missing.length ? `add ${missing.map((m) => (m === 'primary' ? 'a primary core or shape' : m === 'secondary' ? 'a secondary glow or ring' : 'tertiary sparks, embers or smoke')).join(', ')}` : 'merge layers that do the same job; 3-6 per beat' } : {})
+    ...(score < 7 ? { fix: missing.length ? `add ${missing.map((m) => (m === 'primary' ? 'a primary core or shape' : m === 'secondary' ? 'a secondary glow or ring' : 'tertiary sparks, embers or smoke')).join(', ')}` : 'merge layers that do the same job' } : {})
   }
 }
 

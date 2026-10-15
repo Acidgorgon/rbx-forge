@@ -30,6 +30,7 @@ import { EffectImportReview, importProgressText, useImportProgress } from './Eff
 import { DuplicatesPanel, LiveControls, liveLine, matchesTagFilter, TagFilters, TagGroupEditor, type TagFilter } from './LibraryTools'
 import { tagGroupsOf } from '@shared/vfx/tags'
 import { chooseRecipe, fitToPriors, priorFit } from '@shared/vfx/priors'
+import { smallModelHint, type LabModels } from '@shared/labModels'
 
 const IMPORT_HINT = '.rbxm · .rbxmx · .rbxl places · folders · png/jpg · video refs: mp4/webm/mov/gif'
 // After a bulk import of more than this many effects the lab offers to learn from them.
@@ -441,11 +442,11 @@ function Detail({ entry, entries, progress, recipes, live, onClose, onTrashed }:
             </dd>
             <dt>origin</dt>
             <dd className="mono">{entry.origin}</dd>
-            {!!entry.basedOn?.length && (
+            {(!!entry.basedOn?.length || !!entry.makeNotes?.length) && (
               <>
                 <dt>made from</dt>
                 <dd data-testid="vfx-made-from">
-                  {entry.basedOn.map(nameOf).join(', ')}
+                  {entry.basedOn?.length ? entry.basedOn.map(nameOf).join(', ') : <span className="faint">no library effect</span>}
                   {!!entry.makeNotes?.length && (
                     <ul className="vfx-import-notes">
                       {entry.makeNotes.map((n) => (
@@ -596,6 +597,12 @@ export function VfxLabPage() {
   // Video reference import review (a dropped / picked clip), and the reference pinned to Make.
   const [refImport, setRefImport] = useState<{ file: File | null } | null>(null)
   const [pin, setPin] = useState<{ id: string; name: string } | null>(null)
+  // Settings > Labs: a small drafting model is called out next to Make (never switched silently).
+  const [labModels, setLabModels] = useState<LabModels | null>(null)
+  useEffect(() => {
+    void h.getLabModels?.().then(setLabModels, () => setLabModels({}))
+  }, [h])
+  const smallHint = smallModelHint('default', labModels?.default || state.defaultModel?.model)
 
   const load = useCallback(async () => {
     try {
@@ -905,7 +912,7 @@ export function VfxLabPage() {
               <button type="button" className={mode === 'single' ? 'on' : ''} aria-pressed={mode === 'single'} onClick={() => setMode('single')} title="One burst of layers (emitters, beams, lights)">
                 single
               </button>
-              <button type="button" className={mode === 'sequence' ? 'on' : ''} aria-pressed={mode === 'sequence'} onClick={() => setMode('sequence')} title="Multi-stage: a timeline script that spawns kit rigs and tweens them (anticipation, charge, release, impact, dissipate)">
+              <button type="button" className={mode === 'sequence' ? 'on' : ''} aria-pressed={mode === 'sequence'} onClick={() => setMode('sequence')} title="Multi-stage: a timeline script (anticipation, charge, release, impact, dissipate) built around a copy of your closest library effect; kit rigs when nothing in the library is close">
                 sequence
               </button>
             </div>
@@ -957,6 +964,11 @@ export function VfxLabPage() {
             </span>
           </div>
           <LabCostLine lab="vfx" />
+          {smallHint && (
+            <p className="note warn vfx-small-model" role="note" data-testid="vfx-small-model">
+              {smallHint} (Settings &gt; Labs)
+            </p>
+          )}
         </section>
 
         <div className="seg vfx-view" role="tablist" aria-label="Library">

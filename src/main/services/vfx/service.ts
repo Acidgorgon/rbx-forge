@@ -29,8 +29,9 @@ import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeMatches, recipeSkill } from '../../../shared/vfx/recipes.ts'
 import { applyChanges, compactEffect, effectFromSpec, safeName, shortTitle, SpecError, type VfxSpec } from '../../../shared/vfx/spec.ts'
 import type { VfxChange, VfxCritique, VfxEffect, VfxEntry, VfxImportResult, VfxIteration, VfxLabStatus, VfxPick, VfxRecipe, VfxRefineOptions, VfxRefineProgress, VfxScope, VfxScriptResult } from '../../../shared/vfx/types.ts'
-import { draftCandidate, finishEffect, ground, groundingLines, pickByCode, singleCandidates, type Candidate, type Grounding } from '../../../shared/vfx/ground.ts'
-import { emptyFeedback, feedbackBoost, nearestEffects, normalizeFeedback, recordFeedback, type VfxFeedback } from '../../../shared/vfx/retrieve.ts'
+import { alignBaseToStage, baseColors, baseLayerLines, composeBase, draftCandidate, enrichSpec, finishEffect, ground, groundingLines, libraryScript, pickByCode, richnessNotes, singleCandidates, type Candidate, type Grounding } from '../../../shared/vfx/ground.ts'
+import { asksSimpler, guardLayerEdits, richness, richnessLine, richTargetOf, tooSimple } from '../../../shared/vfx/richness.ts'
+import { emptyFeedback, feedbackBoost, nearestEffects, normalizeFeedback, recordFeedback, REMIX_MIN_SCORE, type VfxFeedback } from '../../../shared/vfx/retrieve.ts'
 import { texRef } from '../../../shared/vfx/tex/textures.ts'
 import { studioFramesNote } from '../../../shared/studio/frames.ts'
 import { entryId, PROJECT_VFX_DIR, safeFileName, VfxLibraryError, VfxStore } from './library.ts'
@@ -167,13 +168,13 @@ const EMPTY_BASE = (name: string): VfxEffect => ({ name, roots: [], cues: [], du
 // Make from the closest real effect: the model edits a copy instead of drafting from scratch.
 export const REMIX_SYSTEM = `You adapt a real Roblox VFX from the user's own library to a new request for the RBX Forge VFX Lab. The starting effect is already recoloured and resized for the request; keep what makes it look like the user's work (its structure, textures, flipbooks, timing). Answer with JSON only, no prose:
 {"name":"PascalCase","description":"one sentence","changes":[{"node":"<layer name from the parameters>","prop":"<Roblox property>","value":...,"why":"short"}]}
-At most 10 changes, only what the request needs that the effect does not do yet (a colour accent, more or fewer sparks, a longer dissipate, a bigger ring, a slower flipbook...). Use only layer names (the "name" field) and properties that exist in the parameters; values in the same JSON shapes (sequences [[t, v], ...], colour sequences [[t, "#hex"], ...], ranges [min, max]); bursts with prop "emit" and [{"at": seconds, "count": n}]; the length of one play with node "$effect" prop "duration"; to drop a layer that does not belong (lightning bolts in an ice slash) set its "emit" to [] and "Enabled" to false. Texture: only ids already in the effect or listed as the user's textures; never invent asset ids. An empty changes list is right when it already fits the request.`
+At most 10 changes, only what the request needs that the effect does not do yet (a colour accent, more or fewer sparks, a longer dissipate, a bigger ring, a slower flipbook...). Use only layer names (the "name" field) and properties that exist in the parameters; values in the same JSON shapes (sequences [[t, v], ...], colour sequences [[t, "#hex"], ...], ranges [min, max]); bursts with prop "emit" and [{"at": seconds, "count": n}]; the length of one play with node "$effect" prop "duration". Keep every layer: the user's effects are layered on purpose, so a layer that does not fit (lightning bolts in an ice slash) is recoloured, retextured with one of the user's textures or retimed, never hidden or emptied (only when the request asks for something simpler). Adding detail is welcome; removing it is not. Texture: only ids already in the effect or listed as the user's textures; never invent asset ids. An empty changes list is right when it already fits the request.`
 
 // Picking between variations.
 const PICK_SYSTEM = 'You are a senior Roblox VFX artist choosing between variations of one effect from preview frames (dark background, a grey R15 dummy for scale). Answer with JSON only.'
 
 // Variation hints: one model call per variation (Make and compose).
-export const VARIATION_HINTS = ['', 'Variation B: punchier and tighter: a faster peak, shorter lifetimes, a hotter core, fewer but sharper secondary layers.', 'Variation C: bigger and more showy: a larger silhouette, more secondary detail (sparks, debris, a ring), a longer dissipate.']
+export const VARIATION_HINTS = ['', 'Variation B: punchier and tighter: a faster peak, shorter lifetimes, a hotter core, sharper secondary layers (keep every layer).', 'Variation C: bigger and more showy: a larger silhouette, more secondary detail (sparks, debris, a ring), a longer dissipate.']
 
 export function clampVariations(n: unknown): number {
   const v = Math.floor(Number(n))
@@ -218,6 +219,15 @@ export function scriptName(script: string, request: string): string {
 // The note on an entry the model did not draft, with the actual error.
 export function draftedWithout(error: string): string {
   return `Drafted without a model because: ${error.replace(/\s+/g, ' ').trim().slice(0, 500)}`
+}
+
+// Why Make drafted (or compose used only kit rigs) instead of copying one of the user's effects
+// (shown with the entry).
+export function noBaseNote(g: Grounding, what = 'drafted from the built-in archetype'): string {
+  const m = g.matches[0]
+  if (!m) return `${what}: nothing in your library is close to this request`
+  const why = g.req.groups.kind.length && !m.kindMatch ? `is not tagged ${g.req.groups.kind.join(' / ')}` : `is not close enough (match ${m.score} of ${REMIX_MIN_SCORE})`
+  return `${what}: your closest "${m.entry.name.slice(0, 40)}" ${why}; name it in the request or tag its kind to start from it`
 }
 
 // A numbers-only critique after the vision call failed: say so (with the error) instead of
@@ -1057,12 +1067,21 @@ export class VfxService {
     const vision = this.deps.vision?.('critic')
     const weights = await this.principleWeights()
     const request = criticBrief(entry.origin || entry.description, entry.restatement)
-    const principled = (c: VfxCritique, raw?: string) => withVfxPrinciples(c, effect, { request, raw, weights })
+    // Richness against the user's closest effects; critic changes that would hide a layer are not
+    // applied (a critic that "cleans up" a ten-layer copy to three), unless the request asks for less.
+    const target = richTargetOf(refs.map((r) => ({ name: r.name, effect: r.effect })))
+    const keepLayers = (c: VfxCritique): VfxCritique => {
+      const g = guardLayerEdits(effect, c.changes, `${entry.origin} ${entry.restatement ? JSON.stringify(entry.restatement) : ''}`)
+      if (!g.dropped.length) return c
+      return { ...c, changes: g.kept, summary: `${c.summary} (Kept ${g.dropped.length} layer${g.dropped.length === 1 ? '' : 's'} the critic wanted to hide: ${[...new Set(g.dropped.map((x) => x.node))].slice(0, 4).join(', ')}.)`.trim().slice(0, 700) }
+    }
+    const principled = (c: VfxCritique, raw?: string) => keepLayers(withVfxPrinciples(c, effect, { request, raw, weights }))
     if (!vision) {
       const c = principled(heuristicCritique(effect, recipe, refNames))
       return pinned ? this.withMatch(c, effect, pinned) : c
     }
-    const prompt = `${critiquePrompt({ prompt: criticBrief(entry.origin, entry.restatement), effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })}\n\n${vfxCriticPrinciples(effect, request, { weights, focus: previous?.focus })}`
+    const rich = target && !asksSimpler(entry.origin ?? '') ? `\n\nRichness: ${richnessLine(effect, target)}. Score layering against the user's own effects, not a generic 3-6 layers; never propose hiding or emptying a layer (emit [], Enabled false, Transparency 1, Size 0); fix a layer that does not fit instead.${tooSimple(effect, target) ? ' This effect is sparser than theirs: layering at most 6.' : ''}` : ''
+    const prompt = `${critiquePrompt({ prompt: criticBrief(entry.origin, entry.restatement), effect, frameTimes: times, references: refs.map((r) => ({ name: r.name, description: r.description, effect: r.effect })), recipe, iteration, previous })}${rich}\n\n${vfxCriticPrinciples(effect, request, { weights, focus: previous?.focus })}`
     // Pinned reference: its key frames follow the rendered frames (compared side by side).
     const extra = pinned ? pinned.images : await this.referenceImages(refs, tags)
     const images: ImagePayload[] = [...frames.map((f) => ({ mime: 'image/png', base64: f.toString('base64') })), ...extra]
@@ -1199,7 +1218,7 @@ export class VfxService {
       const lines = [
         `Make: ${text}`,
         hint,
-        `Starting effect: a copy of the user's "${baseName}" (${start.notes.join('; ')}). Its parameters (edit these; "name" is the layer key):\n${JSON.stringify(compactEffect(start.effect, { keys: true })).slice(0, 12000)}`,
+        `Starting effect: a copy of the user's "${baseName}" (${start.notes.join('; ')}). Its parameters (edit these; "name" is the layer key):\n${JSON.stringify(compactEffect(start.effect, { keys: true })).slice(0, 24000)}`,
         ...grounding,
         ...textures
       ].filter(Boolean)
@@ -1208,7 +1227,10 @@ export class VfxService {
       let effect = start.effect
       let applied = 0
       let rejected = 0
-      for (const ch of asChanges(data.changes)) {
+      // Edits that would hide a layer of the user's effect are not applied (small models "simplify"
+      // a ten-layer copy down to two), unless the request asks for something simpler.
+      const guard = guardLayerEdits(start.effect, asChanges(data.changes), text)
+      for (const ch of guard.kept) {
         try {
           effect = applyChanges(effect, [ch])
           applied++
@@ -1219,7 +1241,8 @@ export class VfxService {
       }
       if (typeof data.name === 'string' && safeName(data.name)) effect = { ...effect, name: safeName(data.name).slice(0, 40) }
       const f = finishEffect(effect, g)
-      return { effect: f.effect, basedOn: start.basedOn, how: 'model-remix', notes: [...start.notes, `${applied} model edit${applied === 1 ? '' : 's'}${rejected ? ` (${rejected} did not apply)` : ''}`, ...f.notes], ...(typeof data.description === 'string' ? { description: data.description.slice(0, 600) } : {}) }
+      const kept = guard.dropped.length ? `; kept the ${guard.dropped.length} layer${guard.dropped.length === 1 ? '' : 's'} it tried to hide (${[...new Set(guard.dropped.map((c) => c.node))].slice(0, 4).join(', ')})` : ''
+      return { effect: f.effect, basedOn: start.basedOn, how: 'model-remix', notes: [...start.notes, `${applied} model edit${applied === 1 ? '' : 's'}${rejected ? ` (${rejected} did not apply)` : ''}${kept}`, ...f.notes], ...(typeof data.description === 'string' ? { description: data.description.slice(0, 600) } : {}) }
     }
     const fallback = start.spec ?? draftCandidate(text, g).spec!
     const lines = [
@@ -1231,9 +1254,12 @@ export class VfxService {
       `A starting draft you may improve: ${JSON.stringify(fallback)}`
     ].filter(Boolean)
     const raw = await vision(DRAFT_SYSTEM, lines.join('\n\n'), [])
-    const spec = jsonObject(raw) as unknown as VfxSpec
+    const answer = jsonObject(raw) as unknown as VfxSpec
+    // A spec much sparser than the user's effects gets the starting draft's missing layers back.
+    const { spec, added } = enrichSpec(answer, fallback, g, text)
     const f = finishEffect(effectFromSpec(spec), g)
-    return { effect: f.effect, basedOn: start.basedOn, how: 'model-draft', notes: f.notes, spec, ...(typeof spec.description === 'string' ? { description: spec.description } : {}), ...(Array.isArray(spec.tags) ? { tags: spec.tags.map(String) } : {}) }
+    const notes = [...(added.length ? [`the model's draft had ${answer.layers?.length ?? 0} layer${answer.layers?.length === 1 ? '' : 's'}; added ${added.join(', ')} from the starting draft to match your library's layering`] : []), ...f.notes]
+    return { effect: f.effect, basedOn: start.basedOn, how: 'model-draft', notes, spec, ...(typeof spec.description === 'string' ? { description: spec.description } : {}), ...(Array.isArray(spec.tags) ? { tags: spec.tags.map(String) } : {}) }
   }
 
   // Several variations -> one: the critic looks at two frames of each and picks (when frames can be
@@ -1244,16 +1270,19 @@ export class VfxService {
     if (cands.length < 2) return { index: 0 }
     const code = pickByCode(cands, g)
     const scores = code.scores.map((x) => x.total)
-    const critic = opts.modelFailed ? null : await this.criticPick(cands, text).catch((e) => {
+    const critic = opts.modelFailed ? null : await this.criticPick(cands, text, g).catch((e) => {
       this.deps.log?.(`vfx: critic pick unavailable (${(e as Error).message}); picking by the code checks`, 'stderr')
       return null
     })
-    if (critic) return { index: critic.index, pick: { of: cands.length, chosen: critic.index, by: 'critic', why: critic.why, scores } }
+    // The critic's pick stands unless it is much sparser than the user's effects while another
+    // variation is not (a small critic model likes the cleanest frame).
+    if (critic && !(tooSimple(cands[critic.index].effect, g.target, text) && cands.some((c) => !tooSimple(c.effect, g.target, text)))) return { index: critic.index, pick: { of: cands.length, chosen: critic.index, by: 'critic', why: critic.why, scores } }
     const best = code.scores[code.index]
-    return { index: code.index, pick: { of: cands.length, chosen: code.index, by: 'code', why: `best library fit ${best.total}/10 (realism ${Math.round(best.realism * 100)}%, textures reused ${Math.round(best.textureReuse * 100)}%, timing ${Math.round(best.timing * 100)}%)`, scores } }
+    const overruled = critic ? `; the critic's ${String.fromCharCode(65 + critic.index)} was much sparser than your library` : ''
+    return { index: code.index, pick: { of: cands.length, chosen: code.index, by: 'code', why: `best library fit ${best.total}/10 (realism ${Math.round(best.realism * 100)}%, textures reused ${Math.round(best.textureReuse * 100)}%, timing ${Math.round(best.timing * 100)}%${g.target ? `, richness ${Math.round(best.richness * 100)}%` : ''})${overruled}`, scores } }
   }
 
-  private async criticPick(cands: Candidate[], text: string): Promise<{ index: number; why: string } | null> {
+  private async criticPick(cands: Candidate[], text: string, g?: Grounding): Promise<{ index: number; why: string } | null> {
     const vision = this.deps.vision?.('critic')
     if (!vision || !this.deps.capture) return null
     const images: ImagePayload[] = []
@@ -1262,7 +1291,8 @@ export class VfxService {
       for (const f of frames.slice(0, 2)) images.push({ mime: 'image/png', base64: f.toString('base64') })
     }
     const letters = cands.map((_, i) => String.fromCharCode(65 + i))
-    const prompt = `Request: ${text}\n${cands.length} variations of the effect, 2 frames each, in order: ${letters.map((l, i) => `images ${i * 2 + 1}-${i * 2 + 2} = ${l}`).join(', ')}.\nPick the one a senior Roblox VFX artist would ship for this request (readability, layering, timing, colour, silhouette). Answer JSON only: {"pick":"${letters[0]}","why":"one sentence"}`
+    const prompt = `Request: ${text}\n${cands.length} variations of the effect, 2 frames each, in order: ${letters.map((l, i) => `images ${i * 2 + 1}-${i * 2 + 2} = ${l}`).join(', ')}.\nLayers per variation: ${cands.map((c, i) => `${letters[i]} ${richness(c.effect).layers}`).join(', ')}${g?.target && !asksSimpler(text) ? `; the user's own closest effects have about ${g.target.layers} layers with staggered bursts, so a sparse variation is a step down for them` : ''}.
+Pick the one a senior Roblox VFX artist would ship for this request (readability, layering, timing, colour, silhouette). Answer JSON only: {"pick":"${letters[0]}","why":"one sentence"}`
     const raw = await vision(PICK_SYSTEM, prompt, images)
     const m = /"pick"\s*:\s*"?([A-Z])/i.exec(raw)
     const index = m ? letters.indexOf(m[1].toUpperCase()) : -1
@@ -1286,7 +1316,7 @@ export class VfxService {
       description,
       tags: [...new Set([...g.tags, ...(c.tags ?? [])])],
       basedOn: c.basedOn,
-      makeNotes: c.notes,
+      makeNotes: [...(base ? [] : [noBaseNote(g)]), ...c.notes, ...richnessNotes(c.effect, g, text)],
       ...(pick ? { pick } : {}),
       authoritativeTags: authoritative(g),
       ...(modelError ? { modelNote: draftedWithout(modelError) } : {})
@@ -1350,6 +1380,13 @@ export class VfxService {
     // Grounding in the user's library (closest effects, learned ranges, real textures by role); a
     // script passed in by the caller is used as written.
     const g = script ? null : await this.groundFor(text).catch((e) => (this.deps.log?.(`vfx: grounding: ${(e as Error).message}`, 'stderr'), null))
+    // Built on a copy of the closest library effect (when one is close enough): the script adds the
+    // choreography (anticipation, accents, dissipate) and the copy is the payoff on "impact", so the
+    // sequence keeps the user's layering instead of a few kit rigs.
+    const libBase = g ? composeBase(text, g) : null
+    const libName = libBase ? g!.matches.find((m) => m.entry.id === libBase.basedOn[0])?.entry.name ?? 'library effect' : ''
+    const baseFor = (name: string): VfxEffect => (libBase ? { ...libBase.effect, name } : EMPTY_BASE(name))
+    const settle = (e: VfxEffect): VfxEffect => (libBase ? alignBaseToStage(e).effect : e)
     let finished: { effect: VfxEffect; notes: string[] } | null = null
     let pick: VfxPick | undefined
     if (!script && vision) {
@@ -1361,6 +1398,11 @@ export class VfxService {
         restatementBlock(restatement),
         ...liked.map((e) => `The user liked this related sequence ("${e.origin}"); reuse what fits:\n\`\`\`lua\n${e.effect!.script!.slice(0, 4000)}\n\`\`\``),
         ...(avoid.length ? [`The user disliked: ${avoid.map((e) => `${e.name} (${e.description.slice(0, 120)})`).join(' | ')}`] : []),
+        ...(libBase
+          ? [
+              `The effect already holds a copy of the user's "${libName}" (${libBase.notes.join('; ')}). It plays as one burst at the effect's root when your script reaches fx:stage("impact"); its layers (you may fx:emit / fx:enable / fx:tween them by these names, never spawn a rig with one of these names):\n${baseLayerLines(libBase.effect).slice(0, 24).map((l) => `- ${l}`).join('\n')}\nWrite the choreography around it: an anticipation / charge before fx:stage("impact"), accents that support it (a light spike, extra sparks or a ground ring), then fx:stage("dissipate"). Keep the impact at the root (no fx:forward for it) and do not rebuild its layers with kit rigs.`
+            ]
+          : []),
         ...(g ? groundingLines(g, { script: true }) : []),
         ...(await this.textureLines()),
         ...(pinned ? [pinned.compose] : []),
@@ -1378,7 +1420,7 @@ export class VfxService {
             check: async (raw): Promise<AttemptResult<{ s: string; r: VfxScriptResult }>> => {
               const s = extractScript(raw)
               if (!s) return { ok: false, kind: 'no-script', message: 'no script in the answer' }
-              const r = await this.recordScript(s, EMPTY_BASE(scriptName(s, text)))
+              const r = await this.recordScript(s, baseFor(scriptName(s, text)))
               if (r.ok) return { ok: true, value: { s, r } }
               const where = r.error?.line ? ` (line ${r.error.line}: ${s.split('\n')[r.error.line - 1]?.trim() ?? ''})` : ''
               return { ok: false, kind: 'script-error', message: `${r.error?.message ?? 'the script failed'}${where}` }
@@ -1394,35 +1436,51 @@ export class VfxService {
         const ok = runs.flatMap((r) => (r.status === 'fulfilled' ? [r.value.value] : []))
         if (!ok.length) throw (runs.find((r): r is PromiseRejectedResult => r.status === 'rejected')?.reason ?? new Error('no script'))
         const cands: (Candidate & { s: string; r: VfxScriptResult })[] = ok.map((v) => {
-          const f = g ? finishEffect(v.r.effect!, g) : { effect: v.r.effect!, notes: [] }
-          return { effect: f.effect, basedOn: g?.near ?? [], how: 'model-script', notes: f.notes, s: v.s, r: v.r }
+          const e = settle(v.r.effect!)
+          const f = g ? finishEffect(e, g) : { effect: e, notes: [] }
+          return { effect: f.effect, basedOn: libBase ? [...libBase.basedOn, ...(g?.near ?? []).filter((id) => id !== libBase.basedOn[0])] : g?.near ?? [], how: 'model-script', notes: [...(libBase?.notes ?? []), ...f.notes], s: v.s, r: v.r }
         })
+        // Nothing in the library to build on and every script came out much sparser than the
+        // user's effects (a small model's shockwave + flash): the built-in draft for the request's
+        // archetype joins the candidates, so the pick can prefer a fuller sequence.
+        if (g && !libBase && cands.every((c) => tooSimple(c.effect, g.target, text))) {
+          const ds = draftScript(text)
+          const dr = await this.recordScript(ds, EMPTY_BASE(scriptName(ds, text))).catch(() => null)
+          if (dr?.ok && dr.effect) {
+            const f = finishEffect(dr.effect, g)
+            cands.push({ effect: f.effect, basedOn: g.near, how: 'script', notes: ['the built-in draft sequence (the model\'s scripts were much sparser than your library)', ...f.notes], s: ds, r: dr })
+          }
+        }
         const chosen = g ? await this.pickCandidate(cands, g, text) : { index: 0 }
         const c = cands[chosen.index]
         pick = chosen.pick
         script = c.s
         result = { ...c.r, effect: c.effect }
         finished = { effect: c.effect, notes: c.notes }
-        source = 'model'
+        source = c.how === 'script' ? 'draft' : 'model'
       } catch (e) {
         this.deps.log?.(`vfx: composed script unusable (${(e as Error).message}); using the built-in draft`, 'stderr')
         modelError = e instanceof ComposeGaveUp ? `the model's script did not run (${e.message})` : (e as Error).message
       }
     }
     if (!result) {
-      if (!script) script = draftScript(text)
+      const own = !script
+      // No model script: the built-in choreography around the library copy, else the archetype draft.
+      if (own) script = libBase ? libraryScript(text, libName, baseColors(libBase.effect)) : draftScript(text)
       else source = 'model'
-      result = await this.recordScript(script, EMPTY_BASE(scriptName(script, text)))
+      result = await this.recordScript(script, own ? baseFor(scriptName(script, text)) : EMPTY_BASE(scriptName(script, text)))
       if (!result.ok && opts.script) return { ...result, source }
       if (!result.ok) {
         // The built-in draft always records; this only happens when Lune itself fails.
         throw new VfxError(`could not record the draft timeline: ${result.error?.message}`)
       }
       if (g && result.effect && !opts.script) {
-        finished = finishEffect(result.effect, g)
+        const f = finishEffect(own ? settle(result.effect) : result.effect, g)
+        finished = { effect: f.effect, notes: [...(own && libBase ? libBase.notes : []), ...f.notes] }
         result = { ...result, effect: finished.effect }
       }
     }
+    const composeNotes = g && !opts.script ? [...(libBase ? [] : [noBaseNote(g, 'composed from kit rigs')]), ...(finished?.notes ?? []), ...richnessNotes(result.effect!, g, text)] : finished?.notes ?? []
     const refTags = pinned ? ((await this.find(pinned.id))?.entry.tags ?? []).filter((t) => t !== 'video') : []
     const tags = [...new Set([...promptTags(text), ...(g?.tags ?? []), ...refTags, 'sequence'])]
     const modelNote = source === 'draft' && modelError ? draftedWithout(modelError) : undefined
@@ -1433,8 +1491,8 @@ export class VfxService {
       ...(pinned ? { refId: pinned.id } : {}),
       ...(restatement ? { restatement } : {}),
       ...(modelNote ? { modelNote } : {}),
-      ...(g && !opts.script ? { basedOn: g.near } : {}),
-      ...(finished?.notes.length ? { makeNotes: finished.notes } : {}),
+      ...(g && !opts.script ? { basedOn: libBase ? [...libBase.basedOn, ...g.near.filter((id) => id !== libBase.basedOn[0])] : g.near } : {}),
+      ...(composeNotes.length ? { makeNotes: composeNotes } : {}),
       ...(pick ? { pick } : {})
     })
     await this.ensureChoreographySkill()

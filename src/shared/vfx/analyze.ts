@@ -500,7 +500,7 @@ export const PERF = {
   // Sum of live x area x opacity (studs^2): large, opaque, overlapping quads are what cost fill rate.
   overdrawWarn: 600,
   overdrawError: 2500,
-  emittersWarn: 8,
+  emittersWarn: 12,
   burstWarn: 200
 }
 
@@ -523,7 +523,7 @@ export function perfWarnings(effect: VfxEffect): PerfWarning[] {
   else if (stats.particles > PERF.particlesWarn) out.push({ level: 'warn', message: `About ${stats.particles} live particles: fine alone, heavy if several play at once.` })
   if (stats.overdraw > PERF.overdrawError) out.push({ level: 'error', message: `Overdraw estimate ${stats.overdraw}: large overlapping quads will cost fill rate on mobile.` })
   else if (stats.overdraw > PERF.overdrawWarn) out.push({ level: 'warn', message: `Overdraw estimate ${stats.overdraw}: consider smaller or fewer large particles.` })
-  if (stats.emitters > PERF.emittersWarn && !isSequence(effect)) out.push({ level: 'info', message: `${stats.emitters} emitters; most good effects use 3 to 6 layers.` })
+  if (stats.emitters > PERF.emittersWarn && !isSequence(effect)) out.push({ level: 'info', message: `${stats.emitters} emitters: fine when every layer has a job; check the live particle count if several play at once.` })
   if (isSequence(effect) && stats.emitters > 40) out.push({ level: 'info', message: `${stats.emitters} emitters across the sequence; reuse rigs (tween them) instead of spawning new ones per beat.` })
   return out
 }

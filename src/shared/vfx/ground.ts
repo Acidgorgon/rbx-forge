@@ -12,9 +12,12 @@ import { extractRecipe } from './recipes.ts'
 import { remixEffect } from './remix.ts'
 import { bankLines, bankTextureChanges, effectDigest, effectTextureBank, feedbackBoost, nearestEffects, readRequest, remixable, type TextureBank, type VfxFeedback, type VfxMatch, type VfxRequest } from './retrieve.ts'
 import { knownTextures, scoreEffect, type QualityScore } from './quality.ts'
-import { applyChanges, effectFromSpec, shortTitle, SpecError, type VfxSpec } from './spec.ts'
+import { applyChanges, effectFromSpec, shortTitle, SpecError, type VfxLayerSpec, type VfxSpec } from './spec.ts'
 import { flatTags } from './tags.ts'
-import type { VfxEffect, VfxEntry, VfxRecipe } from './types.ts'
+import { allNodes, nodeRole } from './analyze.ts'
+import { asksSimpler, richnessLine, richnessScore, richTarget, tooSimple, type RichTarget } from './richness.ts'
+import { evalColorSequence } from './sequence.ts'
+import type { ColorSequence, VfxEffect, VfxEntry, VfxRecipe } from './types.ts'
 
 export interface GroundContext {
   entries: VfxEntry[]
@@ -35,6 +38,8 @@ export interface Grounding {
   bank: TextureBank
   near: string[]
   known: Set<string>
+  // How rich the user's closest effects are (layers, roles, beams / trails, beats).
+  target: RichTarget | null
   ctx: GroundContext
 }
 
@@ -64,7 +69,7 @@ export function ground(text: string, ctx: GroundContext, opts: { exclude?: strin
     ctx.entries.filter((e) => e.effect).map((e) => e.effect!),
     ctx.libraryRefs ?? []
   )
-  return { req, tags, matches, recipe, bank, near: matches.slice(0, 3).map((m) => m.entry.id), known, ctx }
+  return { req, tags, matches, recipe, bank, near: matches.slice(0, 3).map((m) => m.entry.id), known, target: richTarget(matches), ctx }
 }
 
 // Prompt lines: the closest effects (compact per-layer digests), the learned ranges for the type and
@@ -77,6 +82,7 @@ export function groundingLines(g: Grounding, opts: { maxRefs?: number; script?: 
       `Closest effects in the user's own library (real effects they made or bought; match their scale, timing, textures and colour treatment${opts.script ? '; pass their texture ids to kit spawns with texture = "rbxassetid://..."' : ''}):\n${refs.map((m) => `${effectDigest(m.entry.effect!)}\n  (why close: ${m.why.join('; ') || 'similar'})`).join('\n')}`
     )
   }
+  if (g.target) lines.push(`How rich the user's closest effects are (${g.target.from.join(', ')}): about ${g.target.layers} visible layers (${g.target.roles.join(', ')})${g.target.beams ? ', beams' : ''}${g.target.trails ? ', a trail' : ''}, bursts staggered over ${g.target.beats} beats. Match that richness; do not simplify unless the request asks for it.`)
   const pl = priorLines(g.recipe)
   if (pl.length) lines.push(`Learned ranges for "${g.recipe!.tag}" from ${g.recipe!.samples} of the user's effects (stay inside these unless the request asks otherwise):\n${pl.map((l) => `- ${l}`).join('\n')}`)
   const bl = bankLines(g.bank, g.near)
@@ -140,16 +146,20 @@ export function draftCandidate(text: string, g: Grounding): Candidate {
 
 export interface CodePick {
   index: number
-  scores: (QualityScore & { principles: number; total: number })[]
+  scores: (QualityScore & { principles: number; richness: number; total: number })[]
 }
 
-// The best candidate by code: library fit (quality.ts) blended with the principle checks.
+// The best candidate by code: library fit (quality.ts) blended with the principle checks and, when
+// the library has close effects, how rich it is next to them (a sparse variation never wins over
+// one that keeps the user's layering just because its few numbers sit inside the ranges).
 export function pickByCode(cands: Candidate[], g: Grounding): CodePick {
   const scores = cands.map((c) => {
     const q = scoreEffect(c.effect, { recipe: g.recipe, known: g.known })
     const checks = safeChecks(c.effect)
     const principles = checks.length ? checks.reduce((a, x) => a + x.score, 0) / checks.length : 5
-    return { ...q, principles: Math.round(principles * 100) / 100, total: Math.round((0.75 * q.overall + 0.25 * principles) * 100) / 100 }
+    const rich = richnessScore(c.effect, g.target)
+    const total = g.target ? 0.6 * q.overall + 0.2 * principles + 2 * rich : 0.75 * q.overall + 0.25 * principles
+    return { ...q, principles: Math.round(principles * 100) / 100, richness: rich, total: Math.round(total * 100) / 100 }
   })
   let index = 0
   for (let i = 1; i < scores.length; i++) if (scores[i].total > scores[index].total) index = i
@@ -162,4 +172,158 @@ function safeChecks(e: VfxEffect) {
   } catch {
     return []
   }
+}
+
+// ------------------------------------------------------------------ richness of model answers
+
+// A model's whole spec that came out much sparser than the user's effects (small models write two
+// or three layers): the starting draft's layers whose job the answer left out are added back, so
+// the result has the draft's layering at least. Returns the spec unchanged when it is rich enough
+// or the request asks for something simpler.
+export function enrichSpec(spec: VfxSpec, start: VfxSpec | undefined, g: Grounding, text: string): { spec: VfxSpec; added: string[] } {
+  if (!start?.layers?.length || !Array.isArray(spec.layers) || asksSimpler(text)) return { spec, added: [] }
+  let effect: VfxEffect
+  try {
+    effect = effectFromSpec(spec)
+  } catch {
+    return { spec, added: [] }
+  }
+  const target = g.target ?? { layers: start.layers.length, roles: [], beams: false, trails: false, beats: 1, from: ['the starting draft'] }
+  if (!tooSimple(effect, target, text) && spec.layers.length >= Math.min(start.layers.length, target.layers)) return { spec, added: [] }
+  const roleOf = (l: VfxLayerSpec) => {
+    try {
+      const e = effectFromSpec({ name: 'X', layers: [l] })
+      const n = allNodes(e.roots).find((x) => x.className === l.class)
+      return n ? nodeRole(n) : 'other'
+    } catch {
+      return 'other'
+    }
+  }
+  const have = new Set(spec.layers.map(roleOf))
+  const names = new Set(spec.layers.map((l) => String(l.name)))
+  const added: string[] = []
+  const layers = [...spec.layers]
+  const add = (l: VfxLayerSpec) => {
+    let name = String(l.name)
+    while (names.has(name)) name += '2'
+    names.add(name)
+    layers.push({ ...l, name })
+    added.push(name)
+  }
+  // The jobs the answer left out first, then the rest of the draft (it is the floor).
+  const rest: VfxLayerSpec[] = []
+  for (const l of start.layers) {
+    const role = roleOf(l)
+    if (have.has(role) && role !== 'other') rest.push(l)
+    else if (layers.length < 16) (have.add(role), add(l))
+  }
+  for (const l of rest) if (layers.length < 16) add(l)
+  return { spec: { ...spec, layers }, added }
+}
+
+// ------------------------------------------------------------------ compose on a library copy
+
+// The library copy a composed sequence is built on: the remix of the closest effect (when one is
+// close enough), with every node name made unique ("1", "1_2", ...) so the script and the game
+// runtime can name each layer.
+export function composeBase(text: string, g: Grounding): Candidate | null {
+  const c = singleCandidates(text, g, 1)[0]
+  if (!c || c.how !== 'remix' || !c.basedOn[0]) return null
+  const effect: VfxEffect = JSON.parse(JSON.stringify(c.effect))
+  delete effect.script
+  delete effect.patches
+  delete effect.stages
+  const seen = new Map<string, number>()
+  for (const n of allNodes(effect.roots)) {
+    const k = n.name.toLowerCase()
+    const i = (seen.get(k) ?? 0) + 1
+    seen.set(k, i)
+    if (i > 1) n.name = `${n.name}_${i}`
+  }
+  return { ...c, effect }
+}
+
+// Layer lines of a base for the compose prompt ("1 [core] ParticleEmitter, emits 3 at 0 s").
+export function baseLayerLines(effect: VfxEffect): string[] {
+  const out: string[] = []
+  for (const n of allNodes(effect.roots)) {
+    if (!['ParticleEmitter', 'Beam', 'Trail'].includes(n.className)) continue
+    const cues = effect.cues.filter((c) => c.target === n.id)
+    const emits = cues.filter((c) => c.action === 'emit').map((c) => `${c.count ?? 16}@${Math.round(c.at * 100) / 100}s`)
+    out.push(`${n.name} [${nodeRole(n)}] ${n.className}${emits.length ? `, emits ${emits.slice(0, 3).join(' ')}` : ''}`)
+  }
+  return out
+}
+
+const IMPACT_STAGE = /impact|hit|explo|burst|slam|land|strike|clash|detonat|boom|blast|merge|collide|pop/i
+const RELEASE_STAGE = /release|fire|launch|shoot|cast|unleash|throw|swing|slash|cut|attack/i
+
+// After a script compiled on a library copy: the copy's own cues (not the script's) start at the
+// impact beat (else the release), so the copy is the payoff of the choreography instead of playing
+// on top of the anticipation. Returns the effect unchanged when there is no such stage.
+export function alignBaseToStage(effect: VfxEffect): { effect: VfxEffect; at: number | null } {
+  const stages = effect.stages ?? []
+  const stage = stages.find((s) => IMPACT_STAGE.test(s.label)) ?? stages.find((s) => RELEASE_STAGE.test(s.label))
+  const base = effect.cues.filter((c) => !c.script && !c.prelude && !c.spawn)
+  if (!stage || !base.length || stage.at <= 0.01) return { effect, at: null }
+  const first = Math.min(...base.map((c) => c.at))
+  const shift = stage.at - first
+  if (shift <= 0.01) return { effect, at: null }
+  const next: VfxEffect = { ...effect, cues: effect.cues.map((c) => (!c.script && !c.prelude && !c.spawn ? { ...c, at: Math.round((c.at + shift) * 1000) / 1000 } : c)).sort((a, b) => a.at - b.at) }
+  // Long enough for the copy to finish after the shift.
+  const nodes = new Map(allNodes(next.roots).map((n) => [n.id, n]))
+  let end = next.duration
+  for (const c of next.cues) {
+    if (c.script || c.prelude || c.spawn) continue
+    const n = nodes.get(c.target)
+    const life = n?.className === 'ParticleEmitter' ? Math.min(3, Number((n.props.Lifetime as number[] | undefined)?.[1] ?? 1)) : 0.3
+    end = Math.max(end, c.at + life + 0.1)
+  }
+  next.duration = Math.min(15, Math.round(end * 100) / 100)
+  return { effect: next, at: stage.at }
+}
+
+// The choreography the Lab writes itself around a library copy when no model script is used:
+// a gather / glow anticipation at the root, the copy's burst on "impact", a light spike, then the
+// dissipate. Names are prefixed so they never take a layer name of the copy.
+export function libraryScript(text: string, baseName: string, color: { main: [number, number, number]; hot: [number, number, number] }): string {
+  const c3 = (c: [number, number, number]) => `Color3.new(${c.map((x) => Math.round(x * 1000) / 1000).join(', ')})`
+  return `-- ${text.replace(/\s+/g, ' ').trim().slice(0, 100)} (built on your "${baseName.replace(/[\r\n]/g, ' ')}" by RBX Forge: tune the anticipation, the copy plays on "impact")
+return function(fx)
+	local MAIN = ${c3(color.main)}
+	local HOT = ${c3(color.hot)}
+	fx:stage("anticipation")
+	fx:spawn("charge", { name = "ForgeGather", color = MAIN, size = 3, rate = 70 })
+	local edge = fx:spawn("glow", { name = "ForgeEdge", color = MAIN, size = 2.5 })
+	fx:tween(edge.Glow, 0.45, { Rate = 22 }, "Quad", "In")
+	fx:wait(0.5)
+	fx:stage("impact")
+	fx:disable("ForgeGather")
+	fx:disable("ForgeEdge")
+	fx:spawn("light", { name = "ForgeLight", color = HOT, brightness = 10 })
+	fx:wait(0.3)
+	fx:disable("ForgeLight")
+	fx:wait(0.3)
+	fx:stage("dissipate")
+	fx:wait(0.5)
+end
+`
+}
+
+// Notes for the entry: where it started and how rich it came out next to the user's effects.
+export function richnessNotes(effect: VfxEffect, g: Grounding, text: string): string[] {
+  if (!g.target) return []
+  const notes = [richnessLine(effect, g.target)]
+  if (tooSimple(effect, g.target, text)) notes.push(`sparser than your ${g.target.from[0]}${g.target.from.length > 1 ? ' and similar effects' : ''}: add layers or pick a richer variation (or ask for "simple" when that is the point)`)
+  return notes
+}
+
+// The copy's own colours for the choreography the Lab writes around it: the hot start and the
+// middle of its brightest additive emitter.
+export function baseColors(effect: VfxEffect): { main: [number, number, number]; hot: [number, number, number] } {
+  const ems = allNodes(effect.roots).filter((n) => n.className === 'ParticleEmitter' && Array.isArray(n.props.Color) && Number(n.props.LightEmission ?? 0) >= 0.5)
+  const n = ems[0]
+  if (!n) return { main: [0.6, 0.45, 1], hot: [1, 1, 1] }
+  const seq = n.props.Color as unknown as ColorSequence
+  return { main: evalColorSequence(seq, 0.5) as [number, number, number], hot: evalColorSequence(seq, 0) as [number, number, number] }
 }

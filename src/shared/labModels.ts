@@ -46,3 +46,20 @@ export function resolveLabModel(tier: LabTier, labs: LabModels | null | undefine
   if (tier === 'critic') return tiers?.big ?? chosen
   return chosen
 }
+
+// Small / fast model ids (Haiku, mini, nano, flash-lite, small open models): fine for tagging and
+// summaries, but they write sparse effects (two or three layers) and "simplify" rich ones when they
+// draft or critique. The Labs settings and the VFX Lab say so; nothing switches models on its own.
+export function isSmallModel(id: string | null | undefined): boolean {
+  const m = String(id ?? '').toLowerCase()
+  if (!m) return false
+  return /haiku|(^|[-_.:/])(mini|nano|lite|small|tiny)([-_.:/]|$)|flash-lite|-8b\b|:8b\b|\b[1-9]b\b|gemma|phi-?\d/.test(m)
+}
+
+// The hint for a Labs tier whose model is small (null when it is not).
+export function smallModelHint(tier: LabTier, model: string | null | undefined): string | null {
+  if (tier === 'cheap' || !isSmallModel(model)) return null
+  return tier === 'default'
+    ? `Drafting on a small model (${model}): it tends to write sparse effects and hide layers of your library copies. Pick a larger model here for richer effects.`
+    : `Critiquing on a small model (${model}): it tends to prefer the sparsest variation. Pick a larger model here for a better critic.`
+}

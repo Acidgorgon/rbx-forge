@@ -58,6 +58,10 @@ async function joinAll(page: Page): Promise<void> {
 }
 
 async function splitFlow({ page, root, note, shot }: FlowCtx): Promise<void> {
+  // A key press does not wait for the app the way a click waits for its target. Run first
+  // (--only=split-editor), this flow starts on a window that has only just loaded, and a Ctrl+P sent
+  // before the workbench mounts its shortcut listener is dropped. Wait for the workbench first.
+  await page.locator('nav.activity').waitFor({ state: 'visible', timeout: 30_000 })
   await openViaPalette(page, 'InventoryService')
   await openViaPalette(page, 'PlayerData')
   check((await groupCount(page)) === 1, 'expected one editor group to start with')

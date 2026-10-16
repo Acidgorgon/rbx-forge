@@ -225,6 +225,9 @@ export interface AppSettings {
   // that would lose unsaved editor changes are confirmed regardless.
   confirmFileDelete: boolean
   confirmStudioDelete: boolean
+  // An explicit lune binary for tests, stories and lab previews (settings key tests.lunePath);
+  // '' = find it through rokit / PATH.
+  lunePath: string
 }
 
 export interface PlacesChanged {

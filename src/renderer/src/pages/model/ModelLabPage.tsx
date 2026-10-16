@@ -12,6 +12,8 @@ import { Icon } from '../../components/Icons'
 import { ago, errorText } from '../../lib/format'
 import { ModelPreview } from './ModelPreview'
 import { ModelScript } from './ModelScript'
+import { StudioTargetPicker } from '../studio/StudioTarget'
+import { LabCostLine } from '../gating/LabGating'
 import '../vfx/vfx.css'
 import './model.css'
 
@@ -187,6 +189,7 @@ function StudioBox({ entry, status, onSaved }: { entry: ModelEntry; status: Mode
         <button className="btn primary" onClick={() => void build()} disabled={busy || !studio?.canBuild || !entry.parts} title={studio?.message} data-testid="model-build-studio">
           {busy ? <span className="spinner" aria-hidden /> : <Icon name="studio" size={12} />} Build in Studio
         </button>
+        <StudioTargetPicker />
         <span className={`note${studio && !studio.canBuild ? ' warn' : ''}`}>{studio?.message ?? 'checking Studio…'}</span>
       </div>
     </div>
@@ -442,7 +445,7 @@ export function ModelLabPage() {
           <div className="callout row" data-testid="model-callout">
             <Icon name="info" size={12} />
             <span className="grow note">
-              {!status.lune.available && <>The preview builds scripts with Lune, which was not found{status.lune.hint ? `: ${status.lune.hint}` : ''} (Settings → Toolchain). </>}
+              {!status.lune.available && <>The preview builds scripts with Lune. {status.lune.hint ?? 'Lune was not found: run `rokit install` in the project, or set the Lune path in Settings > Toolchain.'} </>}
               {!status.vision && <>No AI model is set up (Settings → Providers): Generate starts from the template and the critic is off. </>}
             </span>
           </div>
@@ -514,6 +517,7 @@ export function ModelLabPage() {
               ))}
             </span>
           </div>
+          <LabCostLine lab="model" />
           {runMsg && (
             <p className="vfx-progress model-run" aria-live="polite" data-testid="model-progress">
               <span className="spinner" aria-hidden /> {runMsg.message}

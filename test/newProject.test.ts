@@ -15,6 +15,8 @@ import {
   renameWallyToml,
   validateProjectName,
   wallyPart,
+  withLunePin,
+  LUNE_PIN,
   type NewProjectProgress,
   type TemplateFetcher
 } from '../src/main/services/setup/newProject.ts'
@@ -99,6 +101,11 @@ test('GenTree project: strips template git, renames, git init + commit + remote,
   assert.match(readFileSync(join(root, 'wally.toml'), 'utf8'), /^name = "teamone\/shop-sim"$/m)
   assert.match(readFileSync(join(root, 'README.md'), 'utf8'), /^# Shop Sim$/m)
   assert.match(readFileSync(join(root, '.gitignore'), 'utf8'), /^\/Shop Sim\.rbxlx$/m)
+  // The template's tools stay; lune (Forge's tests, stories and lab previews) is pinned next to them.
+  const rokit = readFileSync(join(root, 'rokit.toml'), 'utf8')
+  assert.match(rokit, /^rojo = "rojo-rbx\/rojo@7\.7\.0"$/m)
+  assert.match(rokit, /^blink = "1Axen\/blink@0\.18\.1"$/m)
+  assert.match(rokit, /^lune = "lune-org\/lune@0\.11\.0"$/m)
   assert.deepEqual(calls, [
     '/bin/git init -b main',
     '/bin/git config user.email',
@@ -172,6 +179,7 @@ test('empty Rojo project is generated without any fetch', async () => {
   assert.equal(project.tree.ServerScriptService.Server.$path, 'src/server')
   assert.ok(existsSync(join(result.root, 'src', 'client', 'init.client.luau')))
   assert.match(readFileSync(join(result.root, 'rokit.toml'), 'utf8'), /rojo = "rojo-rbx\/rojo@7\.7\.0"/)
+  assert.match(readFileSync(join(result.root, 'rokit.toml'), 'utf8'), /^lune = "lune-org\/lune@0\.11\.0"$/m)
   const by = Object.fromEntries(result.steps.map((s) => [s.step, s.state]))
   assert.deepEqual([by.rokit, by.wally, by.blink], ['done', 'skipped', 'skipped'])
 })
@@ -270,4 +278,15 @@ test('with real git (when installed): the new project is its own repository with
   assert.equal(out(['remote', 'get-url', 'origin']), 'https://github.com/me/real.git')
   assert.match(out(['log', '-1', '--format=%s']), /Create Real from the GenTree template/)
   assert.equal(out(['status', '--porcelain']), '')
+})
+
+test('withLunePin adds lune to [tools] once and keeps an existing pin', () => {
+  assert.equal(LUNE_PIN.id, 'lune-org/lune')
+  const base = '# Tools\n[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\n'
+  const pinned = withLunePin(base)
+  assert.match(pinned, /^# Tools\n\[tools\]\nrojo = "rojo-rbx\/rojo@7\.7\.0"\nlune = "lune-org\/lune@0\.11\.0"\n$/)
+  assert.equal(withLunePin(pinned), pinned)
+  const own = '[tools]\nlune = "lune-org/lune@0.10.4"\n'
+  assert.equal(withLunePin(own), own, 'a project that pins its own lune keeps it')
+  assert.match(withLunePin(''), /\[tools\]\s*\nlune = "lune-org\/lune@0\.11\.0"/)
 })

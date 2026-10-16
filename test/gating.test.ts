@@ -640,6 +640,24 @@ test('gating wiring: settings round trip, compose runs attach the entry, ratings
   await w.service.flush()
 })
 
+test('gating wiring: Model Lab Generate runs attach the model, Build in Studio marks it kept', async () => {
+  const store = new Map<string, unknown>()
+  const w = createGatingWiring({ userDataDir: await tmp(), settings: { get: (k, f) => (store.has(k) ? (store.get(k) as never) : f), set: (k, v) => void store.set(k, v) }, emit: () => {} })
+  const hs = w.wrap('model', {
+    modelGenerate: async () => {
+      await w.service.charge('default', { input: 200, output: 80, costUsd: 0.02 })
+      return { entry: { id: 'wolf-1a2b3c' }, build: { ok: true }, source: 'model', notes: [] }
+    },
+    modelBuildInStudio: async () => ({ name: 'Wolf', parts: 9, path: 'Workspace.Wolf' })
+  })
+  await hs.modelGenerate('ice wolf', { template: 'guard' })
+  await new Promise((r) => setTimeout(r, 5))
+  await hs.modelBuildInStudio('wolf-1a2b3c')
+  const row = ((await w.handlers.labGatingView()) as { costs: { lab: string; kept: number; costPerKept: number | null }[] }).costs.find((c) => c.lab === 'model')!
+  assert.deepEqual([row.kept, row.costPerKept], [1, 0.02])
+  await w.service.flush()
+})
+
 // ------------------------------------------------------------------ lab service integration
 
 

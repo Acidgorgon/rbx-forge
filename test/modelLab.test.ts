@@ -501,6 +501,48 @@ test('buildInStudio explains an old plugin, a plugin error and a script over the
   }
 })
 
+test('buildInStudio goes to the "Test in" place: its plugin and name are the ones reported', async () => {
+  let opts: unknown = 'unset'
+  const f = await fake({
+    bridge: {
+      studio: () => ({ place: 'Lobby', pluginVersion: 10 }),
+      targetStudio: () => ({ place: 'Arena', placeId: 77, pluginVersion: 9 }),
+      run: async (_job, handler, o) => {
+        opts = o
+        handler({ type: 'log', message: JSON.stringify({ built: 'Egg', parts: 9, path: 'Workspace.Egg' }) }, 0)
+      }
+    }
+  })
+  try {
+    const { entry } = await f.svc.fromTemplate('egg', { name: 'Egg' })
+    // The targeted place runs an old plugin: no build, whatever the last polling window runs.
+    const st = await f.svc.status()
+    assert.equal(st.studio.place, 'Arena')
+    assert.equal(st.studio.canBuild, false)
+    await assert.rejects(() => f.svc.buildInStudio(entry.id), /v9; restart Studio/)
+  } finally {
+    await rm(f.dir, { recursive: true, force: true })
+  }
+  const g = await fake({
+    bridge: {
+      targetStudio: () => ({ place: 'Arena', placeId: 77, pluginVersion: 10 }),
+      run: async (_job, handler, o) => {
+        opts = o
+        handler({ type: 'log', message: JSON.stringify({ built: 'Egg', parts: 9, path: 'Workspace.Egg' }) }, 0)
+      }
+    }
+  })
+  try {
+    const { entry } = await g.svc.fromTemplate('egg', { name: 'Egg' })
+    const r = await g.svc.buildInStudio(entry.id)
+    assert.equal(r.place, 'Arena')
+    // No own target: the bridge sends it to its default target (the picker's place).
+    assert.equal((opts as { target?: unknown }).target, undefined)
+  } finally {
+    await rm(g.dir, { recursive: true, force: true })
+  }
+})
+
 test('run refuses empty and oversized scripts before Lune', async () => {
   const f = await fake()
   try {

@@ -124,7 +124,7 @@ export function modelMock(emit: Emit): ModelApi {
       return {
         projectRoot: '/home/acid/Projects/obby-quest',
         libraryDir: '/home/acid/Projects/obby-quest/.forge/models/library',
-        lune: q === 'nolune' ? { available: false, hint: 'Lune was not found. Settings > Tests > Lune path, or `rokit add lune-org/lune`.' } : { available: true, version: '0.10.4' },
+        lune: q === 'nolune' ? { available: false, hint: 'Lune is not installed. This project pins it in rokit.toml: run `rokit install` in the project folder, or set the Lune path in Settings > Toolchain.' } : { available: true, version: '0.10.4' },
         vision: true,
         render: true,
         studio: { connected: true, place: 'Obby Quest', pluginVersion: 10, canBuild: true, message: 'Builds in Obby Quest' },

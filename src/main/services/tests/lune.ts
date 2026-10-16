@@ -1,12 +1,26 @@
 // Finding the lune binary and the bundled Luau runtime (resources/lune).
 
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
 import { findTool, run, type ToolContext, defaultContext } from '../tools.ts'
 import type { LuneStatus } from './types.ts'
 
 export const INSTALL_HINT =
-  'Lune is not installed. Add it to the project with `rokit add lune-org/lune` (then `rokit install`), or globally with `rokit add --global lune-org/lune`.'
+  'Lune is not installed. Add it to the project with `rokit add lune-org/lune` (then `rokit install`), or set the Lune path in Settings > Toolchain.'
+
+// What to do when lune is missing, for the project at `root`: its rokit.toml already pins lune ->
+// `rokit install` there; else add the pin first. Either way the Lune path in Settings works too.
+export function luneHint(root?: string | null): string {
+  let toml = ''
+  try {
+    toml = root ? readFileSync(join(root, 'rokit.toml'), 'utf8') : ''
+  } catch {
+    toml = ''
+  }
+  if (/^\s*[\w.-]+\s*=\s*["']lune-org\/lune@/im.test(toml)) return 'Lune is not installed. This project pins it in rokit.toml: run `rokit install` in the project folder, or set the Lune path in Settings > Toolchain.'
+  if (root && toml) return 'Lune is not installed. Add it to this project with `rokit add lune-org/lune` (it pins it in rokit.toml), then run `rokit install` in the project folder; or set the Lune path in Settings > Toolchain.'
+  return INSTALL_HINT
+}
 
 export const RUNNER_FILE = 'runner.luau'
 
@@ -24,11 +38,11 @@ export function parseLuneVersion(output: string): string | null {
 
 export async function luneStatus(override?: string | null, cwd: string = process.cwd()): Promise<LuneStatus> {
   const path = findLune(override)
-  if (!path) return { available: false, hint: INSTALL_HINT }
+  if (!path) return { available: false, hint: luneHint(cwd) }
   const result = await run(path, ['--version'], cwd)
   const version = parseLuneVersion(result.stdout || result.stderr)
   if (result.code !== 0 || !version) {
-    return { available: false, hint: `Found ${path} but \`lune --version\` failed (${(result.stderr || result.stdout).trim().slice(0, 200)}). ${INSTALL_HINT}` }
+    return { available: false, hint: `Found ${path} but \`lune --version\` failed (${(result.stderr || result.stdout).trim().slice(0, 200)}). ${luneHint(cwd)}` }
   }
   return { available: true, path, version }
 }

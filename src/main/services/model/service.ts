@@ -50,6 +50,8 @@ export interface ModelCaptureRequest {
 export interface ModelBridge {
   connected(): boolean
   studio(): { pluginVersion?: number; place?: string } | null
+  // The Studio window jobs go to (the "Test in" place picked for this project), when 2+ are open.
+  targetStudio?(): { pluginVersion?: number; place?: string; placeId?: number } | null
   busy(): BridgeJob | null
   run(job: BridgeJob, handler: (ev: BridgeEvent, at: number) => unknown, opts?: RunOptions): Promise<void>
 }
@@ -165,7 +167,8 @@ export class ModelService {
   private studioState(): ModelStatus['studio'] {
     const b = this.deps.bridge?.() ?? null
     if (!b) return { connected: false, canBuild: false, message: 'The Forge Bridge is not available' }
-    const info = b.studio()
+    // Jobs go to the "Test in" place (services/studio/wire.ts studioTargets); its plugin is the one that counts.
+    const info = b.targetStudio?.() ?? b.studio()
     if (!b.connected()) return { connected: false, canBuild: false, message: 'Studio is not connected: open your place in Studio with the Forge Bridge plugin on' }
     const v = info?.pluginVersion ?? 0
     const base = { connected: true, ...(info?.place ? { place: info.place } : {}), ...(v ? { pluginVersion: v } : {}) }

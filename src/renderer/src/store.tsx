@@ -191,7 +191,7 @@ const labErrorSeen = new Map<string, number>()
 // Studio blocking the Forge Bridge plugin's script writes (Script Injection off), from any Studio job:
 // one toast with the steps instead of one per failed job.
 const studioInjectionToast = scriptInjectionToasts()
-const LAB_NAMES: Record<string, string> = { vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab' }
+const LAB_NAMES: Record<string, string> = { vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab', model: 'Model Lab' }
 const DEFAULT_LAYOUT: Layout = { sideOpen: true, sideView: 'explorer', sideW: 268, bottomOpen: true, bottomH: 214, bottomTab: 'output', rightOpen: true, rightW: 360, sideAuto: false }
 
 function loadLayout(): Layout {

@@ -234,7 +234,8 @@ function appSettings(): AppSettings {
     serveAllPlaces: settings.get<boolean>('serveAllPlaces', false) === true,
     autoRoute: settings.get<boolean>('autoRoute', true) !== false,
     confirmFileDelete: settings.get<boolean>('confirmFileDelete', true) !== false,
-    confirmStudioDelete: settings.get<boolean>('confirmStudioDelete', true) !== false
+    confirmStudioDelete: settings.get<boolean>('confirmStudioDelete', true) !== false,
+    lunePath: settings.get<string | null>('tests.lunePath', null) ?? ''
   }
 }
 
@@ -775,7 +776,7 @@ const model = createModelWiring({
   settings,
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[model] ${text}` }),
-  model: (tier) => labModel(undefined, tier),
+  model: (tier) => labModel('model', tier),
   modelReady: () => agentIpc.visionReady(),
   bridge: () => studio.bridge,
   ...modelElectronDeps(preloadPath())
@@ -844,6 +845,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     if (typeof patch.autoRoute === 'boolean') settings.set('autoRoute', patch.autoRoute)
     if (typeof patch.confirmFileDelete === 'boolean') settings.set('confirmFileDelete', patch.confirmFileDelete)
     if (typeof patch.confirmStudioDelete === 'boolean') settings.set('confirmStudioDelete', patch.confirmStudioDelete)
+    if (typeof patch.lunePath === 'string') settings.set('tests.lunePath', patch.lunePath.trim().slice(0, 1000) || null)
     const after = appSettings()
     // rojo's job list depends on serveAllPlaces; restart a running rojo so it serves the new set.
     const rojo = supervisor.statuses().find((s) => s.id === 'rojo')
@@ -875,7 +877,7 @@ for (const [name, handler] of Object.entries({ ...integrations.handlers, ...term
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
 }
-for (const [name, handler] of Object.entries({ ...gating.wrap('ability', ability.handlers), ...gating.wrap('thumbs', thumbs.handlers), ...gating.wrap('uimotion', uiMotion.handlers), ...model.handlers })) {
+for (const [name, handler] of Object.entries({ ...gating.wrap('ability', ability.handlers), ...gating.wrap('thumbs', thumbs.handlers), ...gating.wrap('uimotion', uiMotion.handlers), ...gating.wrap('model', model.handlers) })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))

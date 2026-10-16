@@ -311,7 +311,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
             )}
 
             {mine.map((c) => (
-              <div key={c.path} className="lrow fs-conflict" onClick={() => actions.openConflict(c.path)} title={`Compare (3-way)\n${c.path}\n${c.instancePath?.join('.') ?? ''}\n${c.reason === 'first-run' ? 'first sync, no shared version yet' : c.reason === 'deleted-vs-edited' ? 'deleted on one side, edited on the other' : 'changed in Studio and on disk'}`}>
+              <div key={c.path} className="lrow fs-conflict" onClick={() => actions.openConflict(c.path)} title={`Compare (3-way)\n${c.path}\n${c.instancePath?.join('.') ?? ''}\n${c.note ? c.note : c.reason === 'first-run' ? 'first sync, no shared version yet' : c.reason === 'deleted-vs-edited' ? 'deleted on one side, edited on the other' : 'changed in Studio and on disk'}`}>
                 <Icon name="diff" size={14} style={{ color: 'var(--warn)' }} />
                 <span className="grow ellipsis">{basename(c.path)}</span>
                 <button className="mini-btn" disabled={!!busy} title="Write the Studio version to disk" onClick={(e) => (e.stopPropagation(), void act(`c:${c.path}`, () => window.harness.syncResolve(c.placeKey!, c.path, 'studio')))}>Studio</button>

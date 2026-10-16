@@ -224,7 +224,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
         base: c.base,
         placeKey: c.placeKey,
         instancePath: c.instancePath,
-        reason: c.reason
+        reason: c.reason,
+        ...(c.note ? { note: c.note } : {})
       }))
     },
     async resolveStudioConflict(path, take, placeKey) {

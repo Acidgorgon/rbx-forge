@@ -124,6 +124,8 @@ export interface SyncConflictInfo {
   studio: string
   // 'first-run': no base yet and Studio != disk.
   reason: 'both-changed' | 'first-run' | 'deleted-vs-edited'
+  // Why it is held when the reason alone does not say (a file another place maps too).
+  note?: string
 }
 
 // ---- Gate: whether Rojo may serve a place ----

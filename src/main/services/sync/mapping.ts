@@ -377,6 +377,11 @@ export function fromDisk(map: PlaceMap, file: string): string[] | null {
   return info.stem === null ? [...best.instance, ...dirs] : [...best.instance, ...dirs, info.stem]
 }
 
+// The other places whose project tree also maps this file (e.g. a module two places both mount).
+export function sharedWith(maps: PlaceMap[], self: PlaceMap, file: string): PlaceMap[] {
+  return maps.filter((m) => m.projectFile !== self.projectFile && fromDisk(m, file) !== null)
+}
+
 // Every repo-relative path Forge may write under for this place.
 export function insideMappedRoots(map: PlaceMap, rel: string): boolean {
   if (isSkipped(map.skipGlobs, rel)) return false

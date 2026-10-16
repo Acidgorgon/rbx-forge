@@ -8,7 +8,7 @@ import { join } from 'node:path'
 import { findRuntimeDir, luneStatus } from '../tests/lune.ts'
 import type { VfxEffect, VfxRefineOptions, VfxScope } from '../../../shared/vfx/types.ts'
 import type { VfxSpec } from '../../../shared/vfx/spec.ts'
-import { VfxService, type CaptureRequest, type MemoryLike, type VisionFn } from './service.ts'
+import { NAME_FROM_TAGS_SETTING, VfxService, type CaptureRequest, type MemoryLike, type VisionFn } from './service.ts'
 import { vfxTools, type VfxTool } from './tools.ts'
 import { TextureService } from './textures/service.ts'
 import { textureTools } from './textures/tools.ts'
@@ -117,6 +117,11 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     emit: deps.emit,
     log: deps.log,
     textures,
+    // Imports are named from their tags ("Lightning Impact") unless turned off (import review).
+    nameFromTags: {
+      get: () => deps.settings.get<boolean>(NAME_FROM_TAGS_SETTING, true) !== false,
+      set: (on) => deps.settings.set?.(NAME_FROM_TAGS_SETTING, !!on)
+    },
     studioConnected: () => {
       const b = deps.studioTextures?.bridge
       return !!(b?.listening && b.connected())
@@ -146,6 +151,8 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     vfxClear: (s: unknown) => service.clear(scope(s)),
     vfxDuplicates: () => service.duplicates(),
     vfxRetag: () => service.retag(),
+    vfxNameFromTags: (ids: unknown, opts?: { force?: boolean }) => service.renameFromTags(Array.isArray(ids) ? ids.map(String).slice(0, 5000) : null, { force: !!opts?.force }),
+    vfxSetNameFromTags: async (on: unknown) => service.setNamesFromTags(on === true),
     vfxLiveStart: (opts?: { pin?: string | null; settings?: Partial<LiveSettings>; current?: { key: string; effect: VfxEffect; label?: string } }) =>
       live.start({ pin: opts?.pin ? String(opts.pin) : null, settings: opts?.settings, current: opts?.current?.effect ? { key: String(opts.current.key), effect: opts.current.effect, label: String(opts.current.label ?? opts.current.effect.name ?? '') } : undefined }),
     // loop: Stop on a Loop (Live, when on, follows again); follow: the header toggle off; neither: all off.

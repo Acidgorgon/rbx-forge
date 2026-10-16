@@ -16,6 +16,19 @@ export function check(cond: unknown, message: string): asserts cond {
   if (!cond) throw new FlowError(message)
 }
 
+// Waits until an async page function (a window.harness call) resolves truthy. page.waitForFunction
+// cannot do this: it takes the Promise the predicate returns as truthy and resolves after the first
+// call with whatever that call returned (true or false), so it never polls an async condition.
+export async function waitForAsync<A>(page: Page, fn: (arg: A) => unknown, arg?: A, opts: { timeout?: number; polling?: number } = {}): Promise<void> {
+  const timeout = opts.timeout ?? 30_000
+  const until = Date.now() + timeout
+  for (;;) {
+    if (await page.evaluate(fn, arg)) return
+    if (Date.now() >= until) throw new Error(`waitForAsync: timeout ${timeout} ms exceeded`)
+    await page.waitForTimeout(opts.polling ?? 250)
+  }
+}
+
 // Activity-bar entry by its aria-label (Explorer, Scripts, VFX Lab, Settings...).
 export async function activity(page: Page, label: string): Promise<void> {
   await page.locator(`nav.activity button[aria-label="${label}"]`).click()

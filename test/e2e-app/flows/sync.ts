@@ -10,7 +10,7 @@ import { loadPlaces, placeFor } from '../../../src/main/services/sync/mapping.ts
 import { studioFromDisk } from '../../syncFixture.ts'
 import { BRIDGE_PORT } from '../lib/app.ts'
 import { git, INVENTORY_SERVICE } from '../lib/project.ts'
-import { check, CENTER, openPage, showSide, waitText } from '../lib/ui.ts'
+import { check, CENTER, openPage, showSide, waitForAsync, waitText } from '../lib/ui.ts'
 import type { Flow } from './types.ts'
 
 const BASE = `http://127.0.0.1:${BRIDGE_PORT}/forge-bridge`
@@ -96,7 +96,7 @@ export const syncFlows: Flow[] = [
       await group.waitFor({ state: 'visible', timeout: 5000 })
       for (const [label, engine] of [['Project script', 'project'], ['Off', 'off'], ['Forge (recommended)', 'forge']] as const) {
         await group.getByRole('radio', { name: label }).click()
-        await page.waitForFunction((e: string) => window.harness.syncStatus().then((s) => s.engine === e), engine, { timeout: 5000 }).catch(() => undefined)
+        await waitForAsync(page, (e: string) => window.harness.syncStatus().then((s) => s.engine === e), engine, { timeout: 5000 }).catch(() => undefined)
         const s = await page.evaluate(() => window.harness.syncStatus())
         check(s.engine === engine, `engine is ${s.engine} after choosing "${label}"`)
         check((await group.getByRole('radio', { name: label }).getAttribute('aria-checked')) === 'true', `"${label}" not shown as checked`)

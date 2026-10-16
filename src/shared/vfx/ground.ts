@@ -9,11 +9,11 @@ import { vfxPrincipleChecks } from '../principles/vfxChecks.ts'
 import { draftSpec, libraryTextures } from './draft.ts'
 import { chooseRecipe, fitToPriors, priorLines, PRIOR_MIN_SAMPLES } from './priors.ts'
 import { extractRecipe } from './recipes.ts'
-import { remixEffect } from './remix.ts'
+import { hueDelta, recolor, recolorScript, remixEffect, rescale, rescaleScript, targetHue } from './remix.ts'
 import { bankLines, bankTextureChanges, effectDigest, effectTextureBank, feedbackBoost, nearestEffects, readRequest, remixable, type TextureBank, type VfxFeedback, type VfxMatch, type VfxRequest } from './retrieve.ts'
 import { knownTextures, scoreEffect, type QualityScore } from './quality.ts'
 import { applyChanges, effectFromSpec, shortTitle, SpecError, type VfxLayerSpec, type VfxSpec } from './spec.ts'
-import { flatTags } from './tags.ts'
+import { flatTags, words } from './tags.ts'
 import { allNodes, nodeRole } from './analyze.ts'
 import { asksSimpler, richnessLine, richnessScore, richTarget, tooSimple, type RichTarget } from './richness.ts'
 import { evalColorSequence } from './sequence.ts'
@@ -144,6 +144,17 @@ export function draftCandidate(text: string, g: Grounding): Candidate {
   return { effect: f.effect, basedOn: g.near.slice(0, 2), how: 'draft', notes: f.notes, spec, description: spec.description, tags: spec.tags }
 }
 
+// From scratch (the Lab's "From scratch" toggle): the grounded draft, never a copy of a library
+// effect; the library only shapes it (learned ranges, real textures by role, richness).
+export function scratchCandidate(text: string, g: Grounding): Candidate {
+  return { ...draftCandidate(text, g), basedOn: [] }
+}
+
+export function scratchNote(g: Grounding): string {
+  const refs = g.matches.slice(0, 3).map((m) => `"${m.entry.name.slice(0, 40)}"`)
+  return `from scratch (library used as a style guide${refs.length ? `: ${refs.join(', ')} for ranges, textures and richness; none copied` : ''})`
+}
+
 export interface CodePick {
   index: number
   scores: (QualityScore & { principles: number; richness: number; total: number })[]
@@ -241,6 +252,94 @@ export function composeBase(text: string, g: Grounding): Candidate | null {
     if (i > 1) n.name = `${n.name}_${i}`
   }
   return { ...c, effect }
+}
+
+// ------------------------------------------------------------------ build on a scripted effect
+
+// A scripted effect from the user's library (a timeline script: kit rigs spawned, tweened and staged
+// over time, like Hollow Purple's orbs that converge and merge). Its look lives in the script, so a
+// copy of its layers played as one burst (composeBase) loses it: a request that names it (or whose
+// closest close-enough effect is one) builds on the script itself.
+export interface ScriptBase {
+  match: VfxMatch
+  // The whole effect, copied: script, stages, patches, roots and cues.
+  effect: VfxEffect
+  name: string
+  // Request words beyond the effect's name ("hollow purple but red" -> ["red"]).
+  extra: string[]
+  // The request is just the effect's name: the result is a faithful copy.
+  asIs: boolean
+  // Deterministic tweaks the request names (used without a model): hue turn in degrees, size factor.
+  hueDelta: number
+  hue: number | null
+  scale: number
+}
+
+// Words that do not ask for a change ("make hollow purple again", "my Hollow Purple effect").
+const FILLER = new Set(['a', 'an', 'the', 'make', 'create', 'build', 'do', 'please', 'effect', 'vfx', 'fx', 'sequence', 'my', 'me', 'mine', 'own', 'again', 'copy', 'version', 'another', 'new', 'one', 'of', 'like', 'same', 'exactly', 'as', 'is', 'it', 'remake', 'redo', 'recreate', 'from', 'library', 'use', 'using', 'i', 'want', 'give', 'show', 'play', 'can', 'you', 'but', 'and', 'that', 'this', 'just', 'in', 'to'])
+
+// Scripted library effects worth building on: the user's own (imported / liked / examples they
+// added), not an unrated earlier result of the Lab; any one the request names by name.
+function scriptedOwn(e: VfxEntry): boolean {
+  return e.kind !== 'generated' || e.rating === 'up' || e.quality === 'good' || String(e.origin ?? '').startsWith('example:')
+}
+
+export function scriptedBase(text: string, g: Grounding): ScriptBase | null {
+  const scripted = (m: VfxMatch) => !!m.entry.effect?.script && remixable(m, g.req)
+  const named = g.matches.find((m) => m.nameMatch && scripted(m))
+  const first = g.matches.find((m) => remixable(m, g.req))
+  const m = named ?? (first && scripted(first) && scriptedOwn(first.entry) ? first : undefined)
+  if (!m) return null
+  const effect: VfxEffect = JSON.parse(JSON.stringify(m.entry.effect))
+  const own = new Set(words(m.entry.name))
+  const extra = words(text).filter((w) => !own.has(w) && !FILLER.has(w))
+  const sub = readRequest(extra.join(' '))
+  const hue = extra.length ? targetHue(sub, m.entry) : null
+  const delta = hue === null ? 0 : hueDelta(effect, hue)
+  return { match: m, effect, name: m.entry.name, extra, asIs: extra.length === 0, hueDelta: delta, hue: delta ? hue : null, scale: sub.scale }
+}
+
+// The script with the request's deterministic tweaks (colour turn, size) written into it.
+export function tweakScript(sb: ScriptBase): { script: string; notes: string[] } {
+  let script = sb.effect.script ?? ''
+  const notes: string[] = []
+  if (sb.hueDelta) {
+    const r = recolorScript(script, sb.hueDelta)
+    if (r.changed) (script = r.script), notes.push(`recoloured in its script (${r.changed} colour${r.changed === 1 ? '' : 's'}, hue ${sb.hueDelta > 0 ? '+' : ''}${sb.hueDelta} deg)`)
+  }
+  if (sb.scale !== 1) {
+    const r = rescaleScript(script, sb.scale)
+    if (r.changed) (script = r.script), notes.push(`${sb.scale > 1 ? 'scaled up' : 'scaled down'} x${sb.scale} in its script`)
+  }
+  return { script, notes }
+}
+
+// The tweaks on the recorded layers, for when the script cannot be re-recorded (no Lune).
+export function tweakRecorded(sb: ScriptBase): VfxEffect {
+  let e: VfxEffect = JSON.parse(JSON.stringify(sb.effect))
+  if (sb.hue !== null) e = recolor(e, sb.hue).effect
+  if (sb.scale !== 1) e = rescale(e, sb.scale)
+  return e
+}
+
+// The finishing pass for an effect built on a scripted effect: the user's layers keep their own
+// textures and numbers (it is their effect); only layers the edit added get real textures from the
+// library in place of placeholders.
+export function finishScriptRemix(effect: VfxEffect, original: VfxEffect, g: Grounding): { effect: VfxEffect; notes: string[] } {
+  const had = new Set(allNodes(original.roots).map((n) => n.name))
+  const skipRoles = Object.keys(g.ctx.libraryRoles ?? {})
+  let next = effect
+  let swapped = 0
+  for (const ch of bankTextureChanges(next, g.bank, { near: g.near, skipRoles })) {
+    if (had.has(ch.node)) continue
+    try {
+      next = applyChanges(next, [ch])
+      if (ch.prop === 'Texture') swapped++
+    } catch (e) {
+      if (!(e instanceof SpecError)) throw e
+    }
+  }
+  return { effect: next, notes: swapped ? [`${swapped} new layer(s) use textures from your effects`] : [] }
 }
 
 // Layer lines of a base for the compose prompt ("1 [core] ParticleEmitter, emits 3 at 0 s").

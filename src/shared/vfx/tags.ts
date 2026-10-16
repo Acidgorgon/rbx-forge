@@ -336,3 +336,64 @@ export function requestTagGroups(text: string): TagGroups {
   if (ws.some((w) => /^(loop\w*|idle|ambient|passive|constant|looping)$/.test(w))) add('timing', 'loop')
   return g
 }
+
+// ------------------------------------------------------------------ names from tags
+
+// Display words for tag-based names: element first ("Lightning"), then the kind ("Impact").
+export const ELEMENT_DISPLAY: Record<string, string> = { fire: 'Fire', water: 'Water', electric: 'Lightning', wind: 'Wind', ice: 'Ice', dark: 'Shadow', light: 'Holy', earth: 'Earth', energy: 'Energy' }
+export const KIND_DISPLAY: Record<string, string> = { slash: 'Slash', impact: 'Impact', dash: 'Dash', aura: 'Aura', projectile: 'Projectile', beam: 'Beam', explosion: 'Explosion', charge: 'Charge', shockwave: 'Shockwave', trail: 'Trail', burst: 'Burst', 'ground-crack': 'Ground Crack' }
+const NAME_MAX_WORDS = 3
+
+// "ball trail" -> "Ball Trail", "ground-crack" -> "Ground Crack".
+function titleWords(tag: string): string[] {
+  return tag
+    .split(/[^A-Za-z0-9]+/)
+    .filter(Boolean)
+    .map((w) => w.charAt(0).toUpperCase() + w.slice(1).toLowerCase())
+}
+
+// A readable name from an effect's tags, at most 3 words: the element ("Lightning"), then the kind
+// ("Lightning Impact"); without an element up to two kinds ("Aura Impact"). No element or kind: the
+// first custom tag ("Ball Trail"). Timing alone says nothing about the look: `fallback`.
+export function nameFromTags(groups: Partial<TagGroups> | null | undefined, fallback = ''): string {
+  const g = normalizeGroups(groups)
+  const out: string[] = []
+  const push = (ws: string[]) => {
+    if (!ws.length || out.length + ws.length > NAME_MAX_WORDS) return false
+    out.push(...ws)
+    return true
+  }
+  const element = g.element[0]
+  if (element) push(ELEMENT_DISPLAY[element] ? [ELEMENT_DISPLAY[element]] : titleWords(element))
+  for (const k of g.kind.slice(0, element ? 1 : 2)) push(KIND_DISPLAY[k] ? titleWords(KIND_DISPLAY[k]) : titleWords(k))
+  if (!out.length && g.custom[0]) push(titleWords(g.custom[0]).slice(0, NAME_MAX_WORDS))
+  return out.length ? out.join(' ') : fallback
+}
+
+// Names that say nothing about the look: class names and placeholders Studio / packs give effects
+// ("Particles", "ParticleEmitter", "Attachment", "Part", "VFX", "Effect3", "Model (2)", "Copy of FX").
+const GENERIC_WORDS = new Set(['particle', 'particles', 'emitter', 'emitters', 'attachment', 'attachments', 'part', 'parts', 'mesh', 'meshpart', 'model', 'folder', 'vfx', 'fx', 'sfx', 'effect', 'effects', 'beam', 'beams', 'trail', 'trails', 'new', 'copy', 'of', 'untitled', 'default', 'test', 'thing', 'object', 'root', 'main', 'base', 'template', 'asset', 'item', 'temp', 'tmp'])
+export function isGenericName(name: string): boolean {
+  const ws = words(name).filter((w) => !/^\d+$/.test(w))
+  return ws.every((w) => GENERIC_WORDS.has(w) || /^(particle|effect|vfx|fx|part|model)\d+$/.test(w))
+}
+
+// "Fire Slash (3)" -> "Fire Slash".
+export function baseName(name: string): string {
+  return name.replace(/\s*\(\d+\)$/, '').trim()
+}
+
+// Lower-case names in use (a Set, or a counted set where several entries share a name).
+export interface NameSet {
+  has(name: string): boolean
+  add(name: string): unknown
+}
+
+// `base`, or "base (2)", "base (3)", ... not in `used` (lower-case names; the result is added).
+export function uniqueName(base: string, used: NameSet): string {
+  const b = base.trim() || 'Effect'
+  let name = b
+  for (let n = 2; used.has(name.toLowerCase()); n++) name = `${b} (${n})`
+  used.add(name.toLowerCase())
+  return name
+}

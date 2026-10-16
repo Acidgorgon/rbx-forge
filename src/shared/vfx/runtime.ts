@@ -58,6 +58,9 @@ function ForgeFX.new(model: Model, options: any?)
 	local self = setmetatable({}, ForgeFX)
 	self.model = model
 	self.root = model.PrimaryPart or model:FindFirstChild("Root")
+	-- Where the effect was played (the model is placed before ForgeFX.new): goals of an effect
+	-- without a Root part are relative to it.
+	self.pivot = model:GetPivot()
 	self.spawns = o.spawns or {}
 	self.onStage = o.onStage
 	self.t0 = os.clock()
@@ -375,11 +378,12 @@ function ForgeFX:tween(target, seconds: number, goals: { [string]: any }, style:
 			self:_virtual(inst, prop, goal, info)
 		elseif prop == "Color" and typeof(goal) == "Color3" and SEQ_LAYERS[inst.ClassName] then
 			self:_tint(inst, goal, info)
-		elseif inst:IsA("BasePart") and (prop == "Position" or prop == "CFrame") and self.root then
-			-- Goals are in the effect's space (relative to its root part).
-			local rel = self.root.CFrame:ToObjectSpace((inst :: BasePart).CFrame)
+		elseif inst:IsA("BasePart") and (prop == "Position" or prop == "CFrame") then
+			-- Goals are in the effect's space (relative to its root part, else to where it was played).
+			local frame = if self.root then self.root.CFrame else self.pivot
+			local rel = frame:ToObjectSpace((inst :: BasePart).CFrame)
 			local goalCf = if prop == "CFrame" then goal else CFrame.new(goal) * rel.Rotation
-			native.CFrame = self.root.CFrame * goalCf
+			native.CFrame = frame * goalCf
 		else
 			native[prop] = goal
 		end

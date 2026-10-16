@@ -493,6 +493,18 @@ const studio = createStudioWiring({
   previews: { vfx: vfxElectron.capture, anim: animElectron.capture, ability: abilityElectron.capture },
   rojo: () => (supervisor.statuses().some((s) => s.id === 'rojo' && (s.state === 'running' || s.state === 'starting')) ? 'running' : 'stopped'),
   chatImage: defaultChatImage,
+  // Studio target (several places open): kept per project, defaults to the active place's PlaceIds.
+  projectRoot: () => project?.info.root ?? null,
+  linkedPlaceIds: () => {
+    const ids = [...(project?.getActivePlace()?.servePlaceIds ?? [])]
+    // Places linked in Source Control (Forge Sync, created below; reached lazily).
+    try {
+      for (const [key, link] of Object.entries(forgeSync.service()?.links.all() ?? {})) if (link.projectFile === project?.activePlace && key.startsWith('place:')) ids.push(Number(key.slice(6)))
+    } catch {
+      // Forge Sync is not set up yet.
+    }
+    return ids
+  },
   ...studioElectronDeps(preloadPath())
 })
 

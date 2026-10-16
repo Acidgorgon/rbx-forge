@@ -2,6 +2,9 @@
 // Roblox Studio (through the Forge Bridge plugin), capture the Studio window at the key beats and feed
 // those frames to the critic. Plain data shared by main, preload and renderer. No electron imports.
 
+import type { StudioPlaces, StudioTarget } from './target.ts'
+export type { StudioPlace, StudioPlaces, StudioTarget } from './target.ts'
+
 export type StudioCheckKind = 'vfx' | 'anim' | 'ability'
 
 // Settings key: when on, the labs' render step (refine loops, ability critique) uses Studio frames
@@ -101,6 +104,10 @@ export interface StudioApi {
   studioLastCheck(kind: StudioCheckKind, id: string): Promise<StudioCheckRecord | null>
   // A Studio check file (studio/beat-N.png...) as a data URL.
   studioFile(kind: StudioCheckKind, id: string, file: string): Promise<string | null>
+  // Studio target (several places open): the connected places and where jobs go; the choice is kept
+  // per project (null: any Studio window).
+  studioPlaces(): Promise<StudioPlaces>
+  studioSetTarget(target: StudioTarget | null): Promise<StudioPlaces>
 }
 
 export interface StudioEvents {

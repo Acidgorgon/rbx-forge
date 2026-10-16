@@ -5,12 +5,15 @@
 // idle, with the camera where the user left it. A Loop started while Live is on goes back to
 // following the selection when it stops. Turning it off, disposing (Forge quitting) or Studio
 // disconnecting ends the job; the module then removes Workspace.ForgeLivePreview. A job that keeps
-// failing to start is retried with a back-off, then given up (status error). No electron imports
-// (timers and the bridge are injected for tests).
+// failing to start is retried with a back-off, then given up (status error); a start Studio refuses
+// outright (its Script Injection permission is off: errorCode 'script-injection') is not retried.
+// Changing the Studio target restarts the job in the new place. No electron imports (timers and the
+// bridge are injected for tests).
 
 import { randomBytes } from 'node:crypto'
 import { baseKey, LiveSchedule, liveJob, parseLiveError, parseLivePoll, LIVE_DEBOUNCE_MS, type LiveCurrent, type LiveSettings, type LiveStatus } from '../../../shared/vfx/live.ts'
 import type { BridgeJob } from '../../../shared/studio/protocol.ts'
+import { isScriptInjectionError, SCRIPT_INJECTION_CODE, SCRIPT_INJECTION_MESSAGE } from '../../../shared/studio/errors.ts'
 import type { VfxEffect } from '../../../shared/vfx/types.ts'
 
 export type { LiveStatus }
@@ -50,6 +53,7 @@ export class LiveStudio {
   private ticker: unknown = null
   private debounce: unknown = null
   private error: string | undefined
+  private errorCode: LiveStatus['errorCode']
   private message: string | undefined
   private last = ''
   // The header toggle (follow the current effect) is on; a pinned Loop returns to it.
@@ -86,6 +90,7 @@ export class LiveStudio {
       plays: s.plays,
       settings: s.settings,
       ...(this.error || s.lastError ? { error: this.error ?? s.lastError ?? undefined } : {}),
+      ...(this.errorCode && this.error ? { errorCode: this.errorCode } : {}),
       ...(this.message ? { message: this.message } : {})
     }
   }
@@ -121,6 +126,7 @@ export class LiveStudio {
       this.schedule.flush(this.now(), true)
     }
     this.error = undefined
+    this.errorCode = undefined
     this.schedule.lastError = null
     if (!wasOn || pinChanged) this.deps.log?.(`live: ${pin ? `looping ${pin}` : 'live preview on'}`)
     this.tick()
@@ -264,6 +270,7 @@ export class LiveStudio {
             this.failures = 0
             this.retryAt = 0
             this.error = undefined
+            this.errorCode = undefined
             this.changed()
           }
           const plays = this.schedule.plays
@@ -297,10 +304,20 @@ export class LiveStudio {
       return
     }
     if (this.schedule.enabled) {
-      const preempted = !!e && /another Studio job/.test(e.message)
-      this.paused = preempted
-      this.message = preempted ? 'Paused while Studio runs another job.' : undefined
+      const retargeted = !!e && /Studio target changed/.test(e.message)
+      const preempted = !!e && (retargeted || /another Studio job/.test(e.message))
+      this.paused = preempted && !retargeted
+      this.message = preempted && !retargeted ? 'Paused while Studio runs another job.' : undefined
+      // Another place: frame the effect there.
+      if (retargeted) this.framed = false
       if (e) this.deps.log?.(`live: ${e.message}`, preempted ? 'info' : 'stderr')
+      // Studio refuses to create the module (Script Injection off): retrying cannot help.
+      if (e && ((e as { code?: string }).code === SCRIPT_INJECTION_CODE || isScriptInjectionError(e.message))) {
+        this.error = SCRIPT_INJECTION_MESSAGE
+        this.errorCode = SCRIPT_INJECTION_CODE
+        this.stop('stopped: Studio blocks script injection for the Forge Bridge plugin')
+        return
+      }
       // A job that failed, or ended before its first poll, is a failed start: retry with a
       // back-off, give up after three in a row.
       if (!preempted && (e || !this.polled)) {

@@ -10,6 +10,14 @@ import type { LiveSettings, LiveStatus } from './vfx/live.ts'
 export type * from './vfx/types.ts'
 export type { PerfWarning, VfxSpec, LiveSettings, LiveStatus }
 
+export interface VfxNameFromTagsResult {
+  renamed: VfxEntry[]
+  kept: number
+  unchanged: number
+  noTags: number
+  total: number
+}
+
 export interface VfxApi extends VfxMeshApi {
   vfxStatus(): Promise<VfxLabStatus>
   // User + project library, project first.
@@ -32,7 +40,14 @@ export interface VfxApi extends VfxMeshApi {
   // Entries with the same effect (content hash), keep-first order.
   vfxDuplicates(): Promise<{ hash: string; scope: VfxScope; entries: VfxEntry[] }[]>
   // Recompute auto-tags (kind / element / timing); groups the user edited stay.
-  vfxRetag(): Promise<{ changed: number; total: number }>
+  // renamed: entries named from their tags that followed the new tags.
+  vfxRetag(): Promise<{ changed: number; total: number; renamed?: number }>
+  // Names entries from their tags ("Lightning Impact"; the original stays as sourceName). ids: those
+  // entries (null: every imported model). force: also names chosen on purpose (renamed by the user,
+  // made effects, built-in examples; skipped otherwise unless generic, counted in kept). unchanged: already named so; noTags: no kind / element / custom tag to name by.
+  vfxNameFromTags(ids: string[] | null, opts?: { force?: boolean }): Promise<VfxNameFromTagsResult>
+  // Setting "Name effects from tags" for imports (vfx.nameFromTags).
+  vfxSetNameFromTags(on: boolean): Promise<boolean>
   // Live in Studio: Studio loops the current effect (pin: Loop on one entry until Stop or another
   // entry is current). vfxLiveSet pushes the lab's current effect (debounced); vfx:live reports.
   vfxLiveStart(opts?: { pin?: string | null; settings?: Partial<LiveSettings>; current?: { key: string; effect: VfxEffect; label?: string } }): Promise<LiveStatus>

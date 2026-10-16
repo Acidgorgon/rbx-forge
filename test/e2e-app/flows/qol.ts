@@ -5,7 +5,7 @@ import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { WRITE_MARKER } from '../lib/fakeProvider.ts'
 import { INVENTORY_SERVICE } from '../lib/project.ts'
-import { check, CENTER, closeBottom, dismissDigest, dismissToasts, horizontalOverflow, mod, openPage, setTheme, SkipFlow, waitText } from '../lib/ui.ts'
+import { check, CENTER, closeBottom, dismissDigest, dismissToasts, horizontalOverflow, mod, openPage, setTheme, SkipFlow, waitForAsync, waitText } from '../lib/ui.ts'
 import { setWindowSize } from '../lib/app.ts'
 import type { Page } from '../lib/app.ts'
 import type { Flow } from './types.ts'
@@ -181,7 +181,7 @@ export const qolFlows: Flow[] = [
       // Bouncy preset on the picked button.
       const n0 = (await page.evaluate(() => window.harness.uiMotionList())).length
       await lab.locator('.vfx-examples button', { hasText: 'Bouncy' }).first().click()
-      await page.waitForFunction((n: number) => window.harness.uiMotionList().then((l: UiMotionEntry[]) => l.length > n), n0, { timeout: 10_000 })
+      await waitForAsync(page, (n: number) => window.harness.uiMotionList().then((l: UiMotionEntry[]) => l.length > n), n0, { timeout: 10_000 })
       const list: UiMotionEntry[] = await page.evaluate(() => window.harness.uiMotionList())
       const entry = list.find((e) => e.story === 'src/shared/Interface/Stories/RacingHud.story.luau')
       check(entry, 'the Bouncy stack was not saved with the story source')
@@ -246,7 +246,7 @@ export const qolFlows: Flow[] = [
         await setTheme(page, 'Light')
         await openPage(page, 'UI Motion Lab')
         await page.locator(`${CENTER} .um-story-line`, { hasText: 'RacingHud.story.luau' }).waitFor({ state: 'visible', timeout: 30_000 })
-        await page.waitForFunction(() => window.harness.uiPreviewState().then((st) => !!st?.tree.nodes.some((n) => n.name === 'BOOSTButton')), undefined, { timeout: 30_000 })
+        await waitForAsync(page, () => window.harness.uiPreviewState().then((st) => !!st?.tree.nodes.some((n) => n.name === 'BOOSTButton')), undefined, { timeout: 30_000 })
         await page.waitForTimeout(400)
         const o = await horizontalOverflow(page)
         await shot('light-900')
@@ -370,7 +370,7 @@ export const providerQolFlows: Flow[] = [
       const daily = page.getByLabel('Daily cap in USD')
       await daily.fill('0.01')
       await daily.press('Enter')
-      await page.waitForFunction(() => window.harness.spendState().then((s) => s.settings.dailyUsd === 0.01), undefined, { timeout: 5000 }).catch(() => undefined)
+      await waitForAsync(page, () => window.harness.spendState().then((s) => s.settings.dailyUsd === 0.01), undefined, { timeout: 5000 }).catch(() => undefined)
       const s0 = await page.evaluate(() => window.harness.spendState())
       check(s0.settings.dailyUsd === 0.01, `daily cap is ${s0.settings.dailyUsd}`)
       try {

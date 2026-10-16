@@ -135,7 +135,8 @@ export function nearestEffects(request: VfxRequest | string, entries: VfxEntry[]
       const h = mainHue(e.effect)
       if (h !== null) s += 1.5 * Math.max(0, 1 - Math.abs(((((want - h) % 360) + 540) % 360) - 180) / 90)
     }
-    const nameWords = new Set(words(`${e.name} ${e.kind === 'model' ? e.origin : ''}`))
+    // The original name of an entry named from its tags (or renamed) counts as its name too.
+    const nameWords = new Set(words(`${e.name} ${e.sourceName ?? ''} ${e.kind === 'model' ? e.origin : ''}`))
     const layerWords = new Set(allNodes(e.effect.roots).flatMap((n) => words(n.name)))
     const desc = e.description.toLowerCase()
     const hit: string[] = []
@@ -151,8 +152,8 @@ export function nearestEffects(request: VfxRequest | string, entries: VfxEntry[]
     }
     if (hit.length) why.push(`words ${hit.slice(0, 4).join(', ')}`)
     // The effect named by name: "hollow purple" is that effect, whatever its tags say.
-    const ownName = new Set(words(e.name).filter((w) => w.length > 2 && !STOP.has(w)))
-    const nameMatch = named > 0 && (named >= 2 || named >= ownName.size)
+    const ownSize = (n: string) => new Set(words(n).filter((w) => w.length > 2 && !STOP.has(w))).size
+    const nameMatch = named > 0 && (named >= 2 || named >= ownSize(e.name) || (!!e.sourceName && named >= ownSize(e.sourceName)))
     if (nameMatch) s += 3
     if (s <= 0) continue
     const kindMatch = !req.groups.kind.length || kinds.length > 0

@@ -147,6 +147,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     syncServeWithoutCheck: (projectFile?: string) => need().serveWithoutCheck(typeof projectFile === 'string' && projectFile ? projectFile : undefined),
     syncPullStudioOnly: (placeKey: string) => need().pullStudioOnly(String(placeKey)),
     syncLinkPlace: (id: string, projectFile?: string) => need().linkPlace(String(id), typeof projectFile === 'string' && projectFile ? projectFile : undefined),
+    syncIdentifyPlace: async (id: string) => need().identifyPlace(String(id)),
     syncCommitStudioEdits: (message?: string): Promise<SyncCommitResult> => need().commitStudioEdits(message),
     syncDisableLegacyPlugin: () => need().disableLegacyPlugin(),
     syncSaveTarget: async (instancePath: unknown) => (current ? current.saveTarget(deps.activePlace?.() ?? 'default.project.json', cleanPath(instancePath)) : { reason: 'No project open' }),

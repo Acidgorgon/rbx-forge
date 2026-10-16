@@ -1,8 +1,11 @@
 // Forge Sync in the Source control view: per place, whether Studio has been checked before Rojo
 // serves (gate), conflicts with a 3-way compare (opens the conflict tab), first-run bulk choice,
 // "Commit teammate edits", recent Studio -> disk activity and the legacy plugin banner.
+// Unlinked Studio places with the same name read "Place1 #1 / #2" with what is in each (plugin v11)
+// and an Identify button; with several place files, Link asks which one (inline picker).
 import { useEffect, useState } from 'react'
-import type { GateState, PlaceSyncStatus, SyncAction, SyncEntry, SyncRef, SyncStatus } from '@shared/types'
+import type { GateState, PlaceInfo, PlaceSyncStatus, SyncAction, SyncEntry, SyncRef, SyncStatus, UnlinkedPlace } from '@shared/types'
+import { collisionLabels } from '@shared/sync/labels'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { ago, errorText } from '../lib/format'
@@ -64,10 +67,18 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
   const [showPending, setShowPending] = useState(false)
   const [showRefs, setShowRefs] = useState(false)
   const [showOnly, setShowOnly] = useState<string | null>(null)
+  // The open "link to which place file" picker: the unlinked place, where it opened, the chosen file.
+  const [picking, setPicking] = useState<{ id: string; at: 'callout' | 'row'; file: string } | null>(null)
 
   if (!status || status.engine !== 'forge') return null
   const conflicts = state.studioConflicts.filter((c) => c.placeKey)
-  const placeName = (p: PlaceSyncStatus) => p.place?.name || state.places.find((x) => x.file === p.projectFile)?.name || p.projectFile.replace(/\.project\.json$/, '')
+  const fileName = (file: string) => state.places.find((x) => x.file === file)?.name || file.replace(/\.project\.json$/, '')
+  const placeName = (p: PlaceSyncStatus) => p.place?.name || fileName(p.projectFile)
+  // Linked rows whose Studio names collide ("Place1" twice) also name their place file, then #n.
+  const rawNames = status.places.map(placeName)
+  const rowLabels = collisionLabels(rawNames.map((n, i) => (rawNames.indexOf(n) !== rawNames.lastIndexOf(n) && n !== fileName(status.places[i].projectFile) ? `${n} → ${fileName(status.places[i].projectFile)}` : n)))
+  const rowLabel = (p: PlaceSyncStatus) => rowLabels[status.places.indexOf(p)] ?? placeName(p)
+  const unlinkedName = (u: UnlinkedPlace) => u.label || u.name
 
   const act = async (key: string, run: () => Promise<SyncStatus | void>, ok?: string) => {
     setBusy(key)
@@ -95,7 +106,36 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
   // A Studio place is open that Forge cannot check (not linked, or an old plugin): rojo serve waits.
   const blockedWait = status.places.find((p) => p.gate === 'waiting' && (p.waitReason === 'unlinked' || p.waitReason === 'plugin'))
   const linkTarget = state.activePlace || 'default.project.json'
-  const linkTargetName = state.places.find((x) => x.file === linkTarget)?.name || state.project?.name || linkTarget.replace(/\.project\.json$/, '')
+  const targetName = (file: string) => state.places.find((x) => x.file === file)?.name || state.project?.name || file.replace(/\.project\.json$/, '')
+  const linkTargetName = targetName(linkTarget)
+  // Several place files: Link opens the picker (active place preselected) instead of linking at once.
+  const multi = state.places.length > 1
+  const link = (u: UnlinkedPlace, file: string, ok: string) => {
+    setPicking(null)
+    void act(`link:${u.id}`, () => window.harness.syncLinkPlace(u.id, file), ok)
+  }
+  const startLink = (u: UnlinkedPlace, at: 'callout' | 'row', ok: (file: string) => string) => {
+    if (!multi) return link(u, linkTarget, ok(linkTarget))
+    setPicking(picking?.id === u.id && picking.at === at ? null : { id: u.id, at, file: linkTarget })
+  }
+  const identify = (u: UnlinkedPlace) =>
+    act(`identify:${u.id}`, async () => {
+      const r = await window.harness.syncIdentifyPlace(u.id)
+      actions.toast({ text: `Look at your Studio windows`, detail: `The one showing "${r.label}" (within about 5 s) is this place.`, kind: 'ok', ms: 6000 })
+    })
+  const picker = (u: UnlinkedPlace, at: 'callout' | 'row', ok: (file: string) => string) =>
+    picking?.id === u.id && picking.at === at ? (
+      <LinkPicker
+        places={state.places}
+        active={linkTarget}
+        file={picking.file}
+        name={unlinkedName(u)}
+        busy={!!busy}
+        onPick={(file) => setPicking({ ...picking, file })}
+        onLink={() => link(u, picking.file, ok(picking.file))}
+        onCancel={() => setPicking(null)}
+      />
+    ) : null
   const serveUnchecked = (file?: string) =>
     act(`nocheck:${file ?? '*'}`, () => window.harness.syncServeWithoutCheck(file), 'Rojo serves without a Studio check. Check its dialog in Studio before you accept: it may offer to delete Studio-only scripts.')
 
@@ -107,6 +147,14 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         <span className="grow" />
         <button className="link-btn" onClick={() => actions.openPage('settings')} title="Settings > Sync">settings</button>
       </div>
+      {multi && state.appSettings && !state.appSettings.serveAllPlaces && (
+        <div className="fs-sub note fs-hint">
+          <button className="link-btn" title="Rojo serves every *.project.json, each on its own servePort (same switch as the place pill in the title bar)" onClick={() => void actions.setAppSettings({ serveAllPlaces: true })}>
+            Serve all places
+          </button>{' '}
+          so each place's rojo serve runs on its own port.
+        </div>
+      )}
 
       {status.legacyPluginInstalled && (
         <div className="callout warn fs-callout">
@@ -128,16 +176,17 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
                   key={u.id}
                   className="mini-btn hot"
                   disabled={!!busy}
-                  title={`Sync this Studio place with ${linkTargetName} (${linkTarget}): Forge checks it first, then Rojo serves.`}
-                  onClick={() => void act(`link:${u.id}`, () => window.harness.syncLinkPlace(u.id, linkTarget), `Linked ${u.name} to ${linkTargetName}. Forge checks it before Rojo serves.`)}
+                  title={multi ? `Pick the place file this Studio place syncs with: Forge checks it first, then Rojo serves.${u.fingerprint ? `\n${u.fingerprint}` : ''}` : `Sync this Studio place with ${linkTargetName} (${linkTarget}): Forge checks it first, then Rojo serves.${u.fingerprint ? `\n${u.fingerprint}` : ''}`}
+                  onClick={() => startLink(u, 'callout', (file) => `Linked ${unlinkedName(u)} to ${targetName(file)}. Forge checks it before Rojo serves.`)}
                 >
-                  Link "{u.name}" and check
+                  Link "{unlinkedName(u)}"{multi ? '…' : ' and check'}
                 </button>
               ))}
             <button className="mini-btn" disabled={!!busy} title="Rojo serves now without a Studio check: its connect dialog may offer to delete scripts that exist only in Studio" onClick={() => void serveUnchecked()}>
               Serve without Studio check
             </button>
           </div>
+          {status.unlinked?.map((u) => picker(u, 'callout', (file) => `Linked ${unlinkedName(u)} to ${targetName(file)}. Forge checks it before Rojo serves.`))}
         </div>
       )}
       {status.notice && !blockedWait && (
@@ -189,12 +238,13 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         const firstRun = mine.filter((c) => c.reason === 'first-run')
         return (
           <div key={p.placeKey + p.projectFile} className="fs-place">
-            <div className="lrow static" title={`${p.projectFile}${p.place?.placeId ? ` · place ${p.place.placeId}` : ''}\n${g.hint}`}>
+            <div className="lrow static" title={`${p.projectFile}${p.place?.placeId ? ` · place ${p.place.placeId}` : ''}${p.fingerprint ? `\n${p.fingerprint}` : ''}\n${g.hint}`}>
               <span className={`fs-dot${p.connected ? ' on' : ''}`} title={p.connected ? 'Studio connected' : 'Studio not connected'} />
-              <span className="grow ellipsis">{placeName(p)}</span>
+              <span className="grow ellipsis">{rowLabel(p)}</span>
               <span className={`tag ${g.cls}`}>{p.gate === 'blocked' ? (p.conflicts || !p.studioOnly?.holds ? `${p.conflicts} held` : `${p.studioOnly.count} not on disk`) : g.label}</span>
             </div>
             <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}</div>
+            {p.fingerprint && rowLabel(p) !== placeName(p) && <div className="fs-sub note ellipsis" title={p.fingerprint}>{p.fingerprint}</div>}
             {p.gate === 'waiting' && !blockedWait && (
               <div className="fs-sub note fs-waiting" title={p.gateDetail}>
                 Rojo waits for Studio's first sync check.{' '}
@@ -279,23 +329,33 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
       })}
 
       {status.unlinked?.map((u) => {
-        const target = state.activePlace || 'default.project.json'
-        const targetName = state.places.find((x) => x.file === target)?.name || state.project?.name || target.replace(/\.project\.json$/, '')
+        const ok = (file: string) => `Linked ${unlinkedName(u)} to ${targetName(file)}. Its first sync waits for your choice.`
         return (
           <div key={u.id} className="fs-place fs-unlinked">
-            <div className="lrow static" title={`${u.why}.\n\nForge Sync only syncs Studio places linked to this project: a published place listed in servePlaceIds (or tools/studio-sync.json placeIds), or one you link here. Other places (VFX scratch places, other games) can stay open for Studio checks; nothing from them is written or trashed. While no linked place has been checked, rojo serve waits.`}>
+            <div className="lrow static" title={`${u.why}.${u.fingerprint ? `\n${u.fingerprint}` : ''}\n\nForge Sync only syncs Studio places linked to this project: a published place listed in servePlaceIds (or tools/studio-sync.json placeIds), or one you link here. Other places (VFX scratch places, other games) can stay open for Studio checks; nothing from them is written or trashed. While no linked place has been checked, rojo serve waits.`}>
               <span className="fs-dot" />
-              <span className="grow ellipsis">Not linked: {u.name}</span>
+              <span className="grow ellipsis">Not linked: {unlinkedName(u)}</span>
               <button
                 className="mini-btn"
                 disabled={!!busy || !u.canLink}
-                title={u.canLink ? `Sync this Studio place with ${targetName} (${target}). Its first sync waits until you pick a side.` : u.why}
-                onClick={() => void act(`link:${u.id}`, () => window.harness.syncLinkPlace(u.id, target), `Linked ${u.name} to ${targetName}. Its first sync waits for your choice.`)}
+                title={!u.canLink ? u.why : multi ? 'Pick the place file this Studio place syncs with. Its first sync waits until you pick a side.' : `Sync this Studio place with ${linkTargetName} (${linkTarget}). Its first sync waits until you pick a side.`}
+                onClick={() => startLink(u, 'row', ok)}
               >
-                Link
+                Link{multi ? '…' : ''}
               </button>
             </div>
-            <div className="fs-sub note">Not synced: nothing from this place is written to disk. Rojo serve waits until a linked place is checked.{u.canLink ? ` Link it to sync it with ${targetName}.` : ` ${u.why}.`}</div>
+            {(u.fingerprint || u.canIdentify) && (
+              <div className="fs-sub note fs-fp">
+                <span className="grow ellipsis" title={u.fingerprint}>{u.fingerprint}</span>
+                {u.canIdentify && (
+                  <button className="link-btn" disabled={!!busy} title="Show this place's name in its Studio window for a few seconds (and print it to Output), so you can tell which window it is" onClick={() => void identify(u)}>
+                    Identify
+                  </button>
+                )}
+              </div>
+            )}
+            {picker(u, 'row', ok)}
+            <div className="fs-sub note">Not synced: nothing from this place is written to disk. Rojo serve waits until a linked place is checked.{u.canLink ? (multi ? ' Link it to one of the place files to sync it.' : ` Link it to sync it with ${linkTargetName}.`) : ` ${u.why}.`}</div>
           </div>
         )
       })}
@@ -323,6 +383,32 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         </>
       )}
     </section>
+  )
+}
+
+// Inline "which place file" choice for Link (no dialogs): every *.project.json with its name, file and
+// rojo servePort, the active place preselected.
+function LinkPicker(props: { places: PlaceInfo[]; active: string; file: string; name: string; busy: boolean; onPick: (file: string) => void; onLink: () => void; onCancel: () => void }) {
+  const chosen = props.places.find((p) => p.file === props.file)
+  return (
+    <div className="fs-picker" role="radiogroup" aria-label={`Place file for ${props.name}`}>
+      <div className="fs-picker-head">Link "{props.name}" to:</div>
+      {props.places.map((p) => (
+        <label key={p.file} className={`fs-pick${p.file === props.file ? ' on' : ''}`} title={`${p.file} · rojo serve on port ${p.servePort}`}>
+          <input type="radio" name={`fs-pick-${props.name}`} checked={p.file === props.file} onChange={() => props.onPick(p.file)} />
+          <span className="ellipsis">{p.name}</span>
+          <span className="grow ellipsis faint mono">{p.file}</span>
+          <span className="faint mono">:{p.servePort}</span>
+          {p.file === props.active && <span className="tag">active</span>}
+        </label>
+      ))}
+      <div className="row">
+        <button className="mini-btn hot" disabled={props.busy || !chosen} onClick={props.onLink}>
+          Link to {chosen?.name ?? props.file}
+        </button>
+        <button className="link-btn" onClick={props.onCancel}>cancel</button>
+      </div>
+    </div>
   )
 }
 

@@ -9,6 +9,7 @@ import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import type {
   GateState,
+  PlaceFingerprint,
   PlaceSyncStatus,
   StudioChange,
   StudioNode,
@@ -31,6 +32,7 @@ import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
 import { isLinkedKey, linkKey, matchPlace, PlaceLinks } from './links.ts'
 import { BaseStore } from './store.ts'
 import { LIVE_FOLDER } from '../../../shared/vfx/live.ts'
+import { collisionLabels, fingerprintText } from '../../../shared/sync/labels.ts'
 
 // ---- What the service needs from the engine worker's modules (engine.ts, mapping.ts) ----
 // Structural copies of the contract's Engine API, so this file builds and is tested before they land.
@@ -85,6 +87,8 @@ export interface SyncConfigQuery {
   // Plugin v8: the place's ForgeSyncLink attribute (unpublished, linked) and a random id per plugin run.
   link?: string
   probe?: string
+  // Plugin v11: what is in the place (display only).
+  fp?: PlaceFingerprint
 }
 
 export interface SyncConfigAnswer {
@@ -97,6 +101,8 @@ export interface SyncConfigAnswer {
   outlineMax?: number
   // Plugin v8: store this link id in the (unpublished) place; the user linked it in Forge.
   stampLink?: string
+  // Plugin v11: show this label in that Studio window (the user pressed Identify).
+  identify?: string
 }
 
 export interface OutlineBody {
@@ -233,6 +239,10 @@ interface UnlinkedEntry extends UnlinkedPlace {
   probe?: string
 }
 
+// An Identify press waits this long for that Studio window's next config request (plugin v11 asks
+// every 5 s while its place is not linked).
+export const IDENTIFY_WAIT_MS = 20_000
+
 interface ConfigSeen {
   at: number
   placeId: number
@@ -311,6 +321,10 @@ export class SyncService {
   private unlinked = new Map<string, UnlinkedEntry>()
   // Unpublished places the user linked: plugin probe id -> link id to stamp into the place.
   private stamps = new Map<string, string>()
+  // Identify presses not delivered yet: unlinked place id -> the label to show and when it was asked.
+  private identifies = new Map<string, { label: string; at: number }>()
+  // Plugin v11: the fingerprint each linked place sent when its check started (placeKey -> one line).
+  private fingerprints = new Map<string, string>()
   // One-time note: sync state of never-linked places was dropped at startup.
   private discarded: { id: string; text: string } | undefined
   private expireTimer: ReturnType<typeof setInterval> | null = null
@@ -471,10 +485,17 @@ export class SyncService {
     if (!match) {
       const stamp = q.probe && !placeId ? this.stamps.get(q.probe) : undefined
       if (stamp) return { ...off('linking: the plugin stores the link in the place'), stampLink: stamp }
-      return off(this.noteUnlinked(q, placeId).why)
+      const entry = this.noteUnlinked(q, placeId)
+      const ask = this.identifies.get(entry.id)
+      this.identifies.delete(entry.id)
+      return { ...off(entry.why), ...(ask && this.now() - ask.at <= IDENTIFY_WAIT_MS ? { identify: ask.label } : {}) }
     }
     if (q.probe) this.stamps.delete(q.probe)
     this.unlinked.delete(this.unlinkedId(q, placeId))
+    this.identifies.delete(this.unlinkedId(q, placeId))
+    const fp = fingerprintText(q.fp)
+    if (fp) this.fingerprints.set(match.placeKey, fp)
+    else this.fingerprints.delete(match.placeKey)
     const map = this.maps.find((m) => m.projectFile === match.projectFile)
     if (!map) return off('No *.project.json maps this place')
     const place: SyncPlace = { placeId, ...(q.gameId ? { gameId: Number(q.gameId) } : {}), ...(q.place ? { name: String(q.place) } : {}), ...(linkId ? { linkId } : {}) }
@@ -664,9 +685,29 @@ export class SyncService {
       this.stamps.set(entry.probe!, linkId)
     }
     this.unlinked.delete(id)
+    this.identifies.delete(id)
     this.deps.log?.(`sync: linked Studio place "${entry.name}"${entry.placeId ? ` (${entry.placeId})` : ''} to ${file}; its first sync waits for your choice`)
     this.refresh()
     return this.status()
+  }
+
+  // "Identify": the Studio window of this unlinked place shows its label (e.g. "Place1 #2") on its next
+  // config request, within about 5 s. Plugin v11; older plugins have no fingerprint and no Identify.
+  identifyPlace(id: string): { label: string } {
+    const entry = this.shownUnlinked().find((u) => u.id === id)
+    if (!entry) throw new Error('That Studio place is not connected any more; open it in Studio and try again')
+    if (!entry.canIdentify) throw new Error(`Restart Studio to load Forge Bridge v${PLUGIN_VERSION}, which can identify its window`)
+    const label = entry.label ?? entry.name
+    this.identifies.set(id, { label, at: this.now() })
+    return { label }
+  }
+
+  // Unlinked places still talking to Forge, oldest first, labelled "Place1 #1 / #2" when names collide.
+  private shownUnlinked(): UnlinkedEntry[] {
+    const now = this.now()
+    const list = [...this.unlinked.values()].filter((u) => now - u.lastSeen <= UNLINKED_SHOW_MS)
+    const labels = collisionLabels(list.map((u) => u.name))
+    return list.map((u, i) => ({ ...u, label: labels[i] }))
   }
 
   private unlinkedId(q: SyncConfigQuery, placeId: number): string {
@@ -683,8 +724,20 @@ export class SyncService {
       : canLink
         ? 'Unpublished place, not linked to this project'
         : `Unpublished place, not linked to this project. Restart Studio to load Forge Bridge v${PLUGIN_VERSION}, which can link it`
-    const entry: UnlinkedEntry = { id, name, placeId, lastSeen: this.now(), canLink, why, ...(q.probe ? { probe: q.probe } : {}) }
+    const fingerprint = fingerprintText(q.fp)
+    const entry: UnlinkedEntry = {
+      id,
+      name,
+      placeId,
+      lastSeen: this.now(),
+      canLink,
+      why,
+      ...(fingerprint ? { fingerprint } : {}),
+      ...(q.fp && q.probe ? { canIdentify: true } : {}),
+      ...(q.probe ? { probe: q.probe } : {})
+    }
     const known = this.unlinked.has(id)
+    // Map.set keeps an existing key's place, so "#1 / #2" numbering stays put while both are open.
     this.unlinked.set(id, entry)
     if (!known) this.deps.log?.(`sync: Studio place "${name}" is not linked to this project; nothing from it is synced (Source Control > Link to sync it)`)
     return entry
@@ -850,10 +903,9 @@ export class SyncService {
     if (old !== null) {
       return { reason: 'plugin', text: `Restart Studio to update the Forge Bridge plugin (v${old} → v${PLUGIN_VERSION}): rojo serve waits so Rojo cannot delete scripts that exist only in Studio` }
     }
-    const now = this.now()
-    const unlinked = [...this.unlinked.values()].filter((u) => now - u.lastSeen <= UNLINKED_SHOW_MS)
+    const unlinked = this.shownUnlinked()
     if (unlinked.length) {
-      const quoted = unlinked.map((u) => `"${u.name}"`)
+      const quoted = unlinked.map((u) => `"${u.label ?? u.name}"`)
       const names = quoted.length <= 2 ? quoted.join(' and ') : `${quoted.slice(0, 2).join(', ')} and ${quoted.length - 2} more`
       const one = unlinked.length === 1
       return {
@@ -884,6 +936,7 @@ export class SyncService {
         place: state.place,
         ...shown(this.gate(state.placeKey), state.projectFile),
         ...(pluginVersion ? { pluginVersion } : {}),
+        ...(this.fingerprints.has(state.placeKey) ? { fingerprint: this.fingerprints.get(state.placeKey)! } : {}),
         connected: viaBridge || this.now() - state.lastSeen < SEEN_MS,
         ...(state.lastSnapshot ? { lastSnapshot: state.lastSnapshot } : {}),
         counts: { ...state.counts },
@@ -919,8 +972,7 @@ export class SyncService {
     }
     if (this.warning && status.pendingStudioEdits.length) status.warning = this.warning
     if (status.engine === 'forge') {
-      const now = this.now()
-      const unlinked = [...this.unlinked.values()].filter((u) => now - u.lastSeen <= UNLINKED_SHOW_MS).map(({ probe: _probe, ...u }) => u)
+      const unlinked = this.shownUnlinked().map(({ probe: _probe, ...u }) => u)
       if (unlinked.length) status.unlinked = unlinked
       if (this.discarded) status.discarded = this.discarded
     }

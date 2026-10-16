@@ -154,6 +154,22 @@ async function forgeSyncFlow({ page, root, note, rojo }: { page: import('../lib/
   await waitText(page, /(isn't|aren't) linked to this project.*Rojo serve waits/, { within: 'aside.side .vsec.fs .fs-wait' })
   check(await waitCallout.locator('button', { hasText: 'Serve without Studio check' }).count(), 'no "Serve without Studio check" in the unlinked callout')
   check(await waitCallout.locator('button', { hasText: 'Link "VFX Scratch" and check' }).count(), 'no "Link and check" for the unlinked place')
+  // Two unpublished windows both named "Place1" (plugin v11 sends a fingerprint): told apart as #1 / #2
+  // with what is in each, and Identify reaches only the window it names, on its next config request.
+  const fp = (workspace: string[], scripts: number) => encodeURIComponent(JSON.stringify({ workspace, workspaceCount: workspace.length, scripts }))
+  const askA = () => json(`${BASE}/sync/config?placeId=0&gameId=0&place=Place1&probe=e2e-probe-place-a001&fp=${fp(['Arena'], 40)}`)
+  const askB = () => json(`${BASE}/sync/config?placeId=0&gameId=0&place=Place1&probe=e2e-probe-place-b002&fp=${fp(['MenuStage'], 12)}`)
+  await askA()
+  await askB()
+  await waitText(page, /Not linked: Place1 #1/, { within: 'aside.side .vsec.fs' })
+  await waitText(page, /Workspace: MenuStage · 12 scripts/, { within: 'aside.side .vsec.fs' })
+  const rowB = page.locator('aside.side .vsec.fs .fs-unlinked', { hasText: 'Not linked: Place1 #2' })
+  await rowB.locator('button', { hasText: 'Identify' }).click()
+  let shown: unknown
+  await until('Identify reaches Place1 #2', async () => !!(shown = (await askB()).identify))
+  check(shown === 'Place1 #2', `Identify label: ${JSON.stringify(shown)}`)
+  check((await askA()).identify === undefined, 'Identify reached the other "Place1" window')
+  check((await page.locator('aside.side .vsec.fs .fs-unlinked', { hasText: 'Not linked: VFX Scratch' }).locator('button', { hasText: 'Identify' }).count()) === 0, 'Identify offered for a plugin without a fingerprint')
   if (rojo) {
     await until('rojo held for the unlinked place', async () => (await rojoStatus(page))?.hold?.reason === 'unlinked')
     check(rojo.serves().length === 0, `rojo served with only unlinked Studio places open: ${rojo.serves().join(' | ')}`)

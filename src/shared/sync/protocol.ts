@@ -1,7 +1,7 @@
 // Forge Sync wire protocol between the Forge Bridge plugin (resources/studio/ForgeBridge.luau) and
 // Forge's bridge server (main/services/studio/bridge.ts):
 //
-//   GET  /forge-bridge/sync/config?placeId=&gameId=&place=  -> SyncConfig ({ enabled:false } when off)
+//   GET  /forge-bridge/sync/config?placeId=&gameId=&place=&probe=&link=&fp=  -> SyncConfig ({ enabled:false } when off)
 //   POST /forge-bridge/sync/snapshot  SnapshotBody  -> SyncReply   (chunked: seq 0.., last has final)
 //   POST /forge-bridge/sync/changes   ChangesBody   -> SyncReply   (debounced by the plugin)
 //   POST /forge-bridge/sync/outline   OutlineBody   -> SyncReply   (plugin v5: Game-tab outline of the
@@ -11,7 +11,8 @@
 // full snapshot. Everything that arrives is checked here (pure, no I/O) before main sees it: shapes,
 // sizes and bounds, so a broken or hostile client cannot hand the engine odd paths or huge strings.
 
-import type { StudioChange, StudioNode, StudioOutlineNode, SyncPlace, SyncRef, SyncValue } from './types.ts'
+import { FINGERPRINT_NAMES, type PlaceFingerprint, type StudioChange, type StudioNode, type StudioOutlineNode, type SyncPlace, type SyncRef, type SyncValue } from './types.ts'
+import { identifyText } from './labels.ts'
 
 export interface SyncConfigQuery {
   placeId: number
@@ -21,6 +22,8 @@ export interface SyncConfigQuery {
   // id per plugin run so two unlinked places with the same name are told apart.
   link?: string
   probe?: string
+  // Plugin v11: what is in the place (JSON in the fp parameter), to tell same-name places apart.
+  fp?: PlaceFingerprint
 }
 
 export interface SyncConfig {
@@ -35,6 +38,9 @@ export interface SyncConfig {
   // Plugin v8, with enabled false: the user linked this (unpublished) place in Forge; the plugin stores
   // this id as ServerStorage's ForgeSyncLink attribute and asks for config again.
   stampLink?: string
+  // Plugin v11, with enabled false: the user pressed Identify for this place in Forge; the plugin
+  // shows this label in its Studio window for a few seconds (and prints it to Output).
+  identify?: string
 }
 
 export interface OutlineBody {
@@ -350,12 +356,46 @@ export function parseConfigQuery(params: URLSearchParams): SyncConfigQuery {
   if (link && LINK_ID_RE.test(link)) q.link = link
   const probe = params.get('probe')
   if (probe && LINK_ID_RE.test(probe)) q.probe = probe
+  const fp = parseFingerprint(params.get('fp'))
+  if (fp) q.fp = fp
   return q
+}
+
+// The fp parameter (plugin v11): JSON { workspace: string[], workspaceCount, scripts }. Anything odd
+// is dropped (it is display only), never an error.
+export function parseFingerprint(raw: string | null | undefined): PlaceFingerprint | undefined {
+  if (!raw || raw.length > 4096) return undefined
+  let v: unknown
+  try {
+    v = JSON.parse(raw)
+  } catch {
+    return undefined
+  }
+  if (!isObj(v)) return undefined
+  const count = (x: unknown) => (typeof x === 'number' && Number.isSafeInteger(x) && x >= 0 ? x : null)
+  const workspaceCount = count(v.workspaceCount)
+  const scripts = count(v.scripts)
+  if (workspaceCount === null || scripts === null) return undefined
+  // An empty Lua table encodes as [] or {}.
+  const list = Array.isArray(v.workspace) ? v.workspace : isObj(v.workspace) && !Object.keys(v.workspace).length ? [] : null
+  if (!list) return undefined
+  const workspace = list
+    .filter((n): n is string => typeof n === 'string')
+    // eslint-disable-next-line no-control-regex
+    .map((n) => n.replace(/[\u0000-\u001f]/g, ' ').trim().slice(0, 40))
+    .filter(Boolean)
+    .slice(0, FINGERPRINT_NAMES)
+  return { workspace, workspaceCount: Math.max(workspaceCount, workspace.length), scripts }
 }
 
 // What the bridge sends back for config; strips anything the plugin does not need and keeps it sane.
 export function sanitizeConfig(c: SyncConfig): SyncConfig {
-  if (!c.enabled) return c.stampLink && LINK_ID_RE.test(c.stampLink) ? { enabled: false, stampLink: c.stampLink } : { enabled: false }
+  if (!c.enabled) {
+    const out: SyncConfig = c.stampLink && LINK_ID_RE.test(c.stampLink) ? { enabled: false, stampLink: c.stampLink } : { enabled: false }
+    const identify = typeof c.identify === 'string' ? identifyText(c.identify) : ''
+    if (identify) out.identify = identify
+    return out
+  }
   const paths = (list: string[][] | undefined) => (list ?? []).filter((p) => Array.isArray(p) && p.length > 0 && p.every((n) => typeof n === 'string'))
   const out: SyncConfig = { enabled: true, sessionToken: String(c.sessionToken ?? ''), roots: paths(c.roots), skip: paths(c.skip) }
   if (c.outline?.length) {

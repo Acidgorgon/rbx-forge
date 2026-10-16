@@ -53,6 +53,9 @@ export interface SyncApi {
   // Links a Studio place (an UnlinkedPlace id from SyncStatus.unlinked) to one of the project's place
   // files, persisted in .forge/sync/links.json. Its first sync waits for a "which side" decision.
   syncLinkPlace(id: string, projectFile?: string): Promise<SyncStatus>
+  // "Identify" (Forge Bridge v11): that unlinked place's Studio window shows its label ("Place1 #2")
+  // for a few seconds, within about 5 s. Throws for an older plugin or a place that went away.
+  syncIdentifyPlace(id: string): Promise<{ label: string }>
   forgeSyncSettings(): Promise<ForgeSyncSettings>
   setForgeSyncSettings(patch: Partial<ForgeSyncSettings>): Promise<ForgeSyncSettings>
 }

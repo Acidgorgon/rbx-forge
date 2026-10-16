@@ -164,8 +164,9 @@ test('modelJob ships BlockyKit and the build as two modules and refuses a Source
 
 test('the Forge Bridge plugin (v10) runs model jobs into Workspace and selects them', () => {
   const src = readFileSync(join(ROOT, 'resources/studio/ForgeBridge.luau'), 'utf8')
-  assert.equal(PLUGIN_VERSION, MODEL_PLUGIN_VERSION)
-  assert.match(src, /-- forge-bridge-template: 10\b/)
+  // Model jobs arrived in v10; later plugins keep them.
+  assert.ok(PLUGIN_VERSION >= MODEL_PLUGIN_VERSION, `PLUGIN_VERSION ${PLUGIN_VERSION} < ${MODEL_PLUGIN_VERSION}`)
+  assert.match(src, new RegExp(`-- forge-bridge-template: ${PLUGIN_VERSION}\\b`))
   assert.match(src, /local function runModelJob\(job: any\)/)
   assert.match(src, /answer\.job\.kind == "model" then\s+runModelJob\(answer\.job\)/)
   const body = src.slice(src.indexOf('local function runModelJob'))

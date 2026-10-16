@@ -139,7 +139,7 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
     legacyPluginInstalled: legacy,
     ...(legacy ? { legacyPlugins: ['FSFStudioSync.lua'] } : {}),
     ...(settings.engine === 'forge' && mode !== 'checking' ? { unsyncedRefs: MOCK_REFS, unsyncedRefsTotal: MOCK_REFS.length } : {}),
-    ...(settings.engine === 'forge' ? { unlinked: [{ id: 'probe:mock', name: 'DoubleFireSlashVFX', placeId: 0, lastSeen: t, canLink: true, why: 'Unpublished place, not linked to this project' }] } : {})
+    ...(settings.engine === 'forge' ? { unlinked: [{ id: 'probe:mock', name: 'DoubleFireSlashVFX', label: 'DoubleFireSlashVFX', placeId: 0, lastSeen: t, canLink: true, why: 'Unpublished place, not linked to this project', fingerprint: 'Workspace: Dummy, VFXStage · 12 scripts', canIdentify: true }] } : {})
   })
 
   const studioConflicts = (): StudioConflict[] | null =>
@@ -204,6 +204,11 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
       for (const c of conflicts.filter((x) => x.placeKey === placeKey && (!reason || x.reason === reason))) resolveOne(placeKey, c.file, take)
       changed()
       return status()
+    },
+    async syncIdentifyPlace(id) {
+      const u = status().unlinked?.find((x) => x.id === id)
+      log(`identify ${id}`)
+      return { label: u?.label ?? u?.name ?? 'Place1' }
     },
     async syncLinkPlace(id) {
       log(`linked ${id}`)

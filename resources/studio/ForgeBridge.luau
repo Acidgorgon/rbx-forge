@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 10
+-- forge-bridge-template: 11
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -37,6 +37,11 @@
 -- script next to its BlockyKit module), builds one Model in Workspace in front of the camera inside a
 -- ChangeHistoryService recording (Ctrl+Z removes it) and selects it. With a guard path it hands that
 -- existing guard Model to the script, which copies its gameplay pieces; nothing else is changed.
+-- Version 11: telling same-name places apart (every unpublished place is "Place1"). The config request
+-- carries a small fingerprint (Workspace's top-level names, a script count); when the user presses
+-- Identify for an unlinked place in Forge, the config answer carries identify: the plugin shows that
+-- label in a banner over this window's viewport for a few seconds (CoreGui, never saved with the place)
+-- and prints it to Output. Nothing in the place is changed or selected.
 --
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
@@ -1080,6 +1085,93 @@ local function sendSnapshot(gen: number)
 	return count
 end
 
+-- Plugin v11: what is in this place, so Forge can tell places with the same name apart. Cached for
+-- FINGERPRINT_EVERY seconds (an unlinked place asks for config every SYNC_RECHECK_OFF seconds).
+local FINGERPRINT_EVERY = 30
+local FINGERPRINT_NAMES = 6
+local FINGERPRINT_MAX_SCRIPTS = 100000
+local FINGERPRINT_SERVICES = { "Workspace", "ServerScriptService", "ReplicatedStorage", "ReplicatedFirst", "ServerStorage", "StarterPlayer", "StarterGui", "StarterPack" }
+local fingerprintCache: { at: number, json: string }? = nil
+
+local function fingerprint(): string
+	local now = os.clock()
+	if fingerprintCache and now - fingerprintCache.at < FINGERPRINT_EVERY then
+		return fingerprintCache.json
+	end
+	local names, count, scripts = {}, 0, 0
+	pcall(function()
+		local ws = game:FindFirstChild("Workspace")
+		for _, child in (if ws then ws:GetChildren() else {}) do
+			if not child:IsA("Camera") and not child:IsA("Terrain") then
+				count += 1
+				table.insert(names, child.Name)
+			end
+		end
+	end)
+	table.sort(names)
+	while #names > FINGERPRINT_NAMES do
+		table.remove(names)
+	end
+	for _, name in FINGERPRINT_SERVICES do
+		if scripts >= FINGERPRINT_MAX_SCRIPTS then
+			break
+		end
+		pcall(function()
+			local service = game:FindFirstChild(name)
+			for _, inst in (if service then service:GetDescendants() else {}) do
+				if inst:IsA("LuaSourceContainer") then
+					scripts += 1
+				end
+			end
+		end)
+	end
+	local json = HttpService:JSONEncode({ workspace = names, workspaceCount = count, scripts = math.min(scripts, FINGERPRINT_MAX_SCRIPTS) })
+	fingerprintCache = { at = now, json = json }
+	return json
+end
+
+-- Plugin v11 "Identify": a banner over this window's viewport for a few seconds (CoreGui is never
+-- saved with the place) and one Output line. Nothing in the place is touched.
+local IDENTIFY_SECONDS = 6
+local function showIdentify(label: string)
+	label = string.sub(label, 1, 80)
+	warn("[Forge] This window is " .. label .. " (RBX Forge > Source Control > Studio sync)")
+	task.spawn(function()
+		local ok, gui = pcall(function()
+			local old = CoreGui:FindFirstChild("ForgeBridgeIdentify")
+			if old then
+				old:Destroy()
+			end
+			local g = Instance.new("ScreenGui")
+			g.Name = "ForgeBridgeIdentify"
+			g.DisplayOrder = 100001
+			local text = Instance.new("TextLabel")
+			text.AnchorPoint = Vector2.new(0.5, 0)
+			text.Position = UDim2.new(0.5, 0, 0, 24)
+			text.Size = UDim2.fromOffset(520, 56)
+			text.BackgroundColor3 = Color3.fromRGB(255, 122, 26)
+			text.BorderSizePixel = 0
+			text.TextColor3 = Color3.new(1, 1, 1)
+			text.Font = Enum.Font.GothamBold
+			text.TextSize = 24
+			text.TextScaled = false
+			text.Text = "RBX Forge: this window is " .. label
+			text.Parent = g
+			local corner = Instance.new("UICorner")
+			corner.CornerRadius = UDim.new(0, 10)
+			corner.Parent = text
+			g.Parent = CoreGui
+			return g
+		end)
+		if ok and gui then
+			task.wait(IDENTIFY_SECONDS)
+			pcall(function()
+				gui:Destroy()
+			end)
+		end
+	end)
+end
+
 -- "off": Forge has no sync for this place; "waiting": Forge unreachable; "ok": streaming.
 local function startSync(): string
 	stopSync()
@@ -1092,6 +1184,10 @@ local function startSync(): string
 		.. HttpService:UrlEncode(game.Name)
 		.. "&probe="
 		.. SYNC_PROBE
+	local okFp, fp = pcall(fingerprint)
+	if okFp and type(fp) == "string" then
+		query ..= "&fp=" .. HttpService:UrlEncode(fp)
+	end
 	local link = nil
 	if game.PlaceId == 0 then
 		pcall(function()
@@ -1123,6 +1219,9 @@ local function startSync(): string
 			sync.wanted = true
 			return "off"
 		end
+	end
+	if type(config) == "table" and not config.enabled and type(config.identify) == "string" and config.identify ~= "" then
+		showIdentify(config.identify)
 	end
 	if type(config) ~= "table" or not config.enabled then
 		sync.retryAt = os.clock() + SYNC_RECHECK_OFF

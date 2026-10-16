@@ -55,6 +55,19 @@ export interface SyncPlace {
   linkId?: string
 }
 
+// Plugin v11: a cheap fingerprint of a Studio place, sent with each config request, so places that
+// share a name (every unpublished place is "Place1") can be told apart in Source Control.
+export interface PlaceFingerprint {
+  // Workspace's top-level children (not Camera / Terrain), sorted, up to FINGERPRINT_NAMES of them.
+  workspace: string[]
+  // How many top-level Workspace children there are in all.
+  workspaceCount: number
+  // Scripts (LuaSourceContainers) in the place's main services (the plugin stops counting at 100000).
+  scripts: number
+}
+
+export const FINGERPRINT_NAMES = 6
+
 export type StudioChange =
   | { kind: 'source'; node: StudioNode }
   | { kind: 'added'; node: StudioNode; descendants?: StudioNode[] }
@@ -138,6 +151,8 @@ export interface PlaceSyncStatus {
   gateDetail?: string
   // The Forge Bridge plugin version this place's Studio runs (from its bridge poll), when known.
   pluginVersion?: number
+  // Plugin v11: what the Studio place looked like when its check started (fingerprintText), one line.
+  fingerprint?: string
   connected: boolean
   lastSnapshot?: number
   counts: Partial<Record<SyncAction, number>>
@@ -210,6 +225,13 @@ export interface UnlinkedPlace {
   // false: cannot be linked from here (why says what to do, e.g. restart Studio for plugin v8).
   canLink: boolean
   why: string
+  // The name, or "Place1 #2" when other unlinked places have the same name (numbered in the order
+  // Forge first saw them). Identify shows this label in that Studio window.
+  label?: string
+  // Plugin v11: what is in the place (fingerprintText), one line.
+  fingerprint?: string
+  // Plugin v11 (sends a fingerprint): "Identify" makes that Studio window show its label.
+  canIdentify?: boolean
 }
 
 export const UNSYNCED_REFS_MAX = 100

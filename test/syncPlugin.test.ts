@@ -227,7 +227,12 @@ test('plugin: an unlinked place writes nothing and holds no conflicts (rojo serv
       const unlinked = await until('the unlinked place', async () => (await service.status()).unlinked?.[0])
       assert.equal(unlinked.name, 'Place1')
       assert.equal(unlinked.canLink, true)
-      await new Promise((r) => setTimeout(r, 1500))
+      // Plugin v11: a fingerprint of the place and Identify, which reaches the window on its next config.
+      assert.equal(unlinked.canIdentify, true)
+      assert.match(unlinked.fingerprint ?? '', /\d+ scripts?$/)
+      assert.deepEqual(service.identifyPlace(unlinked.id), { label: 'Place1' })
+      // The unlinked plugin asks for config every 5 s.
+      await new Promise((r) => setTimeout(r, 6500))
       let status = await service.status()
       // No conflicts or snapshot from it; the project's place waits for a linked check, saying why.
       assert.ok(status.places.every((p) => p.gate === 'waiting' && p.waitReason === 'unlinked' && !p.conflicts && !p.lastSnapshot), JSON.stringify(status.places))
@@ -258,6 +263,7 @@ test('plugin: an unlinked place writes nothing and holds no conflicts (rojo serv
   assert.ok(checked, out)
   assert.match(out, /SET ATTRIBUTE ServerStorage\.ForgeSyncLink = /, out)
   assert.match(out, /now linked to the Forge project/, out)
+  assert.match(out, /\[Forge\] This window is Place1 /, out)
   const links = JSON.parse(readFileSync(join(root, '.forge', 'sync', 'links.json'), 'utf8'))
   assert.deepEqual(Object.values(links.links).map((l: any) => l.projectFile), ['default.project.json'])
 })

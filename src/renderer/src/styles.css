@@ -452,7 +452,7 @@ button.badge-o:hover:not(:disabled) { border-color: var(--fg-faint); color: var(
 
 /* overlays */
 .scrim { position: fixed; inset: 0; z-index: 40; background: var(--scrim); animation: rf-scrim-in var(--dur-fast) var(--ease-out); }
-.menu { position: fixed; z-index: 45; min-width: 220px; max-width: 380px; padding: 4px; background: var(--bg-overlay); border-radius: var(--r-lg); box-shadow: var(--sh-3); animation: rf-menu-in var(--dur-fast) var(--ease-out); max-height: calc(100vh - 16px); overflow: auto; }
+.menu { position: fixed; z-index: 45; -webkit-app-region: no-drag; min-width: 220px; max-width: 380px; padding: 4px; background: var(--bg-overlay); border-radius: var(--r-lg); box-shadow: var(--sh-3); animation: rf-menu-in var(--dur-fast) var(--ease-out); max-height: calc(100vh - 16px); overflow: auto; }
 .mi { width: 100%; height: 26px; display: flex; align-items: center; gap: 8px; padding: 0 8px; border-radius: var(--r-md); color: var(--fg-2); cursor: pointer; position: relative; text-align: left; font-size: 12px; }
 .mi:hover:not(:disabled), .mi.hl { background: var(--bg-selected); color: var(--fg); }
 .mi:disabled { opacity: .45; }

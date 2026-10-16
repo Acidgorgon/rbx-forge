@@ -1,5 +1,6 @@
 // Context / dropdown menu with submenus, single-letter accelerators and keyboard navigation (SPEC §6, §8.1).
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from 'react'
+import { createPortal } from 'react-dom'
 import { Icon } from './Icons'
 
 export interface MenuItem {
@@ -231,7 +232,9 @@ export function Menu(props: MenuProps) {
 export function useMenu() {
   const [menu, setMenu] = useState<(Omit<MenuProps, 'onClose'>) | null>(null)
   const close = useCallback(() => setMenu(null), [])
-  const node = menu ? <Menu {...menu} onClose={close} /> : null
+  // Portalled to <body>: a menu rendered inside the title bar's drag region (-webkit-app-region: drag)
+  // swallows clicks on Windows, so no menu lives under the component that opened it.
+  const node = menu ? createPortal(<Menu {...menu} onClose={close} />, document.body) : null
   return {
     node,
     close,

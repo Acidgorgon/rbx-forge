@@ -4,7 +4,8 @@ import { basename, join, resolve } from 'node:path'
 import { findTool, toolEnv } from '../tools.ts'
 import { errorLine, spawnRunner, type CommandRunner } from './runner.ts'
 import { extractZip } from './unzip.ts'
-import { KNOWN_TOOL_IDS, parseRokitToml } from './toolchain.ts'
+import { KNOWN_TOOL_IDS, PINNED_TOOLS, parseRokitToml } from './toolchain.ts'
+import { parseRokitManifest, rokitSet } from '../packages.ts'
 
 // "New project": fetch a template (the GenTree template, or a generated empty Rojo project), make it
 // the person's own (drop the template's .git, rename, fresh `git init` + first commit, optional
@@ -200,7 +201,16 @@ export function githubTemplateFetcher(options: GithubFetcherOptions = {}): Templ
   }
 }
 
-// An empty Rojo project, the same shape `rojo init` makes, plus a rokit.toml pinning rojo.
+// Lune runs Forge's Luau tests, UI Preview stories and lab previews (Model Lab, VFX timelines) inside
+// the project: a new project pins it in rokit.toml (Forge's tested version) unless it already does.
+export const LUNE_PIN = PINNED_TOOLS.find((t) => t.alias === 'lune')!
+
+export function withLunePin(rokitToml: string): string {
+  if (parseRokitManifest(rokitToml).some((t) => t.repo.toLowerCase() === LUNE_PIN.id.toLowerCase() || t.name === 'lune')) return rokitToml
+  return rokitSet(rokitToml, LUNE_PIN.alias, LUNE_PIN.id, LUNE_PIN.version)
+}
+
+// An empty Rojo project, the same shape `rojo init` makes, plus a rokit.toml pinning rojo and lune.
 export function emptyProjectFiles(name: string, rojoVersion = '7.7.0'): Record<string, string> {
   const project = {
     name,
@@ -213,7 +223,7 @@ export function emptyProjectFiles(name: string, rojoVersion = '7.7.0'): Record<s
   }
   return {
     'default.project.json': JSON.stringify(project, null, 2) + '\n',
-    'rokit.toml': `# Tools for this project. After clone: rokit install\n[tools]\nrojo = "rojo-rbx/rojo@${rojoVersion}"\n`,
+    'rokit.toml': withLunePin(`# Tools for this project. After clone: rokit install\n[tools]\nrojo = "rojo-rbx/rojo@${rojoVersion}"\n`),
     '.gitignore': `/${name}.rbxlx\n/*.rbxlx.lock\n/*.rbxl.lock\nsourcemap.json\nPackages/\nServerPackages/\n.studio-sync/\n`,
     'README.md': `# ${name}\n\nA Rojo project. Serve it with \`rojo serve\` and connect from the Rojo plugin in Studio.\n`,
     'src/shared/Hello.luau': 'return function()\n\tprint("Hello, world!")\nend\n',
@@ -311,6 +321,8 @@ export async function createProject(input: NewProjectInput, deps: NewProjectDeps
   await edit('wally.toml', (t) => renameWallyToml(t, scope, name))
   await edit('README.md', (t) => renameReadme(t, oldName, name))
   await edit('.gitignore', (t) => renameGitignore(t, oldName, name))
+  // The GenTree template pins rojo, wally and blink; Forge's Lune features need lune too.
+  await edit('rokit.toml', withLunePin)
   if (!steps.some((s) => s.step === 'rename')) finish('rename', 'done', renamed.length ? `Updated ${renamed.join(', ')}` : undefined)
 
   // 4. git init + first commit (+ remote)

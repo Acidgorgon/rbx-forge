@@ -56,3 +56,6 @@
 @media (max-width: 520px) {
   .np-templates { grid-template-columns: 1fr; }
 }
+.tc-lune { gap: 10px; align-items: center; margin-top: 10px; font-size: 12px; }
+.tc-lune .set-title { flex: none; }
+.tc-lune .input { min-width: 0; height: 26px; font-size: 11.5px; }

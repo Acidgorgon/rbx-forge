@@ -3,6 +3,7 @@
 // model calls run end to end without real keys. Answers are canned and chosen by a list of rules
 // (first match on the system + last user message wins); add a rule to cover a new flow.
 
+import { readFileSync } from 'node:fs'
 import { createServer, type IncomingMessage, type Server } from 'node:http'
 import type { AddressInfo } from 'node:net'
 
@@ -41,6 +42,17 @@ export const DEFAULT_RULES: FakeRule[] = [
       r.lastRole === 'tool'
         ? `FAKE-TOOL-RESULT: ${r.lastTool.slice(0, 300)}`
         : { tool: r.toolNames.find((n) => /(^|__)write_script$/.test(n)) ?? 'write_script', args: { path: 'src/server/Features/Inventory/InventoryService.luau', contents: '-- overwritten by the fake model\nreturn {}\n' } }
+  },
+  // Model Lab (services/model): the build script is the real guard template, marked; the critic keeps it.
+  {
+    name: 'model-lab-critic',
+    match: (r) => /RBX Forge Model Lab/.test(r.system) && /Critic round \d+/.test(r.user),
+    reply: () => 'NO CHANGES\nFAKE critic: the silhouette matches the request.'
+  },
+  {
+    name: 'model-lab-write',
+    match: (r) => /RBX Forge Model Lab/.test(r.system),
+    reply: () => `FAKE built a guard.\n\`\`\`lua\n-- FAKE-MODEL-LAB\n${readFileSync(new URL('../../../resources/lune/model_templates/guard.luau', import.meta.url), 'utf8')}\`\`\``
   },
   {
     name: 'restate',

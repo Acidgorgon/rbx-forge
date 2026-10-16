@@ -34,6 +34,7 @@ import { animMock } from './mockAnim'
 import { refMock } from './mockRef'
 import { abilityMock } from './mockAbility'
 import { uiMotionMock } from './mockUiMotion'
+import { modelMock } from './mockModel'
 import { studioMock } from './mockStudio'
 import { forgeSyncMock } from './mockForgeSync'
 import { principlesMock } from './mockPrinciples'
@@ -941,6 +942,8 @@ const api: HarnessApi = {
   ...refMock(emit, vfxMock(emit), animMock(emit)),
   ...abilityMock(emit),
   ...uiMotionMock(emit),
+  // Model Lab (mockModel.ts): procedural block models (no Lune in the browser); ?model=empty|nolune.
+  ...modelMock(emit),
   // Studio check (mockStudio.ts): fake Forge Bridge + SVG Studio frames; ?studio=ready|offline|noplugin|outdated|nocapture.
   ...studioMock(emit),
   // Principle priorities (mockPrinciples.ts): weights learned from a seeded rating log.
@@ -966,7 +969,7 @@ const api: HarnessApi = {
   }
 }
 
-let appSettings: AppSettings = { serveAllPlaces: false, autoRoute: true, confirmFileDelete: true, confirmStudioDelete: true }
+let appSettings: AppSettings = { serveAllPlaces: false, autoRoute: true, confirmFileDelete: true, confirmStudioDelete: true, lunePath: '' }
 
 // A new file from the create flow shows up in the tree and the scripts list, like the dev watcher's
 // sourcemap refresh would do.

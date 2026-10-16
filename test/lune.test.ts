@@ -29,6 +29,7 @@ import {
   type RunSummary
 } from '../src/main/services/tests/index.ts'
 import { write } from './fixture.ts'
+import { luneHint } from '../src/main/services/tests/lune.ts'
 
 const FIXTURE = resolve(import.meta.dirname, 'fixtures', 'lune-project')
 const roots: string[] = []
@@ -239,5 +240,24 @@ test('finds lune in rokit bin and reports how to install it when missing', async
   } finally {
     process.env.PATH = savedPath
     process.env.HOME = savedHome
+  }
+})
+
+test('the no-Lune hint says what to run for this project', () => {
+  const pinned = mkdtempSync(join(tmpdir(), 'forge-lune-hint-'))
+  const unpinned = mkdtempSync(join(tmpdir(), 'forge-lune-hint-'))
+  try {
+    write(pinned, 'rokit.toml', '[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\nlune = "lune-org/lune@0.11.0"\n')
+    write(unpinned, 'rokit.toml', '[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\n')
+    const a = luneHint(pinned)
+    assert.match(a, /run `rokit install` in the project folder/)
+    assert.doesNotMatch(a, /rokit add/)
+    const b = luneHint(unpinned)
+    assert.match(b, /`rokit add lune-org\/lune`.*then run `rokit install`/)
+    for (const h of [a, b, luneHint(null), INSTALL_HINT]) assert.match(h, /Lune path in Settings > Toolchain/)
+    assert.equal(luneHint(null), INSTALL_HINT)
+  } finally {
+    rmSync(pinned, { recursive: true, force: true })
+    rmSync(unpinned, { recursive: true, force: true })
   }
 })

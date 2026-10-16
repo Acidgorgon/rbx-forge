@@ -78,6 +78,9 @@ const methods = [
   'uiMotionStatus', 'uiMotionList', 'uiMotionGet', 'uiMotionSave', 'uiMotionDelete', 'uiMotionRate', 'uiMotionComponents',
   'uiMotionImportFigmaDoc', 'uiMotionImportFigmaUrl', 'uiMotionFigmaToken', 'uiMotionSetFigmaToken', 'uiMotionClearFigmaToken',
   'uiMotionTestFigmaToken', 'uiMotionLabStory', 'uiMotionCompose', 'uiMotionCritique', 'uiMotionExport', 'uiMotionSnap', 'uiMotionFile',
+  // Model Lab (BlockyKit build scripts, Lune preview, critic rounds, Build in Studio)
+  'modelStatus', 'modelList', 'modelLoad', 'modelRun', 'modelGenerate', 'modelFromTemplate', 'modelSave', 'modelRename', 'modelDelete',
+  'modelCritique', 'modelSetSettings', 'modelFile', 'modelSaveThumb', 'modelBuildInStudio',
   // Studio check (Forge Bridge plugin: play in Roblox Studio, capture the key beats)
   'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile', 'studioPlaces', 'studioSetTarget',
   // Video references (VFX Lab + Animation Lab: "make it like this")

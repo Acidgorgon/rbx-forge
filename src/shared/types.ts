@@ -35,6 +35,8 @@ import type { AbilityApi, AbilityEvents } from './ability/api.ts'
 export type * from './ability/api.ts'
 import type { UiMotionApi, UiMotionEvents } from './uiMotionTypes.ts'
 export type * from './uiMotionTypes.ts'
+import type { ModelApi, ModelEvents } from './model/types.ts'
+export type * from './model/types.ts'
 import type { StudioApi, StudioEvents } from './studio/types.ts'
 export type * from './studio/types.ts'
 import type { RefApi, RefEvents } from './videoref/api.ts'
@@ -223,6 +225,9 @@ export interface AppSettings {
   // that would lose unsaved editor changes are confirmed regardless.
   confirmFileDelete: boolean
   confirmStudioDelete: boolean
+  // An explicit lune binary for tests, stories and lab previews (settings key tests.lunePath);
+  // '' = find it through rokit / PATH.
+  lunePath: string
 }
 
 export interface PlacesChanged {
@@ -542,7 +547,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents, ModelEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -570,7 +575,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi, AccountsApi, EditorAssistApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi, AccountsApi, EditorAssistApi, ModelApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

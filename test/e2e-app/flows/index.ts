@@ -8,9 +8,10 @@ import { pageFlows } from './pages.ts'
 import { labFlows } from './labs.ts'
 import { studioFlows, syncFlows } from './sync.ts'
 import { aiFlows } from './ai.ts'
+import { modelAiFlows, modelFlows } from './model.ts'
 import { providerQolFlows, qolFlows, webglOffFlows } from './qol.ts'
 import type { Flow } from './types.ts'
 
 export type { Flow, FlowCtx } from './types.ts'
 
-export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...editorGroupFlows, ...syncFlows, ...labFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...aiFlows, ...providerQolFlows, ...webglOffFlows]
+export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...editorGroupFlows, ...syncFlows, ...labFlows, ...modelFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...aiFlows, ...modelAiFlows, ...providerQolFlows, ...webglOffFlows]

@@ -77,6 +77,7 @@ export function ActivityBar() {
     { icon: 'bolt', label: 'Ability Composer', page: 'ability' },
     { icon: 'thumbnail', label: 'Thumbnail Lab', page: 'thumbs' },
     { icon: 'tap', label: 'UI Motion Lab', page: 'uimotion' },
+    { icon: 'cube', label: 'Model Lab', page: 'model' },
     { icon: 'monitor', label: 'UI Preview (stories)', page: 'uipreview' },
     { icon: 'memory', label: 'Memory & skills', page: 'memory' },
     { icon: 'gear', label: 'Settings', keys: 'mod+comma', page: 'settings' }

@@ -402,7 +402,7 @@ export const providerQolFlows: Flow[] = [
 export const webglOffFlows: Flow[] = [
   {
     name: 'webgl-off',
-    title: 'Without WebGL, the VFX / Animation / Ability previews show "3D preview needs WebGL"',
+    title: 'Without WebGL, the VFX / Animation / Ability / Model Lab previews show "3D preview needs WebGL"',
     timeoutMs: 120_000,
     // three.js logs the failed context itself; the in-preview message is what this flow checks.
     allowErrors: [/WebGL|THREE\.WebGLRenderer|webgl/i],
@@ -427,6 +427,16 @@ export const webglOffFlows: Flow[] = [
         check(/3D preview needs WebGL/.test(text), `${label}: preview message is "${text.slice(0, 120)}"`)
         seen.push(`${label}: ${text.slice(0, 70)}`)
       }
+      // Model Lab: a model from the template opens its (WebGL-less) preview.
+      await openPage(page, 'Model Lab')
+      await page.locator(`${CENTER} [data-testid="model-from-template"]`).click()
+      const modelMsg = page.locator(`${CENTER} [data-testid="model-detail"] .vfx-canvas-err`).first()
+      await modelMsg.waitFor({ state: 'visible', timeout: 30_000 }).catch(() => {
+        throw new Error('Model Lab: no in-preview WebGL message')
+      })
+      const modelText = (await modelMsg.innerText()).replace(/\s+/g, ' ')
+      check(/3D preview needs WebGL/.test(modelText), `Model Lab: preview message is "${modelText.slice(0, 120)}"`)
+      seen.push(`Model Lab: ${modelText.slice(0, 70)}`)
       note(seen.join(' | '))
     }
   }

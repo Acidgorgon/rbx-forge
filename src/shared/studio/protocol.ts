@@ -62,7 +62,9 @@ export interface BridgeJob {
   version: number
   // snapshot (Thumbnail Lab): no stage, no camera change; capture the user's current viewport.
   // delete (plugin v7): the Game tab's user-confirmed "Delete in Studio" of `target`; no stage.
-  kind: 'vfx' | 'anim' | 'ability' | 'snapshot' | 'delete'
+  // model (plugin v10): the Model Lab's "Build in Studio": requires `entry` (the build script, next
+  // to its BlockyKit module) and builds a Model in Workspace in front of the camera; no stage.
+  kind: 'vfx' | 'anim' | 'ability' | 'snapshot' | 'delete' | 'model'
   // realtime: play once at full speed, Forge records the window and picks the frames nearest each
   // beat. stepped: the plugin poses the rig at each beat (Animator:StepAnimations) and waits.
   mode: 'realtime' | 'stepped'
@@ -88,6 +90,8 @@ export interface BridgeJob {
   timeout: number
   // delete jobs: the Studio-only instance to remove (its class guards against a stale Game tab).
   target?: { path: string[]; className?: string }
+  // model jobs: an existing guard Model (path from game) whose gameplay pieces the build copies.
+  model?: { guard?: string[]; areaId?: string }
 }
 
 export type BridgeEvent =

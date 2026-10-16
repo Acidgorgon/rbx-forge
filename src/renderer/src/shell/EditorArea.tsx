@@ -27,13 +27,14 @@ import { ThumbLabPage } from '../pages/thumbs/ThumbLabPage'
 import { AnimLabPage } from '../pages/anim/AnimLabPage'
 import { AbilityPage } from '../pages/ability/AbilityPage'
 import { UiMotionLabPage } from '../pages/uimotion/UiMotionLabPage'
+import { ModelLabPage } from '../pages/model/ModelLabPage'
 import { UiPreviewPage } from '../pages/uipreview/UiPreviewPage'
 import { MemoryPage } from '../pages/memory/MemoryPage'
 import { GroupChatsPage } from '../assistant/GroupChatsPage'
 import { ConflictPage } from '../pages/ConflictPage'
 import { TranscriptPage } from '../pages/TranscriptPage'
 
-const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', art: 'image', vfx: 'sparkle', anim: 'figure', ability: 'bolt', thumbs: 'thumbnail', uimotion: 'tap', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', transcript: 'bot' }
+const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', art: 'image', vfx: 'sparkle', anim: 'figure', ability: 'bolt', thumbs: 'thumbnail', uimotion: 'tap', model: 'cube', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', transcript: 'bot' }
 
 function TabGlyph({ tab }: { tab: Tab }) {
   if (tab.kind === 'file' && tab.path) {
@@ -459,6 +460,8 @@ function pageFor(tab: Tab): ReactNode {
       return <ThumbLabPage />
     case 'uimotion':
       return <UiMotionLabPage />
+    case 'model':
+      return <ModelLabPage />
     case 'uipreview':
       return <UiPreviewPage />
     case 'memory':

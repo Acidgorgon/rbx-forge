@@ -209,6 +209,34 @@ function GitRow({ git, onCheck }: { git: ToolchainStatus['git']; onCheck: () => 
 
 // ---------------------------------------------------------------- Settings > Toolchain
 
+// Settings > Toolchain > Lune path: an explicit lune binary for tests, UI Preview stories and the
+// labs' Lune previews (Model Lab, VFX timelines), when it is not on rokit / PATH.
+function LunePathRow() {
+  const { state, actions } = useStore()
+  const saved = state.appSettings?.lunePath ?? ''
+  const [path, setPath] = useState(saved)
+  useEffect(() => setPath(saved), [saved])
+  const save = () => {
+    if (path.trim() === saved) return
+    void actions.setAppSettings({ lunePath: path.trim() }).then(() => actions.toast({ text: path.trim() ? 'Lune path saved' : 'Lune is found through rokit / PATH again', kind: 'ok', ms: 2400 }))
+  }
+  return (
+    <div className="row tc-lune">
+      <span className="set-title">Lune path</span>
+      <input
+        className="input mono grow"
+        value={path}
+        onChange={(e) => setPath(e.target.value)}
+        onBlur={save}
+        onKeyDown={(e) => e.key === 'Enter' && save()}
+        placeholder="found through rokit / PATH (or e.g. ~/.rokit/bin/lune)"
+        aria-label="Lune path"
+        spellCheck={false}
+      />
+    </div>
+  )
+}
+
 export function ToolchainSection() {
   const { actions } = useStore()
   const tc = useToolchain()
@@ -253,6 +281,7 @@ export function ToolchainSection() {
         ))}
         <GitRow git={s.git} onCheck={() => void tc.refresh()} />
       </div>
+      <LunePathRow />
       <div className="row tc-buttons">
         {busy ? (
           <>

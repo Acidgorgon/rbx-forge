@@ -10,7 +10,7 @@ import { SyncEngine } from '../src/main/services/sync/engine.ts'
 import { loadPlaces, placeFor } from '../src/main/services/sync/mapping.ts'
 import { SyncService } from '../src/main/services/sync/service.ts'
 import { syncSummary } from '../src/main/services/sync/wire.ts'
-import { PLUGIN_VERSION } from '../src/shared/studio/plugin.ts'
+import { PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../src/shared/studio/plugin.ts'
 
 const dirs: string[] = []
 after(() => {
@@ -135,7 +135,9 @@ test('notice: a place the project does not list (servePlaceIds) says so; an old 
   assert.equal(status.places[0].waitReason, 'unlinked')
 
   studio.placeId = 111
-  studio.pluginVersion = PLUGIN_VERSION - 1
+  // A plugin older than the sync gate (the gate can be older than the current plugin).
+  const OLD = SYNC_GATE_PLUGIN_VERSION - 1
+  studio.pluginVersion = OLD
   const ok = await service.handler.config({ placeId: 111, gameId: 5, place: 'Other' })
   assert.equal(ok.enabled, true)
   await service.handler.snapshot({ session: ok.sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: [{ id: '1', path: ['ReplicatedStorage', 'Shared'], className: 'Folder' }, { id: '2', path: ['StarterPlayer', 'StarterPlayerScripts', 'Client'], className: 'Folder' }] })
@@ -144,10 +146,13 @@ test('notice: a place the project does not list (servePlaceIds) says so; an old 
   // rojo serve: restart Studio.
   assert.equal(after.notice?.action, 'restart-studio')
   assert.equal(after.notice?.level, 'warn')
-  assert.match(after.notice!.text, new RegExp(`Restart Studio to update the Forge Bridge plugin \\(v${PLUGIN_VERSION - 1} → v${PLUGIN_VERSION}\\)`))
+  assert.match(after.notice!.text, new RegExp(`Restart Studio to update the Forge Bridge plugin \\(v${OLD} → v${PLUGIN_VERSION}\\)`))
   assert.equal(after.places[0].gate, 'waiting')
   assert.equal(after.places[0].waitReason, 'plugin')
   assert.equal(service.gateFor('default.project.json').gate, 'waiting')
+  // A plugin at the sync gate (older than the current one) clears it too.
+  studio.pluginVersion = SYNC_GATE_PLUGIN_VERSION
+  assert.equal(service.gateFor('default.project.json').gate, 'clear')
   // Restarted Studio: the current plugin's check clears it.
   studio.pluginVersion = PLUGIN_VERSION
   assert.equal(service.gateFor('default.project.json').gate, 'clear')

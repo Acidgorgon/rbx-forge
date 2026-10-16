@@ -68,6 +68,13 @@ export const LAB_HANDLERS: Record<LabId, { runs: Record<string, number | 'result
       uiMotionRate: (a) => (a[1] === 'up' ? { id: String(a[0]), kept: true } : a[1] === 'down' ? { id: String(a[0]), kept: false } : null),
       uiMotionExport: (a) => ({ id: String(a[0]), kept: true })
     }
+  },
+  // Model Lab: Generate (AI script + critic rounds) and one-round Critique; built in Studio = kept.
+  model: {
+    runs: { modelGenerate: 'result', modelCritique: 0 },
+    kept: {
+      modelBuildInStudio: (a) => ({ id: String(a[0]), kept: true })
+    }
   }
 }
 

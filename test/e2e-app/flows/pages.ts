@@ -24,6 +24,7 @@ export const PAGES: PageSpec[] = [
   { label: 'Ability Composer', expect: /Ability/i, narrow: true },
   { label: 'Thumbnail Lab', expect: /Thumbnail/i, narrow: true },
   { label: 'UI Motion Lab', expect: /Motion/i, narrow: true },
+  { label: 'Model Lab', expect: /Model Lab/i, narrow: true },
   { label: 'UI Preview (stories)', expect: /stor/i, narrow: true },
   { label: 'Memory & skills', expect: /Memory/i, narrow: true },
   { label: 'Settings', expect: /Settings/i, narrow: true }

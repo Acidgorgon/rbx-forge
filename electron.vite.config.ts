@@ -1,4 +1,4 @@
-import { readFileSync } from 'node:fs'
+import { readdirSync, readFileSync } from 'node:fs'
 import { resolve } from 'node:path'
 import { defineConfig, externalizeDepsPlugin } from 'electron-vite'
 import type { Plugin } from 'vite'
@@ -32,9 +32,23 @@ function forgeBridgeTemplate(): Plugin {
   }
 }
 
+// Model Lab files next to the main bundle (out/main/model/...): BlockyKit, the Lune preview sandbox
+// and the template scripts, so a quick update ships kit fixes too (services/model/lune.ts reads this
+// copy first; resources/lune is the installer's fallback).
+function modelLabAssets(): Plugin {
+  return {
+    name: 'rbx-forge-model-lab',
+    generateBundle() {
+      for (const f of ['BlockyKit.luau', 'model_build.luau']) this.emitFile({ type: 'asset', fileName: `model/${f}`, source: readFileSync(resolve('resources/lune', f), 'utf8') })
+      for (const f of readdirSync(resolve('resources/lune/model_templates')).filter((n) => n.endsWith('.luau')))
+        this.emitFile({ type: 'asset', fileName: `model/model_templates/${f}`, source: readFileSync(resolve('resources/lune/model_templates', f), 'utf8') })
+    }
+  }
+}
+
 export default defineConfig({
   main: {
-    plugins: [externalizeDepsPlugin(), forgeBridgeTemplate()],
+    plugins: [externalizeDepsPlugin(), forgeBridgeTemplate(), modelLabAssets()],
     resolve: { alias: { '@shared': resolve('src/shared') } },
     define: { __FORGE_SHELL__: JSON.stringify(shellInfo) },
     build: {

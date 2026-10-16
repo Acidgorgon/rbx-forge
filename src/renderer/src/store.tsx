@@ -44,7 +44,7 @@ import type { GroupsState } from '@shared/editorGroups'
 
 export type SideView = 'explorer' | 'scripts' | 'events' | 'sync' | 'tests' | 'team'
 export type BottomTab = 'output' | 'problems' | 'terminal' | 'shell'
-export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics' | 'memory' | 'groups' | 'art' | 'uipreview' | 'vfx' | 'anim' | 'ability' | 'thumbs' | 'uimotion'
+export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics' | 'memory' | 'groups' | 'art' | 'uipreview' | 'vfx' | 'anim' | 'ability' | 'thumbs' | 'uimotion' | 'model'
 export type TabKind = PageKind | 'file' | 'conflict' | 'transcript'
 
 export interface Tab {
@@ -191,7 +191,7 @@ const labErrorSeen = new Map<string, number>()
 // Studio blocking the Forge Bridge plugin's script writes (Script Injection off), from any Studio job:
 // one toast with the steps instead of one per failed job.
 const studioInjectionToast = scriptInjectionToasts()
-const LAB_NAMES: Record<string, string> = { vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab' }
+const LAB_NAMES: Record<string, string> = { vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab', model: 'Model Lab' }
 const DEFAULT_LAYOUT: Layout = { sideOpen: true, sideView: 'explorer', sideW: 268, bottomOpen: true, bottomH: 214, bottomTab: 'output', rightOpen: true, rightW: 360, sideAuto: false }
 
 function loadLayout(): Layout {
@@ -657,7 +657,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await self.openFile(path)
       },
       openPage(kind) {
-        const titles: Record<PageKind, string> = { forge: 'Forge', settings: 'Settings', packages: 'Packages', release: 'Release', analytics: 'Analytics', memory: 'Memory', groups: 'Group chats', art: 'Art', uipreview: 'UI Preview', vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab' }
+        const titles: Record<PageKind, string> = { forge: 'Forge', settings: 'Settings', packages: 'Packages', release: 'Release', analytics: 'Analytics', memory: 'Memory', groups: 'Group chats', art: 'Art', uipreview: 'UI Preview', vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab', model: 'Model Lab' }
         dispatch({ type: 'openTab', tab: { id: kind, kind, title: titles[kind] } })
       },
       openConflict(path) {

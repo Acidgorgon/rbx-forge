@@ -101,7 +101,7 @@ function StoryList({ list, file, onPick, onRefresh }: { list: UiStoryList | null
           )
         })}
       </div>
-      {list && !list.luneAvailable && <div className="uip-hint note warn-text">{list.hint ?? 'Lune was not found. Set Settings > Tests > Lune path to run stories.'}</div>}
+      {list && !list.luneAvailable && <div className="uip-hint note warn-text">{list.hint ?? 'Lune was not found. Run `rokit install` in the project, or set Settings > Toolchain > Lune path, to run stories.'}</div>}
     </aside>
   )
 }

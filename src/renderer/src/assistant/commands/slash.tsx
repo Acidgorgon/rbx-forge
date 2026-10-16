@@ -9,6 +9,7 @@ import type { ChatMode } from '@shared/chatModes'
 import { useStore } from '../../store'
 import { useMenu, type MenuEntry } from '../../components/Menu'
 import { Markdown } from '../../components/Markdown'
+import { Icon } from '../../components/Icons'
 import { ago, errorText } from '../../lib/format'
 import './modes.css'
 
@@ -59,7 +60,13 @@ export function useSlashRunner(opts: { anchor: () => HTMLElement | null; mode: C
       if (a.kind === 'pickChat') {
         const entries: MenuEntry[] = [{ header: 'Resume a chat' }]
         if (!a.chats.length) entries.push({ label: 'No other chats yet', disabled: true })
-        for (const c of a.chats) entries.push({ label: c.title || 'Untitled', sub: `${c.model}${c.lastAt ? ` · ${ago(c.lastAt)}` : ''}`, onSelect: () => void actions.selectChat(c.id) })
+        for (const c of a.chats)
+          entries.push({
+            label: c.title || 'Untitled',
+            sub: `${c.model}${c.lastAt ? ` · ${ago(c.lastAt)}` : ''}`,
+            onSelect: () => void actions.selectChat(c.id),
+            action: { icon: <Icon name="trash" size={13} />, label: `Delete “${c.title || 'Untitled'}”`, onSelect: () => actions.askDeleteChats([c.id]) }
+          })
         return menu.openAbove(el, entries, { minWidth: 320 })
       }
       if (a.kind === 'pickCheckpoint') {

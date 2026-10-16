@@ -894,6 +894,14 @@ const api: HarnessApi = {
     running.delete(sessionId)
     emit('chat:busy', { sessionId, busy: false })
   },
+  async deleteChats(sessionIds) {
+    for (const id of sessionIds) {
+      running.delete(id)
+      const i = chats.findIndex((c) => c.id === id)
+      if (i >= 0) chats.splice(i, 1)
+      delete chatMessages[id]
+    }
+  },
   ...providers.api,
   async setChatModel(sessionId, provider, model) {
     const c = chats.find((x) => x.id === sessionId)

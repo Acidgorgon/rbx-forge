@@ -553,6 +553,10 @@ export interface Actions {
   // Chat
   selectChat(id: string): Promise<void>
   newChat(): Promise<void>
+  // Asks in the app's confirm dialog, then deletes the chats (deleteChats).
+  askDeleteChats(ids: string[]): void
+  // Deletes chats for good. When the active chat goes, its neighbour in the list opens (or a fresh chat).
+  deleteChats(ids: string[]): Promise<void>
   // opts.mode: this message only in that chat mode (/ask, /plan).
   send(text: string, images?: ChatImage[], opts?: { mode?: ChatMode }): Promise<void>
   // The active chat's id, creating the chat first when there is none (slash commands).
@@ -785,6 +789,48 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       async newChat() {
         dispatch({ type: 'set', patch: { activeChatId: null, pendingModel: null, pendingEffort: null, usage: { ...stateRef.current.usage, chat: null } } })
+      },
+      askDeleteChats(ids) {
+        const list = stateRef.current.chats.filter((c) => ids.includes(c.id))
+        if (!list.length) return
+        const one = list.length === 1
+        const running = list.filter((c) => stateRef.current.busy[c.id]).length
+        self.openDialog({
+          kind: 'confirm',
+          title: one ? `Delete “${list[0].title || 'Untitled'}”?` : `Delete ${list.length} chats?`,
+          body: `${one ? 'The conversation, its images and its /rewind checkpoints are' : 'Their conversations, images and /rewind checkpoints are'} deleted for good. Project files stay as they are.${!running ? '' : one ? ' It is still working; the turn is stopped first.' : ` ${running} of them ${running === 1 ? 'is' : 'are'} still working; those turns are stopped first.`}`,
+          confirm: one ? 'Delete chat' : `Delete ${list.length} chats`,
+          danger: true,
+          ...(one ? {} : { list: list.slice(0, 12).map((c) => c.title || 'Untitled').concat(list.length > 12 ? [`…and ${list.length - 12} more`] : []) }),
+          run: () => void self.deleteChats(list.map((c) => c.id))
+        })
+      },
+      async deleteChats(ids) {
+        if (!ids.length) return
+        const before = stateRef.current.chats
+        try {
+          await h.deleteChats(ids)
+        } catch (e) {
+          toast({ text: ids.length === 1 ? 'Could not delete the chat' : 'Could not delete the chats', detail: errorText(e), kind: 'err' })
+          return
+        }
+        const gone = new Set(ids)
+        const cur = stateRef.current
+        const messages = { ...cur.messages }
+        const busy = { ...cur.busy }
+        for (const id of ids) {
+          delete messages[id]
+          delete busy[id]
+        }
+        dispatch({ type: 'set', patch: { chats: cur.chats.filter((c) => !gone.has(c.id)), messages, busy, ...(cur.streamingSession && gone.has(cur.streamingSession) ? { streamingSession: null } : {}) } })
+        const active = cur.activeChatId
+        if (active && gone.has(active)) {
+          const at = before.findIndex((c) => c.id === active)
+          const next = before.slice(at + 1).find((c) => !gone.has(c.id)) ?? before.slice(0, Math.max(0, at)).reverse().find((c) => !gone.has(c.id))
+          if (next) await self.selectChat(next.id)
+          else await self.newChat()
+        }
+        toast({ text: ids.length === 1 ? 'Chat deleted' : `${ids.length} chats deleted`, kind: 'ok' })
       },
       ensureChat: () => ensureChat(),
       async send(text, images = [], opts = {}) {

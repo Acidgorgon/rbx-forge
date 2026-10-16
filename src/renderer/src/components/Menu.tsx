@@ -18,6 +18,9 @@ export interface MenuItem {
   checked?: boolean
   onSelect?: () => void
   submenu?: MenuEntry[]
+  // Small icon button at the item's right end, shown on hover or highlight (delete a thread from the
+  // History menu). Delete / Backspace on the highlighted item runs it too.
+  action?: { icon: ReactNode; label: string; onSelect: () => void }
 }
 
 export type MenuEntry = MenuItem | 'separator' | { header: string; mono?: boolean }
@@ -121,6 +124,15 @@ function MenuList({ x, y, items, onClose, direction = 'down', minWidth, openSub,
         setHl(next)
         return
       }
+      if ((e.key === 'Delete' || e.key === 'Backspace') && hl >= 0) {
+        const it = items[hl]
+        if (isItem(it) && it.action && !it.disabled) {
+          e.preventDefault()
+          onClose()
+          it.action.onSelect()
+        }
+        return
+      }
       if (e.key === 'ArrowLeft' && onBack) {
         e.preventDefault()
         onBack()
@@ -195,6 +207,21 @@ function MenuList({ x, y, items, onClose, direction = 'down', minWidth, openSub,
                 <span className="mk">
                   {it.hint ?? it.accel?.toUpperCase()}
                   {it.submenu && <Icon name="chev" size={12} />}
+                </span>
+              )}
+              {it.action && (
+                <span
+                  role="button"
+                  className="mact"
+                  aria-label={it.action.label}
+                  title={it.action.label}
+                  onClick={(e) => {
+                    e.stopPropagation()
+                    onClose()
+                    it.action!.onSelect()
+                  }}
+                >
+                  {it.action.icon}
                 </span>
               )}
             </button>

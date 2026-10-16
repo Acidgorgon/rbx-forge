@@ -7,7 +7,7 @@
 // markers into message images (extractImageMarkers), on every provider path.
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { basename, extname, join } from 'node:path'
 import type { ChatImage, ChatImageInput } from '@shared/types'
 import { IMAGE_MIMES, type ImageMime } from '../../shared/modelCaps.ts'
@@ -163,6 +163,13 @@ export class ChatImageStore {
     const r = await this.base64(id)
     if (!r) throw new Error('image not found')
     return `data:${r.mime};base64,${r.base64}`
+  }
+
+  // Deletes a stored image (its chat was deleted). Unknown or malformed ids are ignored.
+  async remove(id: string): Promise<void> {
+    if (!ID.test(id)) return
+    this.meta.delete(id)
+    for (const mime of IMAGE_MIMES) await rm(this.file(id, mime), { force: true }).catch(() => undefined)
   }
 
   // Known reference without touching the disk (images added in this process).

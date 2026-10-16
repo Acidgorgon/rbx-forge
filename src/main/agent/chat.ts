@@ -567,6 +567,8 @@ export class ChatManager {
       start = () => this.runOpenAi(chat, text, abort, ep.baseUrl, ep.headers, provider, modelId, rules, effort, sendImages)
     }
 
+    // Deleted while the turn was being set up.
+    if (!this.alive(chat)) return
     this.running.set(id, abort)
     this.turnModes.set(id, mode)
     this.ctx.emit('chat:busy', { sessionId: id, busy: true })
@@ -746,6 +748,47 @@ export class ChatManager {
 
   stop(id: string): void {
     this.running.get(id)?.abort()
+  }
+
+  // Deletes chats. A running turn is stopped first; whatever it still produces is dropped (push and
+  // updated skip chats that are gone). The images only these chats used and their /rewind
+  // checkpoints go too. Usage stays in the ledger: daily totals and spending caps still count it.
+  // Unknown ids are ignored. The Codex CLI and the Agent SDK keep their own session files; Forge
+  // does not touch those.
+  async delete(ids: string[]): Promise<void> {
+    const gone = this.chats.filter((c) => ids.includes(c.id))
+    if (!gone.length) return
+    this.chats = this.chats.filter((c) => !gone.includes(c))
+    for (const chat of gone) {
+      this.running.get(chat.id)?.abort()
+      // Diff cards still waiting get "stopped" (nothing applies a late Accept).
+      this.modes.expireWaiting(chat.id)
+      this.turnEnd.delete(chat.id)
+      this.deps.meter?.setLive(chat.id, null)
+    }
+    this.flush()
+    await this.forgetOwned(gone)
+  }
+
+  private async forgetOwned(gone: StoredChat[]): Promise<void> {
+    const imagesOf = (cs: StoredChat[]) => new Set(cs.flatMap((c) => c.messages.flatMap((m) => (m.images ?? []).map((i) => i.id))))
+    const kept = imagesOf(this.chats)
+    if (hasChatImageStore()) {
+      for (const id of imagesOf(gone)) if (!kept.has(id)) await chatImageStore().remove(id).catch(() => undefined)
+    }
+    // Checkpoints live in the open project's shadow repo; refs of another project's chat are just
+    // not found there.
+    const root = this.ctx.project()?.root
+    const commits = gone.flatMap((c) => (c.checkpoints ?? []).map((cp) => cp.commit))
+    if (root && commits.length && this.deps.checkpoints !== null) {
+      await (this.deps.checkpoints ?? ((r: string) => new Checkpoints(r)))(root)
+        .drop(commits)
+        .catch((e) => this.ctx.log({ service: 'agent', stream: 'stderr', text: `checkpoints of a deleted chat not dropped: ${(e as Error).message}` }))
+    }
+  }
+
+  private alive(chat: StoredChat): boolean {
+    return this.chats.includes(chat)
   }
 
   dispose(): void {
@@ -1144,6 +1187,7 @@ export class ChatManager {
   }
 
   private updated(chat: StoredChat): void {
+    if (!this.alive(chat)) return
     this.ctx.emit('chat:updated', this.session(chat))
     this.save()
   }
@@ -1340,6 +1384,7 @@ export class ChatManager {
 
   // Runs group work (direct answers, roundtables) under the chat's busy flag.
   private runExclusive(chat: StoredChat, abort: AbortController, fn: () => Promise<void>): void {
+    if (!this.alive(chat)) return
     this.running.set(chat.id, abort)
     this.ctx.emit('chat:busy', { sessionId: chat.id, busy: true })
     void fn()
@@ -1457,6 +1502,8 @@ export class ChatManager {
 
   // Adds a message, or replaces one with the same id (streamed assistant text, tool results).
   private push(chat: StoredChat, m: ChatMessage): void {
+    // The chat was deleted while a turn still ran.
+    if (!this.alive(chat)) return
     // Images a tool produced arrive as forge-image markers in text: show them as message images.
     if (m.role !== 'user' && m.text.includes('forge-image://')) {
       const x = extractImageMarkers(m.text)

@@ -6,7 +6,7 @@ const methods = [
   'getServices', 'startService', 'stopService', 'restartService', 'getLogs',
   'getGitStatus', 'syncNow', 'initGit', 'getSyncSettings', 'setSyncSettings',
   'getStudioConflicts', 'resolveStudioConflict',
-  'listChats', 'newChat', 'getChat', 'sendChat', 'stopChat', 'hasApiKey', 'setApiKey',
+  'listChats', 'newChat', 'getChat', 'sendChat', 'stopChat', 'deleteChats', 'hasApiKey', 'setApiKey',
   'addGuest', 'removeGuest', 'setGuestTools', 'startRoundtable', 'planToChecklist',
   'getGroupSettings', 'setGroupSettings', 'applyPatchProposal', 'mergePatchProposal', 'dismissPatchProposal', 'saveBoard',
   'setChatEffort', 'getDefaultEffort', 'setDefaultEffort', 'addChatImage', 'getChatImage',

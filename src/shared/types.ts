@@ -618,6 +618,8 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   // images: ids from addChatImage.
   sendChat(sessionId: string, text: string, images?: string[]): Promise<void>
   stopChat(sessionId: string): Promise<void>
+  // Deletes chats for good: a running turn is stopped first; their images and /rewind checkpoints go too.
+  deleteChats(sessionIds: string[]): Promise<void>
   // Group chat (main/agent/groupChat.ts). Guests are read-only advisers; only the host edits.
   // Message text can also @mention a guest ("@sol what do you think?") to have it answer directly.
   addGuest(sessionId: string, choice: ModelChoice): Promise<ChatSession>

@@ -113,7 +113,7 @@ function NewGroupChat({ onCreated, onCancel }: { onCreated: (id: string) => void
 }
 
 function GroupList({ onOpen }: { onOpen: (id: string) => void }) {
-  const { state } = useStore()
+  const { state, actions } = useStore()
   const groups = useMemo(
     () =>
       state.chats
@@ -148,7 +148,16 @@ function GroupList({ onOpen }: { onOpen: (id: string) => void }) {
               const tokens = (c.usage ?? []).reduce((n, u) => n + u.input + u.output, 0)
               const busy = !!state.busy[c.id]
               return (
-                <button key={c.id} type="button" role="listitem" className={`gp-row${c.id === state.activeChatId ? ' on' : ''}`} onClick={() => onOpen(c.id)}>
+                <button
+                  key={c.id}
+                  type="button"
+                  role="listitem"
+                  className={`gp-row${c.id === state.activeChatId ? ' on' : ''}`}
+                  onClick={() => onOpen(c.id)}
+                  onKeyDown={(e) => {
+                    if (e.key === 'Delete') actions.askDeleteChats([c.id])
+                  }}
+                >
                   <span className="gp-row-title">
                     {busy ? <span className="lav-dot pulse" /> : <Icon name="round" size={13} />}
                     <span className="ellipsis">{c.title}</span>
@@ -164,6 +173,18 @@ function GroupList({ onOpen }: { onOpen: (id: string) => void }) {
                   <span className="gp-row-meta">
                     {tokens > 0 && <span>{fmtTokens(tokens)} tok</span>}
                     <span>{ago(at)}</span>
+                    <span
+                      role="button"
+                      className="gp-row-del"
+                      aria-label={`Delete “${c.title}”`}
+                      title="Delete this group chat (Del)"
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        actions.askDeleteChats([c.id])
+                      }}
+                    >
+                      <Icon name="trash" size={13} />
+                    </span>
                   </span>
                 </button>
               )
@@ -288,6 +309,9 @@ function RoundPanel({ chat }: { chat: ChatSession }) {
           <span className="gp-k grow">Guests can read project files</span>
           <input type="checkbox" className="switch" checked={chat.guestTools !== false} onChange={(e) => void actions.setGuestTools(e.target.checked)} aria-label="Guests can read project files" />
         </label>
+        {chat.guests?.some((g) => g.provider === 'codex') && (
+          <div className="note">Codex guests read with their own commands in the Codex CLI’s read-only sandbox. Off, they run in an empty scratch folder.</div>
+        )}
       </section>
 
       <BoardPanel chat={chat} />

@@ -594,6 +594,7 @@ export function registerAgentIpc(
     },
     getChatImage: (id: unknown) => chatImageStore().dataUrl(String(id ?? '')),
     stopChat: (id: string) => chats.stop(id),
+    deleteChats: (ids: unknown) => chats.delete((Array.isArray(ids) ? ids : [ids]).filter((x): x is string => typeof x === 'string')),
     // Group chat.
     addGuest: (id: string, c: unknown) => {
       const pick = choice(c)

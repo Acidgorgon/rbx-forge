@@ -14,8 +14,15 @@
 // one-paragraph project summary, the last K group messages, all clipped to a character budget),
 // a small output cap, and at most a few read-only tool turns (or none). The host learns what was
 // said outside its own turns through short notes prepended to its next prompt.
+//
+// Codex (ChatGPT plan) guests answer through the official Codex CLI: `codex exec --json` in its
+// read-only sandbox, never Forge's own tools. Each guest keeps its own Codex thread, so later calls
+// resume it (codex/chat.ts has the prompt and sandbox).
 
 import { randomUUID } from 'node:crypto'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { noProjectDir } from './noProjectDir.ts'
 import { z } from 'zod'
 import type { BoardItem, ChatImage, ChatMessage, GroupParticipant, GroupSettings, ModelChoice, ProviderId, Speaker } from '@shared/types'
@@ -39,6 +46,8 @@ import { anthropicPrompt, chatCompletionsContent, type ImagePayload } from './im
 import { supportsVision } from '../../shared/modelCaps.ts'
 import { spendBlock } from '../services/spend/gate.ts'
 import { defineTool, gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
+import { codexService, type CodexService } from './codex/service.ts'
+import { CODEX_GROUP_SANDBOX, codexGroupPrompt, codexMessage, staleThread } from './codex/chat.ts'
 
 // Read tools a guest may use, when guest tools are on. Never any of WRITE_TOOLS.
 // Group chat v2 adds git_diff, read_diagnostics (group/readTools.ts), service_logs and blink_check.
@@ -83,6 +92,9 @@ export interface Room {
   note(text: string): void
   // Images of the latest user message; guests that read images get them with an ask.
   images?: ChatImage[]
+  // Codex guests: the Codex thread each one continues (`codex exec resume`); unset = a new thread.
+  codexThread?(p: GroupParticipant): string | undefined
+  setCodexThread?(p: GroupParticipant, threadId: string | undefined): void
 }
 
 export interface GroupDeps {
@@ -97,6 +109,8 @@ export interface GroupDeps {
   rules?: () => Promise<string>
   // git + lint runners for git_diff / read_diagnostics (group/readTools.ts).
   groupIo?: GroupIo
+  // Codex CLI for Codex participants; default: the process-wide service.
+  codex?: () => CodexService
 }
 
 export interface ContextPackInput {
@@ -263,10 +277,15 @@ export class GroupChat {
     const people = [room.host, ...room.guests]
     const inRoom = resolveConsultModel(phrase, people, [], room.host)
     if (inRoom.kind === 'ok') return inRoom
-    // Codex runs only as a chat's own agent, never as a guest.
-    const all = (await this.available()).filter((c) => c.provider !== 'codex')
-    const r = resolveConsultModel(phrase, all, await this.known().catch(() => []), room.host)
-    if (r.kind === 'ok') return { kind: 'ok', choice: people.find((p) => sameModel(p, r.choice)) ?? r.choice }
+    // API models first; Codex (the same model ids on the ChatGPT plan) when none of them matches,
+    // so "ask sol" keeps going to OpenAI when both are set up and "ask codex" finds Codex.
+    const ready = await this.available()
+    let r = resolveConsultModel(phrase, ready.filter((c) => c.provider !== 'codex'), [], room.host)
+    if (r.kind !== 'ok' && r.kind !== 'ambiguous') r = resolveConsultModel(phrase, ready, await this.known().catch(() => []), room.host)
+    if (r.kind === 'ok') {
+      const choice = r.choice
+      return { kind: 'ok', choice: people.find((p) => sameModel(p, choice)) ?? choice }
+    }
     return inRoom.kind === 'ambiguous' ? inRoom : r
   }
 
@@ -277,7 +296,8 @@ export class GroupChat {
     if (existing) return existing
     const p = makeParticipant(choice, 'guest', [room.host.alias, ...room.guests.map((g) => g.alias)])
     room.addGuest(p)
-    room.push({ id: randomUUID(), role: 'system', text: `${p.label} joined the chat as a guest (@${p.alias}).`, at: Date.now(), agentId: 'main' })
+    const how = p.provider === 'codex' ? ` ${codexGuestNote(room.guestTools)}` : ''
+    room.push({ id: randomUUID(), role: 'system', text: `${p.label} joined the chat as a guest (@${p.alias}).${how}`, at: Date.now(), agentId: 'main' })
     return p
   }
 
@@ -370,7 +390,8 @@ export class GroupChat {
   async speakFull(room: Room, p: GroupParticipant, prompt: string, opts: SpeakOptions = {}): Promise<SpeakResult> {
     const speaker = speakerOf(p)
     // The app-wide spending cap: no guest / consult / roundtable / review call once it is reached.
-    const block = spendBlock()
+    // Codex runs on the ChatGPT plan (no API spend), like the Labs' Codex calls.
+    const block = p.provider === 'codex' ? null : spendBlock()
     if (block) {
       room.push({ id: randomUUID(), role: 'system', text: `${p.label}: ${block}`, at: Date.now(), agentId: 'main', speaker })
       return { text: '', tokens: 0, tools: [] }
@@ -406,6 +427,15 @@ export class GroupChat {
       const text = [...texts.values()].join('\n\n').trim()
       if (p.role === 'guest' && text && !opts.silent) this.proposePatch(room, speaker, text)
       return { text, tokens, ...(cost !== undefined ? { costUsd: cost } : {}), tools: used }
+    }
+
+    if (p.provider === 'codex') {
+      await this.speakCodex(room, p, prompt, { system, tools, persist: p.role === 'guest' && !opts.system, images: opts.images ?? [] }, emit, (u) => {
+        tokens += u.input + u.output
+        cost ??= 0
+        room.recordUsage(speaker, { ...u, costUsd: 0 })
+      })
+      return done()
     }
 
     if (p.provider === 'anthropic') {
@@ -486,6 +516,89 @@ export class GroupChat {
     })
     if (result.outcome === 'error') this.ctx.log({ service: 'agent', stream: 'stderr', text: `group chat ${p.label}: ${result.error}` })
     return done()
+  }
+
+  // One call on Codex (ChatGPT plan): `codex exec --json` in the CLI's read-only sandbox. With guest
+  // tools on it runs in the project root and reads with its own read-only commands (Forge's
+  // GUEST_TOOLS are not offered to the CLI); off, in an empty scratch folder. persist: a guest's
+  // own advice keeps its Codex thread, so the next call resumes it; calls with their own system
+  // prompt (cross-check review, the host's roundtable / consult turns) run ephemeral. No output-token
+  // cap: the CLI has no flag for one.
+  private async speakCodex(
+    room: Room,
+    p: GroupParticipant,
+    prompt: string,
+    o: { system: string; tools: boolean; persist: boolean; images: ChatImage[] },
+    emit: (m: ChatMessage) => void,
+    onUsage: (u: { input: number; output: number }) => void
+  ): Promise<void> {
+    const note = (text: string, extra: Partial<ChatMessage> = {}) => emit({ id: randomUUID(), role: 'system', text: `${p.label}: ${text}`, at: Date.now(), agentId: 'main', ...extra })
+    const codex = (this.deps.codex ?? codexService)()
+    const why = await codex.notReady()
+    if (why) return note(why, { settingsLink: 'codex' })
+    const root = this.ctx.project()?.root
+    let scratch: string | null = null
+    try {
+      if (!o.tools || !root) scratch = await mkdtemp(join(tmpdir(), 'forge-codex-guest-'))
+      const cwd = scratch ?? root!
+      // codex exec --image takes paths; a path with a comma cannot be passed.
+      const images: string[] = []
+      if (o.images.length && hasChatImageStore()) {
+        for (const i of o.images) {
+          const path = await chatImageStore()
+            .pathOf(i.id)
+            .catch(() => null)
+          if (path && !path.includes(',')) images.push(path)
+        }
+      }
+      let errorShown = false
+      const run = (resumeId: string | undefined) => {
+        const ids = new Map<string, string>()
+        const idOf = (key: string) => {
+          let id = ids.get(key)
+          if (!id) ids.set(key, (id = randomUUID()))
+          return id
+        }
+        return codex.exec({
+          cwd,
+          ...(root ? { root } : {}),
+          prompt: codexGroupPrompt({ system: o.system, prompt, fresh: !resumeId, projectFiles: !scratch }),
+          sandbox: CODEX_GROUP_SANDBOX,
+          model: p.model,
+          resumeId,
+          images,
+          ephemeral: !o.persist,
+          signal: room.signal,
+          onUpdate: (u) => {
+            const m = codexMessage(u, idOf)
+            if (m) emit(m)
+            else if (u.kind === 'thread') {
+              if (o.persist) room.setCodexThread?.(p, u.threadId)
+            } else if (u.kind === 'usage') onUsage({ input: u.usage.input, output: u.usage.output })
+            else if (u.kind === 'error' && !errorShown && !(resumeId && staleThread(u.message))) {
+              errorShown = true
+              note(u.message)
+            }
+          }
+        })
+      }
+      const resumeId = o.persist ? room.codexThread?.(p) : undefined
+      let r = await run(resumeId)
+      // The thread is gone (deleted, another machine): start a new one.
+      if (resumeId && r.error && staleThread(r.error) && !room.signal.aborted) {
+        room.setCodexThread?.(p, undefined)
+        r = await run(undefined)
+      }
+      if (r.aborted || room.signal.aborted) return
+      if (r.error) {
+        if (!errorShown) note(r.error)
+        this.ctx.log({ service: 'agent', stream: 'stderr', text: `group chat ${p.label} (Codex): ${r.error}` })
+      }
+    } catch (e) {
+      if (!room.signal.aborted) note((e as Error).message)
+    } finally {
+      if (scratch) await rm(scratch, { recursive: true, force: true }).catch(() => undefined)
+    }
   }
 
   // A guest's unified diff becomes a patch proposal card; only the host's write path applies it.
@@ -686,6 +799,13 @@ export class GroupChat {
       )
     ]
   }
+}
+
+// What a Codex guest can and cannot do, for its join notice.
+function codexGuestNote(guestTools: boolean): string {
+  return guestTools
+    ? "It answers through the Codex CLI on your ChatGPT plan, in the CLI's read-only sandbox: it reads the project with its own read-only commands and cannot edit files."
+    : "It answers through the Codex CLI on your ChatGPT plan, in the CLI's read-only sandbox. Guest file access is off, so it runs in an empty scratch folder and is told not to read project files (the sandbox blocks writes, not reads)."
 }
 
 // Output token cap per provider's Chat Completions dialect.

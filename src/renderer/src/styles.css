@@ -463,6 +463,9 @@ button.badge-o:hover:not(:disabled) { border-color: var(--fg-faint); color: var(
 .mi .mic { width: 16px; display: grid; place-items: center; color: var(--fg-muted); flex: none; }
 .mi.checked .mic { color: var(--ok); }
 .mi.tall { height: 40px; }
+.mi .mact { width: 22px; height: 22px; margin-left: auto; display: grid; place-items: center; flex: none; border-radius: var(--r-sm); color: var(--fg-faint); opacity: 0; transition: opacity var(--dur-fast); }
+.mi:hover .mact, .mi.hl .mact, .mi .mact:focus-visible { opacity: 1; }
+.mi .mact:hover { color: var(--err); background: var(--err-fill); }
 .mi .two { display: flex; flex-direction: column; line-height: 1.35; min-width: 0; flex: 1; }
 .mi .two small { color: var(--fg-faint); font: 10.5px var(--font-mono); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .msep { height: 1px; background: var(--line); margin: 4px 6px; }

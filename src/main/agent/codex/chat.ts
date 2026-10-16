@@ -1,9 +1,11 @@
-// Prompts and sandbox for chat turns on Codex. No electron imports.
+// Prompts and sandbox for chat turns (and group-chat calls) on Codex. No electron imports.
 
 import type { ChatMode } from '../../../shared/chatModes.ts'
 import { isReadOnlyMode } from '../../../shared/chatModes.ts'
 import { modeNote } from '../modes.ts'
+import type { ChatMessage } from '@shared/types'
 import type { CodexSandbox } from './args.ts'
+import type { CodexUpdate } from './events.ts'
 
 // Ask / Plan: read-only (Codex can read and search, never write). Edit / Auto: workspace-write, the
 // safest sandbox that still lets Codex edit the project: writes only inside the project root (plus
@@ -46,4 +48,34 @@ export function codexPrompt(i: CodexPromptInput): string {
   if (i.transcript.trim()) parts.push(`Earlier in this conversation:\n${i.transcript.trim()}`)
   parts.push(`New message:\n${i.text}`)
   return parts.join('\n\n')
+}
+
+// `codex exec resume` with a thread id the CLI no longer has.
+export function staleThread(error: string): boolean {
+  return /(session|thread|conversation|rollout)[^.]*(not found|no such|does not exist|missing)|no (saved )?(session|thread|rollout)/i.test(error)
+}
+
+// A Codex text / tool / notice update as a chat message (the same id while it streams).
+export function codexMessage(u: CodexUpdate, idOf: (key: string) => string): ChatMessage | null {
+  if (u.kind === 'text') return { id: idOf(u.key), role: 'assistant', text: u.text, at: Date.now(), agentId: 'main' }
+  if (u.kind === 'tool') return { id: idOf(u.key), role: 'tool', text: u.text, tool: { name: u.name, input: u.input }, at: Date.now(), agentId: 'main' }
+  if (u.kind === 'notice') return { id: idOf(u.key), role: 'system', text: u.text, at: Date.now(), agentId: 'main' }
+  return null
+}
+
+// ---- group chat: Codex as a guest (or the host talking in a roundtable / consult)
+
+// Group calls always run in the CLI's read-only sandbox, whatever the chat mode: guests never edit,
+// and the host only edits in its own turns.
+export const CODEX_GROUP_SANDBOX: CodexSandbox = 'read-only'
+
+const READ_PROJECT = 'You run in a read-only sandbox in the project folder. You may read and search the project with read-only commands (rg, ls, cat, git diff, git log) when a fact matters. Never edit files, and do not run builds, installs or anything that writes.'
+const NO_PROJECT = 'You run in an empty scratch folder: the user turned off project file access for guests. Do not look for project files or run commands; answer from the context given.'
+
+// Prompt of one group call on Codex. A fresh thread gets the participant's system prompt; a
+// resumed one already has it. The file-access line comes every time (guest tools can be switched
+// between calls).
+export function codexGroupPrompt(i: { system: string; prompt: string; fresh: boolean; projectFiles: boolean }): string {
+  const access = i.projectFiles ? READ_PROJECT : NO_PROJECT
+  return [i.fresh ? i.system.trim() : '', access, i.prompt.trim()].filter(Boolean).join('\n\n')
 }

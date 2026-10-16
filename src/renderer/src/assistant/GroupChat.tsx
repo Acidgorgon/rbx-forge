@@ -2,7 +2,7 @@
 // messages, the plan and checklist cards, and @mention suggestions for the composer.
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatMessage, ChatSession, GroupParticipant, ModelChoice, Speaker } from '@shared/types'
-import { makeParticipant, modelAlias, modelLabel } from '@shared/modelResolve'
+import { makeParticipant, modelAlias, modelLabel, sameModel } from '@shared/modelResolve'
 import { useStore } from '../store'
 import { InlineMarkdown, Markdown } from '../components/Markdown'
 import { ModelPicker, ProviderMark } from '../components/ModelPicker'
@@ -34,6 +34,12 @@ export function participants(chat: ChatSession | undefined): GroupParticipant[] 
 export function accentOf(chat: ChatSession | undefined, s: Pick<Speaker, 'provider' | 'model'>): number {
   const i = participants(chat).findIndex((p) => p.provider === s.provider && p.model === s.model)
   return (i >= 0 ? i : hash(`${s.provider}/${s.model}`)) % ACCENTS
+}
+
+// Why a model cannot be added as a guest (shown disabled in the picker instead of failing): it is
+// the host, or already a guest. Every provider can be a guest, Codex included.
+export function guestBlocker(host: ModelChoice | null, guests: ModelChoice[] = []): (c: ModelChoice) => string | null {
+  return (c) => (host && sameModel(c, host) ? 'Host of this chat' : guests.some((g) => sameModel(g, c)) ? 'Already a guest' : null)
 }
 
 export function isGroup(chat: ChatSession | undefined): boolean {
@@ -174,6 +180,7 @@ export function ParticipantsBar({ compact }: { compact?: boolean }) {
           placeholder={group ? 'Add' : 'Add a model'}
           icon={<IconPlus size={13} />}
           disabled={busy}
+          unavailable={guestBlocker(host, chat?.guests)}
         />
       </div>
       <div className="gc-tail">

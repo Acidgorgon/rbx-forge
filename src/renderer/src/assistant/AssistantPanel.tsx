@@ -540,7 +540,16 @@ export function AssistantPanel() {
   const history = (el: HTMLElement) => {
     const entries: MenuEntry[] = [{ header: 'Threads' }]
     if (!state.chats.length) entries.push({ label: 'No threads yet', disabled: true })
-    for (const c of state.chats.slice(0, 30)) entries.push({ label: c.title || 'Untitled', sub: `${c.model} · ${ago(c.createdAt)}${c.meter ? ` · ${fmtUsd(c.meter.costUsd)}` : ''}`, checked: c.id === id, onSelect: () => void actions.selectChat(c.id) })
+    for (const c of state.chats.slice(0, 30)) {
+      entries.push({
+        label: c.title || 'Untitled',
+        sub: `${c.model} · ${ago(c.createdAt)}${c.meter ? ` · ${fmtUsd(c.meter.costUsd)}` : ''}`,
+        checked: c.id === id,
+        onSelect: () => void actions.selectChat(c.id),
+        action: { icon: <Icon name="trash" size={13} />, label: `Delete “${c.title || 'Untitled'}”`, onSelect: () => actions.askDeleteChats([c.id]) }
+      })
+    }
+    if (state.chats.length > 1) entries.push('separator', { label: `Delete all ${state.chats.length} threads…`, icon: <Icon name="trash" size={13} />, danger: true, onSelect: () => actions.askDeleteChats(state.chats.map((c) => c.id)) })
     menu.openUnder(el, entries, { minWidth: 300 })
   }
 

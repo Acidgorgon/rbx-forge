@@ -146,7 +146,7 @@ export class Providers {
   // Endpoint and headers for an OpenAI-compatible provider, or why it cannot be used.
   async endpoint(provider: ProviderId): Promise<Endpoint | { error: string }> {
     if (provider === 'anthropic') return { error: 'anthropic uses the Agent SDK' }
-    if (provider === 'codex') return { error: 'Codex (ChatGPT plan) runs only as the chat agent and for one-shot calls. Pick another model here.' }
+    if (provider === 'codex') return { error: 'Codex (ChatGPT plan) runs through the Codex CLI (as a chat’s own agent, a group-chat guest and for one-shot calls), not here. Pick another model here.' }
     const baseUrl = this.baseUrl(provider)
     if (!baseUrl) return { error: `Set a base URL for ${PROVIDERS[provider].label} in Settings.` }
     const key = await this.credentials.getKey(provider)

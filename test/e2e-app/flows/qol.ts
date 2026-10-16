@@ -360,6 +360,37 @@ export const providerQolFlows: Flow[] = [
     }
   },
   {
+    name: 'chat-delete',
+    title: 'History menu: the trash icon on a thread asks in the app dialog, deletes it, and opens another chat',
+    timeoutMs: 60_000,
+    async run({ page, note, shot }) {
+      await dismissToasts(page)
+      await newChat(page)
+      await send(page, 'say hi E2E-DELETE-ME')
+      await page.waitForFunction(() => /FAKE-REPLY/.test(document.querySelector('aside.panel.right')?.textContent ?? ''), undefined, { timeout: 20_000 })
+      await idle(page)
+      const before: { id: string; title: string }[] = await page.evaluate(() => window.harness.listChats())
+      const target = before.find((c) => c.title.includes('E2E-DELETE-ME'))
+      check(target, `no chat titled from the message (${before.map((c) => c.title).join(', ')})`)
+      await page.locator(`${ASSISTANT} button[title="History"]`).click()
+      const item = page.locator('.menu [role="menuitem"]', { hasText: 'E2E-DELETE-ME' }).first()
+      await item.hover()
+      await shot('history-delete-hover')
+      await item.locator('.mact').click()
+      const dialog = page.locator('[role="dialog"][aria-label^="Delete “say hi E2E-DELETE-ME"]')
+      await dialog.waitFor({ state: 'visible', timeout: 5000 })
+      check(/deleted for good/.test(await dialog.innerText()), 'the confirm does not say the chat is deleted for good')
+      await shot('delete-confirm')
+      await dialog.getByRole('button', { name: 'Delete chat' }).click()
+      await waitForAsync(page, async (id: string) => !(await window.harness.listChats()).some((c: { id: string }) => c.id === id), target.id, { timeout: 10_000 })
+      await waitText(page, 'Chat deleted', { timeout: 5000 })
+      const title = (await page.locator(`${ASSISTANT} .panel-title`).innerText()).trim()
+      check(!title.includes('E2E-DELETE-ME'), `the deleted chat is still open (${title})`)
+      check(!(await page.locator(ASSISTANT).innerText()).includes('E2E-DELETE-ME'), 'the deleted conversation is still shown')
+      note(`${before.length} → ${before.length - 1} chats; now open: ${title}`)
+    }
+  },
+  {
     name: 'spend-cap',
     title: 'Spend cap $0.01 refuses a fake-provider call with the cap message',
     timeoutMs: 60_000,

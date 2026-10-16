@@ -32,6 +32,7 @@ import type {
   UsageSnapshot
 } from '@shared/types'
 import { basename, instanceNameOfFile } from './lib/roblox'
+import { errorText } from './lib/format'
 import { isUnder, movedPath, type PathChange, type TrashBatchResult } from '@shared/fileOps'
 import { diskReloadAction, openPathsIn } from './lib/diskReload'
 import type { SaveReason } from '@shared/editorAssist/policy'
@@ -552,6 +553,10 @@ export interface Actions {
   // Chat
   selectChat(id: string): Promise<void>
   newChat(): Promise<void>
+  // Asks in the app's confirm dialog, then deletes the chats (deleteChats).
+  askDeleteChats(ids: string[]): void
+  // Deletes chats for good. When the active chat goes, its neighbour in the list opens (or a fresh chat).
+  deleteChats(ids: string[]): Promise<void>
   // opts.mode: this message only in that chat mode (/ask, /plan).
   send(text: string, images?: ChatImage[], opts?: { mode?: ChatMode }): Promise<void>
   // The active chat's id, creating the chat first when there is none (slash commands).
@@ -614,7 +619,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       try {
         dispatch({ type: 'fileLoaded', path, contents: await h.readFile(path) })
       } catch (e) {
-        dispatch({ type: 'fileLoaded', path, contents: `-- Could not read ${path}: ${(e as Error).message}\n` })
+        dispatch({ type: 'fileLoaded', path, contents: `-- Could not read ${path}: ${errorText(e)}\n` })
       }
     }
     const ensureChat = async (): Promise<string> => {
@@ -643,7 +648,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             await loadProjectData()
           }
         } catch (e) {
-          toast({ text: 'Could not open the project', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not open the project', detail: errorText(e), kind: 'err' })
         }
       },
 
@@ -686,7 +691,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
             await h.writeFile(path, contents)
             dispatch({ type: 'fileSaved', path, contents })
           } catch (e) {
-            toast({ text: `Could not save ${basename(path)}`, detail: (e as Error).message, kind: 'err' })
+            toast({ text: `Could not save ${basename(path)}`, detail: errorText(e), kind: 'err' })
           }
         }
         const next = (saving.get(path) ?? Promise.resolve()).then(run, run)
@@ -785,13 +790,55 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       async newChat() {
         dispatch({ type: 'set', patch: { activeChatId: null, pendingModel: null, pendingEffort: null, usage: { ...stateRef.current.usage, chat: null } } })
       },
+      askDeleteChats(ids) {
+        const list = stateRef.current.chats.filter((c) => ids.includes(c.id))
+        if (!list.length) return
+        const one = list.length === 1
+        const running = list.filter((c) => stateRef.current.busy[c.id]).length
+        self.openDialog({
+          kind: 'confirm',
+          title: one ? `Delete “${list[0].title || 'Untitled'}”?` : `Delete ${list.length} chats?`,
+          body: `${one ? 'The conversation, its images and its /rewind checkpoints are' : 'Their conversations, images and /rewind checkpoints are'} deleted for good. Project files stay as they are.${!running ? '' : one ? ' It is still working; the turn is stopped first.' : ` ${running} of them ${running === 1 ? 'is' : 'are'} still working; those turns are stopped first.`}`,
+          confirm: one ? 'Delete chat' : `Delete ${list.length} chats`,
+          danger: true,
+          ...(one ? {} : { list: list.slice(0, 12).map((c) => c.title || 'Untitled').concat(list.length > 12 ? [`…and ${list.length - 12} more`] : []) }),
+          run: () => void self.deleteChats(list.map((c) => c.id))
+        })
+      },
+      async deleteChats(ids) {
+        if (!ids.length) return
+        const before = stateRef.current.chats
+        try {
+          await h.deleteChats(ids)
+        } catch (e) {
+          toast({ text: ids.length === 1 ? 'Could not delete the chat' : 'Could not delete the chats', detail: errorText(e), kind: 'err' })
+          return
+        }
+        const gone = new Set(ids)
+        const cur = stateRef.current
+        const messages = { ...cur.messages }
+        const busy = { ...cur.busy }
+        for (const id of ids) {
+          delete messages[id]
+          delete busy[id]
+        }
+        dispatch({ type: 'set', patch: { chats: cur.chats.filter((c) => !gone.has(c.id)), messages, busy, ...(cur.streamingSession && gone.has(cur.streamingSession) ? { streamingSession: null } : {}) } })
+        const active = cur.activeChatId
+        if (active && gone.has(active)) {
+          const at = before.findIndex((c) => c.id === active)
+          const next = before.slice(at + 1).find((c) => !gone.has(c.id)) ?? before.slice(0, Math.max(0, at)).reverse().find((c) => !gone.has(c.id))
+          if (next) await self.selectChat(next.id)
+          else await self.newChat()
+        }
+        toast({ text: ids.length === 1 ? 'Chat deleted' : `${ids.length} chats deleted`, kind: 'ok' })
+      },
       ensureChat: () => ensureChat(),
       async send(text, images = [], opts = {}) {
         let id: string
         try {
           id = await ensureChat()
         } catch (e) {
-          toast({ text: 'Could not start a chat', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not start a chat', detail: errorText(e), kind: 'err' })
           return
         }
         const local: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text, at: Date.now(), agentId: 'main', sessionId: id, ...(images.length ? { images } : {}), ...(opts.mode ? { mode: opts.mode } : {}) }
@@ -802,7 +849,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           else await h.sendChat(id, text, images.length ? images.map((i) => i.id) : undefined)
         } catch (e) {
           dispatch({ type: 'busy', sessionId: id, busy: false })
-          dispatch({ type: 'chatMessage', message: { id: `err-${Date.now()}`, role: 'system', text: `Could not send: ${(e as Error).message}`, at: Date.now(), agentId: 'main', sessionId: id } })
+          dispatch({ type: 'chatMessage', message: { id: `err-${Date.now()}`, role: 'system', text: `Could not send: ${errorText(e)}`, at: Date.now(), agentId: 'main', sessionId: id } })
         }
       },
       async stop() {
@@ -819,7 +866,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           await h.setChatModel(id, choice.provider, choice.model)
         } catch (e) {
-          toast({ text: 'Could not switch model', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not switch model', detail: errorText(e), kind: 'err' })
         }
       },
       openSettings(focus) {
@@ -835,7 +882,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const id = await ensureChat()
           updateChat(await h.addGuest(id, choice))
         } catch (e) {
-          toast({ text: 'Could not add the model', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not add the model', detail: errorText(e), kind: 'err' })
         }
       },
       async removeGuest(alias) {
@@ -854,7 +901,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await h.startRoundtable(id, topic, rounds)
         } catch (e) {
           dispatch({ type: 'busy', sessionId: id, busy: false })
-          toast({ text: 'Could not start the roundtable', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not start the roundtable', detail: errorText(e), kind: 'err' })
         }
       },
       async planToChecklist(messageId) {
@@ -863,7 +910,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         try {
           await h.planToChecklist(id, messageId)
         } catch (e) {
-          toast({ text: 'Could not make a task list', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not make a task list', detail: errorText(e), kind: 'err' })
         }
       },
       async startOrchestration(text) {
@@ -872,7 +919,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const board = await h.startOrchestration(id, text, stateRef.current.pendingModel ?? undefined)
           dispatch({ type: 'board', board })
         } catch (e) {
-          toast({ text: 'Could not start the team run', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not start the team run', detail: errorText(e), kind: 'err' })
         }
       },
       async loadAgentTranscript(agentId) {
@@ -893,7 +940,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           dispatch({ type: 'set', patch: { activePlace: place.file } })
           toast({ text: `Switched to ${place.name}`, detail: `${place.file} · rojo :${place.servePort}`, kind: 'ok', ms: 3000 })
         } catch (e) {
-          toast({ text: 'Could not switch place', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not switch place', detail: errorText(e), kind: 'err' })
         }
       },
       async setAppSettings(patch) {
@@ -905,14 +952,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           dispatch({ type: 'set', patch: { appSettings: await h.setAppSettings(patch) } })
         } catch (e) {
           if (before) dispatch({ type: 'set', patch: { appSettings: before } })
-          toast({ text: 'Could not save the setting', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not save the setting', detail: errorText(e), kind: 'err' })
         }
       },
       async restartService(id) {
         try {
           await h.restartService(id)
         } catch (e) {
-          toast({ text: `Could not restart ${id}`, detail: (e as Error).message, kind: 'err' })
+          toast({ text: `Could not restart ${id}`, detail: errorText(e), kind: 'err' })
         }
       },
 
@@ -924,7 +971,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           return summary
         } catch (e) {
           dispatch({ type: 'tests', patch: { running: false } })
-          toast({ text: 'Tests could not run', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Tests could not run', detail: errorText(e), kind: 'err' })
           return null
         }
       },
@@ -939,7 +986,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           await self.openFile(result.path)
           void self.refreshTests()
         } catch (e) {
-          toast({ text: 'Could not create the spec', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Could not create the spec', detail: errorText(e), kind: 'err' })
         }
       },
       async runLint() {
@@ -950,7 +997,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           const notes = [selene.note, stylua.note].filter(Boolean).join(' · ')
           toast({ text: lint.length ? `Lint: ${lint.length} problem${lint.length === 1 ? '' : 's'}` : 'Lint: no problems', detail: notes || undefined, kind: lint.length ? 'info' : 'ok' })
         } catch (e) {
-          toast({ text: 'Lint failed', detail: (e as Error).message, kind: 'err' })
+          toast({ text: 'Lint failed', detail: errorText(e), kind: 'err' })
         }
       }
     }

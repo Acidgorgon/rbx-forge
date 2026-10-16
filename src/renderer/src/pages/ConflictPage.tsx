@@ -82,11 +82,13 @@ export function ConflictPage({ path }: { path: string }) {
       </div>
       {forge && (
         <div className="conflict-why">
-          {c.reason === 'first-run'
-            ? 'First sync for this place: Studio and disk differ and there is no shared version yet.'
-            : c.reason === 'deleted-vs-edited'
-              ? 'One side deleted this script while the other edited it.'
-              : 'Changed in Studio and on disk since they last agreed, and the edits overlap.'}
+          {c.note
+            ? `Held: ${c.note}.`
+            : c.reason === 'first-run'
+              ? 'First sync for this place: Studio and disk differ and there is no shared version yet.'
+              : c.reason === 'deleted-vs-edited'
+                ? 'One side deleted this script while the other edited it.'
+                : 'Changed in Studio and on disk since they last agreed, and the edits overlap.'}
           {' '}Rojo waits for this place until you pick a side.
           {c.instancePath?.length ? <span className="mono"> · {c.instancePath.join('.')}</span> : null}
         </div>

@@ -7,11 +7,14 @@
 //   S==D same | S==B,D!=B disk-ahead | D==B,S!=B pulled | else diff3(B,D,S) merged or conflict
 //   no base and S!=D -> conflict (first-run); Studio-only -> created; disk-only with base -> trashed
 //   (deleted in Studio; conflict if the disk copy changed since), disk-only without base -> disk-ahead.
+// A file another place maps too: a snapshot's pull/merge is held as a conflict when that place's base
+// or Studio copy differs from what would be written, and a Studio delete never trashes it.
 
 import * as nodeFs from 'node:fs/promises'
 import { join, resolve as resolvePath } from 'node:path'
 import type { GateState, PlaceSyncStatus, StudioChange, StudioNode, StudioOnlyScript, SyncAction, SyncConflictInfo, SyncEntry, SyncPlace } from '../../../shared/sync/types.ts'
-import { cleanRel, type DiskProbe, findRoot, fromDisk, insideMappedRoots, isProjectNode, isScriptClass, isSkipped, loadPlaces, PACKAGE_DIRS, parseFileName, type PlaceMap, placeFor, saveTarget, type SaveTarget, type SyncRoot, toDisk, unsafeName } from './mapping.ts'
+import { matchPlace, PlaceLinks } from './links.ts'
+import { cleanRel, type DiskProbe, findRoot, fromDisk, insideMappedRoots, isProjectNode, isScriptClass, isSkipped, loadPlaces, PACKAGE_DIRS, parseFileName, type PlaceMap, placeFor, saveTarget, type SaveTarget, sharedWith, type SyncRoot, toDisk, unsafeName } from './mapping.ts'
 import { diff3, normalise, toFileText } from './merge.ts'
 import { canonicalJson, canonicalModel, detectStyle, modelFromStudio, readModel, writeMeta, writeModel } from './modelJson.ts'
 import { atomicWrite, BaseStore, hashText, migrateLegacy, type SyncFs, TRASH_DIR } from './store.ts'
@@ -74,6 +77,8 @@ interface HeldConflict {
   studioCanon: string
   studioDeleted: boolean
   diskDeleted: boolean
+  // Held because another place maps the file and has a different copy (see sharedDiffers).
+  shared: boolean
 }
 
 interface Session {
@@ -821,7 +826,7 @@ export class SyncEngine {
         if (u.kind !== 'folder' && copies && copies.length > 1) {
           if (copies[0] !== u) continue
           const pick = await this.pickMount(s, copies)
-          entries.push(await this.reconcileUnit(s, pick.unit, pick.conflict))
+          entries.push(await this.reconcileUnit(s, pick.unit, pick.conflict, checkpoint))
           continue
         }
         if (u.kind === 'folder') {
@@ -836,7 +841,7 @@ export class SyncEngine {
           }
           continue
         }
-        entries.push(await this.reconcileUnit(s, u))
+        entries.push(await this.reconcileUnit(s, u, undefined, checkpoint))
       } catch (err) {
         entries.push(this.entry(u.file, 'unmapped', u.instancePath, { note: `refused: ${(err as Error).message}` }))
       }
@@ -1069,8 +1074,12 @@ export class SyncEngine {
     return { unit: picked[0], conflict: `mapped ${copies.length} times in Studio and the copies differ (${copies.map((c) => c.instancePath.join('.')).join(', ')})` }
   }
 
-  private async reconcileUnit(s: Session, u: Unit, mountConflict?: string): Promise<SyncEntry> {
+  // checkpoint: see reconcile. Only then is a shared file's pull checked against the other places: a
+  // live edit was just made in this Studio, and Rojo carries it to them.
+  private async reconcileUnit(s: Session, u: Unit, mountConflict?: string, checkpoint = false): Promise<SyncEntry> {
     const map = s.map
+    // A shared-file conflict stays held until the user picks a side, live edits included.
+    const checkShared = checkpoint || !!s.conflicts.get(u.file)?.shared
     s.conflicts.delete(u.file)
     const diskText = await this.read(u.file)
     const studioText = u.render(diskText)
@@ -1114,6 +1123,11 @@ export class SyncEngine {
     }
     if (hashText(cS) === base.hash) return this.entry(u.file, 'disk-ahead', u.instancePath)
     if (hashText(cD) === base.hash) {
+      const shared = checkShared ? await this.sharedDiffers(s, u, cS) : null
+      if (shared) {
+        this.hold(s, u, studioText, cS, diskText, base.text, 'both-changed', { note: shared, shared: true })
+        return this.entry(u.file, 'conflict', u.instancePath, { note: shared })
+      }
       await this.writeFile(map, u.file, toFileText(studioText, diskText))
       await this.store.set(s.placeKey, u.file, cS)
       return this.entry(u.file, 'pulled', u.instancePath)
@@ -1121,6 +1135,11 @@ export class SyncEngine {
     if (base.text !== null) {
       const merged = diff3(base.text, cD, cS)
       const out = merged.clean ? this.renderMerged(u.kind, merged.text, diskText) : null
+      const shared = out !== null && checkShared ? await this.sharedDiffers(s, u, canon(u.kind, out)) : null
+      if (shared) {
+        this.hold(s, u, studioText, cS, diskText, base.text, 'both-changed', { note: shared, shared: true })
+        return this.entry(u.file, 'conflict', u.instancePath, { note: shared })
+      }
       if (out !== null) {
         await this.writeFile(map, u.file, toFileText(out, diskText))
         // Base stays at Studio's text until Studio receives the merge (through Rojo) and they agree.
@@ -1130,6 +1149,41 @@ export class SyncEngine {
     }
     this.hold(s, u, studioText, cS, diskText, base.text, 'both-changed')
     return this.entry(u.file, 'conflict', u.instancePath)
+  }
+
+  // Writing `canonText` to a file another place maps too would leave that place's copy behind: why
+  // ("shared with Menu: copies differ"), or null when every such place has exactly this copy (for a
+  // script, its live Studio source; otherwise the base it last synced) or has never synced the file.
+  private async sharedDiffers(s: Session, u: Unit, canonText: string): Promise<string | null> {
+    const hash = hashText(canonText)
+    const differ: string[] = []
+    for (const other of sharedWith(this.maps, s.map, u.file)) {
+      for (const key of await this.placeKeysFor(other.projectFile)) {
+        const live = this.sessions.get(key)
+        const inst = u.kind === 'script' && live?.tree ? fromDisk(live.map, u.file) : null
+        const node = inst ? [...live!.tree!.values()].find((n) => pkey(n.path) === pkey(inst) && isScriptClass(n.className) && typeof n.source === 'string') : undefined
+        const copy = node ? hashText(node.source!) : (await this.store.get(key, u.file))?.hash
+        if (copy && copy !== hash) {
+          differ.push(other.name && other.name !== s.map.name ? other.name : other.projectFile)
+          break
+        }
+      }
+    }
+    return differ.length ? `shared with ${differ.join(', ')}: copies differ` : null
+  }
+
+  // Base-store keys of the places synced with a place file: its sessions, configured PlaceIds and
+  // places linked in Source Control (links.json).
+  private async placeKeysFor(projectFile: string): Promise<string[]> {
+    const links = new PlaceLinks(this.root, this.fs as never)
+    await links.load()
+    const out = new Set<string>()
+    for (const s of this.sessions.values()) if (s.map.projectFile === projectFile) out.add(s.placeKey)
+    for (const key of await this.store.placeKeys()) {
+      const place = /^\d+$/.test(key) ? { placeId: Number(key) } : key.startsWith('local:') ? { placeId: 0, linkId: key.slice('local:'.length) } : null
+      if (place && matchPlace(this.maps, links.all(), place)?.projectFile === projectFile) out.add(key)
+    }
+    return [...out]
   }
 
   // Merged canonical text back to file form; null when the merge broke the JSON.
@@ -1151,14 +1205,15 @@ export class SyncEngine {
     return text
   }
 
-  private hold(s: Session, u: { kind: UnitKind; file: string; instancePath: string[] }, studioText: string, studioCanon: string, disk: string, base: string | null, reason: SyncConflictInfo['reason'], flags: { studioDeleted?: boolean; diskDeleted?: boolean } = {}): void {
+  private hold(s: Session, u: { kind: UnitKind; file: string; instancePath: string[] }, studioText: string, studioCanon: string, disk: string, base: string | null, reason: SyncConflictInfo['reason'], flags: { studioDeleted?: boolean; diskDeleted?: boolean; note?: string; shared?: boolean } = {}): void {
     s.conflicts.set(u.file, {
-      info: { placeKey: s.placeKey, file: u.file, instancePath: u.instancePath, base, disk, studio: studioText, reason },
+      info: { placeKey: s.placeKey, file: u.file, instancePath: u.instancePath, base, disk, studio: studioText, reason, ...(flags.note ? { note: flags.note } : {}) },
       kind: u.kind,
       studioText,
       studioCanon,
       studioDeleted: flags.studioDeleted ?? false,
-      diskDeleted: flags.diskDeleted ?? false
+      diskDeleted: flags.diskDeleted ?? false,
+      shared: flags.shared ?? false
     })
   }
 
@@ -1167,6 +1222,12 @@ export class SyncEngine {
     const base = await this.store.get(s.placeKey, file)
     // First sync undecided: nothing is trashed.
     if (!base || s.firstSync) return this.entry(file, 'disk-ahead', inst)
+    // Another place still maps the file: the delete only means this place no longer has it.
+    const others = sharedWith(this.maps, s.map, isGitkeep(file) ? `${dirOf(file)}/init.meta.json` : file)
+    if (others.length) {
+      await this.store.delete(s.placeKey, file)
+      return this.entry(file, 'disk-ahead', inst, { note: `kept: shared with ${others.map((m) => m.name || m.projectFile).join(', ')}, which still maps it` })
+    }
     const text = (await this.read(file)) ?? ''
     if (hashText(canon(kind, text)) === base.hash) {
       await this.trash(s.map, file, stamp)

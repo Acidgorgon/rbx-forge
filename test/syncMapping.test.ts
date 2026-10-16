@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { rmSync } from 'node:fs'
 import { after, test } from 'node:test'
-import { cleanRel, fromDisk, fsProbe, isSkipped, loadPlaces, parseFileName, placeFor, scriptForm, toDisk, unsafeName, type PlaceMap } from '../src/main/services/sync/mapping.ts'
+import { cleanRel, fromDisk, fsProbe, isSkipped, loadPlaces, parseFileName, placeFor, scriptForm, sharedWith, toDisk, unsafeName, type PlaceMap } from '../src/main/services/sync/mapping.ts'
 import { diff3, matchLines, normalise, toFileText } from '../src/main/services/sync/merge.ts'
 import { canonicalModel, canonicalValue, shortFloat, detectStyle, modelFromStudio, readModel, writeMeta, writeModel } from '../src/main/services/sync/modelJson.ts'
 import { MATCH_PLACE, MENU_PLACE, MENU_PLACE_2, makeFsfProject, put } from './syncFixture.ts'
@@ -166,6 +166,20 @@ test('fromDisk inverts the conventions and refuses paths outside roots', async (
 })
 
 // ---- merge ----
+
+test('sharedWith finds the other places whose tree maps the same file', async () => {
+  const { maps, match, menu } = await fixture()
+  // Menu mounts this one module of src/shared as a file root; Match maps all of src/shared.
+  assert.deepEqual(sharedWith(maps, menu, 'src/shared/Modules/SharedConfig.luau'), [match])
+  assert.deepEqual(sharedWith(maps, match, 'src/shared/Modules/SharedConfig.luau'), [menu])
+  // Cross-mounted directories are shared file by file.
+  assert.deepEqual(sharedWith(maps, match, 'src/skills/Definitions/Guard.luau'), [menu])
+  assert.deepEqual(sharedWith(maps, match, 'src/skills/Server/Moves/Dash/Config.luau'), [menu])
+  // Only one place maps these.
+  assert.deepEqual(sharedWith(maps, match, 'src/shared/Modules/Util.luau'), [])
+  assert.deepEqual(sharedWith(maps, match, 'src/skills/Server/Schema.luau'), [])
+  assert.deepEqual(sharedWith(maps, menu, 'src/menu/shared/Modules/MenuUtil.luau'), [])
+})
 
 test('normalise / toFileText keep CRLF files CRLF', () => {
   assert.equal(normalise('a\r\nb\r\n\r\n'), 'a\nb')

@@ -178,6 +178,7 @@ export interface StudioConflict {
   placeKey?: string
   instancePath?: string[]
   reason?: 'both-changed' | 'first-run' | 'deleted-vs-edited'
+  note?: string
 }
 
 export interface SyncSettings {

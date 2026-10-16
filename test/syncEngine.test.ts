@@ -9,7 +9,7 @@ import { placeKeyFor, SyncEngine, SyncResendError, type SyncFs } from '../src/ma
 import { fromDisk, type PlaceMap } from '../src/main/services/sync/mapping.ts'
 import { readModel } from '../src/main/services/sync/modelJson.ts'
 import { BaseStore, ensureSyncIgnored, hashText, migrateLegacy } from '../src/main/services/sync/store.ts'
-import { edit, find, get, listFiles, makeFsfProject, MATCH_PLACE, MENU_PLACE, put, studioFromDisk } from './syncFixture.ts'
+import { edit, FILES, find, get, listFiles, makeFsfProject, MATCH_PLACE, MENU_PLACE, put, studioFromDisk } from './syncFixture.ts'
 
 const roots: string[] = []
 after(() => {
@@ -21,6 +21,11 @@ const SSS = 'ServerScriptService'
 const MOVES = [SSS, 'Server', 'Features', 'Skills', 'Moves']
 const MENU_MOVES = [SSS, 'Server', 'Features', 'Skills', 'Moves']
 const SKILLS = [RS, 'Shared', 'Skills']
+// Mapped by the match place only (src/skills/* is cross-mounted into the menu place).
+const HANDLERS = [SSS, 'Server', 'Handlers']
+// Mapped by both places: the match place maps all of src/shared, the menu place this one file.
+const SHARED_CONFIG = [RS, 'Shared', 'Modules', 'SharedConfig']
+const SC = 'src/shared/Modules/SharedConfig.luau'
 const MATCH = { placeId: MATCH_PLACE, name: 'Arena' }
 const MENU = { placeId: MENU_PLACE, name: 'Menu' }
 const MK = String(MATCH_PLACE)
@@ -133,12 +138,12 @@ test("teammate's Team Create edit is captured before Rojo connects (pulled)", as
   const ctx = await setup()
   await agreed(ctx)
   ctx.engine.endSession(MK)
-  // Later: a teammate edited Catalog in Studio; Acid's disk still has the old copy.
-  const newer = 'local Catalog = {}\n\nCatalog.list = { "Dash", "Guard" }\n\nreturn Catalog'
-  const nodes = edit(studio(ctx), [...MOVES.slice(0, -1), 'Catalog'], { source: newer })
+  // Later: a teammate edited Combat in Studio; Acid's disk still has the old copy.
+  const newer = 'local Combat = {}\nCombat.range = 4\nreturn Combat'
+  const nodes = edit(studio(ctx), [...HANDLERS, 'Combat'], { source: newer })
   const entries = await snapshot(ctx.engine, MK, MATCH, nodes)
-  assert.deepEqual(actions(entries, 'pulled'), ['src/skills/Server/Catalog.luau'])
-  assert.equal(get(ctx.root, 'src/skills/Server/Catalog.luau'), newer + '\n')
+  assert.deepEqual(actions(entries, 'pulled'), ['src/server/Handlers/Combat.luau'])
+  assert.equal(get(ctx.root, 'src/server/Handlers/Combat.luau'), newer + '\n')
   assert.equal(ctx.engine.gate(MK), 'clear')
 })
 
@@ -156,6 +161,99 @@ test("menu Studio's stale copy does not overwrite a newer match edit (disk-ahead
   assert.deepEqual(actions(entries, 'disk-ahead'), ['src/skills/Server/Catalog.luau'])
   assert.equal(get(ctx.root, 'src/skills/Server/Catalog.luau'), newer + '\n')
   assert.equal(ctx.engine.gate(NK), 'clear')
+})
+
+// ---- files several places map ----
+
+test("a shared file: a place reopened with an older copy is held as a conflict, not pulled over the other place's", async () => {
+  const ctx = await setup()
+  await agreed(ctx)
+  const newer = 'local SharedConfig = {}\nSharedConfig.MaxPlayers = 12\nreturn SharedConfig'
+  // A live edit in the match Studio is pulled as usual; Rojo then pushes it into the menu Studio.
+  const live = await ctx.engine.applyChanges(MK, [{ kind: 'source', node: { ...find(studio(ctx), SHARED_CONFIG), source: newer } }])
+  assert.deepEqual(actions(live, 'pulled'), [SC])
+  const pushed = await ctx.engine.applyChanges(NK, [{ kind: 'source', node: find(studio(ctx, ctx.menu), SHARED_CONFIG) }])
+  assert.deepEqual(actions(pushed, 'same'), [SC])
+  // The menu Studio closes without saving and reopens with its older copy: not pulled.
+  ctx.engine.endSession(NK)
+  const entries = await snapshot(ctx.engine, NK, MENU, edit(studio(ctx, ctx.menu), SHARED_CONFIG, { source: FILES[SC] }))
+  assert.deepEqual(actions(entries, 'pulled'), [])
+  assert.deepEqual(actions(entries, 'conflict'), [SC])
+  assert.equal(entries.find((e) => e.file === SC)!.note, 'shared with Arena: copies differ')
+  const [held] = ctx.engine.conflicts(NK)
+  assert.equal(held.reason, 'both-changed')
+  assert.equal(held.note, 'shared with Arena: copies differ')
+  assert.equal(held.studio, FILES[SC])
+  assert.equal(get(ctx.root, SC), newer + '\n')
+  assert.equal(ctx.engine.gate(NK), 'blocked')
+  // A live edit to that stale copy does not slip it through either.
+  const edited = await ctx.engine.applyChanges(NK, [{ kind: 'source', node: { ...find(studio(ctx, ctx.menu), SHARED_CONFIG), source: FILES[SC] + '-- menu' } }])
+  assert.deepEqual(actions(edited, 'conflict'), [SC])
+  assert.equal(get(ctx.root, SC), newer + '\n')
+  // The user keeps the disk copy: Rojo pushes it to the menu place.
+  await ctx.engine.resolve(NK, SC, 'disk')
+  assert.equal(get(ctx.root, SC), newer + '\n')
+  assert.equal(ctx.engine.gate(NK), 'clear')
+})
+
+test('a shared file with the same copy in both places stays fine', async () => {
+  const ctx = await setup()
+  await agreed(ctx)
+  // Studio and disk agree in both places: reconnecting either changes nothing.
+  for (const [key, place, map] of [[MK, MATCH, ctx.match], [NK, MENU, ctx.menu]] as const) {
+    ctx.engine.endSession(key)
+    const entries = await snapshot(ctx.engine, key, place, studio(ctx, map))
+    assert.equal(entries.find((e) => e.file === SC)?.action, 'same')
+    assert.equal(ctx.engine.gate(key), 'clear')
+  }
+  // The same edit made in both Studios while Forge was closed. The menu place reconnects first and is
+  // held (the match place last synced the old copy); the match place then has the menu Studio's exact
+  // copy, so its pull goes through.
+  const newer = 'local SharedConfig = {}\nSharedConfig.MaxPlayers = 10\nreturn SharedConfig'
+  ctx.engine.endSession(MK)
+  ctx.engine.endSession(NK)
+  const menu = await snapshot(ctx.engine, NK, MENU, edit(studio(ctx, ctx.menu), SHARED_CONFIG, { source: newer }))
+  assert.deepEqual(actions(menu, 'conflict'), [SC])
+  const match = await snapshot(ctx.engine, MK, MATCH, edit(studio(ctx), SHARED_CONFIG, { source: newer }))
+  assert.deepEqual(actions(match, 'pulled'), [SC])
+  assert.deepEqual(ctx.engine.conflicts(MK), [])
+  assert.equal(ctx.engine.gate(MK), 'clear')
+  assert.equal(get(ctx.root, SC), newer + '\n')
+  ctx.engine.endSession(NK)
+  const again = await snapshot(ctx.engine, NK, MENU, edit(studio(ctx, ctx.menu), SHARED_CONFIG, { source: newer }))
+  assert.equal(again.find((e) => e.file === SC)?.action, 'same')
+  assert.equal(ctx.engine.gate(NK), 'clear')
+})
+
+test('a file only one place maps is pulled and trashed as before', async () => {
+  const ctx = await setup()
+  await agreed(ctx)
+  const UTIL = [RS, 'Shared', 'Modules', 'Util']
+  ctx.engine.endSession(MK)
+  const entries = await snapshot(ctx.engine, MK, MATCH, edit(studio(ctx), UTIL, { source: 'return { util = true }' }))
+  assert.deepEqual(actions(entries, 'pulled'), ['src/shared/Modules/Util.luau'])
+  assert.deepEqual(actions(entries, 'conflict'), [])
+  assert.equal(ctx.engine.gate(MK), 'clear')
+  const util = find(studio(ctx), UTIL)
+  const gone = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: util.id, path: util.path }])
+  assert.deepEqual(actions(gone, 'trashed'), ['src/shared/Modules/Util.luau'])
+})
+
+test('a Studio delete of a shared file is not trashed while another place maps it', async () => {
+  const ctx = await setup()
+  await agreed(ctx)
+  const node = find(studio(ctx), SHARED_CONFIG)
+  const entries = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: node.id, path: node.path }])
+  assert.deepEqual(actions(entries, 'trashed'), [])
+  const kept = entries.find((e) => e.file === SC)!
+  assert.equal(kept.action, 'disk-ahead')
+  assert.equal(kept.note, 'kept: shared with Menu, which still maps it')
+  assert.equal(get(ctx.root, SC), FILES[SC])
+  assert.equal(ctx.engine.gate(MK), 'clear')
+  // The match place no longer has it: the next pass reads the file as disk-ahead, not as a delete.
+  const again = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: node.id, path: node.path }])
+  assert.equal(again.find((e) => e.file === SC)?.action, 'disk-ahead')
+  assert.equal(again.find((e) => e.file === SC)?.note, undefined)
 })
 
 test('a new skill folder made in Studio becomes files plus Animations.model.json', async () => {
@@ -245,26 +343,27 @@ test('a rename to an unsafe name is refused and keeps the old file', async () =>
 })
 
 test('Studio delete moves the file to .forge/sync/trash; an edited disk copy becomes a conflict', async () => {
-  const ctx = await setup()
+  // A match-only copy of the Dash move folder (the menu place maps src/skills/Server/Moves too).
+  const ctx = await setup({ before: (root) => ['Config.luau', 'Server.luau', 'Animations.model.json'].forEach((f) => put(root, `src/server/Handlers/Dash/${f}`, FILES[`src/skills/Server/Moves/Dash/${f}`])) })
   await agreed(ctx)
-  const guard = find(studio(ctx), [...SKILLS, 'Guard'])
-  const entries = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: guard.id, path: guard.path }])
-  assert.deepEqual(actions(entries, 'trashed'), ['src/skills/Definitions/Guard.luau'])
-  assert.ok(!existsSync(join(ctx.root, 'src/skills/Definitions/Guard.luau')))
+  const combat = find(studio(ctx), [...HANDLERS, 'Combat'])
+  const entries = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: combat.id, path: combat.path }])
+  assert.deepEqual(actions(entries, 'trashed'), ['src/server/Handlers/Combat.luau'])
+  assert.ok(!existsSync(join(ctx.root, 'src/server/Handlers/Combat.luau')))
   const trash = join(ctx.root, '.forge/sync/trash')
   const [stamp] = readdirSync(trash)
-  assert.equal(get(trash, `${stamp}/src/skills/Definitions/Guard.luau`), 'return { name = "Guard" }\n')
+  assert.equal(get(trash, `${stamp}/src/server/Handlers/Combat.luau`), 'return {}\n')
 
   // A deleted move folder whose Config was edited on disk: the rest is trashed, Config is held.
-  put(ctx.root, 'src/skills/Server/Moves/Dash/Config.luau', 'return { damage = 11 }\n')
-  const dash = find(studio(ctx), [...MOVES, 'Dash'])
+  put(ctx.root, 'src/server/Handlers/Dash/Config.luau', 'return { damage = 11 }\n')
+  const dash = find(studio(ctx), [...HANDLERS, 'Dash'])
   const del = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: dash.id, path: dash.path }])
-  assert.deepEqual(actions(del, 'trashed'), ['src/skills/Server/Moves/Dash/Animations.model.json', 'src/skills/Server/Moves/Dash/Server.luau'])
-  assert.deepEqual(actions(del, 'conflict'), ['src/skills/Server/Moves/Dash/Config.luau'])
+  assert.deepEqual(actions(del, 'trashed'), ['src/server/Handlers/Dash/Animations.model.json', 'src/server/Handlers/Dash/Server.luau'])
+  assert.deepEqual(actions(del, 'conflict'), ['src/server/Handlers/Dash/Config.luau'])
   assert.equal(ctx.engine.conflicts(MK)[0].reason, 'deleted-vs-edited')
   assert.equal(ctx.engine.gate(MK), 'blocked')
-  await ctx.engine.resolve(MK, 'src/skills/Server/Moves/Dash/Config.luau', 'disk')
-  assert.equal(get(ctx.root, 'src/skills/Server/Moves/Dash/Config.luau'), 'return { damage = 11 }\n')
+  await ctx.engine.resolve(MK, 'src/server/Handlers/Dash/Config.luau', 'disk')
+  assert.equal(get(ctx.root, 'src/server/Handlers/Dash/Config.luau'), 'return { damage = 11 }\n')
   assert.equal(ctx.engine.gate(MK), 'clear')
 })
 
@@ -272,9 +371,9 @@ test('a full snapshot missing a file trashes it; a snapshot missing a whole root
   const ctx = await setup()
   await agreed(ctx)
   ctx.engine.endSession(MK)
-  const without = studio(ctx).filter((n) => n.path.join('/') !== [...SKILLS, 'Guard'].join('/'))
+  const without = studio(ctx).filter((n) => n.path.join('/') !== [...HANDLERS, 'Combat'].join('/'))
   const entries = await snapshot(ctx.engine, MK, MATCH, without)
-  assert.deepEqual(actions(entries, 'trashed'), ['src/skills/Definitions/Guard.luau'])
+  assert.deepEqual(actions(entries, 'trashed'), ['src/server/Handlers/Combat.luau'])
   ctx.engine.endSession(MK)
   const noSkillsRoot = studio(ctx).filter((n) => !n.path.join('/').startsWith(MOVES.slice(0, -1).join('/')))
   const second = await snapshot(ctx.engine, MK, MATCH, noSkillsRoot)
@@ -517,9 +616,9 @@ test('every file Forge writes stays inside mapped roots or .forge/sync', async (
 test('empty Studio folders get a .gitkeep; it goes once the folder has children and comes back when it is empty', async () => {
   const ctx = await setup()
   await agreed(ctx)
-  const dir = 'src/skills/Server/Moves/NewMove'
+  const dir = 'src/server/Handlers/NewMove'
   const keep = `${dir}/.gitkeep`
-  const folder = { id: 'nm', path: [...MOVES, 'NewMove'], className: 'Folder' }
+  const folder = { id: 'nm', path: [...HANDLERS, 'NewMove'], className: 'Folder' }
   // .gitkeep is not an instance.
   assert.equal(fromDisk(ctx.match, keep), null)
 
@@ -553,15 +652,15 @@ test('empty Studio folders get a .gitkeep; it goes once the folder has children 
   assert.ok(!existsSync(join(ctx.root, 'src/skills/Server/Moves/Dash/.gitkeep')))
 
   // Renaming the empty folder carries the .gitkeep (and its base) along.
-  const renamed = await ctx.engine.applyChanges(MK, [{ kind: 'renamed', id: folder.id, from: folder.path, node: { ...folder, path: [...MOVES, 'Later'] } }])
-  assert.ok(renamed.some((e) => e.action === 'renamed' && e.file === 'src/skills/Server/Moves/Later'))
-  assert.deepEqual(readdirSync(join(ctx.root, 'src/skills/Server/Moves/Later')), ['.gitkeep'])
+  const renamed = await ctx.engine.applyChanges(MK, [{ kind: 'renamed', id: folder.id, from: folder.path, node: { ...folder, path: [...HANDLERS, 'Later'] } }])
+  assert.ok(renamed.some((e) => e.action === 'renamed' && e.file === 'src/server/Handlers/Later'))
+  assert.deepEqual(readdirSync(join(ctx.root, 'src/server/Handlers/Later')), ['.gitkeep'])
   assert.ok(!existsSync(join(ctx.root, dir)))
 
   // The empty folder deleted in Studio: .gitkeep trashed and the directory pruned.
-  const gone = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: folder.id, path: [...MOVES, 'Later'] }])
-  assert.deepEqual(actions(gone, 'trashed'), ['src/skills/Server/Moves/Later/.gitkeep'])
-  assert.ok(!existsSync(join(ctx.root, 'src/skills/Server/Moves/Later')))
+  const gone = await ctx.engine.applyChanges(MK, [{ kind: 'removed', id: folder.id, path: [...HANDLERS, 'Later'] }])
+  assert.deepEqual(actions(gone, 'trashed'), ['src/server/Handlers/Later/.gitkeep'])
+  assert.ok(!existsSync(join(ctx.root, 'src/server/Handlers/Later')))
   assert.equal(ctx.engine.gate(MK), 'clear')
 })
 

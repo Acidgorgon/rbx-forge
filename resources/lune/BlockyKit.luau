@@ -575,4 +575,120 @@ function Kit:scutes(bone: BasePart?, cf: CFrame, a: number, b: number, from: num
 	end
 end
 
+-- ── Faceted stone / bat-wing helpers (added for the Mourngoyle) ─────────────────────────────
+
+-- Picks a colour from a list of shades (e.g. five stone greys, dark to light). light = true
+-- biases toward the lighter end. Used by boulder/lump so neighbouring facets differ.
+function Kit:shade(shades: { Color3 }, light: boolean?): Color3
+	local i = self.rng:NextInteger(1, #shades)
+	if light then i = math.min(#shades, i + 2) end
+	return shades[i]
+end
+
+-- Faceted boulder: a band box with a tapered frustum above and a flipped one below, i.e. an
+-- octagonal low-poly rock whose top and bottom facets catch different light. cf: centre, +Y up.
+-- shades: a Color3 or a list of shades. opts: taper (0.6) or taperX/taperZ, taperB (extra bottom
+-- taper, < 1 = narrower foot), band (vertical fraction of the straight band, 0.4), yaw/tilt
+-- (random degrees), light, name. ~11 parts. Good for shoulders, knuckles, feet, tail segments.
+function Kit:boulder(bone: BasePart?, cf: CFrame, size: Vector3, shades: any, opts: any?): BasePart
+	local o = opts or {}
+	local r = self.rng
+	local tx, tz = o.taperX or o.taper or 0.6, o.taperZ or o.taper or 0.6
+	local tb = o.taperB or 1
+	local band = o.band or 0.4
+	if o.yaw or o.tilt then
+		local t, y = o.tilt or 0, o.yaw or 0
+		cf = cf * CFrame.Angles(rad(r:NextNumber(-t, t)), rad(r:NextNumber(-y, y)), rad(r:NextNumber(-t, t)))
+	end
+	local hb = size.Y * band
+	local hs = (size.Y - hb) / 2
+	local function c(light: boolean?): Color3
+		return if typeof(shades) == "Color3" then self:vary(shades, 0.03) else self:shade(shades, light)
+	end
+	local nm = o.name or "Rock"
+	local core = self:part(nm, Vector3.new(size.X, hb + 0.04, size.Z), cf, c(o.light), bone)
+	self:frustum(bone, cf * CFrame.new(0, hb / 2, 0), size.X, size.Z, size.X * tx, size.Z * tz, hs, c(true), nm, c(o.light))
+	self:frustum(bone, cf * CFrame.new(0, -hb / 2, 0) * CFrame.Angles(math.pi, 0, 0), size.X, size.Z, size.X * tx * tb, size.Z * tz * tb, hs, c(false), nm, c(false))
+	return core
+end
+
+-- Rock-chunk limb / mass: a core boulder plus n smaller boulders bulging out of it at random
+-- spots and angles, so one body part reads as a cluster of faceted stones rather than a box.
+-- opts as boulder, plus bias (Vector3 in cf space) to push bulges toward the faces seen most.
+function Kit:lump(bone: BasePart?, cf: CFrame, size: Vector3, n: number?, shades: any, opts: any?): BasePart
+	local o = opts or {}
+	local r = self.rng
+	local core = self:boulder(bone, cf, size * 0.92, shades, o)
+	for _ = 1, n or 2 do
+		local d = (Vector3.new(r:NextNumber(-1, 1), r:NextNumber(-0.6, 0.8), r:NextNumber(-1, 1)) + (o.bias or Vector3.zero)).Unit
+		local off = Vector3.new(d.X * size.X, d.Y * size.Y, d.Z * size.Z) * 0.3
+		local bcf = cf * CFrame.new(off) * CFrame.Angles(rad(r:NextNumber(-20, 20)), rad(r:NextNumber(0, 90)), rad(r:NextNumber(-20, 20)))
+		self:boulder(bone, bcf, size * r:NextNumber(0.45, 0.6), shades, { taper = r:NextNumber(0.5, 0.7), band = r:NextNumber(0.3, 0.5), light = o.light, name = o.name })
+	end
+	return core
+end
+
+-- Zigzag glow crack: cf sits on a surface with LookVector = outward normal; the crack runs len
+-- studs down cf's -Y in n kinks of +-amp (random 55-100%). Draws through Kit:crack in Neon and
+-- returns the points, so a branch can start from one of them.
+function Kit:zigCrack(bone: BasePart?, cf: CFrame, len: number, amp: number, n: number, width: number, color: Color3, halo: number?): { Vector3 }
+	local pts, nrm = {}, {}
+	for i = 0, n do
+		local x = if i == 0 or i == n then 0 else ((i % 2 == 0) and 1 or -1) * amp * self.rng:NextNumber(0.55, 1)
+		pts[#pts + 1] = (cf * CFrame.new(x, -len * i / n, 0)).Position
+		nrm[#nrm + 1] = cf.LookVector
+	end
+	self:with(Enum.Material.Neon, function()
+		self:crack(bone, pts, nrm, width, color, halo)
+	end)
+	return pts
+end
+
+-- Flat triangle a, b, c (model-local points) from two WedgeParts, th thick. Any triangle works;
+-- use it for membranes, faceted plates and shards that boxes cannot shape. 2 parts.
+function Kit:tri(bone: BasePart?, a: Vector3, b: Vector3, c: Vector3, th: number, color: Color3, name: string?)
+	local ab, ac, bc = b - a, c - a, c - b
+	local abd, acd, bcd = ab:Dot(ab), ac:Dot(ac), bc:Dot(bc)
+	if abd > acd and abd > bcd then
+		c, a = a, c
+	elseif acd > bcd and acd > abd then
+		a, b = b, a
+	end
+	ab, ac, bc = b - a, c - a, c - b
+	local right = ac:Cross(ab)
+	if right.Magnitude < 1e-4 then return end
+	right = right.Unit
+	local up = bc:Cross(right).Unit
+	local back = bc.Unit
+	local height = math.abs(ab:Dot(up))
+	self:part(name or "Tri", Vector3.new(th, height, math.abs(ab:Dot(back))), CFrame.fromMatrix((a + b) / 2, right, up, back), color, bone, "WedgePart")
+	self:part(name or "Tri", Vector3.new(th, height, math.abs(ac:Dot(back))), CFrame.fromMatrix((a + c) / 2, -right, up, -back), color, bone, "WedgePart")
+end
+
+-- Faceted bat-wing membrane: fans triangles from the hub W (the wing's wrist) along the edge
+-- polyline `edge` (model-local points running from the leading edge round to the body). Each fan
+-- triangle is split into folded facets: its edge-side corner is pushed back by `fold` studs
+-- along `foldDir` so neighbouring planes catch light differently. shades: list of dark colours.
+-- Add bone spars with Kit:shard / Kit.aim from W to the tips. ~4 parts per edge segment.
+function Kit:wingFan(bone: BasePart?, W: Vector3, edge: { Vector3 }, th: number, shades: { Color3 }, fold: number?, foldDir: Vector3?)
+	local f = fold or 0.6
+	local fd = (foldDir or Vector3.zAxis).Unit
+	for i = 1, #edge - 1 do
+		local a, b = edge[i], edge[i + 1]
+		local m = (a + b) / 2 + fd * f * (if i % 2 == 0 then 1 else -1)
+		local mid = W + (m - W) * 0.55
+		self:tri(bone, W, a, mid, th, self:shade(shades), "Membrane")
+		self:tri(bone, mid, a, m, th, self:shade(shades), "Membrane")
+		self:tri(bone, W, mid, b, th, self:shade(shades), "Membrane")
+		self:tri(bone, mid, m, b, th, self:shade(shades), "Membrane")
+	end
+end
+
+-- Curved talon / claw: base at pos, starting along dir, curling `bend` degrees toward `curl`
+-- over segs segments (a Kit:horn aimed with Kit.aim). pal = { base, tip }. Use 3-4 per hand,
+-- spread a little and curled downward, with w around 35% of len for a chunky gargoyle claw.
+function Kit:claw(bone: BasePart, pos: Vector3, dir: Vector3, curl: Vector3, len: number, w: number, bend: number, segs: number?, pal: Palette)
+	self:horn(bone, Kit.aim(pos, dir, curl), len, w, w * 0.85, bend, segs or 2, pal)
+end
+
 return Kit

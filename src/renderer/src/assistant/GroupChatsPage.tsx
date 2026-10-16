@@ -15,7 +15,7 @@ import { MemoryProposals } from '../pages/memory/MemoryProposals'
 import { Composer } from './AssistantPanel'
 import { MessageList } from './Thread'
 import { EffortPicker, RouteSummary } from './EffortPicker'
-import { accentOf, ChecklistCard, fmtTokens, participants } from './GroupChat'
+import { accentOf, ChecklistCard, fmtTokens, guestBlocker, participants } from './GroupChat'
 import { BoardPanel, ConsultSettings, fmtUsd } from './GroupCards'
 import './groupspage.css'
 
@@ -92,6 +92,7 @@ function NewGroupChat({ onCreated, onCancel }: { onCreated: (id: string) => void
                 setGuests([...guests, c])
               }}
               onAddKey={(p) => actions.openSettings(p)}
+              unavailable={guestBlocker(host, guests)}
             />
           </div>
           <span className="note">Read-only advisers. @mention them, or start a roundtable.</span>
@@ -212,7 +213,17 @@ function ParticipantsRail({ chat, onBack }: { chat: ChatSession; onBack: () => v
           )
         })}
       </div>
-      <ModelPicker value={null} providers={state.providers} direction="down" placeholder="Add a model" icon={<Icon name="plus" size={12} />} disabled={busy} onChange={(c) => void actions.addGuest(c)} onAddKey={(p) => actions.openSettings(p)} />
+      <ModelPicker
+        value={null}
+        providers={state.providers}
+        direction="down"
+        placeholder="Add a model"
+        icon={<Icon name="plus" size={12} />}
+        disabled={busy}
+        onChange={(c) => void actions.addGuest(c)}
+        onAddKey={(p) => actions.openSettings(p)}
+        unavailable={guestBlocker({ provider: chat.provider, model: chat.model }, chat.guests)}
+      />
       <div className="gp-rail-foot note">
         @alias asks one guest directly. “Ask sol … and report back” runs a consult that ends in a Conclusion card.
       </div>
@@ -298,6 +309,9 @@ function RoundPanel({ chat }: { chat: ChatSession }) {
                   <span className={`gc-a${accentOf(chat, u)}`} style={{ width: `${Math.round(((u.input + u.output) / max) * 100)}%` }} />
                 </span>
                 <span className="gp-unum">{u.costUsd ? fmtUsd(u.costUsd) : fmtTokens(u.input + u.output)}</span>
+        {chat.guests?.some((g) => g.provider === 'codex') && (
+          <div className="note">Codex guests read with their own commands in the Codex CLI’s read-only sandbox. Off, they run in an empty scratch folder.</div>
+        )}
               </div>
             ))}
           </div>

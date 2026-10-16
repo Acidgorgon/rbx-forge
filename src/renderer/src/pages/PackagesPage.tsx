@@ -4,6 +4,7 @@ import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } fro
 import type { PackagesChanged, RokitTool, WallyDependency, WallyPackage, WallyRealm } from '@shared/types'
 import { useStore } from '../store'
 import { IconAlert, IconCheck, IconClose, IconSearch, IconTool } from '../components/Icons'
+import { errorText } from '../lib/format'
 import './packages.css'
 
 type P = { size?: number; className?: string }
@@ -21,12 +22,6 @@ const IconUp = ({ size = 12 }: P) => (
 )
 
 const REALM_LABEL: Record<WallyRealm, string> = { shared: 'Shared', server: 'Server', dev: 'Dev' }
-
-// "Error invoking remote method 'harness:addWallyDep': PackageError: msg" -> "msg"
-function errorText(e: unknown): string {
-  const text = e instanceof Error ? e.message : String(e)
-  return text.replace(/^Error invoking remote method '[^']+':\s*/, '').replace(/^(\w*Error):\s*/, '')
-}
 
 // "0.7.4+registry.0.2.3" -> "0.7.4" for display (the full tag is in the title).
 function shortVersion(v?: string): string {

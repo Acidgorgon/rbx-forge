@@ -34,6 +34,9 @@
 .mpick-item.sel { color: var(--fg); background: var(--bg-selected); }
 .mpick-item.sel svg { color: var(--ok); }
 .mpick-item.use { color: var(--ember-text); }
+.mpick-item.off { color: var(--fg-faint); cursor: default; }
+.mpick-item.off:hover { background: none; color: var(--fg-faint); }
+.mpick-why { margin-left: auto; padding-left: 8px; flex: none; font-size: 10.5px; color: var(--fg-faint); }
 .mpick-model { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .mpick-more { font-size: 10.5px; color: var(--fg-faint); padding: 2px 8px 4px 28px; }
 .pmark { display: inline-grid; place-items: center; border-radius: var(--r-sm); font-family: var(--font-mono); font-weight: 600; letter-spacing: 0; flex: none; border: 1px solid var(--line-strong); color: var(--fg-2); line-height: 1; }

@@ -248,7 +248,8 @@ test('ChatManager on codex: not signed in -> a notice with a Settings link, no r
   assert.equal(last.settingsLink, 'codex')
   assert.match(last.text, /Codex CLI not found/)
   assert.equal(chats.busy(c.id), false)
-  assert.throws(() => chats.addGuest(chats.create().id, { provider: 'codex', model: 'codex-default' }), /not a guest/)
+  // Codex can be a guest too (test/codexGuests.test.ts); adding one never throws over IPC.
+  assert.equal(chats.addGuest(chats.create().id, { provider: 'codex', model: 'codex-default' }).guests?.[0].provider, 'codex')
 })
 
 test('ChatManager on codex: a stale thread id starts a fresh thread; turn errors are shown once', async () => {

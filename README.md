@@ -149,6 +149,8 @@ Before a big task, Forge says back what it thinks you want and waits. The card h
 Invite other models into a chat. The host model has the project tools and is the only one that edits files. Guests are read-only advisers, and you choose whether they may read project files. `@sol what do you think?` asks one guest directly. "Talk to Sol about…" lets the host consult a guest. A **roundtable** has the models take turns on a topic for 1 to 4 rounds, then the host writes a plan card (agreements, disagreements, recommendation) that becomes a task list in one click. Guests get a compact context pack instead of the whole history, and the usage panel shows tokens per model.
 
 #### Consults, second opinions and the Board
+A guest can also be a Codex model on your ChatGPT plan. It answers through the official Codex CLI (`codex exec`) in the CLI's read-only sandbox and keeps its own Codex thread, so later asks and roundtable rounds continue it. It reads the project with its own read-only commands rather than Forge's guest tools. With *Guests can read project files* off, it runs in an empty scratch folder and is told not to read the project. The sandbox blocks writes, not reads, so the chat says that Forge cannot fully hide files from it. Its tokens are counted at $0.
+
 
 ![Conclusion card: Opus and Sol agreed after 2 of 3 exchanges, with what each model checked](docs/screenshots/170-group-conclusion-dark.png)
 

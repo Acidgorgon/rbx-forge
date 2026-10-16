@@ -44,7 +44,8 @@ export function ModelPicker({
   disabled,
   variant = 'pill',
   placeholder,
-  icon
+  icon,
+  unavailable
 }: {
   value: ModelChoice | null
   providers: ProviderInfo[] | null
@@ -57,6 +58,9 @@ export function ModelPicker({
   // Button text when no model is chosen (e.g. "Add model" in the group chat bar), and an icon before it.
   placeholder?: string
   icon?: ReactNode
+  // Why a model cannot be picked here (e.g. "Host of this chat" when adding a guest), or null. Such
+  // models are shown disabled with the reason instead of failing after the click.
+  unavailable?: (choice: ModelChoice) => string | null
 }) {
   const [open, setOpen] = useState(false)
   const [query, setQuery] = useState('')
@@ -146,9 +150,11 @@ export function ModelPicker({
               spellCheck={false}
               onKeyDown={(e) => {
                 if (e.key !== 'Enter') return
-                const first = groups.find((g) => g.p.ready && (g.shown.length || g.custom))
-                if (!first) return
-                pick({ provider: first.p.id, model: first.shown[0] ?? first.custom! })
+                for (const g of groups) {
+                  if (!g.p.ready) continue
+                  const model = [...g.shown, ...(g.custom ? [g.custom] : [])].find((m) => !unavailable?.({ provider: g.p.id, model: m }))
+                  if (model) return pick({ provider: g.p.id, model })
+                }
               }}
             />
           </div>
@@ -176,9 +182,11 @@ export function ModelPicker({
                   {p.ready &&
                     shown.map((m) => {
                       const sel = value?.provider === p.id && value.model === m
+                      const why = unavailable?.({ provider: p.id, model: m }) ?? null
                       return (
-                        <button key={m} type="button" role="option" aria-selected={sel} className={`mpick-item${sel ? ' sel' : ''}`} onClick={() => pick({ provider: p.id, model: m })}>
+                        <button key={m} type="button" role="option" aria-selected={sel} aria-disabled={!!why || undefined} disabled={!!why} title={why ?? undefined} className={`mpick-item${sel ? ' sel' : ''}${why ? ' off' : ''}`} onClick={() => pick({ provider: p.id, model: m })}>
                           <span className="mpick-model">{m}</span>
+                          {why && <span className="mpick-why">{why}</span>}
                           {sel && <IconCheck size={13} />}
                         </button>
                       )

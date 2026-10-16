@@ -61,7 +61,7 @@ import { ChatModes, gateOpenAiTools, modeNote, refuseRemovedTool, sdkModeOptions
 import { ChatCommands, type CommandHost, type GatingCostRow } from './commands/index.ts'
 import { Checkpoints } from './checkpoints.ts'
 import { codexService, type CodexService } from './codex/service.ts'
-import { codexPrompt, codexSandboxFor } from './codex/chat.ts'
+import { codexMessage, codexPrompt, codexSandboxFor, staleThread } from './codex/chat.ts'
 import { estimateTokens } from './budget/tokens.ts'
 import { LAST_CHAT_MODEL_SETTING } from '../../shared/labModels.ts'
 
@@ -80,6 +80,8 @@ interface StoredChat extends Omit<ChatSession, 'provider' | 'model'>, ModeChatFi
   oaiHistory?: OaiMessage[]
   // Codex thread (`codex exec resume <id>`) of the last Codex turn.
   codexThreadId?: string
+  // Group chat: the Codex thread of each Codex guest, by model.
+  codexGuestThreads?: Record<string, string>
   // The "Codex edits without per-edit approval" note was shown.
   codexNoted?: boolean
   // Provider of the last turn, to notice switches.
@@ -1007,10 +1009,9 @@ export class ChatManager {
         images: paths,
         signal: abort.signal,
         onUpdate: (u) => {
-          if (u.kind === 'thread') chat.codexThreadId = u.threadId
-          else if (u.kind === 'text') this.push(chat, { id: idOf(u.key), role: 'assistant', text: u.text, at: Date.now(), agentId: 'main' })
-          else if (u.kind === 'tool') this.push(chat, { id: idOf(u.key), role: 'tool', text: u.text, tool: { name: u.name, input: u.input }, at: Date.now(), agentId: 'main' })
-          else if (u.kind === 'notice') this.push(chat, { id: idOf(u.key), role: 'system', text: u.text, at: Date.now(), agentId: 'main' })
+          const m = codexMessage(u, idOf)
+          if (m) this.push(chat, m)
+          else if (u.kind === 'thread') chat.codexThreadId = u.threadId
           else if (u.kind === 'usage') {
             // ChatGPT plan usage: tokens are counted, cost is 0 (no API spend).
             this.recordUsage(chat, speaker, { input: Math.max(0, u.usage.input - u.usage.cachedInput), cacheRead: u.usage.cachedInput, output: u.usage.output, costUsd: 0 })
@@ -1130,6 +1131,14 @@ export class ChatManager {
         const notes = (chat.groupNotes ??= [])
         notes.push(t)
         if (notes.length > 20) notes.splice(0, notes.length - 20)
+      },
+      codexThread: (p) => chat.codexGuestThreads?.[p.model],
+      setCodexThread: (p, threadId) => {
+        const threads = { ...(chat.codexGuestThreads ?? {}) }
+        if (threadId) threads[p.model] = threadId
+        else delete threads[p.model]
+        chat.codexGuestThreads = Object.keys(threads).length ? threads : undefined
+        this.save()
       }
     }
   }
@@ -1193,7 +1202,7 @@ export class ChatManager {
     if (r.kind !== 'ok') {
       // "ask gpt 9 and report back" with no such model: say so instead of a silent host turn.
       if (trigger!.converge && looksLikeModel(phrase)) {
-        const ready = ((await this.group.available()).filter((c) => c.provider !== 'codex')).map((c) => modelLabel(c.model))
+        const ready = (await this.group.available()).map((c) => modelLabel(c.model))
         this.push(chat, { ...systemMessage('main', `No model called “${phrase}” is set up. ${ready.length ? `Ready: ${[...new Set(ready)].slice(0, 8).join(', ')}.` : 'No provider is set up yet.'} Add providers in Settings → Providers.`), settingsLink: 'openai' })
         return { kind: 'asked' }
       }
@@ -1346,7 +1355,6 @@ export class ChatManager {
     const chat = this.find(id)
     if (!chat) throw new Error(`unknown chat ${id}`)
     if (!isProviderId(choice?.provider) || !choice.model?.trim()) throw new Error('invalid model choice')
-    if (choice.provider === 'codex') throw new Error('Codex can be a chat’s own model, not a guest in a group chat.')
     const p = this.group.ensureGuest(this.room(chat, new AbortController().signal), { provider: choice.provider, model: choice.model.trim() })
     if (p.role === 'host') throw new Error('that model is already the host of this chat')
     return this.session(chat)
@@ -1356,7 +1364,10 @@ export class ChatManager {
     const chat = this.find(id)
     if (!chat) throw new Error(`unknown chat ${id}`)
     const k = String(key ?? '').toLowerCase()
-    chat.guests = (chat.guests ?? []).filter((g) => g.alias.toLowerCase() !== k && `${g.provider}/${g.model}`.toLowerCase() !== k)
+    const gone = (g: GroupParticipant) => g.alias.toLowerCase() === k || `${g.provider}/${g.model}`.toLowerCase() === k
+    // A Codex guest invited again starts a new Codex thread.
+    for (const g of chat.guests ?? []) if (gone(g) && g.provider === 'codex' && chat.codexGuestThreads) delete chat.codexGuestThreads[g.model]
+    chat.guests = (chat.guests ?? []).filter((g) => !gone(g))
     this.updated(chat)
     return this.session(chat)
   }
@@ -1364,8 +1375,15 @@ export class ChatManager {
   setGuestTools(id: string, on: boolean): ChatSession {
     const chat = this.find(id)
     if (!chat) throw new Error(`unknown chat ${id}`)
+    const was = chat.guestTools !== false
     chat.guestTools = on ? undefined : false
     this.updated(chat)
+    // Codex guests read through the CLI, which Forge cannot keep from reading: say what "off" means.
+    const codex = (chat.guests ?? []).filter((g) => g.provider === 'codex')
+    if (was !== on && codex.length) {
+      const who = `${codex.map((g) => g.label).join(', ')} (Codex)`
+      this.push(chat, systemMessage('main', on ? `${who} can read the project again, with read-only commands in the Codex sandbox.` : `${who} will run in an empty scratch folder and is told not to read project files. The Codex CLI's read-only sandbox blocks writes, not reads, so Forge cannot fully hide files from it.`))
+    }
     return this.session(chat)
   }
 
@@ -1506,11 +1524,6 @@ function transcriptHistory(messages: ChatMessage[], host?: ModelChoice): OaiMess
   }
   while (out.length && out[0].role !== 'user') out.shift()
   return out
-}
-
-// `codex exec resume` with a thread id the CLI no longer has.
-function staleThread(error: string): boolean {
-  return /(session|thread|conversation|rollout)[^.]*(not found|no such|does not exist|missing)|no (saved )?(session|thread|rollout)/i.test(error)
 }
 
 function transcriptText(messages: ChatMessage[], host?: ModelChoice): string {

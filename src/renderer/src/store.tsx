@@ -43,7 +43,7 @@ import type { GroupsState } from '@shared/editorGroups'
 
 export type SideView = 'explorer' | 'scripts' | 'events' | 'sync' | 'tests' | 'team'
 export type BottomTab = 'output' | 'problems' | 'terminal' | 'shell'
-export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics' | 'memory' | 'groups' | 'art' | 'uipreview' | 'vfx' | 'anim' | 'ability' | 'thumbs' | 'uimotion'
+export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics' | 'memory' | 'groups' | 'art' | 'uipreview' | 'vfx' | 'anim' | 'ability' | 'thumbs' | 'uimotion' | 'model'
 export type TabKind = PageKind | 'file' | 'conflict' | 'transcript'
 
 export interface Tab {
@@ -652,7 +652,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await self.openFile(path)
       },
       openPage(kind) {
-        const titles: Record<PageKind, string> = { forge: 'Forge', settings: 'Settings', packages: 'Packages', release: 'Release', analytics: 'Analytics', memory: 'Memory', groups: 'Group chats', art: 'Art', uipreview: 'UI Preview', vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab' }
+        const titles: Record<PageKind, string> = { forge: 'Forge', settings: 'Settings', packages: 'Packages', release: 'Release', analytics: 'Analytics', memory: 'Memory', groups: 'Group chats', art: 'Art', uipreview: 'UI Preview', vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab', model: 'Model Lab' }
         dispatch({ type: 'openTab', tab: { id: kind, kind, title: titles[kind] } })
       },
       openConflict(path) {

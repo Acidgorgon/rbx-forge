@@ -1,0 +1,26 @@
+/* Model Lab: reuses the VFX Lab's make box, library grid, detail and preview (vfx.css); these are the extras. */
+.model-make .vfx-make-row { flex-wrap: wrap; row-gap: 8px; }
+.model-make .vfx-make-row .input { min-width: 200px; flex: 1 1 240px; }
+.model-make .vfx-make-row .seg button { flex: none; padding: 0 8px; }
+.model-drop { margin-top: 10px; min-height: 40px; cursor: default; }
+.model-refs { display: flex; flex-wrap: wrap; gap: 6px; }
+.model-ref { position: relative; width: 64px; height: 48px; border: 1px solid var(--line); border-radius: var(--r-sm); overflow: hidden; background: #0c0c0e; }
+.model-ref img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.model-ref .btn { position: absolute; top: 1px; right: 1px; height: 16px; min-width: 16px; padding: 0; background: rgba(0, 0, 0, .55); color: #ddd; }
+.model-run { margin: 8px 0 0; }
+.model-ago { margin-left: auto; font-size: 10px; }
+.model-title { padding: 0; border: 0; background: none; color: inherit; cursor: text; text-align: left; }
+.model-title:hover { text-decoration: underline dotted; }
+.model-prompt-line { margin: -4px 0 0; font-style: italic; }
+.model-canvas { aspect-ratio: 4 / 3; max-height: 520px; }
+.model-loading { display: grid; place-items: center; }
+.model-over { color: var(--warn); }
+.model-script-editor { height: 420px; }
+.model-critic { display: flex; flex-direction: column; gap: 8px; }
+.model-round { border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 10px; display: flex; flex-direction: column; gap: 6px; font-size: 11.5px; }
+.model-round .note { margin: 0; }
+.model-frames { display: grid; grid-template-columns: repeat(3, 1fr); gap: 4px; }
+.model-studio { display: flex; flex-direction: column; gap: 8px; padding-top: 8px; border-top: 1px solid var(--line); }
+.model-guard { display: flex; flex-wrap: wrap; gap: 8px 14px; }
+.model-guard .input { height: 26px; }
+.model-area { width: 90px; }

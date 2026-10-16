@@ -7,7 +7,7 @@ workbench, Forge Sync, the labs, Settings and the AI flows. It is not part of `n
 
 ```sh
 npm run test:app                       # electron-vite build, then every flow under xvfb-run
-LUNE_PATH=/path/to/lune npm run test:app   # also runs the Lune-backed parts (UI Preview, sequence compose)
+LUNE_PATH=/path/to/lune npm run test:app   # also runs the Lune-backed parts (UI Preview, sequence compose, Model Lab preview)
 ```
 
 Without rebuilding, or a subset (inside an X server / `xvfb-run -a`):
@@ -35,7 +35,8 @@ with `node --experimental-strip-types test/e2e-app/run.ts`).
 - **Fake model provider** (`lib/fakeProvider.ts`): a local OpenAI-compatible server. The
   `fake-provider` flow points Settings > Providers > Custom at it, so chat, restate-first and lab
   compose run end to end. Answers are chosen by rules (restate JSON, a `write_script` tool call for
-  messages with `E2E-WRITE`, default text); add a rule for a new flow. It can report a per-call
+  messages with `E2E-WRITE`, the Model Lab's build script and critic answers, default text); add a rule
+  for a new flow. It can report a per-call
   `usage.cost` (`fake.costUsd`) for the spend-cap flow. Flows before it run with **no provider** and
   check the "no key" states; `providerQolFlows` (slash commands, Ask mode, spend cap) run after it.
 - **Forge Bridge**: the `forge-sync` flow plays the Studio plugin over HTTP against the app's bridge

@@ -40,6 +40,12 @@ async function boot(): Promise<void> {
     createRoot(document.getElementById('root')!).render(<AbilityCapture />)
     return
   }
+  // Offscreen capture window for the Model Lab critic: only the block-model preview.
+  if (new URLSearchParams(location.search).has('model-capture')) {
+    const { ModelCapture } = await import('./pages/model/ModelCapture')
+    createRoot(document.getElementById('root')!).render(<ModelCapture />)
+    return
+  }
   // Hidden capture window for the Studio check: the live stream of the Roblox Studio window.
   if (new URLSearchParams(location.search).has('studio-capture')) {
     const { StudioCapture } = await import('./pages/studio/StudioCapture')

@@ -59,6 +59,8 @@ import { abilityElectronDeps } from './services/ability/electron.ts'
 import { withAbilityTools } from './services/ability/tools.ts'
 import { createUiMotionWiring } from './services/uimotion/wire.ts'
 import { uiMotionElectronDeps } from './services/uimotion/electron.ts'
+import { createModelWiring } from './services/model/wire.ts'
+import { modelElectronDeps } from './services/model/electron.ts'
 import { createPrincipleWiring } from './services/principles/wire.ts'
 import { createGatingWiring } from './services/gating/wire.ts'
 import type { LabTier } from '../shared/labModels.ts'
@@ -752,6 +754,20 @@ const uiMotion = createUiMotionWiring({
   ...uiMotionElectronDeps()
 })
 registerPackSection({ id: 'uimotion', label: 'UI motion library', dir: () => uiMotion.service.userLibraryDir })
+// Model Lab (services/model): blocky plated creature / guard / egg models from a BlockyKit build
+// script (AI-written from a prompt + references, critic rounds on preview snapshots), previewed
+// headlessly in Lune and built in Studio through the Forge Bridge. Visuals only.
+const model = createModelWiring({
+  userDataDir: app.getPath('userData'),
+  root: () => project?.info.root ?? null,
+  settings,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[model] ${text}` }),
+  model: (tier) => labModel(undefined, tier),
+  modelReady: () => agentIpc.visionReady(),
+  bridge: () => studio.bridge,
+  ...modelElectronDeps(preloadPath())
+})
 
 const handlers: Record<string, (...args: any[]) => unknown> = {
   openProject: (root?: string) => openProject(root),
@@ -847,7 +863,7 @@ for (const [name, handler] of Object.entries({ ...integrations.handlers, ...term
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
 }
-for (const [name, handler] of Object.entries({ ...gating.wrap('ability', ability.handlers), ...gating.wrap('thumbs', thumbs.handlers), ...gating.wrap('uimotion', uiMotion.handlers) })) {
+for (const [name, handler] of Object.entries({ ...gating.wrap('ability', ability.handlers), ...gating.wrap('thumbs', thumbs.handlers), ...gating.wrap('uimotion', uiMotion.handlers), ...model.handlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))

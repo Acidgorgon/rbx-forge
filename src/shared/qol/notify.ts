@@ -36,6 +36,7 @@ const LABS: Record<string, { label: string; page: string }> = {
   thumbnail: { label: 'Thumbnail Lab', page: 'thumbs' },
   uimotion: { label: 'UI Motion Lab', page: 'uimotion' },
   motion: { label: 'UI Motion Lab', page: 'uimotion' },
+  model: { label: 'Model Lab', page: 'model' },
   ref: { label: 'Video references', page: 'vfx' },
   studio: { label: 'Studio check', page: 'vfx' }
 }

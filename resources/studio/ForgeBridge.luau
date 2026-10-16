@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 9
+-- forge-bridge-template: 10
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -33,6 +33,10 @@
 -- Earlier versions re-pathed and forgot by path, so after Studio's Ctrl+D (a same-name copy) and a
 -- rename of the copy the original's scripts were tracked under the copy's new name: edits to them
 -- reached disk late or not at all, and the copy's children never did.
+-- Version 10: the Model Lab's "Build in Studio" job. It requires the job's Build module (a block-model
+-- script next to its BlockyKit module), builds one Model in Workspace in front of the camera inside a
+-- ChangeHistoryService recording (Ctrl+Z removes it) and selects it. With a guard path it hands that
+-- existing guard Model to the script, which copies its gameplay pieces; nothing else is changed.
 --
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
@@ -1650,6 +1654,109 @@ local function runDeleteJob(job: any)
 	end
 end
 
+-- ------------------------------------------------------------ Model Lab (v10)
+
+local function findByPath(path: any): Instance?
+	if type(path) ~= "table" then
+		return nil
+	end
+	local node: Instance? = game
+	for i, name in path do
+		if type(name) ~= "string" or not node then
+			return nil
+		end
+		local child = node:FindFirstChild(name)
+		if not child and i == 1 then
+			-- "Workspace" / "ServerStorage"...: a service name
+			local ok, service = pcall(function()
+				return game:GetService(name)
+			end)
+			child = if ok then service else nil
+		end
+		node = child
+	end
+	return node
+end
+
+-- The floor in front of the camera, facing it (the model's front is -Z).
+local function buildOrigin(): CFrame
+	local camera = workspace.CurrentCamera
+	local cf = if camera then camera.CFrame else CFrame.new(0, 10, 30)
+	local look = Vector3.new(cf.LookVector.X, 0, cf.LookVector.Z)
+	look = if look.Magnitude > 1e-3 then look.Unit else Vector3.new(0, 0, -1)
+	local at = cf.Position + look * 28
+	local hit = workspace:Raycast(at + Vector3.new(0, 300, 0), Vector3.new(0, -2000, 0))
+	local ground = if hit then hit.Position else Vector3.new(at.X, 0, at.Z)
+	return CFrame.lookAt(ground, ground - look)
+end
+
+local function runModelJob(job: any)
+	local folder: Folder? = nil
+	local ok, err = pcall(function()
+		post(job, { type = "accepted" })
+		local spec = if type(job.model) == "table" then job.model else {}
+		local guard = nil
+		if type(spec.guard) == "table" and #spec.guard > 0 then
+			guard = findByPath(spec.guard)
+			if not guard or not guard:IsA("Model") then
+				error("the guard to copy, " .. table.concat(spec.guard, ".") .. ", is not a Model in this place", 0)
+			end
+		end
+		folder = jobFolder()
+		buildModules(job.modules or {}, folder :: Folder)
+		local module = (folder :: Folder):FindFirstChild(job.entry or "Build")
+		if not module then
+			error("the job has no build script", 0)
+		end
+		local build = require(module :: ModuleScript) :: any
+		if type(build) ~= "function" then
+			error("the build script must return function(model, ctx)", 0)
+		end
+		local recording = nil
+		if ChangeHistoryService then
+			local okRec, id = pcall(function()
+				return ChangeHistoryService:TryBeginRecording("Forge: build " .. tostring(job.name), "Build " .. tostring(job.name) .. " (RBX Forge Model Lab)")
+			end)
+			recording = if okRec then id else nil
+		end
+		local model = Instance.new("Model")
+		model.Name = job.name
+		local okBuild, buildErr = pcall(build, model, { origin = buildOrigin(), preview = false, guard = guard, areaId = spec.areaId })
+		if okBuild then
+			model.Parent = workspace
+		else
+			model:Destroy()
+		end
+		if recording then
+			pcall(function()
+				ChangeHistoryService:FinishRecording(recording, if okBuild then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel)
+			end)
+		end
+		if not okBuild then
+			error("the build script failed: " .. tostring(buildErr), 0)
+		end
+		pcall(function()
+			game:GetService("Selection"):Set({ model })
+		end)
+		local parts = 0
+		for _, d in model:GetDescendants() do
+			if d:IsA("BasePart") then
+				parts += 1
+			end
+		end
+		print("[Forge Bridge] built " .. model:GetFullName() .. " (" .. parts .. " parts; Ctrl+Z in Studio removes it)")
+		post(job, { type = "log", message = HttpService:JSONEncode({ built = model.Name, parts = parts, path = model:GetFullName() }) })
+		post(job, { type = "done", marks = {} })
+	end)
+	if folder then
+		folder:Destroy()
+	end
+	if not ok then
+		warn("[Forge Bridge] " .. tostring(err))
+		pcall(post, job, { type = "error", message = tostring(err) })
+	end
+end
+
 -- ------------------------------------------------------------ poll loop
 
 plugin.Unloading:Connect(function()
@@ -1689,6 +1796,8 @@ task.spawn(function()
 		if type(answer) == "table" and answer.job then
 			if answer.job.kind == "delete" then
 				runDeleteJob(answer.job)
+			elseif answer.job.kind == "model" then
+				runModelJob(answer.job)
 			else
 				runJob(answer.job)
 			end

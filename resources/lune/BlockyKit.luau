@@ -448,4 +448,131 @@ function Kit:wireGuard(guard: Model, source: Model, root: BasePart, head: BasePa
 	return hrp
 end
 
+-- ── Crystal / armour helpers (added for the Abyssalisk) ─────────────────────────────────────
+
+-- A frame at pos whose +Y points along dir and whose +Z leans toward `bend` (made orthogonal).
+-- Use it to aim horns, shards and antlers in any direction: their tips bend toward +Z, and a
+-- shard's width runs along the frame's X (= dir x bend).
+function Kit.aim(pos: Vector3, dir: Vector3, bend: Vector3): CFrame
+	local y = dir.Unit
+	local z = bend - y * bend:Dot(y)
+	if z.Magnitude < 1e-4 then
+		z = if math.abs(y.Y) < 0.9 then Vector3.yAxis - y * y.Y else Vector3.xAxis - y * y.X
+	end
+	z = z.Unit
+	return CFrame.fromMatrix(pos, y:Cross(z), y, z)
+end
+
+local QUADS = { { -1, -1 }, { 1, -1 }, { 1, 1 }, { -1, 1 } }
+
+-- Crystal shard / blade: a w x d body with a four-facet pyramid tip whose quadrants alternate
+-- light/mid/dark so it reads cut, plus (facet ~= false) a light bevel strip down one half of the
+-- body. cf: base centre, +Y along the shard (see Kit.aim). pal: { light, mid, dark }. ~6 parts;
+-- pass facet = false for 5. Works for crystal spikes, mane blades, claws and fan blades.
+function Kit:shard(bone: BasePart?, cf: CFrame, len: number, w: number, d: number, pal: any, name: string?, tipFrac: number?, facet: boolean?)
+	local n = name or "Shard"
+	local tip = math.min(len * (tipFrac or 0.42), math.max(w, d) * 2.4)
+	local body = math.max(0.1, len - tip)
+	self:part(n, Vector3.new(w, body + 0.04, d), cf * CFrame.new(0, body / 2, 0), self:vary(pal.mid, 0.025), bone)
+	if facet ~= false and w > 0.5 then
+		self:part(n .. "Facet", Vector3.new(w * 0.42, body * 0.94, d + 0.05), cf * CFrame.new(w * 0.27, body * 0.5, 0), pal.light, bone)
+	end
+	local top = cf * CFrame.new(0, body, 0)
+	local cols = { pal.light, pal.mid, pal.dark or pal.mid, pal.light }
+	for i, q in QUADS do
+		self:cornerAt(n .. "Tip", bone, top, q[1], q[2], w / 2, tip, d / 2, cols[i])
+	end
+end
+
+-- Glowing zigzag crack / vein: bars through the model-local points `pts`, lying flat on a surface
+-- whose normals are `nrm` (one per point). Call inside kit:with(Enum.Material.Neon, ...). halo
+-- (e.g. 3) adds a wider translucent strip under the line so it reads as a soft glow.
+function Kit:crack(bone: BasePart?, pts: { Vector3 }, nrm: { Vector3 }, width: number, color: Color3, halo: number?)
+	for i = 1, #pts - 1 do
+		local a, b = pts[i], pts[i + 1]
+		local n = (nrm[i] + nrm[i + 1]).Unit
+		local d = (b - a).Magnitude
+		local cf = CFrame.lookAt((a + b) / 2, b, n)
+		self:part("Crack", Vector3.new(width, width * 0.7, d + width * 0.9), cf, color, bone)
+		if halo then
+			local h = self:part("CrackGlow", Vector3.new(width * halo, width * 0.35, d + width * halo * 0.5), cf * CFrame.new(0, -width * 0.2, 0), color, bone)
+			h.Transparency = 0.72
+		end
+	end
+end
+
+-- Branching crystal antler. cf: base, +Y along the beam, bends toward +Z (use Kit.aim).
+-- spec = { len, w, segs, bend = deg per joint (number or per-joint list), branches = { { at =
+-- joint index, pitch, roll, len, w?, segs, bend, branches? } } }. Negative pitch tilts a tine
+-- away from the bend (upward on a back-swept beam); roll tilts it sideways. Segments are
+-- diamond prisms with a light facet and an angular knuckle; the last one is a shard tip.
+function Kit:antler(bone: BasePart?, cf: CFrame, spec: any, pal: any)
+	local cur = cf
+	local segLen = spec.len / spec.segs
+	for k = 1, spec.segs do
+		local u = (k - 1) / spec.segs
+		local wk = spec.w * (1 - 0.45 * u)
+		if k == spec.segs then
+			self:shard(bone, cur, segLen * 1.25, wk, wk * 0.8, pal, "Antler", 0.6)
+		else
+			local mid = cur * CFrame.new(0, segLen / 2, 0) * CFrame.Angles(0, math.rad(45), 0)
+			self:part("Antler", Vector3.new(wk, segLen + wk * 0.35, wk * 0.8), mid, self:vary(k % 2 == 0 and pal.light or pal.mid, 0.02), bone)
+			self:part("AntlerFacet", Vector3.new(wk * 0.45, segLen * 0.85, wk * 0.85), mid * CFrame.new(wk * 0.3, 0, 0), pal.light, bone)
+			cur = cur * CFrame.new(0, segLen, 0)
+			self:part("AntlerKnuckle", Vector3.new(wk * 1.08, wk * 1.0, wk * 0.95), cur * CFrame.Angles(math.rad(25), math.rad(45), math.rad(20)), pal.dark or pal.mid, bone)
+			for _, br in spec.branches or {} do
+				if br.at == k then
+					local bcf = cur * CFrame.Angles(math.rad(br.pitch or 0), 0, math.rad(br.roll or 0))
+					self:antler(bone, bcf, { len = br.len, w = br.w or wk * 0.75, segs = br.segs or 2, bend = br.bend or 0, branches = br.branches }, pal)
+				end
+			end
+			local b = spec.bend
+			if type(b) == "table" then b = b[k] or 0 end
+			cur = cur * CFrame.Angles(math.rad(b or 0), 0, 0)
+		end
+	end
+end
+
+-- Faceted gem: an elongated octahedron (two four-facet pyramids base to base). cf: centre, +Y
+-- along the long axis (h), +Z out of the surface (d). Seen along Z it is a w x h diamond. Nest a
+-- Neon gem in a larger navy one for a socketed jewel.
+function Kit:gem(bone: BasePart?, cf: CFrame, w: number, h: number, d: number, pal: any)
+	local cols = { pal.light, pal.mid, pal.light, pal.dark or pal.mid }
+	for _, flip in { 0, math.pi } do
+		local base = cf * CFrame.Angles(flip, 0, 0)
+		for i, q in QUADS do
+			self:cornerAt("Gem", bone, base, q[1], q[2], w / 2, h / 2, d / 2, cols[i])
+		end
+	end
+end
+
+-- Armour scale: a two-facet ridge (two CornerWedges sharing an apex at the back-centre) over a
+-- dark base slab. cf: on the surface, +Y = normal, -Z = upstream (toward the head); the thick
+-- edge sits at cf's back, so rows of scales spaced < len overlap like roof tiles. 3 parts.
+function Kit:scale(bone: BasePart?, cf: CFrame, w: number, len: number, h: number, color: Color3, baseColor: Color3?)
+	if baseColor then
+		self:part("ScaleBase", Vector3.new(w * 0.96, 0.4, len * 0.66), cf * CFrame.new(0, 0, -len * 0.4), baseColor, bone)
+	end
+	self:cornerAt("Scale", bone, cf, -1, -1, w / 2, h, len, self:vary(color, 0.02))
+	self:cornerAt("Scale", bone, cf, 1, -1, w / 2, h, len, self:vary(color, 0.05))
+end
+
+-- Chevron scute row (belly plates): n flat plates across an elliptical arc (half-axes a, b in
+-- frame cf, angles from..to in degrees, 270 = straight down), outer plates shifted toward -Z and
+-- yawed so the row forms a V pointing to +Z, each over a darker seam plate.
+function Kit:scutes(bone: BasePart?, cf: CFrame, a: number, b: number, from: number, to: number, n: number, len: number, color: Color3, seam: Color3, vDepth: number?)
+	local step = (to - from) / n
+	local perim = math.pi * (a + b)
+	for j = 0, n - 1 do
+		local c = j - (n - 1) / 2
+		local th = math.rad(from + (j + 0.5) * step)
+		local cs, sn = math.cos(th), math.sin(th)
+		local face = cf * CFrame.new(a * cs, b * sn, 0) * CFrame.Angles(0, 0, math.atan2(sn / b, cs / a) - math.pi / 2)
+		local pw = perim * step / 360 * 1.1
+		local sc = face * CFrame.new(0, 0.12, -math.abs(c) * (vDepth or 0.18) * len) * CFrame.Angles(0, math.rad(math.sign(c) * 7), 0)
+		self:part("Scute", Vector3.new(pw, 0.5, len * 0.84), sc, self:vary(color, 0.025), bone)
+		self:part("ScuteSeam", Vector3.new(pw * 1.08, 0.3, len * 1.1), face * CFrame.new(0, -0.08, 0), seam, bone)
+	end
+end
+
 return Kit

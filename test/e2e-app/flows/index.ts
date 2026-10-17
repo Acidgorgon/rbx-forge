@@ -11,8 +11,9 @@ import { studioFlows, syncFlows } from './sync.ts'
 import { aiFlows } from './ai.ts'
 import { modelAiFlows, modelFlows } from './model.ts'
 import { providerQolFlows, qolFlows, webglOffFlows } from './qol.ts'
+import { queueFlows } from './queue.ts'
 import type { Flow } from './types.ts'
 
 export type { Flow, FlowCtx } from './types.ts'
 
-export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...editorGroupFlows, ...syncFlows, ...labFlows, ...modelFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...artFlows, ...aiFlows, ...modelAiFlows, ...providerQolFlows, ...webglOffFlows]
+export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...editorGroupFlows, ...syncFlows, ...labFlows, ...modelFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...artFlows, ...aiFlows, ...modelAiFlows, ...providerQolFlows, ...queueFlows, ...webglOffFlows]

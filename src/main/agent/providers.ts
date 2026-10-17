@@ -295,8 +295,9 @@ export class Providers {
     return this.meta.get(provider)?.get(model)
   }
 
-  // OpenRouter /models entries: architecture.input_modalities (vision) and
-  // reasoning.supported_efforts (null = every effort; absent = no effort selection).
+  // OpenRouter /models entries: architecture.input_modalities (vision),
+  // reasoning.supported_efforts (null = every effort; absent = no effort selection) and
+  // context_length (the auto-compact window).
   readOpenRouterMeta(entries: any[]): void {
     const map = this.meta.get('openrouter') ?? new Map<string, ModelMeta>()
     for (const e of entries) {
@@ -308,6 +309,7 @@ export class Providers {
         const se = e.reasoning.supported_efforts
         m.efforts = Array.isArray(se) ? se.filter((x: unknown): x is string => typeof x === 'string') : null
       } else m.efforts = undefined
+      if (typeof e.context_length === 'number' && e.context_length > 0) m.contextWindow = e.context_length
       map.set(e.id, m)
     }
     this.meta.set('openrouter', map)

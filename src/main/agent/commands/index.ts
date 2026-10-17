@@ -29,6 +29,8 @@ export interface CmdChat extends ModeChat {
   sdkSessionId?: string
   oaiHistory?: unknown[]
   usage?: GroupUsage[]
+  // Prompt tokens of the last request (the context meter); a compaction resets it.
+  contextTokens?: number
 }
 
 export interface GatingCostRow {
@@ -156,13 +158,18 @@ export class ChatCommands {
         chat.oaiHistory = undefined
         chat.todos = undefined
         chat.seed = ''
+        chat.contextTokens = undefined
         this.host.updated(chat)
         this.say(chat, name, args, 'Conversation cleared. The next message starts fresh (files are unchanged; /rewind still has the checkpoints).')
         return { text: 'cleared', action: { kind: 'selectChat', id } }
       }
-      case 'compact':
+      case 'compact': {
         busyGuard()
-        return reply(await this.compact(chat, args))
+        const r = await this.compact(chat, args)
+        // A compaction is posted as the divider ("Compacted · 142k → 48k tokens", summary folded).
+        this.host.push(chat, { id: randomUUID(), role: 'system', text: r.text, at: Date.now(), agentId: 'main', command: `/compact${args ? ` ${args}` : ''}`, ...(r.compact ? { compact: r.compact } : {}) })
+        return { text: r.text }
+      }
       case 'ask':
       case 'plan': {
         if (!args) return reply(`Add the message after /${name}, e.g. /${name} ${name === 'ask' ? 'how does ModuleLoader start services?' : 'add a daily reward system'}.`)
@@ -261,19 +268,26 @@ export class ChatCommands {
     return reply(`Model: ${pick.provider}/${pick.model} for this chat.`)
   }
 
-  private async compact(chat: CmdChat, focus: string): Promise<string> {
+  // Every provider: the visible conversation is summarized on the cheap tier and the next turn starts
+  // fresh from the summary (a new SDK session, OpenAI history or Codex thread). "Before" is the real
+  // context of the last request when known (tool results included), else the transcript estimate.
+  private async compact(chat: CmdChat, focus: string): Promise<{ text: string; compact?: NonNullable<ChatMessage['compact']> }> {
     const text = conversationText(chat.messages)
-    if (!text.trim()) return 'Nothing to compact yet.'
-    if (!this.host.oneShot) return 'Compaction needs a model; set one up in Settings.'
-    const before = estimateTokens(text)
+    if (!text.trim()) return { text: 'Nothing to compact yet.' }
+    if (!this.host.oneShot) return { text: 'Compaction needs a model; set one up in Settings.' }
+    const before = Math.max(estimateTokens(text), chat.contextTokens ?? 0)
     const summary = (await this.host.oneShot(SUMMARY_INSTRUCTIONS + (focus ? `\nFocus on: ${focus}` : ''), text)).trim()
-    if (!summary) return 'The summary came back empty; nothing changed.'
-    const after = estimateTokens(summary)
+    if (!summary) return { text: 'The summary came back empty; nothing changed.' }
     chat.seed = `Summary of the conversation so far (compacted with /compact):\n${summary}`
+    const after = estimateTokens(chat.seed)
     chat.sdkSessionId = undefined
     chat.oaiHistory = undefined
+    chat.contextTokens = undefined
     this.host.updated(chat)
-    return `Compacted: ~${formatTokens(before)} → ~${formatTokens(after)} tokens (saved ~${formatTokens(Math.max(0, before - after))}). The next message continues from this summary:\n\n${summary}`
+    return {
+      text: `Compacted: ~${formatTokens(before)} → ~${formatTokens(after)} tokens (saved ~${formatTokens(Math.max(0, before - after))}). The next message continues from this summary:\n\n${summary}`,
+      compact: { trigger: 'manual', before, after, summary }
+    }
   }
 
   private async cost(chat: CmdChat): Promise<string> {
@@ -418,6 +432,7 @@ export class ChatCommands {
       if (root && this.host.checkpoints && gone.length) await this.host.checkpoints(root).drop(gone).catch(() => undefined)
       chat.sdkSessionId = undefined
       chat.oaiHistory = undefined
+      chat.contextTokens = undefined
       const transcript = conversationText(chat.messages, { tools: false })
       chat.seed = transcript ? `Earlier in this conversation:\n${transcript.slice(-12_000)}` : ''
     }

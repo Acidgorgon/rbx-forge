@@ -16,6 +16,7 @@ import { UpdatesSection } from '../../updates/UpdatesSection'
 import { ForgeSyncSettings } from './ForgeSyncSettings'
 import { LabsSettings } from './LabsSettings'
 import { RestateSettingRow } from './RestateSettings'
+import { AutoCompactSettingRows } from './AutoCompactSettings'
 import { QolSettings } from '../../qol/QolSettings'
 import { DoctorBanner } from '../qolc/Doctor'
 import { SpendSettingsSection } from '../qolc/Spend'
@@ -444,6 +445,7 @@ export function SettingsPage() {
             <section className="set-sec" id="set-chat">
               <h2>Chat</h2>
               <RestateSettingRow scope="chat" />
+              <AutoCompactSettingRows />
             </section>
             <section className="set-sec" id="set-providers">
               <h2>Providers</h2>

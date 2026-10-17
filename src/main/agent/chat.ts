@@ -65,6 +65,8 @@ import { ChatCommands, type CommandHost, type GatingCostRow } from './commands/i
 import { Checkpoints } from './checkpoints.ts'
 import { codexService, type CodexService } from './codex/service.ts'
 import { codexMessage, codexPrompt, codexSandboxFor, staleThread } from './codex/chat.ts'
+import { generatedImagesMessage, importGeneratedImages } from './codex/imageSink.ts'
+import { isCodexWarningNotice } from './codex/events.ts'
 import { estimateMessagesTokens, estimateTokens } from './budget/tokens.ts'
 import { LAST_CHAT_MODEL_SETTING } from '../../shared/labModels.ts'
 
@@ -223,6 +225,8 @@ export class ChatManager {
     this.group = new GroupChat(ctx, deps)
     const stored = ctx.getSetting<{ sessions?: StoredChat[] } | null>(SETTING, null)
     this.chats = Array.isArray(stored?.sessions) ? stored.sessions : []
+    // Codex CLI config warnings older versions posted into transcripts: the log has them.
+    for (const c of this.chats) if (Array.isArray(c.messages)) c.messages = c.messages.filter((m) => !(m?.role === 'system' && typeof m.text === 'string' && isCodexWarningNotice(m.text)))
     this.modes = new ChatModes({ ctx, find: (id) => this.find(id), push: (c, m) => this.push(c as StoredChat, m) })
     this.modes.expireStale(this.chats)
     this.cmds = new ChatCommands(this.commandHost())
@@ -498,8 +502,9 @@ export class ChatManager {
         this.push(chat, systemMessage('main', budgetStopText(check.reason)))
         return
       }
-      if (check.level === 'warn' && check.reason && chat.budgetWarned !== check.reason) {
-        chat.budgetWarned = check.reason
+      // Once per cap: the reason's numbers change every turn ("chat is at 312k tokens").
+      if (check.level === 'warn' && check.reason && chat.budgetWarned !== budgetKey(check.reason) && chat.budgetWarned !== check.reason) {
+        chat.budgetWarned = budgetKey(check.reason)
         this.push(chat, systemMessage('main', `Budget: ${check.reason.replace(/\.+\s*$/, '')}.`))
       }
     }
@@ -1124,7 +1129,7 @@ export class ChatManager {
         return id
       }
       let errorShown = false
-      const prompt = codexPrompt({ text, mode, rules, fresh: !resume, transcript: resume ? '' : transcript(), basePrompt: SYSTEM_PROMPT, ...(studioConfig.length ? { studio: true } : {}) })
+      const prompt = codexPrompt({ text, mode, rules, fresh: !resume, transcript: resume ? '' : transcript(), basePrompt: SYSTEM_PROMPT, images: paths, ...(studioConfig.length ? { studio: true } : {}) })
       const r = await codex.exec({
         cwd: root,
         prompt,
@@ -1134,6 +1139,13 @@ export class ChatManager {
         resumeId: resume,
         images: paths,
         signal: abort.signal,
+        // image_gen output: shown here and saved to art/concepts (codex/imageSink.ts).
+        onImages: async (files) => {
+          const got = await importGeneratedImages(files, { prompt: text })
+          for (const p of got.problems) this.ctx.log({ service: 'agent', stream: 'stderr', text: `Codex image: ${p}` })
+          const m = generatedImagesMessage(got)
+          if (m) this.push(chat, m)
+        },
         onUpdate: (u) => {
           const m = codexMessage(u, idOf)
           if (m) this.push(chat, m)
@@ -1249,7 +1261,8 @@ export class ChatManager {
       recordUsage: (speaker, u) => {
         this.recordUsage(chat, speaker, u)
         // Guest calls (and the host's consult calls) are not in the turn's own meter: add them.
-        this.deps.meter?.ledger.record({ at: Date.now(), provider: speaker.provider, model: speaker.model, chatId: chat.id, input: u.input, output: u.output, cacheRead: 0, cacheWrite: 0, ...(u.costUsd !== undefined ? { costUsd: u.costUsd } : {}), costSource: u.costUsd !== undefined ? 'estimate' : 'unknown' })
+        // Cache reads stay cache reads: the budget counts them at 10% (budget.ts countTokens).
+        this.deps.meter?.ledger.record({ at: Date.now(), provider: speaker.provider, model: speaker.model, chatId: chat.id, input: u.input, output: u.output, cacheRead: u.cacheRead ?? 0, cacheWrite: u.cacheWrite ?? 0, ...(u.costUsd !== undefined ? { costUsd: u.costUsd } : {}), costSource: u.costUsd !== undefined ? 'estimate' : 'unknown' })
       },
       get board() {
         return chat.board ?? []
@@ -1600,6 +1613,11 @@ export class ChatManager {
   private push(chat: StoredChat, m: ChatMessage): void {
     // The chat was deleted while a turn still ran.
     if (!this.alive(chat)) return
+    // A Codex CLI config warning is never a chat line, whichever path it came by (output log only).
+    if (m.role === 'system' && isCodexWarningNotice(m.text)) {
+      this.ctx.log({ service: 'agent', stream: 'info', text: `[codex] warning: ${m.text}` })
+      return
+    }
     // Images a tool produced arrive as forge-image markers in text: show them as message images.
     if (m.role !== 'user' && m.text.includes('forge-image://')) {
       const x = extractImageMarkers(m.text)
@@ -1642,6 +1660,11 @@ export class ChatManager {
 }
 
 type GentreeToolAny = GentreeTool<any>
+
+// A budget reason without its numbers: which cap it is.
+export function budgetKey(reason: string): string {
+  return reason.replace(/\$?\d[\d.,]*[kM]?/g, '#')
+}
 
 function planOf(text: string) {
   const p = planCardFrom(text)

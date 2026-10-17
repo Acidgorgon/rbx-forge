@@ -48,6 +48,7 @@ import { spendBlock } from '../services/spend/gate.ts'
 import { defineTool, gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
 import { codexService, type CodexService } from './codex/service.ts'
 import { CODEX_GROUP_SANDBOX, codexGroupPrompt, codexMessage, staleThread } from './codex/chat.ts'
+import { generatedImagesMessage, importGeneratedImages } from './codex/imageSink.ts'
 import { codexStudioConfig, resolveStudioMcp } from './studioMcp.ts'
 
 // Read tools a guest may use, when guest tools are on. Never any of WRITE_TOOLS.
@@ -85,7 +86,8 @@ export interface Room {
   signal: AbortSignal
   push(m: ChatMessage): void
   addGuest(p: GroupParticipant): void
-  recordUsage(speaker: Speaker, usage: { input: number; output: number; costUsd?: number }): void
+  // input excludes cache reads / writes (they are counted apart, like the provider reports them).
+  recordUsage(speaker: Speaker, usage: { input: number; output: number; cacheRead?: number; cacheWrite?: number; costUsd?: number }): void
   // Group chat v2: the chat's Board (decisions, open questions, conclusions) and its update.
   board?: BoardItem[]
   setBoard?(items: BoardItem[]): void
@@ -406,6 +408,11 @@ export class GroupChat {
     let cost: number | undefined
     const emit = (m: ChatMessage) => {
       if (m.role === 'assistant') {
+        // Generated images always show, even from a silent call.
+        if (m.images?.length) {
+          room.push({ ...m, agentId: 'main', speaker })
+          return
+        }
         texts.set(m.id, m.text)
         if (opts.silent) return
       }
@@ -418,7 +425,7 @@ export class GroupChat {
       const pr = priced(p.model, u, { provider: p.provider })
       tokens += input + u.output
       if (pr.usage.costUsd !== undefined) cost = (cost ?? 0) + pr.usage.costUsd
-      room.recordUsage(speaker, { input, output: u.output, ...(pr.usage.costUsd !== undefined ? { costUsd: pr.usage.costUsd } : {}) })
+      room.recordUsage(speaker, { input: u.input, cacheRead: u.cacheRead ?? 0, cacheWrite: u.cacheWrite ?? 0, output: u.output, ...(pr.usage.costUsd !== undefined ? { costUsd: pr.usage.costUsd } : {}) })
     }
     const toolList = tools ? this.guestTools() : []
     const maxTokens = this.setting<number>('guestMaxTokens')
@@ -434,7 +441,8 @@ export class GroupChat {
       await this.speakCodex(room, p, prompt, { system, tools, persist: p.role === 'guest' && !opts.system, images: opts.images ?? [] }, emit, (u) => {
         tokens += u.input + u.output
         cost ??= 0
-        room.recordUsage(speaker, { ...u, costUsd: 0 })
+        // Codex's input_tokens include the cached ones.
+        room.recordUsage(speaker, { input: Math.max(0, u.input - u.cachedInput), cacheRead: u.cachedInput, output: u.output, costUsd: 0 })
       })
       return done()
     }
@@ -531,7 +539,7 @@ export class GroupChat {
     prompt: string,
     o: { system: string; tools: boolean; persist: boolean; images: ChatImage[] },
     emit: (m: ChatMessage) => void,
-    onUsage: (u: { input: number; output: number }) => void
+    onUsage: (u: { input: number; cachedInput: number; output: number }) => void
   ): Promise<void> {
     const note = (text: string, extra: Partial<ChatMessage> = {}) => emit({ id: randomUUID(), role: 'system', text: `${p.label}: ${text}`, at: Date.now(), agentId: 'main', ...extra })
     const codex = (this.deps.codex ?? codexService)()
@@ -563,7 +571,7 @@ export class GroupChat {
         return codex.exec({
           cwd,
           ...(root ? { root } : {}),
-          prompt: codexGroupPrompt({ system: o.system, prompt, fresh: !resumeId, projectFiles: !scratch }),
+          prompt: codexGroupPrompt({ system: o.system, prompt, fresh: !resumeId, projectFiles: !scratch, images }),
           sandbox: CODEX_GROUP_SANDBOX,
           // With guest tools on: Studio's look-only tools (no Luau, playtests or edits).
           ...(o.tools && !scratch ? { config: codexStudioConfig(resolveStudioMcp((k, f) => this.ctx.getSetting(k, f)).active, { readOnly: true }) } : {}),
@@ -572,12 +580,20 @@ export class GroupChat {
           images,
           ephemeral: !o.persist,
           signal: room.signal,
+          // image_gen output: shown in the chat under this guest and saved to art/concepts.
+          onImages: async (files) => {
+            const got = await importGeneratedImages(files, { prompt: lastUserText(room) })
+            for (const x of got.problems) this.ctx.log({ service: 'agent', stream: 'stderr', text: `group chat ${p.label} (Codex image): ${x}` })
+            const m = generatedImagesMessage(got)
+            if (m) emit(m)
+            if (got.concepts.length && p.role === 'guest') room.note(`${p.label} generated ${got.concepts.length === 1 ? 'an image' : `${got.concepts.length} images`} (shown in the chat, saved to ${got.concepts.join(', ')}).`)
+          },
           onUpdate: (u) => {
             const m = codexMessage(u, idOf)
             if (m) emit(m)
             else if (u.kind === 'thread') {
               if (o.persist) room.setCodexThread?.(p, u.threadId)
-            } else if (u.kind === 'usage') onUsage({ input: u.usage.input, output: u.usage.output })
+            } else if (u.kind === 'usage') onUsage({ input: u.usage.input, cachedInput: u.usage.cachedInput, output: u.usage.output })
             else if (u.kind === 'error' && !errorShown && !(resumeId && staleThread(u.message))) {
               errorShown = true
               note(u.message)
@@ -802,6 +818,12 @@ export class GroupChat {
       )
     ]
   }
+}
+
+// The user's latest message: the prompt saved with images a guest generates for it.
+function lastUserText(room: Room): string {
+  for (let i = room.messages.length - 1; i >= 0; i--) if (room.messages[i].role === 'user') return room.messages[i].text
+  return ''
 }
 
 // What a Codex guest can and cannot do, for its join notice.

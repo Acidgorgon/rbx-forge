@@ -291,12 +291,25 @@ export class ArtService {
       this.deps.onProgress?.({ id: job, stage: 'failed', detail: (error as Error).message })
       throw error
     }
+    const items = await this.writeCodexItems(root, res.images, { prompt, full, style: q.style, transparent: q.transparent, refs: refs.map((r) => r.path), slug: input.slug, source: input.source ?? 'page' })
+    const notes = res.notes.length ? ` · ${res.notes.join(' ')}` : ''
+    this.deps.onProgress?.({ id: job, stage: 'done', detail: `${items.length} image${items.length === 1 ? '' : 's'} (Codex)${notes}` })
+    this.deps.onChanged?.(root)
+    return items
+  }
+
+  // Codex images as concepts: art/concepts/<day>/<slug>-<n>.<ext> plus the sidecar, then the git policy.
+  private async writeCodexItems(
+    root: string,
+    images: Buffer[],
+    o: { prompt: string; full: string; style: ArtItem['style']; transparent: boolean; refs: string[]; slug?: string; source: ArtItem['source'] }
+  ): Promise<ArtItem[]> {
     const date = dayOf(this.now())
-    const slug = slugify(input.slug || prompt)
+    const slug = slugify(o.slug || o.prompt)
     const dir = join(root, ...CONCEPTS_DIR.split('/'), date)
     let index = await nextIndex(dir, slug)
     const items: ArtItem[] = []
-    for (const bytes of res.images) {
+    for (const bytes of images) {
       const size = pngSize(bytes)
       const mime = mimeOf(bytes)
       const outputFormat = mime === 'image/jpeg' ? ('jpeg' as const) : mime === 'image/webp' ? ('webp' as const) : ('png' as const)
@@ -307,22 +320,22 @@ export class ArtService {
           date,
           slug,
           index,
-          prompt,
-          fullPrompt: full,
-          style: q.style,
+          prompt: o.prompt,
+          fullPrompt: o.full,
+          style: o.style,
           model: CODEX_IMAGE_MODEL,
           size: size ? `${size.width}x${size.height}` : 'auto',
           quality: 'auto',
-          background: q.transparent ? 'transparent' : 'auto',
+          background: o.transparent ? 'transparent' : 'auto',
           outputFormat,
-          mode: refs.length ? 'edit' : 'generate',
-          ...(refs.length ? { referencePaths: refs.map((r) => r.path) } : {}),
+          mode: o.refs.length ? 'edit' : 'generate',
+          ...(o.refs.length ? { referencePaths: o.refs } : {}),
           seed: null,
           costUsd: 0,
           createdAt: new Date(this.now()).toISOString(),
           bytes: bytes.byteLength,
           ...(size ? { width: size.width, height: size.height } : {}),
-          source: input.source ?? 'page'
+          source: o.source
         },
         bytes
       )
@@ -331,8 +344,16 @@ export class ArtService {
     }
     const policy = this.settings(root).gitPolicy
     if (policy !== 'track' || items.some((i) => i.bytes > 5 * 1024 * 1024)) await applyGitPolicy(root, policy).catch(() => undefined)
-    const notes = res.notes.length ? ` · ${res.notes.join(' ')}` : ''
-    this.deps.onProgress?.({ id: job, stage: 'done', detail: `${items.length} image${items.length === 1 ? '' : 's'} (Codex)${notes}` })
+    return items
+  }
+
+  // Images Codex made in a chat (agent/codex/imageSink.ts): saved like the Art page's Codex images,
+  // with the chat request as the prompt, so the Art page lists them. Needs an open project.
+  async saveGenerated(input: { images: Buffer[]; prompt: string }): Promise<ArtItem[]> {
+    const root = this.root()
+    const prompt = input.prompt.trim().slice(0, 4000) || 'Image made by Codex in a chat'
+    if (!input.images.length) return []
+    const items = await this.writeCodexItems(root, input.images, { prompt, full: prompt, style: 'none', transparent: false, refs: [], source: 'agent' })
     this.deps.onChanged?.(root)
     return items
   }

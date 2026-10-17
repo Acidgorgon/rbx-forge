@@ -119,4 +119,11 @@ export async function attachImageToChat(input: AttachInput): Promise<ChatImage |
   }
 }
 
+// An image already in the chat store (one a model generated) back into the composer, to ask for
+// changes to it.
+export function attachStoredImage(ref: ChatImage): void {
+  if (listener) listener(ref)
+  else queued.push(ref)
+}
+
 export { MAX_IMAGES_PER_MESSAGE }

@@ -4,7 +4,7 @@ import { useEffect, useMemo, useState } from 'react'
 import type { ChatImage } from '@shared/types'
 import { Icon } from '../components/Icons'
 import { Lightbox, type LightboxItem } from '../components/Lightbox'
-import { chatImageUrl } from './attachments'
+import { attachStoredImage, chatImageUrl } from './attachments'
 import { sizeLabel } from './imageScale'
 
 export function useChatImageUrl(id: string): string | null {
@@ -51,7 +51,8 @@ export function ImageThumb({ img, onRemove, onOpen, size = 'md' }: { img: ChatIm
 
 const loadChatImage = (it: LightboxItem) => chatImageUrl(it.key)
 
-export function MessageImages({ images, size = 'md' }: { images: ChatImage[]; size?: 'sm' | 'md' | 'lg' }) {
+// attachable: a model's images get "Attach to message" in the viewer, to ask for changes to one.
+export function MessageImages({ images, size = 'md', attachable = false }: { images: ChatImage[]; size?: 'sm' | 'md' | 'lg'; attachable?: boolean }) {
   const [open, setOpen] = useState<number | null>(null)
   const items = useMemo<LightboxItem[]>(() => images.map((i) => ({ key: i.id, name: i.name ?? 'image', detail: sizeLabel(i.bytes) || undefined })), [images])
   if (!images.length) return null
@@ -60,7 +61,34 @@ export function MessageImages({ images, size = 'md' }: { images: ChatImage[]; si
       {images.map((i, k) => (
         <ImageThumb key={i.id} img={i} size={images.length === 1 && size === 'md' ? 'lg' : size} onOpen={() => setOpen(k)} />
       ))}
-      {open !== null && <Lightbox items={items} index={open} onIndex={setOpen} onClose={() => setOpen(null)} load={loadChatImage} />}
+      {open !== null && (
+        <Lightbox
+          items={items}
+          index={open}
+          onIndex={setOpen}
+          onClose={() => setOpen(null)}
+          load={loadChatImage}
+          actions={
+            attachable
+              ? (it) => {
+                  const ref = images.find((i) => i.id === it.key)
+                  return ref ? (
+                    <button
+                      className="btn small ghost"
+                      onClick={() => {
+                        attachStoredImage(ref)
+                        setOpen(null)
+                      }}
+                      title="Attach this image to the message you are writing, to ask for changes to it"
+                    >
+                      <Icon name="at" size={12} /> Attach to message
+                    </button>
+                  ) : null
+                }
+              : undefined
+          }
+        />
+      )}
     </div>
   )
 }

@@ -69,6 +69,32 @@ export function isCodexWarning(message: string): boolean {
   return WARNING_RE.test(message.trim())
 }
 
+// A chat notice that only carries a Codex CLI config warning: "Codex: Codex is ignoring 1
+// unrecognized configuration setting ..." (how older Forge versions posted them), optionally after a
+// speaker label or "Error: ". Such lines belong in the output log, not in a transcript.
+export function isCodexWarningNotice(text: string): boolean {
+  const t = text.trim()
+  if (!/codex|config/i.test(t)) return false
+  const inner = t.replace(/^(?:[^:\n]{1,60}: )?(?:Error: )?/, '')
+  return isCodexWarning(inner) || isCodexWarning(t)
+}
+
+// The reason of a failed image_gen call: a message, or the plan's image limit (with its reset).
+export function imageFailureText(f: unknown): string {
+  if (!f) return ''
+  if (typeof f === 'string') return f
+  if (typeof f !== 'object') return ''
+  const o = f as Record<string, any>
+  if (typeof o.message === 'string' && o.message) return o.message
+  const limit = o.usage_limit_exceeded ?? o.UsageLimitExceeded ?? o.usageLimitExceeded ?? (/usage_?limit/i.test(String(o.type ?? o.kind ?? '')) ? o : null)
+  if (limit && typeof limit === 'object') {
+    const at = Number(limit.resets_at ?? limit.resetsAt)
+    const when = Number.isFinite(at) && at > 0 ? ` (resets ${new Date(at * 1000).toLocaleString()})` : ''
+    return `the ChatGPT plan's image generation limit is reached${when}`
+  }
+  return short(o, 300)
+}
+
 export class CodexEventMapper {
   // Paths in file changes are shown relative to this root.
   private root: string | undefined
@@ -186,9 +212,12 @@ export class CodexEventMapper {
         return [{ kind: 'tool', key, name: 'web_search', input: short(item.query), text: done ? 'done' : '', done }]
       case 'collab_tool_call':
         return [{ kind: 'tool', key, name: str(item.tool) || 'agent', input: short(item.prompt ?? ''), text: done ? (failed ? 'Error: failed' : 'done') : '', done, ...(failed ? { error: true } : {}) }]
+      // Not in today's `codex exec --json` (the images are found on disk, generated.ts); newer CLIs
+      // or the app-server shape may send it. A failed call shows the CLI's own reason.
       case 'image_generation': {
-        const err = str(item.failure?.message ?? item.error?.message)
-        return [{ kind: 'tool', key, name: 'image_gen', input: short(item.revised_prompt ?? item.revisedPrompt ?? ''), text: done ? (err ? `Error: ${err}` : 'image generated') : '', done, ...(err ? { error: true } : {}) }]
+        const err = imageFailureText(item.failure ?? item.error) || (failed ? 'image generation failed' : '')
+        const text = done ? (err ? `Error: ${err}` : item.saved_path || item.savedPath ? `saved ${str(item.saved_path ?? item.savedPath)}` : 'image generated') : ''
+        return [{ kind: 'tool', key, name: 'image_gen', input: short(item.revised_prompt ?? item.revisedPrompt ?? ''), text, done, ...(err ? { error: true } : {}) }]
       }
       case 'todo_list': {
         const items = Array.isArray(item.items) ? item.items : []

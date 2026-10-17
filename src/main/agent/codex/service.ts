@@ -15,6 +15,7 @@ import { buildExecArgs, codexEnv, DEVICE_LOGIN_ARGS, LOGIN_ARGS, LOGIN_STATUS_AR
 import { DeviceAuthParser, deviceAuthUnsupported, findCodex, loginUrl, parseLoginStatus, parseModelCatalog, parseVersion, type CodexAuthMethod } from './binary.ts'
 import { CODEX_INSTALL_DOCS, CODEX_NPM_VERSION, findNpm, installArgs, installEnv, installError, installProgressLine } from './install.ts'
 import { CodexEventMapper, type CodexUpdate, type CodexUsage } from './events.ts'
+import { GeneratedImageWatch } from './generated.ts'
 import { lastErrorLine, runCli, type RunOptions, type SpawnedRun } from './process.ts'
 
 export const CODEX_INSTALL_HINT = 'Install the Codex CLI (npm i -g @openai/codex, or brew install --cask codex on a Mac), then sign in.'
@@ -74,6 +75,9 @@ export interface ExecInput {
   onUpdate?: (u: CodexUpdate) => void
   // Root for relative paths in file-change chips (defaults to cwd).
   root?: string
+  // Images the built-in image_gen tool saved during this run (generated.ts), as they appear: before
+  // the next update is passed on, so a chat shows them where Codex made them. Awaited in order.
+  onImages?: (paths: string[]) => Promise<void> | void
 }
 
 export interface ExecResult {
@@ -81,6 +85,8 @@ export interface ExecResult {
   lastMessage: string
   usage: CodexUsage
   savedImages: string[]
+  // Images this run made (onImages got each of them).
+  images: string[]
   aborted: boolean
   // Set when the run failed (turn.failed / error event / non-zero exit).
   error?: string
@@ -388,23 +394,61 @@ export class CodexService {
     if (!path) throw new Error(`Codex CLI not found. ${CODEX_INSTALL_HINT}`)
     const mapper = new CodexEventMapper(i.root ?? i.cwd)
     const args = buildExecArgs({ cwd: i.cwd, sandbox: i.sandbox, model: i.model, resumeId: i.resumeId, images: i.images, ephemeral: i.ephemeral, config: i.config })
+    const env = this.env()
+    const pass = (updates: CodexUpdate[]) => {
+      for (const u of updates) {
+        // Warnings about the user's Codex setup go to the output log, never into a chat.
+        if (u.kind === 'warning') this.warn(u.text)
+        else i.onUpdate?.(u)
+      }
+    }
+    // Image watch: with onImages, updates go through one queue so images found on disk are handed
+    // over before the update that follows them ("Made two concepts above").
+    const found: string[] = []
+    const watch = i.onImages ? new GeneratedImageWatch({ home: codexHome(env), cwd: i.cwd, since: Date.now() }) : null
+    if (watch) await watch.prime(i.resumeId).catch(() => undefined)
+    let queue: Promise<void> = Promise.resolve()
+    let lastScan = 0
+    const flush = async () => {
+      if (!watch || !i.onImages) return
+      lastScan = Date.now()
+      const fresh = await watch.scan(mapper.threadId).catch(() => [] as string[])
+      if (!fresh.length) return
+      found.push(...fresh)
+      try {
+        await i.onImages(fresh)
+      } catch (e) {
+        this.deps.log?.(`could not show generated images: ${(e as Error).message}`, 'stderr')
+      }
+    }
     const r = await this.run({
       bin: path,
       args,
       cwd: i.cwd,
-      env: this.env(),
+      env,
       stdin: i.prompt,
       signal: i.signal,
       timeoutMs: i.timeoutMs,
       onStdoutLine: (line) => {
-        for (const u of mapper.line(line)) {
-          // Warnings about the user's Codex setup go to the output log, never into a chat.
-          if (u.kind === 'warning') this.warn(u.text)
-          else i.onUpdate?.(u)
-        }
+        const updates = mapper.line(line)
+        if (!watch) return pass(updates)
+        queue = queue.then(async () => {
+          // Text and tool rows come after an image call; usage ends the turn. Commands stream many
+          // updates, so other scans are spaced out.
+          const key = updates.some((u) => u.kind === 'text' || u.kind === 'usage' || (u.kind === 'tool' && u.done))
+          if (mapper.threadId && (key || Date.now() - lastScan > 500)) await flush()
+          try {
+            pass(updates)
+          } catch (e) {
+            this.deps.log?.(`chat update failed: ${(e as Error).message}`, 'stderr')
+          }
+        })
       }
     })
-    const out: ExecResult = { threadId: mapper.threadId, lastMessage: mapper.lastMessage, usage: mapper.usage, savedImages: mapper.savedImages, aborted: r.aborted }
+    await queue
+    // Images made before a stop still belong to the chat.
+    await flush()
+    const out: ExecResult = { threadId: mapper.threadId, lastMessage: mapper.lastMessage, usage: mapper.usage, savedImages: mapper.savedImages, images: found, aborted: r.aborted }
     if (r.aborted) return out
     if (r.timedOut) out.error = 'Codex did not finish in time.'
     else if (mapper.failed) out.error = mapper.failed

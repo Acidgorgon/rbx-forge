@@ -88,7 +88,7 @@ export const Message = memo(function Message({ m, chat }: { m: ChatMessage; chat
       {m.speaker && group && <SpeakerHead s={m.speaker} host={host} chat={chat} />}
       {st.text && <Markdown text={st.text} />}
       {st.stance && <StancePill stance={st.stance} />}
-      {m.images?.length ? <MessageImages images={m.images} /> : null}
+      {m.images?.length ? <MessageImages images={m.images} attachable /> : null}
     </div>
   )
 })

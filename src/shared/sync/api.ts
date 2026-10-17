@@ -56,6 +56,9 @@ export interface SyncApi {
   // "Identify" (Forge Bridge v11): that unlinked place's Studio window shows its label ("Place1 #2")
   // for a few seconds, within about 5 s. Throws for an older plugin or a place that went away.
   syncIdentifyPlace(id: string): Promise<{ label: string }>
+  // "Check now" (Forge Bridge v12): the Studio window(s) of this place file start a fresh sync check
+  // within a few seconds. Throws when none is open, or for an older plugin (restart Studio).
+  syncRecheckPlace(projectFile: string): Promise<SyncStatus>
   forgeSyncSettings(): Promise<ForgeSyncSettings>
   setForgeSyncSettings(patch: Partial<ForgeSyncSettings>): Promise<ForgeSyncSettings>
 }

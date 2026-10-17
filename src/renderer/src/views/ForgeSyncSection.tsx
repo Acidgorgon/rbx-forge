@@ -2,9 +2,13 @@
 // serves (gate), conflicts with a 3-way compare (opens the conflict tab), first-run bulk choice,
 // "Commit teammate edits", recent Studio -> disk activity and the legacy plugin banner.
 // Unlinked Studio places with the same name read "Place1 #1 / #2" with what is in each (plugin v11)
-// and an Identify button; with several place files, Link asks which one (inline picker).
+// and an Identify button; with several place files, Link asks which one (inline picker), or links in
+// one click when Forge can tell which place file it is (UnlinkedPlace.suggest).
+// Drift: a place whose Studio is open but behind disk ("Match is 5 files behind disk": not linked, no
+// sync session with its window, or its rojo not serving / not connected) is a callout at the top with
+// the fix (Link, Check now, Start Rojo).
 import { useEffect, useState } from 'react'
-import type { GateState, PlaceInfo, PlaceSyncStatus, SyncAction, SyncEntry, SyncRef, SyncStatus, UnlinkedPlace } from '@shared/types'
+import type { GateState, PlaceDrift, PlaceInfo, PlaceSyncStatus, SyncAction, SyncEntry, SyncRef, SyncStatus, UnlinkedPlace } from '@shared/types'
 import { collisionLabels } from '@shared/sync/labels'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
@@ -136,6 +140,23 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         onCancel={() => setPicking(null)}
       />
     ) : null
+  // "Start Rojo" for a place file: a non-active place needs "Serve all places" (its own servePort).
+  const startRojo = (file: string) =>
+    act(`rojo:${file}`, async () => {
+      if (file !== state.activePlace && !state.appSettings?.serveAllPlaces) await actions.setAppSettings({ serveAllPlaces: true })
+      const rojo = state.services.find((x) => x.id === 'rojo')
+      if (!rojo || rojo.state === 'stopped' || rojo.state === 'crashed' || rojo.state === 'missing') await window.harness.startService('rojo')
+      return window.harness.syncStatus()
+    }, `Rojo serves ${targetName(file)}. Connect Rojo in its Studio window.`)
+  const recheck = (file: string) => act(`recheck:${file}`, () => window.harness.syncRecheckPlace(file), `Asked Studio to check ${targetName(file)} again`)
+  // Every drifted place (linked rows and unlinked windows), for the callouts at the top.
+  const drifts: { key: string; drift: PlaceDrift; projectFile?: string; unlinked?: UnlinkedPlace }[] = [
+    ...status.places.filter((p) => p.drift).map((p) => ({ key: `p:${p.placeKey}:${p.projectFile}`, drift: p.drift!, projectFile: p.projectFile })),
+    ...(status.unlinked ?? []).filter((u) => u.drift).map((u) => ({ key: `u:${u.id}`, drift: u.drift!, unlinked: u }))
+  ]
+  // Unlinked windows that can be linked, shown prominently (not only when rojo waits for them).
+  const linkable = (status.unlinked ?? []).filter((u) => u.canLink && !u.drift)
+  const linkOne = (u: UnlinkedPlace, at: 'callout' | 'row', ok: (file: string) => string) => (u.suggest ? link(u, u.suggest, ok(u.suggest)) : startLink(u, at, ok))
   const serveUnchecked = (file?: string) =>
     act(`nocheck:${file ?? '*'}`, () => window.harness.syncServeWithoutCheck(file), 'Rojo serves without a Studio check. Check its dialog in Studio before you accept: it may offer to delete Studio-only scripts.')
 
@@ -156,6 +177,50 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         </div>
       )}
 
+      {drifts.map(({ key, drift, projectFile, unlinked }) => (
+        <div key={key} className="callout warn fs-callout fs-drift" role="alert" title={`${drift.text}\n\n${drift.files.join('\n')}${drift.behind > drift.files.length ? `\n… and ${drift.behind - drift.files.length} more` : ''}`}>
+          <div>
+            <b>{drift.text.split(': ')[0]}</b>
+            {drift.text.includes(': ') ? `: ${drift.text.split(': ').slice(1).join(': ')}.` : '.'}
+          </div>
+          <div className="fs-sub note ellipsis mono" style={{ padding: 0 }}>{drift.files.slice(0, 3).join(', ')}{drift.behind > 3 ? ', …' : ''}</div>
+          <div className="row">
+            {drift.fix === 'link' && unlinked && (
+              <button className="mini-btn hot" disabled={!!busy} title={`Link this Studio place to ${targetName(drift.linkTo ?? linkTarget)} (${drift.linkTo ?? linkTarget}). Its first sync waits until you pick a side.`} onClick={() => link(unlinked, drift.linkTo ?? linkTarget, `Linked ${unlinkedName(unlinked)} to ${targetName(drift.linkTo ?? linkTarget)}. Forge checks it before Rojo serves.`)}>
+                Link to {targetName(drift.linkTo ?? linkTarget)}
+              </button>
+            )}
+            {drift.fix === 'recheck' && projectFile && (
+              <button className="mini-btn hot" disabled={!!busy} title="Ask that Studio window for a fresh sync check (Forge Bridge v12): Forge reads Studio first, then Rojo serves" onClick={() => void recheck(projectFile)}>
+                Check now
+              </button>
+            )}
+            {drift.fix === 'start-rojo' && projectFile && (
+              <button className="mini-btn hot" disabled={!!busy} title={projectFile !== state.activePlace && !state.appSettings?.serveAllPlaces ? `Turns on "Serve all places" so ${projectFile} gets its own rojo serve, then starts Rojo` : 'Starts rojo serve'} onClick={() => void startRojo(projectFile)}>
+                Start Rojo for {targetName(projectFile)}
+              </button>
+            )}
+          </div>
+        </div>
+      ))}
+      {linkable.length > 0 && !blockedWait && (
+        <div className="callout warn fs-callout fs-not-linked" role="status">
+          <div>
+            Not linked: Studio has {linkable.map((u) => `"${unlinkedName(u)}"`).join(', ')} open, but {linkable.length === 1 ? "it isn't" : "they aren't"} linked to this project, so nothing from {linkable.length === 1 ? 'it' : 'them'} syncs and Rojo is not checked against {linkable.length === 1 ? 'it' : 'them'}.
+          </div>
+          <div className="row">
+            {linkable.map((u) => {
+              const ok = (file: string) => `Linked ${unlinkedName(u)} to ${targetName(file)}. Its first sync waits for your choice.`
+              return (
+                <button key={u.id} className="mini-btn hot" disabled={!!busy} title={u.suggest ? `Sync this Studio place with ${targetName(u.suggest)} (${u.suggest})${u.fingerprint ? `\n${u.fingerprint}` : ''}` : `Pick the place file this Studio place syncs with${u.fingerprint ? `\n${u.fingerprint}` : ''}`} onClick={() => linkOne(u, 'callout', ok)}>
+                  Link "{unlinkedName(u)}"{u.suggest ? ` to ${targetName(u.suggest)}` : multi ? '…' : ''}
+                </button>
+              )
+            })}
+          </div>
+          {linkable.map((u) => picker(u, 'callout', (file) => `Linked ${unlinkedName(u)} to ${targetName(file)}. Its first sync waits for your choice.`))}
+        </div>
+      )}
       {status.legacyPluginInstalled && (
         <div className="callout warn fs-callout">
           <div>
@@ -243,7 +308,8 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
               <span className="grow ellipsis">{rowLabel(p)}</span>
               <span className={`tag ${g.cls}`}>{p.gate === 'blocked' ? (p.conflicts || !p.studioOnly?.holds ? `${p.conflicts} held` : `${p.studioOnly.count} not on disk`) : g.label}</span>
             </div>
-            <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}</div>
+            <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}{p.rojo === 'stopped' ? ' · rojo not serving it' : ''}</div>
+            {p.drift && <div className="fs-sub note" style={{ color: 'var(--warn)' }} title={p.drift.files.join('\n')}>{p.drift.behind} file{p.drift.behind === 1 ? '' : 's'} behind disk</div>}
             {p.fingerprint && rowLabel(p) !== placeName(p) && <div className="fs-sub note ellipsis" title={p.fingerprint}>{p.fingerprint}</div>}
             {p.gate === 'waiting' && !blockedWait && (
               <div className="fs-sub note fs-waiting" title={p.gateDetail}>
@@ -311,9 +377,9 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
             )}
 
             {mine.map((c) => (
-              <div key={c.path} className="lrow fs-conflict" onClick={() => actions.openConflict(c.path)} title={`Compare (3-way)\n${c.path}\n${c.instancePath?.join('.') ?? ''}\n${c.note ? c.note : c.reason === 'first-run' ? 'first sync, no shared version yet' : c.reason === 'deleted-vs-edited' ? 'deleted on one side, edited on the other' : 'changed in Studio and on disk'}`}>
+              <div key={c.path} className="lrow fs-conflict" onClick={() => actions.openConflict(c.path)} title={`Compare (3-way)\n${c.path}\n${c.instancePath?.join('.') ?? ''}\n${c.note ? c.note : c.reason === 'duplicate' ? 'Studio has several instances with this name' : c.reason === 'first-run' ? 'first sync, no shared version yet' : c.reason === 'deleted-vs-edited' ? 'deleted on one side, edited on the other' : 'changed in Studio and on disk'}`}>
                 <Icon name="diff" size={14} style={{ color: 'var(--warn)' }} />
-                <span className="grow ellipsis">{basename(c.path)}</span>
+                <span className="grow ellipsis">{basename(c.path)}{c.reason === 'duplicate' ? ' · same-name copies in Studio' : ''}</span>
                 <button className="mini-btn" disabled={!!busy} title="Write the Studio version to disk" onClick={(e) => (e.stopPropagation(), void act(`c:${c.path}`, () => window.harness.syncResolve(c.placeKey!, c.path, 'studio')))}>Studio</button>
                 <button className="mini-btn" disabled={!!busy} title="Keep the disk version (Rojo pushes it to Studio)" onClick={(e) => (e.stopPropagation(), void act(`c:${c.path}`, () => window.harness.syncResolve(c.placeKey!, c.path, 'disk')))}>Disk</button>
               </div>

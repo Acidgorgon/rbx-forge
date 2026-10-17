@@ -383,6 +383,15 @@ if scenario == "late-root" then
 	local controllers = methods.FindFirstChild(script, "Controllers")
 	new("ModuleScript", "Shop", controllers, "return {}")
 	task.wait(1.5)
+elseif scenario == "forge-restart" then
+	-- Plugin v12: Forge restarts (or the project is reopened) while this window sits idle with its old
+	-- session. The next poll says resync and the plugin checks again without any edit in Studio; the
+	-- first edit after that reaches disk through the new session.
+	local _, script = rojoBuildsClient()
+	waitForMarker("swapped")
+	waitForMarker("resynced")
+	script.Source = "print(\"after restart\")"
+	task.wait(2)
 elseif scenario == "editor-only" then
 	-- The mapped folders exist from the start; the user types in the Script Editor and Studio has not
 	-- written Script.Source (yet).

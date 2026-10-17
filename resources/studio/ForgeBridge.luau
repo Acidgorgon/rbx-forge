@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 11
+-- forge-bridge-template: 12
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -42,6 +42,12 @@
 -- Identify for an unlinked place in Forge, the config answer carries identify: the plugin shows that
 -- label in a banner over this window's viewport for a few seconds (CoreGui, never saved with the place)
 -- and prints it to Output. Nothing in the place is changed or selected.
+-- Version 12: each poll says which Forge Sync session this window holds (sync=<token>, empty while it
+-- has none) with its run id and, unpublished, its ForgeSyncLink. When Forge has no live session for a
+-- linked place's window (Forge or the project restarted, or the session expired while Studio was busy),
+-- the poll answer carries resync and the plugin starts its check again at once. Before, an idle window
+-- only found out on its next edit, so a place could sit unchecked (and rojo serve unheld or held for it)
+-- for hours while its Studio drifted behind disk.
 --
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
@@ -1869,6 +1875,17 @@ task.spawn(function()
 			continue
 		end
 		local query = "/poll?v=" .. VERSION .. "&place=" .. HttpService:UrlEncode(game.Name) .. "&placeId=" .. tostring(game.PlaceId)
+		-- v12: this window's sync state, so Forge can ask for a fresh check (see the header).
+		query ..= "&sync=" .. HttpService:UrlEncode(sync.session or "") .. "&probe=" .. SYNC_PROBE
+		if game.PlaceId == 0 then
+			local link = nil
+			pcall(function()
+				link = ServerStorage:GetAttribute(LINK_ATTRIBUTE)
+			end)
+			if type(link) == "string" and link ~= "" then
+				query ..= "&link=" .. HttpService:UrlEncode(link)
+			end
+		end
 		local ok, answer = request("GET", query)
 		if not ok then
 			if connected then
@@ -1888,6 +1905,13 @@ task.spawn(function()
 		end
 		if sync.waitingForForge then
 			-- Forge is back (maybe restarted with a new session): fetch the config and resend everything.
+			sync.waitingForForge = false
+			sync.wanted = true
+			sync.retryAt = 0
+		end
+		if type(answer) == "table" and answer.resync == true then
+			-- Forge has no live sync session for this (linked) place: check again now.
+			print("[Forge Bridge] Forge Sync: RBX Forge asked for a fresh check of this place")
 			sync.waitingForForge = false
 			sync.wanted = true
 			sync.retryAt = 0

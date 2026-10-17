@@ -172,3 +172,45 @@ test('sync plugin: the Studio plugin speaks the sync protocol', async () => {
   const chunk = /SYNC_CHUNK_BYTES = (\d+) \* 1024/.exec(src)
   assert.ok(chunk && Number(chunk[1]) * 1024 < 256 * 1024)
 })
+
+test('sync bridge: plugin v12 polls carry the sync session; a pollHint resync is answered at once', async () => {
+  const b = await bridge()
+  const seen: unknown[] = []
+  const handler = new FakeSync() as FakeSync & SyncHandler
+  handler.pollHint = (info) => {
+    seen.push(info)
+    return info.session ? null : { resync: true }
+  }
+  b.setSyncHandler(handler)
+  const base = `http://127.0.0.1:${b.port}/forge-bridge/poll`
+  const session = '6b1f2c3d-0000-4000-8000-000000000001'
+  try {
+    const idle = await (await fetch(`${base}?placeId=42&place=FSF&v=12&sync=&probe=probe-0001`)).json()
+    assert.deepEqual(idle, { idle: true, resync: true })
+    const live = await (await fetch(`${base}?placeId=42&place=FSF&v=12&sync=${session}&probe=probe-0001`)).json()
+    assert.deepEqual(live, { idle: true }, 'a live session waits for jobs as before')
+    assert.deepEqual(seen[0], { placeId: 42, session: '', place: 'FSF', probe: 'probe-0001', pluginVersion: 12 })
+    assert.equal((seen[1] as { session: string }).session, session)
+    const w = b.studios().find((s) => s.placeId === 42)
+    assert.equal(w?.probe, 'probe-0001')
+    assert.equal(w?.syncSession, session)
+    // An older plugin (no sync parameter) is never asked.
+    seen.length = 0
+    await (await fetch(`${base}?placeId=42&place=FSF&v=11`)).json()
+    assert.equal(seen.length, 0)
+    // A throwing hint never breaks the poll.
+    handler.pollHint = () => {
+      throw new Error('boom')
+    }
+    assert.deepEqual(await (await fetch(`${base}?placeId=42&place=FSF&v=12&sync=`)).json(), { idle: true })
+  } finally {
+    await b.stop()
+  }
+})
+
+test('sync plugin v12: polls with its sync session and restarts its check on resync', async () => {
+  const src = await readFile(resolve(import.meta.dirname, '..', 'resources', 'studio', 'ForgeBridge.luau'), 'utf8')
+  assert.ok(PLUGIN_VERSION >= 12)
+  assert.ok(src.includes(`-- forge-bridge-template: ${PLUGIN_VERSION}`))
+  for (const needle of ['&sync=', 'answer.resync == true']) assert.ok(src.includes(needle), needle)
+})

@@ -354,3 +354,27 @@ test('Forge Sync: with the gate setting off or the project engine, rojo serves w
     await ctx.supervisor.stopAll()
   }
 })
+
+test('rojoState: serving the active place only (Serve all places off), held by the gate, stopped', shOnly, async () => {
+  rmSync(runs, { force: true })
+  const { root, supervisor } = make()
+  await supervisor.setRoot(root)
+  await supervisor.setPlaces(
+    [
+      { file: 'default.project.json', name: 'match', isDefault: true, servePort: 34872, sourcemap: 'sourcemap.json' } as never,
+      { file: 'menu.project.json', name: 'menu', isDefault: false, servePort: 34875, sourcemap: '.studio-sync/sourcemap.menu.json' } as never
+    ],
+    'menu.project.json'
+  )
+  assert.equal(supervisor.rojoState('menu.project.json'), 'stopped')
+  await supervisor.start('rojo')
+  await waitFor(() => serves().length === 1)
+  // The FSF case: Menu is the active place, so Match's rojo is not served at all.
+  assert.equal(supervisor.rojoState('menu.project.json'), 'serving')
+  assert.equal(supervisor.rojoState('default.project.json'), 'stopped')
+  supervisor.setGate('menu.project.json', 'blocked', '1 conflict')
+  assert.equal(supervisor.rojoState('menu.project.json'), 'held')
+  supervisor.setGate('menu.project.json', 'clear')
+  await supervisor.stopAll()
+  assert.equal(supervisor.rojoState('menu.project.json'), 'stopped')
+})

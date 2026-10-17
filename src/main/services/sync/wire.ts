@@ -5,13 +5,13 @@
 
 import { cleanTarget } from '../../../shared/studio/target.ts'
 import type { StudioConflict } from '../../../shared/types.ts'
-import type { SyncStatus, GateState, WaitReason } from '../../../shared/sync/types.ts'
+import type { SyncStatus, GateState, RojoServeState, WaitReason } from '../../../shared/sync/types.ts'
 import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING } from '../../../shared/sync/types.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import type { ServiceState } from '../../../shared/types.ts'
 import { findTool, run, toolEnv } from '../tools.ts'
 import { deleteInStudio, deleteManyInStudio, deleteUnavailable, type DeleteBridge } from '../studio/deleteInstance.ts'
-import { engineSetting, SyncService, type LiveStudioNode, type SyncEngineLike, type SyncHandler, type SyncMapping } from './service.ts'
+import { engineSetting, SyncService, type LiveStudioNode, type StudioWindow, type SyncEngineLike, type SyncHandler, type SyncMapping } from './service.ts'
 
 export interface SyncWireDeps {
   settings: { get<T>(key: string, fallback: T): T; set(key: string, value: unknown): void }
@@ -24,8 +24,10 @@ export interface SyncWireDeps {
   }
   pluginsDir: () => string | null
   studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
-  // Every Studio window polling the bridge right now (and its plugin version).
-  studios?: () => { placeId?: number; place?: string; pluginVersion?: number }[]
+  // Every Studio window polling the bridge right now (and its plugin version, v12: its sync session).
+  studios?: () => StudioWindow[]
+  // rojo serve for a place file right now (supervisor.rojoState).
+  rojo?: (projectFile: string) => RojoServeState
   plugin?: () => Promise<{ installed: boolean; version?: number } | null>
   // The engine worker's SyncEngine and mapping.ts (loadPlaces / placeFor). Absent: Forge Sync stays
   // off for the plugin and every place serves normally.
@@ -80,6 +82,9 @@ export function syncSummary(status: SyncStatus): { state: ServiceState; detail: 
     const parts = [...(n || !only ? [`${n} conflict${n === 1 ? '' : 's'} held`] : []), ...(only ? [`${only} Studio-only script${only === 1 ? '' : 's'} not on disk`] : [])]
     return { state: 'running', detail: `Forge Sync: ${parts.join(', ')}` }
   }
+  // An open Studio place is behind disk (not linked, not syncing, its rojo not serving or not connected).
+  const drift = [...status.places.map((p) => p.drift), ...(status.unlinked ?? []).map((u) => u.drift)].filter((d) => !!d)
+  if (drift.length) return { state: 'starting', detail: `Forge Sync: ${drift[0]!.text}${drift.length > 1 ? ` (+${drift.length - 1} more)` : ''}` }
   // Studio edits are not reaching disk (no plugin, place refused, mapped folders missing ...): not green.
   if (status.notice?.level === 'warn') return { state: 'starting', detail: status.notice.text }
   const waiting = status.places.filter((p) => p.gate === 'waiting')
@@ -118,7 +123,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     config: async (q) => (current ? current.handler.config(q) : { enabled: false, sessionToken: '', roots: [], skip: [], reason: 'No project open in Forge' }),
     snapshot: async (body) => (current ? current.handler.snapshot(body) : offAnswer),
     changes: async (body) => (current ? current.handler.changes(body) : offAnswer),
-    outline: async (body) => (current?.handler.outline ? current.handler.outline(body) : offAnswer)
+    outline: async (body) => (current?.handler.outline ? current.handler.outline(body) : offAnswer),
+    pollHint: (info) => current?.handler.pollHint?.(info) ?? null
   }
 
   const deleteDeps = () => {
@@ -148,6 +154,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     syncPullStudioOnly: (placeKey: string) => need().pullStudioOnly(String(placeKey)),
     syncLinkPlace: (id: string, projectFile?: string) => need().linkPlace(String(id), typeof projectFile === 'string' && projectFile ? projectFile : undefined),
     syncIdentifyPlace: async (id: string) => need().identifyPlace(String(id)),
+    syncRecheckPlace: (projectFile: string) => need().recheckPlace(String(projectFile)),
     syncCommitStudioEdits: (message?: string): Promise<SyncCommitResult> => need().commitStudioEdits(message),
     syncDisableLegacyPlugin: () => need().disableLegacyPlugin(),
     syncSaveTarget: async (instancePath: unknown) => (current ? current.saveTarget(deps.activePlace?.() ?? 'default.project.json', cleanPath(instancePath)) : { reason: 'No project open' }),
@@ -197,6 +204,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
         pluginsDir: deps.pluginsDir,
         studio: deps.studio,
         studios: deps.studios,
+        rojo: deps.rojo,
         plugin: deps.plugin,
         onGate: (file, gate, detail, reason) => deps.supervisor.setGate(file, gate, detail, reason),
         emit,

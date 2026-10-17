@@ -180,7 +180,7 @@ export interface StudioConflict {
   base?: string | null
   placeKey?: string
   instancePath?: string[]
-  reason?: 'both-changed' | 'first-run' | 'deleted-vs-edited'
+  reason?: 'both-changed' | 'first-run' | 'deleted-vs-edited' | 'duplicate'
   note?: string
 }
 

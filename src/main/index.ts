@@ -562,11 +562,23 @@ const forgeSync = createSync({
     return info ? { placeId: info.placeId, place: info.place, pluginVersion: info.pluginVersion, connected: studio.bridge.connected() } : null
   },
   studios: () => studio.bridge.studios(),
+  rojo: (file) => supervisor.rojoState(file),
   plugin: async () => {
     const s = await studio.service.status()
     return s.plugin.dir ? { installed: s.plugin.installed, ...(s.plugin.version !== undefined ? { version: s.plugin.version } : {}) } : null
   },
-  engine: (root) => new SyncEngine({ root }),
+  // A file Forge writes for an instance made in Studio is written with rojo serve paused: Rojo would
+  // add a second same-name instance for a file that appears while it serves (it adopts Studio's own
+  // one when it reconnects).
+  engine: (root) =>
+    new SyncEngine({
+      root,
+      guardNewFile: (file, rel, fn) => {
+        const serving = supervisor.rojoState(file) === 'serving'
+        if (serving) logs.push({ service: 'harness', stream: 'info', text: `[sync] ${rel} is new on disk for an instance made in Studio: rojo serve restarts around the write so Rojo adopts Studio's instance instead of adding a second one. Reconnect Rojo in Studio.` })
+        return rojoPause.run(fn, 'new file from Studio', serving)
+      }
+    }),
   mapping: { loadPlaces, placeFor },
   activePlace: () => project?.activePlace ?? null,
   onStudioTree: () => project?.studioChanged(),

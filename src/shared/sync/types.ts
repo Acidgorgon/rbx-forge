@@ -125,10 +125,13 @@ export interface SyncConflictInfo {
   base: string | null
   disk: string
   studio: string
-  // 'first-run': no base yet and Studio != disk.
-  reason: 'both-changed' | 'first-run' | 'deleted-vs-edited'
+  // 'first-run': no base yet and Studio != disk. 'duplicate': Studio has two or more siblings with
+  // this name (one file can hold only one of them): Forge does not pick one, the user does.
+  reason: 'both-changed' | 'first-run' | 'deleted-vs-edited' | 'duplicate'
   // Why it is held when the reason alone does not say (a file another place maps too).
   note?: string
+  // 'duplicate': how many same-name siblings Studio has at instancePath.
+  copies?: number
 }
 
 // ---- Gate: whether Rojo may serve a place ----
@@ -168,6 +171,14 @@ export interface PlaceSyncStatus {
   // Mapped roots (instance paths joined with '.') the last Studio snapshot did not have: nothing
   // under them is synced until they exist in Studio (e.g. Rojo has not connected yet).
   missingRoots?: string[]
+  // A Studio window for this place polls the Forge Bridge right now (it may not be syncing: see drift).
+  studioOpen?: boolean
+  // rojo serve for this place file: running, held by the gate, or not running (not the active place and
+  // "Serve all places" off, or stopped).
+  rojo?: RojoServeState
+  // Disk has changes this place's Studio has not got (see PlaceDrift); absent when it is up to date or
+  // nothing can be said (no Studio open, no shared version yet).
+  drift?: PlaceDrift
   // Scripts that exist only in Studio (no file on disk) and that Rojo would delete from Studio when
   // it connects. `holds`: rojo serve is held for them (found by a snapshot or a resolve) until they
   // are pulled to disk or the user serves anyway. Items capped at STUDIO_ONLY_MAX; count is not.
@@ -175,6 +186,38 @@ export interface PlaceSyncStatus {
 }
 
 export const STUDIO_ONLY_MAX = 50
+
+export type RojoServeState = 'serving' | 'held' | 'stopped'
+
+// Why an open Studio place is behind disk, and the one-click fix:
+//   not-linked          the window's place is not linked to this project ('link': SyncStatus.unlinked id)
+//   not-syncing         linked, but Forge has no live sync session with that window ('recheck': plugin
+//                       v12 restarts its check; older plugins: 'restart-studio')
+//   rojo-stopped        rojo serve for the place file is not running ('start-rojo')
+//   rojo-held           rojo serve is held by the gate (resolve what it holds)
+//   rojo-not-connected  rojo serves, but disk edits are not reaching Studio (connect Rojo in Studio)
+export type DriftCause = 'not-linked' | 'not-syncing' | 'rojo-stopped' | 'rojo-held' | 'rojo-not-connected'
+
+export interface PlaceDrift {
+  // Files whose disk copy differs from what this place's Studio last had (its base), new on disk, or
+  // deleted on disk while Studio still has them.
+  behind: number
+  // The place's display name ("Match").
+  place: string
+  // A few of them (repo-relative), newest first; at most DRIFT_FILES_MAX.
+  files: string[]
+  // Newest disk change among them (ms).
+  newest?: number
+  cause: DriftCause
+  // "Match is 5 files behind disk: Rojo is not serving it" (one line, for the status bar and panel).
+  text: string
+  fix?: 'link' | 'recheck' | 'start-rojo' | 'restart-studio'
+  // fix 'link': the SyncStatus.unlinked id and the place file to link it to.
+  unlinkedId?: string
+  linkTo?: string
+}
+
+export const DRIFT_FILES_MAX = 10
 
 // A script in Studio under a mapped root with no file on disk, which Rojo would delete from Studio
 // when it (re)connects: its topmost Studio-only ancestor is not a direct child of an
@@ -237,6 +280,11 @@ export interface UnlinkedPlace {
   fingerprint?: string
   // Plugin v11 (sends a fingerprint): "Identify" makes that Studio window show its label.
   canIdentify?: boolean
+  // The place file a one-click Link would use (a place file whose name matches the Studio place, or
+  // the only one no Studio window is syncing), when Forge can tell.
+  suggest?: string
+  // It synced with this project before (a shared version under its PlaceId) and disk moved on since.
+  drift?: PlaceDrift
 }
 
 export const UNSYNCED_REFS_MAX = 100

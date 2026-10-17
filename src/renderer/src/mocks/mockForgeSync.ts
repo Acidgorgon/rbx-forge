@@ -1,7 +1,9 @@
 // Browser-preview mock of SyncApi (Forge Sync): an FSF-like project with two places (match =
 // default.project.json, menu = menu.project.json) that cross-mount src/skills, teammate edits pulled
 // from Studio, a held conflict and a first-run place.
-// ?forgesync=blocked (default) | firstrun | studioonly | clear | checking | project | off
+// ?forgesync=blocked (default) | firstrun | studioonly | clear | checking | drift | project | off
+// drift: the match place's Studio is open but Forge has no sync session with it, 5 files behind disk,
+// and two same-name EmperorsShot modules held as a duplicate conflict on the menu place.
 import type { ForgeSyncSettings, HarnessEvents, StudioConflict, StudioOnlyScript, SyncApi, SyncConflictInfo, SyncEntry, SyncStatus, PlaceSyncStatus } from '@shared/types'
 import { collapseInstancePaths } from '@shared/explorerSelection'
 
@@ -60,6 +62,20 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
       reason: 'both-changed'
     })
   }
+  if (mode === 'drift') {
+    conflicts.push({
+      placeKey: MENU,
+      file: 'src/skills/Definitions/EmperorsShot.luau',
+      instancePath: ['ReplicatedStorage', 'Shared', 'Skills', 'EmperorsShot'],
+      base: DASH_DISK,
+      disk: DASH_DISK,
+      studio: DASH_STUDIO,
+      reason: 'duplicate',
+      copies: 2,
+      note: 'Studio has 2 ModuleScripts named EmperorsShot in ReplicatedStorage.Shared.Skills (one file, src/skills/Definitions/EmperorsShot.luau, can hold only one; Rojo would keep one and delete the rest): copy 1 (ModuleScript) = disk; copy 2 (ModuleScript): 1 line(s) differ from disk. Take Studio writes copy 2 to disk, Take disk keeps the file; then delete the extra copy in Studio (or accept Rojo\'s dialog, which deletes it)'
+    })
+  }
+  let rechecked = false
   if (mode === 'firstrun') {
     conflicts.push(
       { placeKey: MENU, file: 'src/menu/Shop/ShopController.luau', instancePath: ['StarterPlayer', 'StarterPlayerScripts', 'Menu', 'Shop', 'ShopController'], base: null, disk: SHOP_DISK, studio: SHOP_STUDIO, reason: 'first-run' },
@@ -111,7 +127,22 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
         ...(mode === 'checking' ? {} : { lastSnapshot: t - 42_000 }),
         counts: mode === 'checking' ? {} : { same: 318, pulled: 3, created: 3, renamed: 1, trashed: 1, ...(held(MATCH) ? { conflict: held(MATCH) } : { merged: 1 }) },
         conflicts: held(MATCH),
-        ...only(MATCH)
+        ...only(MATCH),
+        ...(mode === 'drift' && !rechecked
+          ? {
+              studioOpen: true,
+              rojo: 'stopped' as const,
+              drift: {
+                behind: 5,
+                place: 'Match',
+                files: ['src/skills/Definitions/EmperorsShot.luau', 'src/server/Config/GameConfig.luau', 'src/server/Features/Character/CharacterService.luau', 'src/server/Handlers/BallHandler.server.luau', 'src/skills/Server/SkillHelpers.luau'],
+                newest: t - 11 * 3_600_000,
+                cause: 'not-syncing' as const,
+                text: 'Match is 5 files behind disk: Studio has it open, but Forge has no sync session with that window: check it now',
+                fix: 'recheck' as const
+              }
+            }
+          : {})
       },
       {
         placeKey: MENU,
@@ -145,7 +176,7 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
   const studioConflicts = (): StudioConflict[] | null =>
     settings.engine !== 'forge'
       ? null
-      : conflicts.map((c) => ({ path: c.file, repoSource: c.disk, studioSource: c.studio, base: c.base, placeKey: c.placeKey, instancePath: c.instancePath, reason: c.reason }))
+      : conflicts.map((c) => ({ path: c.file, repoSource: c.disk, studioSource: c.studio, base: c.base, placeKey: c.placeKey, instancePath: c.instancePath, reason: c.reason, ...(c.note ? { note: c.note } : {}) }))
 
   const changed = () => {
     const s = status()
@@ -209,6 +240,13 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
       const u = status().unlinked?.find((x) => x.id === id)
       log(`identify ${id}`)
       return { label: u?.label ?? u?.name ?? 'Place1' }
+    },
+    async syncRecheckPlace(projectFile) {
+      await delay(300)
+      rechecked = true
+      log(`re-checking ${projectFile}`)
+      changed()
+      return status()
     },
     async syncLinkPlace(id) {
       log(`linked ${id}`)

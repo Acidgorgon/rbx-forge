@@ -6,6 +6,10 @@
 //   POST /forge-bridge/sync/changes   ChangesBody   -> SyncReply   (debounced by the plugin)
 //   POST /forge-bridge/sync/outline   OutlineBody   -> SyncReply   (plugin v5: Game-tab outline of the
 //        config's `outline` containers outside the synced roots; debounced, re-sent only when changed)
+//   GET  /forge-bridge/poll?...&sync=<session token or empty>&probe=&link=  (plugin v12) -> the poll's
+//        answer may carry resync: true: this window's place is linked but Forge has no live session
+//        with it (Forge restarted, the project was reopened, the session expired): the plugin starts
+//        its check again (config + snapshot) instead of waiting for its next edit.
 //
 // SyncReply is { ok: true } or { ok: false, error, resend?: true }; resend asks the plugin for a fresh
 // full snapshot. Everything that arrives is checked here (pure, no I/O) before main sees it: shapes,
@@ -74,10 +78,28 @@ export interface ChangesBody {
 
 export type SyncReply = { ok: true } | { ok: false; error: string; resend?: true }
 
+// Plugin v12: what a bridge poll says about the window's Forge Sync state.
+export interface SyncPollInfo {
+  placeId: number
+  place?: string
+  // The plugin's current session token ('' while it has none: not linked, or between checks).
+  session: string
+  probe?: string
+  // Unpublished places: the ForgeSyncLink attribute.
+  link?: string
+  pluginVersion?: number
+}
+
+export interface SyncPollHint {
+  resync?: true
+}
+
 export interface SyncHandler {
   config(q: SyncConfigQuery): Promise<SyncConfig>
   snapshot(body: SnapshotBody): Promise<SyncReply>
   changes(body: ChangesBody): Promise<SyncReply>
+  // Plugin v12 polls (see the header): whether that window should start its sync check again.
+  pollHint?(info: SyncPollInfo): SyncPollHint | null
   outline?(body: OutlineBody): Promise<SyncReply>
 }
 
@@ -359,6 +381,23 @@ export function parseConfigQuery(params: URLSearchParams): SyncConfigQuery {
   const fp = parseFingerprint(params.get('fp'))
   if (fp) q.fp = fp
   return q
+}
+
+// The sync part of a bridge poll's query (plugin v12), or null for an older plugin (no sync parameter).
+export function parsePollSync(params: URLSearchParams): SyncPollInfo | null {
+  const session = params.get('sync')
+  if (session === null) return null
+  const raw = Number(params.get('placeId'))
+  const info: SyncPollInfo = { placeId: Number.isSafeInteger(raw) && raw > 0 ? raw : 0, session: LINK_ID_RE.test(session) ? session : '' }
+  const place = params.get('place')
+  if (place) info.place = place.slice(0, SYNC_LIMITS.maxPlaceName)
+  const probe = params.get('probe')
+  if (probe && LINK_ID_RE.test(probe)) info.probe = probe
+  const link = params.get('link')
+  if (link && LINK_ID_RE.test(link)) info.link = link
+  const v = Number(params.get('v'))
+  if (Number.isSafeInteger(v) && v > 0) info.pluginVersion = v
+  return info
 }
 
 // The fp parameter (plugin v11): JSON { workspace: string[], workspaceCount, scripts }. Anything odd

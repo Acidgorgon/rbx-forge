@@ -94,7 +94,7 @@ const methods = [
   // Principle priorities (learned from Labs ratings)
   'principlesView', 'principlesReset',
   // Forge Sync (Studio -> disk, gates rojo serve)
-  'syncStatus', 'syncResolve', 'syncResolveAll', 'syncServeAnyway', 'syncServeWithoutCheck', 'syncPullStudioOnly', 'syncCommitStudioEdits', 'syncDisableLegacyPlugin', 'syncSaveTarget', 'syncSaveToRepo', 'syncDeleteCheck', 'syncDeleteInStudio', 'syncDeleteManyInStudio', 'syncLinkPlace', 'syncIdentifyPlace',
+  'syncStatus', 'syncResolve', 'syncResolveAll', 'syncServeAnyway', 'syncServeWithoutCheck', 'syncPullStudioOnly', 'syncCommitStudioEdits', 'syncDisableLegacyPlugin', 'syncSaveTarget', 'syncSaveToRepo', 'syncDeleteCheck', 'syncDeleteInStudio', 'syncDeleteManyInStudio', 'syncLinkPlace', 'syncIdentifyPlace', 'syncRecheckPlace',
   'forgeSyncSettings', 'setForgeSyncSettings',
   // Lab gating (decision log, decision models, cost per kept)
   'labGatingView', 'labGatingSet', 'labGatingRetrain', 'labGatingReset',

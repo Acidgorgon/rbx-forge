@@ -11,6 +11,7 @@ import { useProblems } from './problems'
 import { UpdatePill } from '../updates/UpdatePill'
 import { SpendPill } from '../pages/qolc/Spend'
 import { AiCompletionsPill } from '../editorAssist/AiPill'
+import { useForgeSync } from '../views/ForgeSyncSection'
 
 export function ledOf(s: ServiceStatus | undefined): 'ok' | 'warn' | 'err' | 'idle' {
   if (!s) return 'idle'
@@ -54,7 +55,7 @@ function ServiceSegment({ s, port }: { s: ServiceStatus; port?: number }) {
     { label: s.state === 'running' ? 'Restart' : 'Start', icon: <Icon name="restart" />, onSelect: () => void (s.state === 'running' ? h.restartService(s.id) : h.startService(s.id)) },
     { label: 'Stop', icon: <Icon name="stop" />, disabled: s.state === 'stopped' || s.state === 'missing', onSelect: () => void h.stopService(s.id) }
   ]
-  const detail = s.hold ? (s.hold.gate === 'blocked' ? 'held: conflicts' : 'waiting for Studio') : s.state === 'crashed' ? (s.gaveUp ? 'Crashed' : 'restarting…') : s.state === 'starting' ? (s.id === 'studioSync' ? (/not sync/i.test(s.detail ?? '') ? 'not syncing' : 'connecting…') : 'starting…') : s.state === 'missing' ? 'not found' : s.state === 'stopped' ? 'stopped' : s.id === 'rojo' && port ? `:${port}` : ''
+  const detail = s.hold ? (s.hold.gate === 'blocked' ? 'held: conflicts' : 'waiting for Studio') : s.state === 'crashed' ? (s.gaveUp ? 'Crashed' : 'restarting…') : s.state === 'starting' ? (s.id === 'studioSync' ? (/behind disk/i.test(s.detail ?? '') ? 'behind disk' : /not sync/i.test(s.detail ?? '') ? 'not syncing' : 'connecting…') : 'starting…') : s.state === 'missing' ? 'not found' : s.state === 'stopped' ? 'stopped' : s.id === 'rojo' && port ? `:${port}` : ''
   return (
     <>
       <span
@@ -69,6 +70,24 @@ function ServiceSegment({ s, port }: { s: ServiceStatus; port?: number }) {
       </span>
       {menu.node}
     </>
+  )
+}
+
+// Forge Sync drift: a place whose Studio is open but behind disk (not linked, not syncing, or its rojo
+// not serving it). Shows "Match 5 behind" in warn color; click opens the sync view with the fix.
+function SyncDriftPill() {
+  const { actions } = useStore()
+  const [sync] = useForgeSync()
+  const drifts = [...(sync?.places ?? []).map((p) => p.drift), ...(sync?.unlinked ?? []).map((u) => u.drift)].filter((d): d is NonNullable<typeof d> => !!d)
+  if (!drifts.length) return null
+  const first = drifts[0]
+  return (
+    <span className="sb" onClick={() => actions.showSide('sync')} title={`${drifts.map((d) => d.text).join('\n')}\nClick: open Forge Sync to fix`}>
+      <Icon name="warn" size={12} style={{ color: 'var(--warn)' }} />
+      <span className="mono" style={{ color: 'var(--warn)' }}>
+        {first.place} {first.behind} behind{drifts.length > 1 ? ` +${drifts.length - 1}` : ''}
+      </span>
+    </span>
   )
 }
 
@@ -124,6 +143,7 @@ export function StatusBar() {
       {services.map((s) => (
         <ServiceSegment key={s.id} s={s} port={place?.servePort} />
       ))}
+      <SyncDriftPill />
       <span className="sb-sp" />
       <UpdatePill />
       <span className="sb" onClick={() => actions.showBottom('problems')} title="Problems">

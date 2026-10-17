@@ -59,7 +59,7 @@ test('sanitizeConfig passes identify (one clean line) only with enabled false', 
 
 test('plugin template v11: sends the fingerprint and shows identify', () => {
   const template = readFileSync(resolve(import.meta.dirname, '..', 'resources', 'studio', 'ForgeBridge.luau'), 'utf8')
-  assert.equal(PLUGIN_VERSION, 11)
+  assert.ok(PLUGIN_VERSION >= 11)
   assert.equal(pluginTemplateVersion(template), PLUGIN_VERSION)
   assert.match(template, /"&fp=" \.\. HttpService:UrlEncode\(fp\)/)
   assert.match(template, /config\.identify/)
@@ -129,7 +129,7 @@ test('two unpublished "Place1" windows: #1 / #2 with fingerprints, Identify reac
     assert.equal((await service.handler.config(MATCH)).identify, undefined)
     assert.equal((await service.handler.config(MENU)).identify, 'Place1 #2')
     assert.equal((await service.handler.config(MENU)).identify, undefined, 'delivered once')
-    assert.throws(() => service.identifyPlace('probe:probe-old-000003'), /Restart Studio to load Forge Bridge v11/)
+    assert.throws(() => service.identifyPlace('probe:probe-old-000003'), new RegExp(`Restart Studio to load Forge Bridge v${PLUGIN_VERSION}`))
     assert.throws(() => service.identifyPlace('probe:nobody'), /not connected/)
     // A press the window never picked up goes stale.
     service.identifyPlace('probe:probe-match-0001')

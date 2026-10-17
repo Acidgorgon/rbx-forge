@@ -248,11 +248,12 @@ test('Studio-only scripts Forge cannot write are listed (not pullable); Rojo-ign
   const loose: StudioNode = { id: 'loose', path: [...CLIENT, 'Bad:Name'], className: 'LocalScript', source: 'print(1)' }
   await ctx.snapshot([...ctx.disk(), big, unsafe, twinA, twinB, underUnsafe, loose])
   const only = ctx.engine.studioOnly(KEY)
-  assert.deepEqual(only.items.map((i) => i.instancePath.slice(ONBOARDING.length).join('/')), ['Huge', 'init', 'init/Kid', 'twin', 'Twin'])
+  assert.deepEqual(only.items.map((i) => i.instancePath.slice(ONBOARDING.length).join('/')), ['Huge', 'init', 'init/Kid'])
   assert.ok(only.items.every((i) => !i.canPull && !i.file))
   assert.match(only.items.find((i) => i.instancePath.at(-1) === 'Huge')!.reason, /too large/)
   assert.match(only.items.find((i) => i.instancePath.at(-1) === 'Kid')!.reason, /unsafe name/)
-  assert.match(only.items.find((i) => i.instancePath.at(-1) === 'Twin')!.reason, /duplicate/)
+  // Same-name twins are a duplicate conflict (Studio's side and disk's), not a Studio-only item.
+  assert.deepEqual(ctx.engine.conflicts(KEY).map((c) => [c.reason, c.copies]), [['duplicate', 2]])
   assert.equal(ctx.engine.gate(KEY), 'blocked')
   // Nothing to pull; renaming in Studio fixes it.
   assert.deepEqual(await ctx.engine.pullStudioOnly(KEY), [])
@@ -281,10 +282,12 @@ test('a Ctrl+D copy of a module with children: renaming the copy carries its own
   const TRAINER = [...ONBOARDING, 'TrainerCutscene']
   const copy: StudioNode = { id: 'copy', path: TRAINER, className: 'ModuleScript', source: 'return "trainer"\n' }
   const copyShots: StudioNode = { id: 'copy-shots', path: [...TRAINER, 'Shots'], className: 'ModuleScript', source: 'return { "wide" }\n' }
-  // Pasted: same name as the original, both refused as duplicates; the original's files stay.
+  // Pasted: same name as the original, held as a duplicate conflict (rojo waits: it would delete one
+  // copy on connect); the original's files stay.
   const pasted = await ctx.engine.applyChanges(KEY, [{ kind: 'added', node: copy, descendants: [copyShots] }])
   assert.deepEqual(files(pasted, 'trashed'), [])
-  assert.ok(pasted.some((e) => e.note === 'duplicate sibling name'))
+  assert.ok(pasted.some((e) => e.action === 'conflict' && /2 ModuleScripts named TrainerCutscene/.test(e.note ?? '')))
+  assert.equal(ctx.engine.gate(KEY), 'blocked')
   // Renamed: the copy and ITS Shots move to WakeUpCutscene; the original's Shots stays.
   const renamed = await ctx.engine.applyChanges(KEY, [{ kind: 'renamed', id: 'copy', from: TRAINER, node: { ...copy, path: WAKE } }])
   assert.deepEqual(files(renamed, 'created'), [`${WAKE_DIR}/Shots.luau`, `${WAKE_DIR}/init.luau`])

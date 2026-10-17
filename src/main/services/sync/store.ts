@@ -118,6 +118,12 @@ export class BaseStore {
     }
   }
 
+  // The base's digest only (no blob read), or null.
+  async hashOf(placeKey: string, file: string): Promise<string | null> {
+    await this.ready()
+    return this.index.places[placeKey]?.[file] ?? null
+  }
+
   async has(placeKey: string, file: string): Promise<boolean> {
     await this.ready()
     return Boolean(this.index.places[placeKey]?.[file])

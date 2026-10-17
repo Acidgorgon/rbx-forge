@@ -9,6 +9,10 @@
 //   (deleted in Studio; conflict if the disk copy changed since), disk-only without base -> disk-ahead.
 // A file another place maps too: a snapshot's pull/merge is held as a conflict when that place's base
 // or Studio copy differs from what would be written, and a Studio delete never trashes it.
+// Delete guard: a large script (more than GUARD_LINES lines) or one another synced script requires is
+// never removed on its own. A Studio delete of it, a disk delete Rojo would carry into Studio, or a
+// file gone from both sides without Forge doing it (Rojo two-way sync, another tool) is held as a
+// conflict; the last synced copy of a file gone from both sides is saved under RECOVERED_DIR.
 
 import * as nodeFs from 'node:fs/promises'
 import { join, resolve as resolvePath } from 'node:path'
@@ -17,7 +21,10 @@ import { matchPlace, PlaceLinks } from './links.ts'
 import { cleanRel, type DiskProbe, findRoot, fromDisk, insideMappedRoots, isProjectNode, isScriptClass, isSkipped, loadPlaces, PACKAGE_DIRS, parseFileName, type PlaceMap, placeFor, saveTarget, type SaveTarget, sharedWith, type SyncRoot, toDisk, unsafeName } from './mapping.ts'
 import { diff3, normalise, toFileText } from './merge.ts'
 import { canonicalJson, canonicalModel, detectStyle, modelFromStudio, readModel, writeMeta, writeModel } from './modelJson.ts'
-import { atomicWrite, BaseStore, hashText, migrateLegacy, type SyncFs, TRASH_DIR } from './store.ts'
+import { atomicWrite, BaseStore, ensureTrashIgnored, hashText, migrateLegacy, type SyncFs, TRASH_DIR } from './store.ts'
+import { GUARD_LINES, lineCount, moduleName, requiredNames } from './deleteGuard.ts'
+
+export { GUARD_LINES } from './deleteGuard.ts'
 
 export type { SyncFs } from './store.ts'
 
@@ -79,7 +86,18 @@ interface HeldConflict {
   diskDeleted: boolean
   // Held because another place maps the file and has a different copy (see sharedDiffers).
   shared: boolean
+  // Gone from disk and from Studio, not by Forge: "disk" restores the last synced copy (base),
+  // "studio" confirms the delete.
+  lost?: boolean
 }
+
+// Last synced copies of files that left disk and Studio without Forge removing them.
+export const RECOVERED_DIR = '.forge/sync/recovered'
+
+// Why removing `file` needs the user's word ("1587 lines", "required by src/x.luau"), or null.
+type DeleteGuard = (file: string, text: string) => Promise<string | null>
+
+
 
 interface Session {
   placeKey: string
@@ -166,6 +184,11 @@ export class SyncEngine {
   private readonly recentEntries: SyncEntry[] = []
   private readonly listeners = new Set<(placeKey: string) => void>()
   private queue: Promise<unknown> = Promise.resolve()
+  // Per place: guarded files whose delete the user confirmed (resolved "disk" for a disk delete), so
+  // the next pass lets Rojo carry it into Studio instead of holding it again.
+  private readonly confirmedDeletes = new Map<string, Set<string>>()
+  // Recovery copies already saved (place, file, base hash): a re-held loss is not copied again.
+  private readonly recovered = new Map<string, string>()
 
   constructor(options: SyncEngineOptions) {
     this.root = resolvePath(options.root)
@@ -596,12 +619,72 @@ export class SyncEngine {
     await atomicWrite(this.fs, await this.guard(map, rel), text)
   }
 
-  private async trash(map: PlaceMap, rel: string, stamp: string): Promise<void> {
+  // Moves a project file into .forge/sync/trash/<stamp>/ (never a hard delete); returns where it went.
+  private async trash(map: PlaceMap, rel: string, stamp: string): Promise<string> {
     const from = await this.guard(map, rel)
-    const to = join(this.root, ...TRASH_DIR.split('/'), stamp, ...rel.split('/'))
+    const dest = `${TRASH_DIR}/${stamp}/${rel}`
+    const to = join(this.root, ...dest.split('/'))
     await this.fs.mkdir(join(to, '..'), { recursive: true })
+    await ensureTrashIgnored(this.root, this.fs).catch(() => undefined)
     await this.fs.rename(from, to)
     await this.pruneEmpty(map, dirOf(rel))
+    return dest
+  }
+
+  private confirmed(placeKey: string): Set<string> {
+    let set = this.confirmedDeletes.get(placeKey)
+    if (!set) this.confirmedDeletes.set(placeKey, (set = new Set()))
+    return set
+  }
+
+  // The delete guard for one pass. `requirers`: the scripts that stay (on disk and in Studio); a
+  // script one of them requires (by name on a require line) is guarded. Built lazily: most passes
+  // remove nothing.
+  // `staying`: every file this pass keeps or writes (Studio has it).
+  private deleteGuard(requirers: string[], staying: Iterable<string> = requirers): DeleteGuard {
+    const names = new Map<string, string[]>()
+    for (const f of staying) {
+      const n = moduleName(f)
+      if (n) (names.get(n) ?? names.set(n, []).get(n)!).push(f)
+    }
+    let index: Promise<Map<string, string[]>> | null = null
+    const build = async (): Promise<Map<string, string[]>> => {
+      const out = new Map<string, string[]>()
+      for (const f of requirers) {
+        if (kindOfFile(f) !== 'script') continue
+        const text = await this.read(f)
+        if (!text) continue
+        for (const name of requiredNames(text)) {
+          const list = out.get(name) ?? []
+          if (list.length < 4) list.push(f)
+          out.set(name, list)
+        }
+      }
+      return out
+    }
+    return async (file, text) => {
+      const lines = lineCount(text)
+      if (lines > GUARD_LINES) return `${lines} lines`
+      const name = moduleName(file)
+      if (!name) return null
+      // Another staying script has this name (a moved copy, Legacy/Old twins): the require may well
+      // mean that one, so only the size counts.
+      // (A script changing form keeps its name: X.luau -> X/init.luau.)
+      if ((names.get(name) ?? []).some((f) => f !== file)) return null
+      const by = (await (index ??= build())).get(name)?.filter((f) => f !== file) ?? []
+      return by.length ? `required by ${by[0]}` : null
+    }
+  }
+
+  // Saves the last synced copy of a file that left disk and Studio without Forge (once per content).
+  private async saveRecovered(placeKey: string, rel: string, text: string, stamp: string): Promise<string> {
+    const key = `${placeKey}\u0000${rel}\u0000${hashText(text)}`
+    const saved = this.recovered.get(key)
+    if (saved) return saved
+    const dest = `${RECOVERED_DIR}/${stamp}/${rel}`
+    await atomicWrite(this.fs, join(this.root, ...dest.split('/')), normalise(text) + '\n')
+    this.recovered.set(key, dest)
+    return dest
   }
 
   private async pruneEmpty(map: PlaceMap, dir: string): Promise<void> {
@@ -811,6 +894,8 @@ export class SyncEngine {
 
     const claimed = new Set<string>()
     for (const u of plan.units) claimed.add(u.file)
+    // Scripts that stay this pass (on disk and in Studio): what they require is guarded.
+    const guard = this.deleteGuard([...disk.files].filter((f) => claimed.has(f)).sort(), claimed)
     // Directories some unit owns (folders, init-script dirs): their .gitkeep is not a deletion.
     const dirsClaimed = new Set<string>()
     for (const u of plan.units) if (u.kind === 'folder' || u.anchor !== u.file) dirsClaimed.add(u.anchor)
@@ -826,7 +911,7 @@ export class SyncEngine {
         if (u.kind !== 'folder' && copies && copies.length > 1) {
           if (copies[0] !== u) continue
           const pick = await this.pickMount(s, copies)
-          entries.push(await this.reconcileUnit(s, pick.unit, pick.conflict, checkpoint))
+          entries.push(await this.reconcileUnit(s, pick.unit, pick.conflict, checkpoint, guard))
           continue
         }
         if (u.kind === 'folder') {
@@ -841,7 +926,7 @@ export class SyncEngine {
           }
           continue
         }
-        entries.push(await this.reconcileUnit(s, u, undefined, checkpoint))
+        entries.push(await this.reconcileUnit(s, u, undefined, checkpoint, guard))
       } catch (err) {
         entries.push(this.entry(u.file, 'unmapped', u.instancePath, { note: `refused: ${(err as Error).message}` }))
       }
@@ -884,9 +969,36 @@ export class SyncEngine {
       }
       if ([...s.protect].some((p) => file.startsWith(p + '/'))) continue
       try {
-        entries.push(await this.diskOnly(s, file, kind, inst, stamp))
+        entries.push(await this.diskOnly(s, file, kind, inst, stamp, guard))
       } catch (err) {
         entries.push(this.entry(file, 'unmapped', inst, { note: `refused: ${(err as Error).message}` }))
+      }
+    }
+
+    // Bases of files neither side has any more: removed from disk and from Studio without Forge Sync
+    // doing it (Forge's own removals drop the base). Typical: Rojo two-way sync deleting the file when
+    // the instance was deleted in Studio, or a disk delete Rojo carried into Studio. The last synced
+    // copy is saved; a guarded file is held until the user restores it or confirms the delete.
+    if (!s.firstSync) {
+      const diskLower = new Set([...disk.files].map((f) => f.toLowerCase()))
+      // Instances Studio still has (a base from a script's other form is not a loss).
+      const live = new Set(plan.units.map((u) => pkey(u.instancePath)))
+      for (const file of (await this.store.files(s.placeKey)).sort()) {
+        if (disk.files.has(file) || diskLower.has(file.toLowerCase()) || claimed.has(file) || claimedLower.has(file.toLowerCase()) || plan.keep.has(file) || s.protect.has(file) || isGitkeep(file)) continue
+        if (s.conflicts.has(file) || [...s.protect].some((p) => file.startsWith(p + '/'))) continue
+        const kind = kindOfFile(file)
+        if (!kind) continue
+        const inst = fromDisk(map, file)
+        if (!inst || !inScope(inst) || live.has(pkey(inst))) continue
+        const hit = findRoot(map, inst)
+        if (!hit?.root || !present.has(hit.root.path)) continue
+        if (refusedPaths.some((p) => related(p, inst))) continue
+        try {
+          const e = await this.goneBoth(s, file, kind, inst, stamp, guard)
+          if (e) entries.push(e)
+        } catch (err) {
+          entries.push(this.entry(file, 'unmapped', inst, { note: `refused: ${(err as Error).message}` }))
+        }
       }
     }
 
@@ -1053,8 +1165,8 @@ export class SyncEngine {
     await this.store.delete(s.placeKey, keep)
     // Real children now: Forge's (empty) .gitkeep goes to the trash; one with content is the user's.
     if ((await this.read(keep))?.trim() !== '') return null
-    await this.trash(map, keep, stamp)
-    return this.entry(keep, 'trashed', u.instancePath, { note: 'folder has children now: .gitkeep removed' })
+    const trashPath = await this.trash(map, keep, stamp)
+    return this.entry(keep, 'trashed', u.instancePath, { note: 'folder has children now: .gitkeep removed', trashPath })
   }
 
   // The Studio copy that stands for a file several mapped instances share: the one edited since the
@@ -1076,7 +1188,7 @@ export class SyncEngine {
 
   // checkpoint: see reconcile. Only then is a shared file's pull checked against the other places: a
   // live edit was just made in this Studio, and Rojo carries it to them.
-  private async reconcileUnit(s: Session, u: Unit, mountConflict?: string, checkpoint = false): Promise<SyncEntry> {
+  private async reconcileUnit(s: Session, u: Unit, mountConflict?: string, checkpoint = false, guard?: DeleteGuard): Promise<SyncEntry> {
     const map = s.map
     // A shared-file conflict stays held until the user picks a side, live edits included.
     const checkShared = checkpoint || !!s.conflicts.get(u.file)?.shared
@@ -1107,11 +1219,19 @@ export class SyncEngine {
           await this.store.set(s.placeKey, u.file, cS)
           return this.entry(u.file, 'created', u.instancePath, { note: u.formFrom ? `form changed in Studio (was ${u.formFrom})` : 'pulled to disk (only Studio had it)' })
         }
+        // Rojo carries a disk delete into Studio: a guarded script waits for the user's word first.
+        const why = guard && !this.confirmed(s.placeKey).has(u.file) ? await guard(u.file, studioText) : null
+        if (why) {
+          const note = `deleted on disk, not by Forge Sync (${why}): Take Studio writes it back to disk, Take disk deletes it from Studio too`
+          this.hold(s, u, studioText, cS, '', base.text, 'deleted-vs-edited', { diskDeleted: true, note })
+          return this.entry(u.file, 'conflict', u.instancePath, { note })
+        }
         return this.entry(u.file, 'disk-ahead', u.instancePath, { note: 'deleted on disk' })
       }
       this.hold(s, u, studioText, cS, '', base.text, 'deleted-vs-edited', { diskDeleted: true })
       return this.entry(u.file, 'conflict', u.instancePath, { note: 'deleted on disk, edited in Studio' })
     }
+    this.confirmedDeletes.get(s.placeKey)?.delete(u.file)
     const cD = canon(u.kind, diskText)
     if (cS === cD) {
       await this.store.set(s.placeKey, u.file, cS)
@@ -1217,7 +1337,7 @@ export class SyncEngine {
     })
   }
 
-  private async diskOnly(s: Session, file: string, kind: UnitKind, inst: string[], stamp: string): Promise<SyncEntry> {
+  private async diskOnly(s: Session, file: string, kind: UnitKind, inst: string[], stamp: string, guard?: DeleteGuard): Promise<SyncEntry> {
     s.conflicts.delete(file)
     const base = await this.store.get(s.placeKey, file)
     // First sync undecided: nothing is trashed.
@@ -1230,21 +1350,75 @@ export class SyncEngine {
     }
     const text = (await this.read(file)) ?? ''
     if (hashText(canon(kind, text)) === base.hash) {
-      await this.trash(s.map, file, stamp)
+      const why = guard ? await guard(file, text) : null
+      if (why) {
+        const note = `deleted in Studio (${why}): keep or delete? Take disk keeps it (Rojo puts it back in Studio), Take Studio moves it to ${TRASH_DIR}`
+        this.hold(s, { kind, file, instancePath: inst }, '', '', text, base.text, 'deleted-vs-edited', { studioDeleted: true, note })
+        return this.entry(file, 'conflict', inst, { note })
+      }
+      const trashPath = await this.trash(s.map, file, stamp)
       await this.store.delete(s.placeKey, file)
-      return this.entry(file, 'trashed', inst)
+      return this.entry(file, 'trashed', inst, { trashPath })
     }
     this.hold(s, { kind, file, instancePath: inst }, '', '', text, base.text, 'deleted-vs-edited', { studioDeleted: true })
     return this.entry(file, 'conflict', inst, { note: 'deleted in Studio, edited on disk' })
+  }
+
+  // A base whose file is on neither side: removed outside Forge Sync. Saves the last synced copy under
+  // RECOVERED_DIR; a guarded file is held ("restore or delete?"), any other base is dropped. A delete
+  // the user already confirmed only drops the base.
+  private async goneBoth(s: Session, file: string, kind: UnitKind, inst: string[], stamp: string, guard: DeleteGuard): Promise<SyncEntry | null> {
+    const confirmed = this.confirmedDeletes.get(s.placeKey)
+    const base = await this.store.get(s.placeKey, file)
+    if (!base) return null
+    if (confirmed?.has(file) || base.text === null) {
+      // Confirmed, or a digest-only base (migrated from the legacy state): nothing to recover.
+      if (confirmed?.delete(file)) await this.store.delete(s.placeKey, file)
+      return null
+    }
+    const trashPath = await this.saveRecovered(s.placeKey, file, base.text, stamp)
+    const why = await guard(file, base.text)
+    if (why) {
+      const note = `gone from disk and from Studio, not removed by Forge Sync (${why}): Take disk restores the last synced copy (also saved to ${trashPath}), Take Studio confirms the delete`
+      s.conflicts.set(file, {
+        info: { placeKey: s.placeKey, file, instancePath: inst, base: base.text, disk: base.text, studio: '', reason: 'deleted-vs-edited', note },
+        kind,
+        studioText: '',
+        studioCanon: '',
+        studioDeleted: true,
+        diskDeleted: true,
+        shared: false,
+        lost: true
+      })
+      return this.entry(file, 'conflict', inst, { note, trashPath })
+    }
+    await this.store.delete(s.placeKey, file)
+    return this.entry(file, 'disk-ahead', inst, { note: `gone from disk and from Studio, not removed by Forge Sync; last synced copy saved to ${trashPath}`, trashPath })
   }
 
   private async resolveOne(s: Session, held: HeldConflict, take: 'studio' | 'disk' | 'merged', text?: string): Promise<void> {
     const file = held.info.file
     const map = s.map
     const current = await this.read(file)
+    let trashPath: string | undefined
+    if (held.lost) {
+      // Gone from both sides: "disk" restores the last synced copy (Rojo then puts it back in
+      // Studio), "studio" confirms the delete, "merged" writes the given text.
+      if (take === 'studio') await this.store.delete(s.placeKey, file)
+      else {
+        const out = take === 'merged' ? text : held.info.base
+        if (typeof out !== 'string') throw new Error(take === 'merged' ? 'merged resolution needs text' : `no synced copy of ${file} to restore`)
+        await this.writeFile(map, file, toFileText(out))
+        await this.store.set(s.placeKey, file, canon(held.kind, out))
+      }
+      s.conflicts.delete(file)
+      this.recentEntries.unshift(this.entry(file, take === 'studio' ? 'disk-ahead' : 'created', held.info.instancePath, { note: take === 'studio' ? 'resolved: delete confirmed' : 'resolved: restored to disk' }))
+      this.recentEntries.splice(RECENT_LIMIT)
+      return
+    }
     if (take === 'studio') {
       if (held.studioDeleted) {
-        if (current !== null) await this.trash(map, file, this.stamp())
+        if (current !== null) trashPath = await this.trash(map, file, this.stamp())
         await this.store.delete(s.placeKey, file)
       } else {
         await this.writeFile(map, file, toFileText(held.studioText, current))
@@ -1254,6 +1428,8 @@ export class SyncEngine {
       // Disk stays; Rojo pushes it. Base = Studio's side so the next pass reads it as disk-ahead.
       if (held.studioDeleted) await this.store.delete(s.placeKey, file)
       else await this.store.set(s.placeKey, file, held.studioCanon)
+      // A disk delete the user confirmed: the guard does not hold it again (Rojo deletes it in Studio).
+      if (held.diskDeleted && current === null) this.confirmed(s.placeKey).add(file)
     } else {
       if (typeof text !== 'string') throw new Error('merged resolution needs text')
       const out = held.kind === 'model' || held.kind === 'meta' ? this.renderMerged(held.kind, canon(held.kind, text), current ?? '') : text
@@ -1263,7 +1439,7 @@ export class SyncEngine {
       else await this.store.set(s.placeKey, file, held.studioCanon)
     }
     s.conflicts.delete(file)
-    this.recentEntries.unshift(this.entry(file, take === 'disk' ? 'disk-ahead' : take === 'merged' ? 'merged' : held.studioDeleted ? 'trashed' : 'pulled', held.info.instancePath, { note: `resolved: ${take}` }))
+    this.recentEntries.unshift(this.entry(file, take === 'disk' ? 'disk-ahead' : take === 'merged' ? 'merged' : held.studioDeleted ? 'trashed' : 'pulled', held.info.instancePath, { note: `resolved: ${take}`, ...(trashPath ? { trashPath } : {}) }))
     this.recentEntries.splice(RECENT_LIMIT)
   }
 

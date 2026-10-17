@@ -220,6 +220,15 @@ export class BaseStore {
 }
 
 // Adds `.forge/sync/` to the project's .gitignore when no line covers it yet. Returns true if added.
+// The trash ignores itself (a '*' .gitignore inside it), so copies Forge keeps there are never
+// committed, whatever the project's .gitignore says (or a rewind puts back).
+export async function ensureTrashIgnored(root: string, fs: SyncFs = nodeFs): Promise<void> {
+  const file = join(root, ...TRASH_DIR.split('/'), '.gitignore')
+  if (await fs.stat(file).then(() => true, () => false)) return
+  await fs.mkdir(dirname(file), { recursive: true })
+  await fs.writeFile(file, '*\n', 'utf8')
+}
+
 export async function ensureSyncIgnored(root: string, fs: SyncFs = nodeFs): Promise<boolean> {
   const file = join(root, '.gitignore')
   const text = await fs.readFile(file, 'utf8').catch(() => '')

@@ -326,12 +326,15 @@ test('trashEntries: each entry once, children of a listed folder go with it, fai
       { path: 'src/server', isDir: true },
       { path: 'src/server/Nope.luau' }
     ],
-    trash
+    trash,
+    () => Date.UTC(2026, 9, 17, 0, 45)
   )
   assert.deepEqual(trashed, [join(root, 'src/server/Features/Inventory'), join(root, 'src/server/Handlers/Join.server.luau')], 'the init script trashes its folder; the module inside is not trashed on its own')
+  // Each keeps a copy in one project trash folder first.
+  const stamp = '.forge/sync/trash/2026-10-17T00-45-00-000Z'
   assert.deepEqual(r.changes, [
-    { from: 'src/server/Features/Inventory', to: null, isDir: true },
-    { from: 'src/server/Handlers/Join.server.luau', to: null, isDir: false }
+    { from: 'src/server/Features/Inventory', to: null, isDir: true, backup: `${stamp}/src/server/Features/Inventory` },
+    { from: 'src/server/Handlers/Join.server.luau', to: null, isDir: false, backup: `${stamp}/src/server/Handlers/Join.server.luau` }
   ])
   assert.deepEqual(r.failed.map((f) => f.path), ['src/server', 'src/server/Nope.luau'])
   assert.match(r.failed[0].error, /mapped/)

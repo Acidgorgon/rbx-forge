@@ -351,7 +351,8 @@ test('Studio delete moves the file to .forge/sync/trash; an edited disk copy bec
   assert.deepEqual(actions(entries, 'trashed'), ['src/server/Handlers/Combat.luau'])
   assert.ok(!existsSync(join(ctx.root, 'src/server/Handlers/Combat.luau')))
   const trash = join(ctx.root, '.forge/sync/trash')
-  const [stamp] = readdirSync(trash)
+  const [stamp] = readdirSync(trash).filter((n) => n !== '.gitignore')
+  assert.equal(get(trash, '.gitignore'), '*\n', 'the trash ignores itself')
   assert.equal(get(trash, `${stamp}/src/server/Handlers/Combat.luau`), 'return {}\n')
 
   // A deleted move folder whose Config was edited on disk: the rest is trashed, Config is held.

@@ -4,15 +4,19 @@
 // the project's .git, its refs, index and history are never read or written. .gitignore rules of
 // the project still apply, so ignored files (Packages/, build output) are left alone.
 // Restoring first snapshots the current state (so a rewind can itself be undone), then makes the
-// work tree match the checkpoint: changed files are restored and files added since are removed.
+// work tree match the checkpoint: changed files are restored and files added since are removed, each
+// copied first to .forge/sync/trash/<stamp>/ (a rewind never hard-deletes a project file).
 // No Electron imports (tested on a temp git repo).
 
 import { execFile } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile, stat } from 'node:fs/promises'
-import { join } from 'node:path'
+import { copyFile, mkdir, writeFile, stat } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
+import { ensureTrashIgnored } from '../services/sync/store.ts'
 
 export const CHECKPOINT_DIR = '.forge/checkpoints'
+// Where a rewind copies the files it removes (the Forge Sync trash; gitignored with .forge/sync/).
+export const REWIND_TRASH_DIR = '.forge/sync/trash'
 
 // Never snapshotted (nor removed by a rewind), even when the project's .gitignore misses them:
 // Wally packages (a rewind must not delete packages installed since), node_modules, and Roblox
@@ -131,20 +135,32 @@ export class Checkpoints {
     return out.split('\n').map((s) => s.trim()).filter(Boolean)
   }
 
-  // Makes the work tree match the checkpoint. Returns the safety snapshot taken first and the files
-  // that changed.
-  restore(commit: string): Promise<{ undo: string; files: string[] }> {
-    return this.locked(() => this.restoreUnlocked(commit))
+  // Makes the work tree match the checkpoint. Returns the safety snapshot taken first, the files
+  // that changed, and the files it removed (each copied to `trash`/<path> first).
+  restore(commit: string, now: () => number = Date.now): Promise<{ undo: string; files: string[]; removed: string[]; trash?: string }> {
+    return this.locked(() => this.restoreUnlocked(commit, now))
   }
 
-  private async restoreUnlocked(commit: string): Promise<{ undo: string; files: string[] }> {
+  private async restoreUnlocked(commit: string, now: () => number): Promise<{ undo: string; files: string[]; removed: string[]; trash?: string }> {
     await this.init()
     const files = await this.changedUnlocked(commit)
     const undo = await this.createUnlocked(`before rewind to ${commit.slice(0, 8)}`)
+    // In the work tree now (the index, after add -A) but not in the checkpoint: read-tree removes them.
+    const removed = (await this.run(['diff', '--cached', '--name-only', '--diff-filter=A', '-z', commit])).split('\0').filter(Boolean)
+    let trash: string | undefined
+    if (removed.length) {
+      trash = `${REWIND_TRASH_DIR}/${new Date(now()).toISOString().replace(/[:.]/g, '-')}-rewind`
+      await ensureTrashIgnored(this.root).catch(() => undefined)
+      for (const rel of removed) {
+        const to = join(this.root, ...trash.split('/'), ...rel.split('/'))
+        await mkdir(dirname(to), { recursive: true })
+        await copyFile(join(this.root, ...rel.split('/')), to)
+      }
+    }
     // The index holds the current state (create ran add -A); read-tree -u --reset updates the files
     // and removes the ones the checkpoint does not have.
     await this.run(['read-tree', '-u', '--reset', commit])
-    return { undo, files }
+    return { undo, files, removed, ...(trash ? { trash } : {}) }
   }
 
   // Forgets checkpoints no chat lists any more (trimmed, or rewound past), so the shadow repo does

@@ -58,6 +58,7 @@ const methods = [
   // Art concepts (OpenAI images, Roblox import)
   'artStatus', 'artSetSettings', 'artSetRobloxKey', 'artClearRobloxKey', 'artList', 'artEstimate', 'artGenerate',
   'artThumbnail', 'artDelete', 'artUndoDelete', 'artImportToRoblox', 'artSaveToProject', 'artRegistry', 'artChooseReferences', 'artReveal',
+  'fbxInboxStatus', 'fbxInboxSetSettings', 'fbxInboxChooseFolder',
   // UI Preview (UI Labs stories)
   'uiPreviewStories', 'uiPreviewOpen', 'uiPreviewClose', 'uiPreviewInput', 'uiPreviewState', 'uiPreviewImages', 'uiPreviewSaveExport',
   // VFX Lab (library, recipes, render / critique / refine)

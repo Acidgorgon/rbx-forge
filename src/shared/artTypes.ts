@@ -166,6 +166,31 @@ export interface ArtEvents {
   'art:changed': { root: string }
   // Generation/upload progress for the page.
   'art:progress': { id: string; stage: string; detail?: string }
+  // The FBX upload inbox finished a request (a Forge toast).
+  'fbxInbox:upload': ModelInboxEntry
+}
+
+// FBX upload inbox (main/services/art/modelInbox.ts): <id>.request.json files dropped in a folder
+// become Model assets; Forge writes <id>.result.json back.
+export interface ModelInboxEntry {
+  id: string
+  name?: string
+  status: 'done' | 'error'
+  assetId?: number | string
+  error?: string
+  at: string
+}
+
+export interface ModelInboxStatus {
+  enabled: boolean
+  // The folder in use, the default one (<Documents>/ForgeModels/_upload_inbox) and its parent root.
+  dir: string
+  defaultDir: string
+  modelsDir: string
+  robloxKey: boolean
+  creator: boolean
+  watching: boolean
+  recent: ModelInboxEntry[]
 }
 
 export interface ArtApi {
@@ -187,4 +212,9 @@ export interface ArtApi {
   artChooseReferences(): Promise<string[]>
   // Opens a concept in the OS image viewer ('open') or shows it in its folder ('folder').
   artReveal(path: string, how: 'open' | 'folder'): Promise<void>
+  // FBX upload inbox. Enabling needs an Open Cloud key; dir null goes back to the default folder.
+  fbxInboxStatus(): Promise<ModelInboxStatus>
+  fbxInboxSetSettings(patch: { enabled?: boolean; dir?: string | null }): Promise<ModelInboxStatus>
+  // Folder picker; saves the choice. Unchanged status when cancelled.
+  fbxInboxChooseFolder(): Promise<ModelInboxStatus>
 }

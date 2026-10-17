@@ -455,6 +455,16 @@ const integrations = createIntegrations({
   openExternal: (url) => void shell.openExternal(url),
   summarize: (prompt) => agentIpc.summarize(prompt),
   art: artElectronDeps(),
+  // FBX upload inbox (<Documents>/ForgeModels/_upload_inbox by default; off until turned on).
+  modelInbox: {
+    documentsDir: app.getPath('documents'),
+    chooseFolder: async (title, defaultPath) => {
+      const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+      const options: Electron.OpenDialogOptions = { title, defaultPath, properties: ['openDirectory', 'createDirectory'] }
+      const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+      return picked.canceled ? null : (picked.filePaths[0] ?? null)
+    }
+  },
   // UI Preview: preview_ui screenshots through an offscreen renderer window.
   uiPreview: { capture: uiPreviewCapture(preloadPath()) },
   choosePlaceFile: async () => {
@@ -979,6 +989,7 @@ app.whenReady().then(async () => {
   })
   updater.start()
   brainSync.start()
+  void integrations.modelInbox.start()
   void studio.start()
   // Studio's Roblox folder (the plugins folder's parent) exists only where Studio is installed.
   void studio.service

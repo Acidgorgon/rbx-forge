@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 12
+-- forge-bridge-template: 13
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -48,6 +48,14 @@
 -- the poll answer carries resync and the plugin starts its check again at once. Before, an idle window
 -- only found out on its next edit, so a place could sit unchecked (and rojo serve unheld or held for it)
 -- for hours while its Studio drifted behind disk.
+-- Version 13: sync only ever reads the Edit DataModel. The plugin does not start in a playtest
+-- DataModel (RunService:IsRunning() or not RunService:IsEdit(); the first alone can miss a play copy
+-- loaded before its simulation starts), pauses its sync while this DataModel runs (Run mode) and sends
+-- a fresh snapshot afterwards, and says which DataModel it is in (mode=edit) with every config request,
+-- snapshot and change batch, so Forge refuses anything else. A playtest copy is the place as it was
+-- when the test started: synced, its stale scripts were read as Studio edits and written over newer
+-- files on disk. It also prints why Forge does not sync this window when that reason changes (e.g.
+-- another window with the same place already syncs it).
 --
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
@@ -62,7 +70,18 @@ local ServerStorage = game:GetService("ServerStorage")
 local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 local CollectionService = game:GetService("CollectionService")
 
-if RunService:IsRunning() then
+-- Edit mode only (v13): never a playtest DataModel (Play: server and client copies; Run).
+local function isEditMode(): boolean
+	if RunService:IsRunning() then
+		return false
+	end
+	local ok, edit = pcall(function()
+		return RunService:IsEdit()
+	end)
+	return not ok or edit == true
+end
+
+if not isEditMode() then
 	return
 end
 
@@ -597,6 +616,8 @@ local sync = {
 	wanted = true, -- start (or restart) at the next loop turn
 	retryAt = 0,
 	waitingForForge = false, -- Forge was unreachable: the poll loop restarts us when it answers again
+	offReason = nil :: string?, -- the last reason Forge gave for not syncing this window (printed once)
+	paused = false, -- v13: this DataModel is running (Run mode): no sync until it stops
 	session = nil :: string?,
 	generation = 0,
 	roots = {} :: { Instance },
@@ -639,6 +660,17 @@ end
 
 local function syncPlace(): any
 	return { placeId = game.PlaceId, gameId = game.GameId, name = game.Name }
+end
+
+-- v13: which DataModel this is ("edit", or "run" / "play" while it simulates). Forge syncs only "edit".
+local function syncMode(): string
+	if isEditMode() then
+		return "edit"
+	end
+	local ok, run = pcall(function()
+		return RunService:IsRunMode()
+	end)
+	return if ok and run then "run" else "play"
 end
 
 local function idFor(inst: Instance): string
@@ -1041,7 +1073,7 @@ local function sendSnapshot(gen: number)
 	local chunk, bytes, seq, count = {}, 0, 0, 0
 	local place = syncPlace()
 	local function send(final: boolean)
-		local body: any = { session = sync.session, place = place, seq = seq, final = final, nodes = chunk }
+		local body: any = { mode = syncMode(), session = sync.session, place = place, seq = seq, final = final, nodes = chunk }
 		if final then
 			body.refs, body.refsTotal = refList()
 			sync.refsDirty = false
@@ -1190,6 +1222,8 @@ local function startSync(): string
 		.. HttpService:UrlEncode(game.Name)
 		.. "&probe="
 		.. SYNC_PROBE
+		.. "&mode="
+		.. syncMode()
 	local okFp, fp = pcall(fingerprint)
 	if okFp and type(fp) == "string" then
 		query ..= "&fp=" .. HttpService:UrlEncode(fp)
@@ -1230,10 +1264,19 @@ local function startSync(): string
 		showIdentify(config.identify)
 	end
 	if type(config) ~= "table" or not config.enabled then
+		-- Why Forge does not sync this window, once per change (e.g. another window of the place syncs it).
+		local reason = if type(config) == "table" and type(config.reason) == "string" then config.reason else nil
+		if reason ~= sync.offReason then
+			sync.offReason = reason
+			if reason and reason ~= "" then
+				print("[Forge Bridge] Forge Sync is off for this window: " .. string.sub(reason, 1, 300))
+			end
+		end
 		sync.retryAt = os.clock() + SYNC_RECHECK_OFF
 		sync.wanted = true
 		return "off"
 	end
+	sync.offReason = nil
 	sync.session = tostring(config.sessionToken or "")
 	sync.roots = {}
 	sync.skip = {}
@@ -1336,7 +1379,7 @@ local function sendChanges(changes: { any })
 	local total = 0
 	local place = syncPlace()
 	local function send(last: boolean?)
-		local body: any = { session = sync.session, place = place, changes = batch }
+		local body: any = { mode = syncMode(), session = sync.session, place = place, changes = batch }
 		if last and sync.refsDirty then
 			-- The whole current list: Forge replaces what it had for this place.
 			body.refs, body.refsTotal = refList()
@@ -1556,6 +1599,24 @@ local function syncLoop()
 			end
 			task.wait(1)
 			continue
+		end
+		-- v13: never sync while this DataModel simulates (Run mode); a fresh snapshot once it stops.
+		if not isEditMode() then
+			if not sync.paused then
+				sync.paused = true
+				print("[Forge Bridge] Forge Sync paused: this DataModel is running (playtest); it checks again when the test stops")
+			end
+			if sync.session then
+				stopSync()
+			end
+			sync.wanted = true
+			sync.retryAt = 0
+			task.wait(0.5)
+			continue
+		elseif sync.paused then
+			sync.paused = false
+			sync.wanted = true
+			sync.retryAt = 0
 		end
 		local now = os.clock()
 		if sync.session and #sync.missing > 0 and now >= sync.rootCheckAt then

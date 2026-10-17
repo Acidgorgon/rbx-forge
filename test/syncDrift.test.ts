@@ -11,6 +11,7 @@ import { SyncEngine } from '../src/main/services/sync/engine.ts'
 import { loadPlaces, placeFor, type PlaceMap } from '../src/main/services/sync/mapping.ts'
 import { RESYNC_EVERY_MS, RESYNC_QUIET_MS, SyncService, type StudioWindow } from '../src/main/services/sync/service.ts'
 import { syncSummary } from '../src/main/services/sync/wire.ts'
+import { PLUGIN_VERSION } from '../src/shared/studio/plugin.ts'
 import type { RojoServeState, StudioNode } from '../src/shared/sync/types.ts'
 import { get, makeFsfProject, MATCH_PLACE, MENU_PLACE, put, studioFromDisk } from './syncFixture.ts'
 
@@ -149,7 +150,7 @@ test('Check now: the window re-checks on its next poll; older plugins are told t
   await s.start()
   await assert.rejects(() => s.recheckPlace(MATCH), /No Studio window has/)
   w.windows = [{ placeId: MATCH_PLACE, place: 'Match', pluginVersion: 11 }]
-  await assert.rejects(() => s.recheckPlace(MATCH), /Restart Studio to load Forge Bridge v12/)
+  await assert.rejects(() => s.recheckPlace(MATCH), new RegExp(`Restart Studio to load Forge Bridge v${PLUGIN_VERSION}`))
   w.windows = [{ placeId: MATCH_PLACE, place: 'Match', pluginVersion: 12, syncSession: '', probe: 'p1' }]
   const token = await s.handler.config({ placeId: MATCH_PLACE, place: 'Match', probe: 'p1' })
   // Right after a config request the window is not nagged...
@@ -175,7 +176,7 @@ test('an older plugin with no session: drift says restart Studio', async () => {
   const match = (await s.status()).places.find((p) => p.projectFile === MATCH)!
   assert.equal(match.drift?.cause, 'not-syncing')
   assert.equal(match.drift?.fix, 'restart-studio')
-  assert.match(match.drift?.text ?? '', /restart Studio to load Forge Bridge v12/)
+  assert.match(match.drift?.text ?? '', new RegExp(`restart Studio to load Forge Bridge v${PLUGIN_VERSION}`))
   s.close()
 })
 

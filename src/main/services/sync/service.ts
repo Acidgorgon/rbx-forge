@@ -91,6 +91,8 @@ export interface SyncMapping {
 // ---- Bridge side (bridge.setSyncHandler) ----
 
 export interface SyncConfigQuery {
+  // Plugin v13: the DataModel the plugin runs in; only 'edit' syncs (protocol.ts StudioMode).
+  mode?: 'edit' | 'play' | 'run'
   placeId: number
   gameId?: number
   place?: string
@@ -130,6 +132,7 @@ export interface LiveStudioNode {
 }
 
 export interface SnapshotBody {
+  mode?: 'edit' | 'play' | 'run'
   session: string
   place: SyncPlace
   seq: number
@@ -140,6 +143,7 @@ export interface SnapshotBody {
 }
 
 export interface ChangesBody {
+  mode?: 'edit' | 'play' | 'run'
   session: string
   place: SyncPlace
   changes: StudioChange[]
@@ -213,6 +217,14 @@ export interface StudioWindow {
 export const RESYNC_EVERY_MS = 30_000
 export const RESYNC_QUIET_MS = 15_000
 export const DRIFT_GRACE_MS = 15_000
+// One Studio window syncs a place at a time. Another window of the same place (the place opened twice,
+// a second Studio, a playtest copy whose plugin ran) is refused while the holder still polls within
+// this long. Before, each window's config took the session from the other, and with v12 resync they
+// took turns every 15-30 s: the stale window's snapshot was read as a Studio edit and written over
+// the disk copy the other window had just confirmed.
+export const WINDOW_ALIVE_MS = 20_000
+// The reason a playtest DataModel's plugin is refused (plugin v13 says which DataModel it runs in).
+export const PLAYTEST_REFUSED = 'Studio is playtesting (Play or Run): Forge Sync only reads the Edit DataModel, never a playtest copy'
 
 const RECENT_MAX = 200
 // Game-tab outline: the plugin sends at most this many instances outside the synced roots.
@@ -237,6 +249,8 @@ const GATE_RANK: Record<GateState, number> = { idle: 0, clear: 1, waiting: 2, ch
 interface Session {
   token: string
   placeKey: string
+  // Plugin v8+: the run id of the Studio window that holds the session.
+  probe?: string
   nextSeq: number
   ready: boolean
   // Root instance paths (joined with \0) seen in the snapshot being received.
@@ -369,6 +383,10 @@ export class SyncService {
   private configSeen = new Map<string, number>()
   private resyncAt = new Map<string, number>()
   private recheck = new Set<string>()
+  // Plugin v12+: when each Studio window (by its run id) last polled or asked for config.
+  private windowSeen = new Map<string, number>()
+  // Windows already told (in the log) that another window of their place syncs it.
+  private refusedNoted = new Set<string>()
 
   constructor(deps: SyncServiceDeps) {
     this.deps = deps
@@ -479,7 +497,7 @@ export class SyncService {
       changed = true
     }
     for (const [id, u] of this.unlinked) if (now - u.lastSeen > UNLINKED_SHOW_MS) this.unlinked.delete(id)
-    for (const m of [this.configSeen, this.resyncAt]) for (const [k, at] of m) if (now - at > 10 * 60_000) m.delete(k)
+    for (const m of [this.configSeen, this.resyncAt, this.windowSeen]) for (const [k, at] of m) if (now - at > 10 * 60_000) m.delete(k)
     // Gates also follow the bridge's view of Studio (plugin version, unlinked places going away).
     if (this.pushGates() || changed) this.refresh()
   }
@@ -528,6 +546,10 @@ export class SyncService {
     if (!match) return null
     const now = this.now()
     const key = this.windowKey(info)
+    if (info.probe) this.windowSeen.set(info.probe, now)
+    // Another live window holds this place's session: asking this one to check again would take the
+    // session away from it (the two windows would take turns forever).
+    if (this.heldByOtherWindow(match.placeKey, info.probe)) return null
     if (this.recheck.has(match.projectFile)) {
       this.recheck.delete(match.projectFile)
       this.resyncAt.set(key, now)
@@ -540,6 +562,17 @@ export class SyncService {
     this.resyncAt.set(key, now)
     this.deps.log?.(`sync: Studio has ${info.place ? `"${info.place}"` : 'a place'} open for ${match.projectFile}, but Forge has no sync session with it; asked it to check again`)
     return { resync: true }
+  }
+
+  // The run id of another, still polling Studio window whose session holds this place, or null.
+  private heldByOtherWindow(placeKey: string, probe: string | undefined): string | null {
+    if (!probe) return null
+    const now = this.now()
+    for (const s of this.sessions.values()) {
+      if (s.placeKey !== placeKey || !s.probe || s.probe === probe) continue
+      if (now - (this.windowSeen.get(s.probe) ?? 0) < WINDOW_ALIVE_MS) return s.probe
+    }
+    return null
   }
 
   // "Check now": the Studio window(s) of this place file start a fresh sync check on their next poll
@@ -570,6 +603,9 @@ export class SyncService {
       return { enabled: false, sessionToken: '', roots: [], skip: [], reason }
     }
     if (!this.active()) return off(this.settings().engine === 'forge' ? 'Forge Sync is not available in this build' : `Studio sync is set to "${this.settings().engine}"`)
+    // Rule: never sync from a Play / Run DataModel (plugin v13 says which one it runs in).
+    if (q.mode && q.mode !== 'edit') return off(PLAYTEST_REFUSED)
+    if (q.probe) this.windowSeen.set(q.probe, seen.at)
     if (!this.maps.length) await this.reload()
     await this.links.load()
     const placeId = Number(q.placeId) || 0
@@ -598,11 +634,21 @@ export class SyncService {
     if (!map) return off('No *.project.json maps this place')
     const place: SyncPlace = { placeId, ...(q.gameId ? { gameId: Number(q.gameId) } : {}), ...(q.place ? { name: String(q.place) } : {}), ...(linkId ? { linkId } : {}) }
     const placeKey = match.placeKey
+    const holder = this.heldByOtherWindow(placeKey, q.probe)
+    if (holder) {
+      const why = `another Studio window with ${this.placeName(map.projectFile)}${q.place ? ` ("${q.place}")` : ''} open already syncs it; this window is not synced (close one of them)`
+      if (q.probe && !this.refusedNoted.has(q.probe)) {
+        this.refusedNoted.add(q.probe)
+        this.deps.log?.(`sync: ${why}`, 'stderr')
+      }
+      return off(why)
+    }
+    if (q.probe) this.refusedNoted.delete(q.probe)
     for (const [token, s] of this.sessions) if (s.placeKey === placeKey) this.sessions.delete(token)
     const token = randomUUID()
     // Unready until its snapshot is reconciled: the place is 'checking' from now on, so a rojo serve
     // still running from an earlier session stops before Studio's Rojo plugin can (re)connect to it.
-    this.sessions.set(token, { token, placeKey, nextSeq: 0, ready: false, rootsSeen: new Set() })
+    this.sessions.set(token, { token, placeKey, nextSeq: 0, ready: false, rootsSeen: new Set(), ...(q.probe ? { probe: q.probe } : {}) })
     const state = this.placeState(placeKey, map.projectFile, place)
     state.lastSeen = this.now()
     state.override = false
@@ -639,6 +685,7 @@ export class SyncService {
 
   private async snapshot(body: SnapshotBody): Promise<SyncAnswer> {
     if (!this.active()) return { ok: false, error: 'Forge Sync is off' }
+    if (body.mode && body.mode !== 'edit') return { ok: false, error: PLAYTEST_REFUSED }
     const session = this.sessions.get(body.session)
     if (!session) return { ok: false, error: 'unknown session', resend: true }
     const engine = this.deps.engine!
@@ -722,6 +769,7 @@ export class SyncService {
 
   private async changes(body: ChangesBody): Promise<SyncAnswer> {
     if (!this.active()) return { ok: false, error: 'Forge Sync is off' }
+    if (body.mode && body.mode !== 'edit') return { ok: false, error: PLAYTEST_REFUSED }
     const session = this.sessions.get(body.session)
     if (!session) return { ok: false, error: 'unknown session', resend: true }
     if (!session.ready) return { ok: false, error: 'no complete snapshot yet', resend: true }
@@ -1508,7 +1556,8 @@ export class SyncService {
       if (entry.action === 'same') continue
       // Every file leaving the project, and every delete the guard holds, is in the output panel.
       if (entry.action === 'trashed') this.deps.log?.(`sync: ${entry.file}: deleted in Studio, moved to ${entry.trashPath ?? '.forge/sync/trash'}${entry.note ? ` (${entry.note})` : ''}`)
-      else if (entry.trashPath || (entry.action === 'conflict' && /keep or delete|not by Forge Sync|not removed by Forge Sync/.test(entry.note ?? ''))) this.deps.log?.(`sync: ${entry.file}: ${entry.note ?? `copy saved to ${entry.trashPath}`}`, 'stderr')
+      // (A disk copy kept before an overwrite is logged by the engine, where it is made.)
+      else if ((entry.trashPath && entry.action !== 'pulled') || (entry.action === 'conflict' && /keep or delete|not by Forge Sync|not removed by Forge Sync/.test(entry.note ?? ''))) this.deps.log?.(`sync: ${entry.file}: ${entry.note ?? `copy saved to ${entry.trashPath}`}`, 'stderr')
       shown.push(entry)
       if (WRITES.includes(entry.action)) {
         writes.push(entry.file)

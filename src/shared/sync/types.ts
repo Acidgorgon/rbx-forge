@@ -96,12 +96,12 @@ export interface MappedFile {
 export type SyncAction =
   | 'same' // Studio == disk
   | 'pulled' // Studio changed, disk did not: Studio written to disk
-  | 'merged' // both changed, clean 3-way merge written to disk
+  | 'merged' // both changed: the merged text the user picked (resolve 'merged'), written to disk
   | 'disk-ahead' // disk changed, Studio did not: Rojo will push it
   | 'created' // new in Studio: file/folder created
   | 'renamed' // renamed/moved in Studio: file moved
   | 'trashed' // deleted in Studio: file moved to .forge/sync/trash
-  | 'conflict' // both changed and no clean merge: held, gate blocked
+  | 'conflict' // both changed (never merged on its own), or a stale Studio copy: held, gate blocked
   | 'unmapped' // outside every mapped tree (ignored)
 
 export interface SyncEntry {

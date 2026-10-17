@@ -10,6 +10,9 @@
 //        answer may carry resync: true: this window's place is linked but Forge has no live session
 //        with it (Forge restarted, the project was reopened, the session expired): the plugin starts
 //        its check again (config + snapshot) instead of waiting for its next edit.
+//   Plugin v13: config (mode=) and every snapshot / changes body (mode) say which DataModel the plugin
+//        runs in: 'edit', or 'play' / 'run' (a playtest copy). Forge Sync refuses anything but 'edit':
+//        a playtest DataModel is a copy of the place taken when the test started, never Studio's edit.
 //
 // SyncReply is { ok: true } or { ok: false, error, resend?: true }; resend asks the plugin for a fresh
 // full snapshot. Everything that arrives is checked here (pure, no I/O) before main sees it: shapes,
@@ -18,7 +21,12 @@
 import { FINGERPRINT_NAMES, type PlaceFingerprint, type StudioChange, type StudioNode, type StudioOutlineNode, type SyncPlace, type SyncRef, type SyncValue } from './types.ts'
 import { identifyText } from './labels.ts'
 
+// Plugin v13: the DataModel the plugin runs in (RunService:IsEdit / IsRunning / IsRunMode).
+export type StudioMode = 'edit' | 'play' | 'run'
+
 export interface SyncConfigQuery {
+  // Plugin v13 (absent before): only 'edit' syncs.
+  mode?: StudioMode
   placeId: number
   gameId?: number
   place?: string
@@ -56,6 +64,8 @@ export interface OutlineBody {
 }
 
 export interface SnapshotBody {
+  // Plugin v13 (absent before): only 'edit' syncs.
+  mode?: StudioMode
   session: string
   place: SyncPlace
   seq: number
@@ -68,6 +78,8 @@ export interface SnapshotBody {
 }
 
 export interface ChangesBody {
+  // Plugin v13 (absent before): only 'edit' syncs.
+  mode?: StudioMode
   session: string
   place: SyncPlace
   changes: StudioChange[]
@@ -294,11 +306,19 @@ function withRefs<T extends { refs?: SyncRef[]; refsTotal?: number }>(out: T, v:
   return out
 }
 
+// A mode the plugin sent; anything but the three known words counts as a playtest copy (never synced).
+export function parseMode(v: unknown): StudioMode | undefined {
+  if (v === undefined || v === null || v === '') return undefined
+  return v === 'edit' || v === 'run' ? v : 'play'
+}
+
 export function parseSnapshotBody(v: unknown): SnapshotBody {
   if (!isObj(v)) return fail('body must be an object')
   if (typeof v.final !== 'boolean') fail('final must be a boolean')
+  const mode = parseMode(v.mode)
   return withRefs<SnapshotBody>(
     {
+      ...(mode ? { mode } : {}),
       session: str(v.session, 'session', SYNC_LIMITS.maxSession),
       place: parsePlace(v.place),
       seq: int(v.seq, 'seq'),
@@ -319,7 +339,8 @@ export function parseChangesBody(v: unknown): ChangesBody {
     return change
   })
   if (total > SYNC_LIMITS.maxNodes) fail(`changes carry more than ${SYNC_LIMITS.maxNodes} descendants`)
-  return withRefs<ChangesBody>({ session: str(v.session, 'session', SYNC_LIMITS.maxSession), place: parsePlace(v.place), changes }, v)
+  const mode = parseMode(v.mode)
+  return withRefs<ChangesBody>({ ...(mode ? { mode } : {}), session: str(v.session, 'session', SYNC_LIMITS.maxSession), place: parsePlace(v.place), changes }, v)
 }
 
 function parseOutlineNode(v: unknown, what: string): StudioOutlineNode {
@@ -380,6 +401,8 @@ export function parseConfigQuery(params: URLSearchParams): SyncConfigQuery {
   if (probe && LINK_ID_RE.test(probe)) q.probe = probe
   const fp = parseFingerprint(params.get('fp'))
   if (fp) q.fp = fp
+  const mode = parseMode(params.get('mode'))
+  if (mode) q.mode = mode
   return q
 }
 

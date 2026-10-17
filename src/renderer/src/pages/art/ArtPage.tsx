@@ -1,8 +1,8 @@
 // Art page: prompt box with presets and a cost estimate, a gallery of concepts by date, and a detail
 // view (regenerate, variations, edit, import to Roblox, copy id, insert a Vide ImageLabel, save,
-// send to chat, delete with undo), and a fullscreen viewer over the gallery list (click the preview,
-// Fullscreen, double-click a thumbnail or press F). Keys never reach this page; it only sees whether
-// they are set.
+// send to chat, split into layers, delete with undo), and a fullscreen viewer over the gallery list
+// (click the preview, Fullscreen, double-click a thumbnail or press F). "Split into layers" (card,
+// detail, viewer) opens LayersPanel. Keys never reach this page; it only sees whether they are set.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ArtCostEstimate, ArtGenerateInput, ArtItem, ArtQuality, ArtRegistryEntry, ArtSettings, ArtStatus, ArtStyleId } from '@shared/types'
 import { useStore } from '../../store'
@@ -13,6 +13,7 @@ import { CODEX_IMAGE_NOTE } from '@shared/artTypes'
 import { attachImageToChat } from '../../assistant/attachments'
 import { ModelInboxSettings } from '../settings/ModelInboxSettings'
 import { insertIntoComponent, isComponentPath, videImageLabel, IMAGES_REQUIRE } from './videSnippet'
+import { LayersPanel } from './LayersPanel'
 import './art.css'
 
 const SIZES = ['1024x1024', '1536x1024', '1024x1536', '1920x1088', 'auto']
@@ -200,7 +201,7 @@ function KeyCard({ status, onStatus }: { status: ArtStatus; onStatus: (s: ArtSta
   )
 }
 
-function Detail({ item, status, registry, onClose, onChanged, onCompose, onFullscreen }: {
+function Detail({ item, status, registry, onClose, onChanged, onCompose, onFullscreen, onSplit }: {
   item: ArtItem
   status: ArtStatus
   registry: ArtRegistryEntry[]
@@ -208,6 +209,7 @@ function Detail({ item, status, registry, onClose, onChanged, onCompose, onFulls
   onChanged: (next?: ArtItem) => void
   onCompose: (patch: Partial<ArtGenerateInput>, run?: boolean) => void
   onFullscreen: () => void
+  onSplit: () => void
 }) {
   const { state, actions } = useStore()
   const full = useThumb(item.path, true)
@@ -322,6 +324,9 @@ function Detail({ item, status, registry, onClose, onChanged, onCompose, onFulls
         <button className="btn small" onClick={() => void attachImageToChat({ path: item.absPath, name: base(item.path) })}>
           <Icon name="at" size={12} /> Send to chat
         </button>
+        <button className="btn small" disabled={!!busy} onClick={onSplit} title="Cut a UI mockup into image layers (background plate, panel textures, icons, logos, character); text and buttons become real Roblox UI">
+          <Icon name="split" size={12} /> Split into layers
+        </button>
       </div>
 
       <div className="art-import">
@@ -400,6 +405,8 @@ export function ArtPage() {
   const [showSetup, setShowSetup] = useState(false)
   // Path of the concept open in the fullscreen viewer.
   const [viewing, setViewing] = useState<string | null>(null)
+  // Path of the concept open in "Split into layers".
+  const [splitting, setSplitting] = useState<string | null>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
   const pageRef = useRef<HTMLDivElement>(null)
 
@@ -727,16 +734,21 @@ export function ArtPage() {
                   {list.map((i) => (
                     <div key={i.path} className="art-cell" draggable onDragStart={(e) => e.dataTransfer.setData('text/x-forge-art', i.path)}>
                       <Thumb item={i} selected={i.path === selected} onSelect={() => setSelected(i.path === selected ? null : i.path)} onOpen={() => openViewer(i.path)} />
-                      <button className="art-send" onClick={() => sendToChat(i)} title="Attach this image to the chat message you are writing, to ask a model to change it" aria-label={`Send ${base(i.path)} to chat`}>
-                        <Icon name="at" size={11} /> Chat
-                      </button>
+                      <div className="art-overlay">
+                        <button className="art-send" onClick={() => setSplitting(i.path)} title="Split into layers: cut this UI mockup into image layers" aria-label={`Split ${base(i.path)} into layers`}>
+                          <Icon name="split" size={11} /> Layers
+                        </button>
+                        <button className="art-send" onClick={() => sendToChat(i)} title="Attach this image to the chat message you are writing, to ask a model to change it" aria-label={`Send ${base(i.path)} to chat`}>
+                          <Icon name="at" size={11} /> Chat
+                        </button>
+                      </div>
                     </div>
                   ))}
                 </div>
               </div>
             ))}
           </div>
-          {current && status && <Detail item={current} status={status} registry={registry} onClose={() => setSelected(null)} onChanged={() => void load()} onCompose={compose} onFullscreen={() => openViewer(current.path)} />}
+          {current && status && <Detail item={current} status={status} registry={registry} onClose={() => setSelected(null)} onChanged={() => void load()} onCompose={compose} onFullscreen={() => openViewer(current.path)} onSplit={() => setSplitting(current.path)} />}
         </div>
       </div>
       {viewing && viewList.length > 0 && (
@@ -758,6 +770,16 @@ export function ArtPage() {
               >
                 <Icon name="at" size={12} /> Send to chat
               </button>
+              <button
+                className="btn small ghost"
+                onClick={() => {
+                  setViewing(null)
+                  setSplitting(it.key)
+                }}
+                title="Cut this UI mockup into image layers"
+              >
+                <Icon name="split" size={12} /> Split into layers
+              </button>
               <button className="btn small ghost" onClick={() => reveal(it.key, 'open')} title="Open in the system image viewer">
                 <Icon name="external" size={12} /> Open file
               </button>
@@ -768,6 +790,7 @@ export function ArtPage() {
           )}
         />
       )}
+      {splitting && status && items.some((i) => i.path === splitting) && <LayersPanel key={splitting} concept={items.find((i) => i.path === splitting)!} status={status} onClose={() => setSplitting(null)} />}
     </div>
   )
 }

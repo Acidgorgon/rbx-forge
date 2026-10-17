@@ -1,6 +1,7 @@
 // Browser-preview mock of ArtApi: placeholder "generated" images as inline SVG data URLs, so the
 // Art page and its gallery render without Electron, OpenAI or Roblox.
-import type { ArtApi, ArtCostEstimate, ArtGenerateInput, ArtItem, ArtRegistryEntry, ArtSettings, ArtStatus, ArtStylePreset, HarnessEvents, ModelInboxStatus } from '@shared/types'
+import type { ArtApi, ArtCostEstimate, ArtGenerateInput, ArtItem, ArtLayerManifest, ArtLayerSpec, ArtRegistryEntry, ArtSettings, ArtStatus, ArtStylePreset, HarnessEvents, ModelInboxStatus } from '@shared/types'
+import { conceptLayerName, layerName, layersDir, normalizeLayerSpecs } from '@shared/artLayers'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -97,6 +98,7 @@ function makeItem(prompt: string, at: number, index: number, opts: { size?: stri
 const H = 3_600_000
 const t0 = Date.now()
 let items: ArtItem[] = [
+  makeItem('Football game main menu, 16:9: stadium tunnel background, a striker, big headline, nav tabs and three cards (Quick Join, Ranked, Shop)', t0 - 0.5 * H, 1, { size: '1536x1024', style: 'cartoon-key-art' }),
   makeItem('Gold coin icon with a sword emblem, chunky outline', t0 - 1 * H, 1, { transparent: true, style: 'stylized-icon', uri: 'rbxassetid://18273645012' }),
   makeItem('Gold coin icon with a sword emblem, chunky outline', t0 - 1 * H, 2, { transparent: true, style: 'stylized-icon' }),
   makeItem('Shop button, green, rounded, glossy', t0 - 2 * H, 1, { transparent: true, style: 'roblox-ui-flat', source: 'agent' }),
@@ -108,6 +110,19 @@ let items: ArtItem[] = [
   makeItem('Game icon: crossed swords over a glowing gem', t0 - 50 * H, 2, { style: 'game-icon-512' })
 ]
 const thumbs = new Map<string, string>()
+// Split into layers: manifests by ConceptName.
+const layerSets = new Map<string, ArtLayerManifest & { spend?: number }>()
+// What the mock "vision model" sees in a UI mockup.
+const PROPOSAL: ArtLayerSpec[] = [
+  { name: 'Background', kind: 'background', prompt: 'The stadium tunnel at night with floodlights and haze, every UI element, text, card and the striker removed.', transparent: false, size: '1536x1024' },
+  { name: 'QuickJoinCard', kind: 'panel', prompt: 'The green Quick Join card background with the pitch-line pattern, no text or icons.', transparent: true, size: '1024x1536' },
+  { name: 'RankedCard', kind: 'panel', prompt: 'The gold Ranked card background with the trophy glow, no text or icons.', transparent: true, size: '1024x1536' },
+  { name: 'ShopIcon', kind: 'icon', prompt: 'The shopping bag icon with a football, glossy.', transparent: true, size: '1024x1024' },
+  { name: 'GameLogo', kind: 'logo', prompt: 'The shield-shaped game logo with the ball emblem.', transparent: true, size: '1024x1024' },
+  { name: 'Striker', kind: 'character', prompt: 'The striker in the red kit mid-celebration, full figure.', transparent: true, size: '1024x1536' }
+]
+const layerUsd = (size?: string, quality?: string) => PER_IMAGE[quality ?? settings.quality] * (size === '1024x1024' ? 1 : 0.78) + 0.008
+const layersSpentToday = () => [...layerSets.values()].reduce((s, m) => s + (m.spend ?? 0), 0)
 items.forEach((it, i) => thumbs.set(it.path, placeholder(i * 3 + it.index, it.width!, it.height!, it.background === 'transparent')))
 let registry: ArtRegistryEntry[] = [{ name: 'GoldCoinIconSwordEmblem', uri: 'rbxassetid://18273645012' }]
 const trash = new Map<string, ArtItem>()
@@ -138,7 +153,7 @@ function estimate(input: ArtGenerateInput): ArtCostEstimate {
     n,
     perImageUsd: per,
     totalUsd: per * n + (input.referencePaths?.length ?? 0) * 0.008,
-    spentTodayUsd: items.filter((i) => i.date === today).reduce((s, i) => s + i.costUsd, 0),
+    spentTodayUsd: items.filter((i) => i.date === today).reduce((s, i) => s + i.costUsd, 0) + layersSpentToday(),
     dailyCapUsd: settings.dailyCapUsd,
     note: 'Estimate from OpenAI per-image token prices; actual billing can differ.'
   }
@@ -243,6 +258,79 @@ export function artMock(emit: Emit): ArtApi {
     },
     async artReveal(path) {
       if (!items.some((i) => i.path === path)) throw new Error(`${path} does not exist`)
+    },
+    async artLayersPropose(concept) {
+      const it = items.find((i) => i.path === concept)
+      if (!it) throw new Error(`${concept} does not exist`)
+      const id = Math.random().toString(36).slice(2, 8)
+      emit('art:progress', { id, stage: 'proposing layers', detail: concept })
+      await delay(600)
+      emit('art:progress', { id, stage: 'done', detail: 'layers proposed' })
+      const existing = [...layerSets.values()].find((m) => m.concept === concept)
+      return { concept, name: existing?.name ?? conceptLayerName(it.slug, it.index), layers: PROPOSAL.map((l) => ({ ...l })), source: 'vision', ...(existing ? { existing } : {}) }
+    },
+    async artLayersEstimate(input) {
+      const layers = normalizeLayerSpecs(input.layers)
+      if (!layers.length) throw new Error('Add at least one layer')
+      const codex = settings.backend === 'codex'
+      const per = layers.map((l) => ({ name: l.name, size: l.size ?? '1024x1024', usd: codex ? 0 : layerUsd(l.size, input.quality) }))
+      const totalUsd = per.reduce((s, p) => s + p.usd, 0)
+      const spentTodayUsd = estimate({ prompt: '' }).spentTodayUsd
+      const dailyCapUsd = codex ? 0 : settings.dailyCapUsd
+      return { layers: per, totalUsd, spentTodayUsd, dailyCapUsd, model: codex ? 'codex-gpt-image-2' : settings.model, quality: codex ? 'auto' : (input.quality ?? settings.quality), overCap: dailyCapUsd > 0 && spentTodayUsd + totalUsd > dailyCapUsd, note: codex ? 'ChatGPT plan (Codex)' : `${layers.length} edits with the concept as the reference.` }
+    },
+    async artLayersGenerate(input) {
+      const it = items.find((i) => i.path === input.concept)
+      if (!it) throw new Error(`${input.concept} does not exist`)
+      const est = await this.artLayersEstimate(input)
+      if (est.overCap) throw new Error("This would pass today's art budget. Raise it on the Art page or drop some layers.")
+      const name = layerName(input.name || conceptLayerName(it.slug, it.index), 'Concept')
+      const now = new Date().toISOString()
+      const m = layerSets.get(name) ?? { version: 1 as const, name, concept: it.path, createdAt: now, updatedAt: now, layers: [], spend: 0 }
+      const id = Math.random().toString(36).slice(2, 8)
+      const specs = normalizeLayerSpecs(input.layers)
+      for (const [k, spec] of specs.entries()) {
+        emit('art:progress', { id, stage: 'generating layers', detail: `${k + 1}/${specs.length} · ${spec.name}` })
+        await delay(250)
+        const file = `${layersDir(name)}/${spec.name}.png`
+        const [w, h] = (spec.size ?? '1024x1024').split('x').map(Number)
+        thumbs.set(file, placeholder(k * 5 + 2, w || 1024, h || 1024, spec.transparent))
+        const usd = est.layers[k]?.usd ?? 0
+        const layer = { ...spec, file, size: spec.size ?? '1024x1024', model: est.model, costUsd: usd, createdAt: new Date().toISOString() }
+        const at = m.layers.findIndex((l) => l.name === spec.name)
+        if (at >= 0) m.layers[at] = layer
+        else m.layers.push(layer)
+        m.spend = (m.spend ?? 0) + usd
+      }
+      m.updatedAt = new Date().toISOString()
+      layerSets.set(name, m)
+      emit('art:progress', { id, stage: 'done', detail: `${specs.length} layers` })
+      changed()
+      return JSON.parse(JSON.stringify(m))
+    },
+    async artLayersGet(q) {
+      const m = q.includes('/') ? [...layerSets.values()].find((x) => x.concept === q) : layerSets.get(layerName(q, 'Concept'))
+      return m ? JSON.parse(JSON.stringify(m)) : null
+    },
+    async artLayersImport(name, opts) {
+      if (!robloxKey) throw new Error('No Open Cloud API key with asset:read + asset:write. Add one on the Art page.')
+      const m = layerSets.get(name)
+      if (!m) throw new Error(`No layers for ${name}. Split the concept into layers first.`)
+      const id = Math.random().toString(36).slice(2, 8)
+      const imported: string[] = []
+      const todo = m.layers.filter((l) => opts?.force || !l.uri)
+      for (const [k, l] of todo.entries()) {
+        emit('art:progress', { id, stage: 'importing layers', detail: `${k + 1}/${todo.length} · ${l.name}` })
+        await delay(200)
+        l.assetId = String(18_100_000_000 + Math.floor(Math.random() * 999_999_999))
+        l.uri = `rbxassetid://${l.assetId}`
+        l.moderation = 'MODERATION_STATE_APPROVED'
+        l.uploadedAt = new Date().toISOString()
+        imported.push(l.name)
+      }
+      emit('art:progress', { id, stage: 'done', detail: `${imported.length} imported` })
+      changed()
+      return { manifest: JSON.parse(JSON.stringify(m)), imported, failed: [] }
     },
     async fbxInboxStatus() {
       return inboxStatus()

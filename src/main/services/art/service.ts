@@ -26,6 +26,7 @@ import { applyGitPolicy, CONCEPTS_DIR, dayOf, insideRoot, listConcepts, nextInde
 import { assertSpend, chargeSpend } from '../spend/gate.ts'
 import { backendOf, codexBackend, type CodexImages } from './imageBackend.ts'
 import { CODEX_IMAGE_MODEL, CODEX_IMAGE_NOTE } from '../../../shared/artTypes.ts'
+import { ArtLayerService, layersSpent } from './layers.ts'
 
 export const ART_MODELS: ArtModel[] = ['gpt-image-2.5-flare', 'gpt-image-2.5-sunburst', 'gpt-image-2', 'gpt-image-1.5', 'gpt-image-1-mini']
 export const DEFAULT_SETTINGS: ArtSettings = { model: 'gpt-image-2.5-flare', quality: 'high', gitPolicy: 'track-small', dailyCapUsd: 5, assetType: 'Image' }
@@ -58,7 +59,12 @@ export interface ArtServiceDeps {
   maxConcurrent?: number
   // The ChatGPT plan through Codex (settings.backend 'codex').
   codex?: CodexImages
+  // A vision model (the Labs critic tier through the agent layer) for "Split into layers"; without
+  // it the split starts from a default layer list.
+  vision?: ArtVision
 }
+
+export type ArtVision = (system: string, prompt: string, images: { mime: string; base64: string }[]) => Promise<string>
 
 export class ArtService {
   private deps: ArtServiceDeps
@@ -66,16 +72,25 @@ export class ArtService {
   private running = 0
   private queue: (() => void)[] = []
   private lastRequest = 0
+  // "Split into layers" (layers.ts).
+  readonly layers: ArtLayerService
 
   constructor(deps: ArtServiceDeps) {
     this.deps = deps
+    this.layers = new ArtLayerService(this, {
+      vision: deps.vision,
+      thumbnail: deps.thumbnail,
+      now: () => this.now(),
+      onProgress: deps.onProgress,
+      onChanged: deps.onChanged
+    })
   }
 
   private now(): number {
     return (this.deps.now ?? Date.now)()
   }
 
-  private root(): string {
+  root(): string {
     const r = this.deps.root()
     if (!r) throw new Error('No project open')
     return r
@@ -126,9 +141,49 @@ export class ArtService {
     return r ? listConcepts(r) : []
   }
 
+  // Concepts made today plus layers generated today (art/ui/*/layers/layers.json).
   async spentToday(): Promise<number> {
     const today = dayOf(this.now())
-    return round((await this.list()).filter((i) => i.date === today).reduce((s, i) => s + (i.costUsd || 0), 0))
+    const r = this.deps.root()
+    const layers = r ? await layersSpent(r, today).catch(() => 0) : 0
+    return round((await this.list()).filter((i) => i.date === today).reduce((s, i) => s + (i.costUsd || 0), 0) + layers)
+  }
+
+  // Whether images come from Codex (the ChatGPT plan) rather than the billed Images API.
+  usesCodex(): boolean {
+    return !!codexBackend(this.settings().backend, this.deps.codex)
+  }
+
+  // One image for "Split into layers": an edit with the references on the chosen backend, the prompt
+  // sent as is. The caller checks the daily budget for the whole batch first; the app-wide spending
+  // cap is checked and charged here, per image.
+  async renderImage(req: { prompt: string; size: string; quality?: ArtQuality; transparent: boolean; referencePaths: string[] }): Promise<{ bytes: Buffer; model: string; size: string; quality: string; costUsd: number }> {
+    const root = this.root()
+    const refs = await Promise.all(req.referencePaths.map((r) => this.readReference(root, r)))
+    const codex = codexBackend(this.settings().backend, this.deps.codex)
+    if (codex) {
+      const res = await this.slot(() => codex.generate({ prompt: req.prompt, n: 1, size: req.size, transparent: req.transparent, references: refs.map((r) => r.dataUrl) }))
+      if (!res.images[0]) throw new Error(`Codex returned no image${res.notes.length ? `: ${res.notes.join(' ')}` : ''}`)
+      return { bytes: res.images[0], model: CODEX_IMAGE_MODEL, size: 'auto', quality: 'auto', costUsd: 0 }
+    }
+    const apiKey = await this.deps.openAiKey()
+    if (!apiKey) throw new Error('No OpenAI API key. Add one in Settings > Providers > OpenAI.')
+    const q = this.resolveRequest({ prompt: req.prompt, size: req.size, quality: req.quality, transparent: req.transparent, n: 1, referencePaths: req.referencePaths })
+    const costUsd = estimateUsd(q.model, q.quality, q.size, 1, refs.length)
+    assertSpend('images')
+    const image = { model: q.model, prompt: req.prompt, n: 1, size: q.size, quality: q.quality, background: req.transparent ? ('transparent' as const) : ('auto' as const), outputFormat: 'png' as const }
+    const client = { apiKey, fetch: this.deps.fetch, sleep: this.deps.sleep }
+    const res = await this.slot(() => (refs.length ? editImages({ ...image, images: refs.map((r) => r.dataUrl) }, client) : generateImages(image, client)))
+    chargeSpend({ provider: 'openai', source: 'images', costUsd })
+    if (!res.images[0]) throw new Error('OpenAI returned no image')
+    return { bytes: res.images[0], model: q.model, size: res.size ?? q.size, quality: res.quality ?? q.quality, costUsd }
+  }
+
+  // Per-image estimate for one layer on the API backend (0 on Codex).
+  estimateOne(req: { size: string; quality?: ArtQuality; references: number }): { usd: number; model: string; size: string; quality: string } {
+    if (this.usesCodex()) return { usd: 0, model: CODEX_IMAGE_MODEL, size: 'auto', quality: 'auto' }
+    const q = this.resolveRequest({ prompt: 'x', size: req.size, quality: req.quality, n: 1 })
+    return { usd: estimateUsd(q.model, q.quality, q.size, 1, req.references), model: q.model, size: q.size, quality: q.quality }
   }
 
   // ------------------------------------------------------------ generation
@@ -446,25 +501,39 @@ export class ArtService {
     const assetType = input.assetType ?? s.assetType
     const job = randomUUID().slice(0, 8)
     const bytes = await readFile(item.absPath)
-    const result = await uploadImageAsset({
-      apiKey: key.key,
-      bytes,
-      fileName: item.absPath.split(/[\\/]/).pop()!,
-      displayName: name,
-      description: item.prompt.slice(0, 900),
-      assetType,
-      creator: { userId: s.creatorUserId, groupId: s.creatorGroupId },
-      fetch: this.deps.fetch,
-      sleep: this.deps.sleep,
-      now: this.deps.now,
-      onProgress: (stage) => this.deps.onProgress?.({ id: job, stage, detail: name })
-    })
+    const result = await this.uploadBytes({ key: key.key, bytes, fileName: item.absPath.split(/[\\/]/).pop()!, name, description: item.prompt, assetType, job })
     const next: ArtItem = { ...item, roblox: { assetId: result.assetId, uri: result.uri, assetType, name, uploadedAt: new Date(this.now()).toISOString(), ...(result.moderation ? { moderation: result.moderation } : {}) } }
     await writeSidecar(root, next)
     const registry = input.registry === false ? undefined : await this.writeRegistry(root, name, result.uri)
     this.deps.onProgress?.({ id: job, stage: 'done', detail: result.uri })
     this.deps.onChanged?.(root)
     return { item: next, assetId: result.assetId, uri: result.uri, ...(registry ? { registry } : {}) }
+  }
+
+  // The Open Cloud key (Art, else Release); throws the page's message when there is none.
+  async requireRobloxKey(): Promise<string> {
+    const key = await this.deps.robloxKey()
+    if (!key) throw new Error('No Open Cloud API key with asset:read + asset:write. Add one on the Art page.')
+    return key.key
+  }
+
+  // One Open Cloud Image (or Decal) upload with the Art page's creator; the key is never logged.
+  async uploadBytes(o: { key: string; bytes: Buffer; fileName: string; name: string; description: string; assetType?: 'Image' | 'Decal'; job?: string }) {
+    const s = this.settings(this.root())
+    const job = o.job ?? randomUUID().slice(0, 8)
+    return uploadImageAsset({
+      apiKey: o.key,
+      bytes: o.bytes,
+      fileName: o.fileName,
+      displayName: o.name,
+      description: o.description.slice(0, 900),
+      assetType: o.assetType ?? s.assetType,
+      creator: { userId: s.creatorUserId, groupId: s.creatorGroupId },
+      fetch: this.deps.fetch,
+      sleep: this.deps.sleep,
+      now: this.deps.now,
+      onProgress: (stage) => this.deps.onProgress?.({ id: job, stage, detail: o.name })
+    })
   }
 }
 

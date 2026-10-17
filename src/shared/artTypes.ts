@@ -161,6 +161,89 @@ export interface ArtRegistryEntry {
   uri: string
 }
 
+// "Split into layers" (main/services/art/layers.ts, shared/artLayers.ts): a UI mockup concept is cut
+// into the image layers worth keeping as images (background plate, panel textures, icons, logos, a
+// character); text and buttons are rebuilt as real Roblox UI. Files go to
+// art/ui/<ConceptName>/layers/<Layer>.png with the manifest layers.json next to them.
+export type ArtLayerKind = 'background' | 'panel' | 'icon' | 'logo' | 'character'
+
+export interface ArtLayerSpec {
+  // PascalCase key used in the theme table (QuickJoinCard).
+  name: string
+  kind: ArtLayerKind
+  // What to render; the concept goes along as the style reference.
+  prompt: string
+  transparent: boolean
+  // Requested size ("1536x1024"); defaults by kind.
+  size?: string
+}
+
+export interface ArtLayer extends ArtLayerSpec {
+  // Project-relative PNG: art/ui/<ConceptName>/layers/<Name>.png
+  file: string
+  // Pixel size of the file ("1536x1024"), else the requested size.
+  size: string
+  model: string
+  costUsd: number
+  createdAt: string
+  // Set by "Import all to Roblox".
+  assetId?: string
+  uri?: string
+  moderation?: string
+  uploadedAt?: string
+}
+
+export interface ArtLayerManifest {
+  version: 1
+  // ConceptName (PascalCase): the folder under art/ui.
+  name: string
+  // The concept it was cut from (project-relative).
+  concept: string
+  createdAt: string
+  updatedAt: string
+  layers: ArtLayer[]
+}
+
+export interface ArtLayerProposal {
+  concept: string
+  // Suggested ConceptName.
+  name: string
+  layers: ArtLayerSpec[]
+  // 'vision': from the vision model; 'default': a starter list (no vision model reachable).
+  source: 'vision' | 'default'
+  note?: string
+  // The manifest already saved for this concept, if any.
+  existing?: ArtLayerManifest
+}
+
+export interface ArtLayersInput {
+  concept: string
+  // ConceptName; derived from the concept's slug when absent.
+  name?: string
+  layers: ArtLayerSpec[]
+  quality?: ArtQuality
+  source?: 'page' | 'agent'
+}
+
+export interface ArtLayersEstimate {
+  // Per layer, in order.
+  layers: { name: string; size: string; usd: number }[]
+  totalUsd: number
+  spentTodayUsd: number
+  dailyCapUsd: number
+  model: string
+  quality: string
+  // True when this would pass the daily budget (API backend only).
+  overCap: boolean
+  note: string
+}
+
+export interface ArtLayersImportResult {
+  manifest: ArtLayerManifest
+  imported: string[]
+  failed: { name: string; error: string }[]
+}
+
 export interface ArtEvents {
   // Concepts were added, changed or removed.
   'art:changed': { root: string }
@@ -213,6 +296,13 @@ export interface ArtApi {
   // Opens a concept in the OS image viewer ('open') or shows it in its folder ('folder').
   artReveal(path: string, how: 'open' | 'folder'): Promise<void>
   // FBX upload inbox. Enabling needs an Open Cloud key; dir null goes back to the default folder.
+  // Split into layers: propose (vision model), estimate, generate, read, import.
+  artLayersPropose(concept: string): Promise<ArtLayerProposal>
+  artLayersEstimate(input: ArtLayersInput): Promise<ArtLayersEstimate>
+  artLayersGenerate(input: ArtLayersInput): Promise<ArtLayerManifest>
+  // The saved manifest for a concept path or a ConceptName; null when none.
+  artLayersGet(conceptOrName: string): Promise<ArtLayerManifest | null>
+  artLayersImport(name: string, opts?: { force?: boolean }): Promise<ArtLayersImportResult>
   fbxInboxStatus(): Promise<ModelInboxStatus>
   fbxInboxSetSettings(patch: { enabled?: boolean; dir?: string | null }): Promise<ModelInboxStatus>
   // Folder picker; saves the choice. Unchanged status when cancelled.

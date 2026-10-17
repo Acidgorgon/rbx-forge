@@ -30,7 +30,8 @@
 .art-card { display: flex; flex-direction: column; width: 100%; text-align: left; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-panel); overflow: hidden; transition: border-color var(--dur-fast), transform var(--dur-fast) var(--ease-out); }
 .art-card:hover { border-color: var(--line-strong); }
 .art-cell { position: relative; min-width: 0; }
-.art-send { position: absolute; top: 6px; right: 6px; display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; font-size: 11px; border: 1px solid var(--line-strong); border-radius: var(--r-md, 6px); background: var(--bg-panel); color: var(--fg-1); opacity: 0; transition: opacity var(--dur-fast); }
+.art-overlay { position: absolute; top: 6px; right: 6px; display: flex; gap: 4px; }
+.art-send { display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; font-size: 11px; border: 1px solid var(--line-strong); border-radius: var(--r-md, 6px); background: var(--bg-panel); color: var(--fg-1); opacity: 0; transition: opacity var(--dur-fast); }
 .art-cell:hover .art-send, .art-send:focus-visible { opacity: 1; }
 .art-send:hover { border-color: var(--line-focus); }
 .art-card.on { border-color: var(--ember-lo); box-shadow: 0 0 0 1px var(--ember-lo); }
@@ -59,6 +60,24 @@
 .art-import .input { height: 24px; font-size: 12px; }
 .art-insert select.input { width: auto; }
 .art-setup .note a { color: var(--fg-2); text-decoration: underline; text-underline-offset: 2px; }
+
+/* Split into layers (LayersPanel in the shared Dialog frame). */
+.art-layers { display: flex; flex-direction: column; gap: 10px; }
+.art-layers > p { margin: 0; }
+.art-layers .row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.art-layers .input { height: 24px; font-size: 11.5px; }
+.art-layers select.input { width: auto; }
+.art-layers-name .input { width: 220px; }
+.art-layer-list { display: flex; flex-direction: column; gap: 8px; max-height: 40vh; overflow: auto; padding-right: 2px; }
+.art-layer { display: grid; grid-template-columns: 84px minmax(0, 1fr); gap: 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-panel); padding: 8px; }
+.art-layer-thumb .art-img { border: 1px solid var(--line); border-radius: var(--r-sm, 4px); }
+.art-layer-thumb .note { font-size: 10.5px; }
+.art-layer-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; }
+.art-layer-body .row > .input.grow { min-width: 120px; flex: 1; }
+.art-layers .art-layer-prompt { width: 100%; height: auto; min-height: 44px; resize: vertical; font: 11.5px/1.5 var(--font-mono); padding: 5px 8px; }
+.art-layers-out { display: flex; flex-direction: column; gap: 8px; border-top: 1px solid var(--line); padding-top: 4px; }
+.art-layers-out .set-sub { margin: 8px 0 0; }
+.art-layers-snippet { margin: 0; padding: 8px 10px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-editor); font-size: 11.5px; line-height: 1.5; white-space: pre; overflow: auto; max-height: 180px; user-select: text; }
 
 @container (max-width: 820px) {
   .art-body.has-detail { grid-template-columns: minmax(0, 1fr); }

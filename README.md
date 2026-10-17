@@ -181,6 +181,17 @@ Forge's agents keep memories about you (user) and about the game (project, store
 
 Generate UI art, icons, key art and thumbnails with OpenAI's image models (`gpt-image-2.5-flare` by default). You get style presets, sizes, quality, 1 to 4 variants, transparent backgrounds and reference images to edit or riff on. Every generation shows its cost up front, and a daily budget (default $5) stops overspending. Concepts are saved under `art/` in the project. **Roblox import** uploads an image as an Image or Decal asset through the Open Cloud Assets API and returns its asset id. **Ask the agent** hands the image to the assistant, and the assistant can generate art with the same tools.
 
+#### Split a UI mockup into layers
+
+A mockup such as a full 16:9 main menu should not ship as one image. Rebuild its text, buttons and nav tabs as real Roblox UI, and cut out only the art. **Split into layers** does the cutting. You find it on a concept card (**Layers**), in the concept's details and in the fullscreen viewer.
+
+1. **Propose.** The vision model (the Labs critic tier) looks at the concept and proposes a layer list. Each layer has a name, a kind (background plate, panel texture, icon, logo or character), a prompt and a transparent flag. A typical list has one background plate with all UI, text and characters removed, one texture per distinct card or panel with no text, logos and icons on transparent backgrounds, and optionally a character on a transparent background. If no vision model is reachable, you get a starter list to edit instead.
+2. **Edit.** You can rename, re-kind, resize, remove or add layers. The cost line shows the total against today's budget before anything runs.
+3. **Generate.** Each layer is made with the image backend picked on the page (OpenAI API key, or Codex on the ChatGPT plan), with the concept as the reference image so the style, palette and lighting match. The daily budget and the app spending cap apply. The files go to `art/ui/<ConceptName>/layers/<Layer>.png`, with a `layers.json` manifest that lists each layer's name, kind, file, size and prompt.
+4. **Import all to Roblox.** This uploads every layer as an Open Cloud Image asset and records each `assetId` in `layers.json`. The panel then shows a copyable Luau theme table, `{ Background = "rbxassetid://…", QuickJoinCard = "rbxassetid://…", … }`.
+
+The assistant can do the same split with `art_split_layers` (propose, then generate, optionally with `import`). It reads the files and ids with `art_layers_get` when it builds the UI.
+
 ### Studio check for the labs
 
 ![VFX Lab Studio tab: Studio frames next to the preview at each beat](docs/screenshots/90-studio-check-vfx-dark.png)

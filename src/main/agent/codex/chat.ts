@@ -6,6 +6,7 @@ import { modeNote } from '../modes.ts'
 import type { ChatMessage } from '@shared/types'
 import type { CodexSandbox } from './args.ts'
 import type { CodexUpdate } from './events.ts'
+import { STUDIO_GUIDE } from '../studioMcp.ts'
 
 // Ask / Plan: read-only (Codex can read and search, never write). Edit / Auto: workspace-write, the
 // safest sandbox that still lets Codex edit the project: writes only inside the project root (plus
@@ -44,13 +45,19 @@ export interface CodexPromptInput {
   basePrompt: string
   // Paths of the images attached to this message (also passed with --image).
   images?: string[]
+  // Roblox Studio's MCP server is attached to this run (server "studio").
+  studio?: boolean
 }
+
+const NO_STUDIO = '- Roblox Studio is not reachable from here; Studio-only instances (marked * in Forge) are not in the repo.'
+const WITH_STUDIO = `- Live Roblox Studio: the tools of the "studio" MCP server (Roblox's Studio MCP server) act on the open Studio. Studio-only instances (marked * in Forge) are not in the repo.\n${STUDIO_GUIDE}`
 
 export function codexPrompt(i: CodexPromptInput): string {
   const note = modeNote(i.mode, false).trim()
   const attached = attachedImagesNote(i.images ?? [])
-  if (!i.fresh) return [note, attached, i.text].filter(Boolean).join('\n\n')
-  const parts = [projectBrief(i.basePrompt), CODEX_RULES]
+  // A resumed thread has the brief already; say when Studio comes or goes since.
+  if (!i.fresh) return [note, i.studio === undefined ? '' : i.studio ? '(The "studio" MCP server for the live Roblox Studio is attached to this turn.)' : '', attached, i.text].filter(Boolean).join('\n\n')
+  const parts = [projectBrief(i.basePrompt), i.studio ? CODEX_RULES.replace(NO_STUDIO, WITH_STUDIO) : CODEX_RULES]
   if (i.rules.trim()) parts.push(i.rules.trim())
   if (note) parts.push(note)
   if (i.transcript.trim()) parts.push(`Earlier in this conversation:\n${i.transcript.trim()}`)

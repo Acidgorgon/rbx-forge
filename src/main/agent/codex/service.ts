@@ -68,6 +68,8 @@ export interface ExecInput {
   resumeId?: string
   images?: string[]
   ephemeral?: boolean
+  // `-c key=value` config overrides (TOML values), e.g. an MCP server for this run.
+  config?: string[]
   signal?: AbortSignal
   timeoutMs?: number
   onUpdate?: (u: CodexUpdate) => void
@@ -391,7 +393,7 @@ export class CodexService {
     const path = this.bin()
     if (!path) throw new Error(`Codex CLI not found. ${CODEX_INSTALL_HINT}`)
     const mapper = new CodexEventMapper(i.root ?? i.cwd)
-    const args = buildExecArgs({ cwd: i.cwd, sandbox: i.sandbox, model: i.model, resumeId: i.resumeId, images: i.images, ephemeral: i.ephemeral })
+    const args = buildExecArgs({ cwd: i.cwd, sandbox: i.sandbox, model: i.model, resumeId: i.resumeId, images: i.images, ephemeral: i.ephemeral, config: i.config })
     const env = this.env()
     const pass = (updates: CodexUpdate[]) => {
       for (const u of updates) {

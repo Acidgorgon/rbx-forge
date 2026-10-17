@@ -19,7 +19,8 @@ import type { HarnessContext } from './context.ts'
 import { registerAgentIpc } from './agent/index.ts'
 import { DEFAULT_SYNC, emptyStatus, GitSync } from './services/gitSync.ts'
 import { LogBuffer } from './services/logs.ts'
-import { LspBridge } from './services/lspBridge.ts'
+import { LspBridge, SKIP_DIRS } from './services/lspBridge.ts'
+import { DEFAULT_COMPANION_PORT, StudioCompanionServer, luauFilePaths, validPort } from './services/lspCompanion.ts'
 import { Project, type ProjectChange } from './services/project.ts'
 import { renameEntry, trashEntries, trashEntry } from './services/fileOps.ts'
 import { Settings } from './services/settings.ts'
@@ -82,6 +83,7 @@ import { createDoctorWiring } from './services/doctor/wire.ts'
 import { doctorMarkdown } from '../shared/doctor/format.ts'
 import { createAddToGameWiring } from './services/addToGame/wire.ts'
 import { createEditorAssistWiring } from './services/editorAssist/wire.ts'
+import { studioMcpHandlers } from './agent/studioMcp.ts'
 import { completionBlock } from './services/editorAssist/completions.ts'
 import { spendBlock } from './services/spend/gate.ts'
 import { AUTO_COMPACT_DEFAULT, clampCompactPct } from '../shared/autoCompact.ts'
@@ -153,6 +155,22 @@ const lsp = new LspBridge({
     const result = await run(bin, ['--version'], process.cwd())
     return result.code === 0 ? result.stdout.trim() : null
   }
+})
+
+// luau-lsp Studio Companion plugin: the HTTP server the VS Code extension would run (port 3667),
+// forwarding the plugin's DataModel to the luau-lsp above. Settings > Editor turns it off.
+const lspCompanion = new StudioCompanionServer({
+  target: {
+    available: () => lsp.acceptsPlugin,
+    full: (tree) => lsp.pluginFull(tree),
+    clear: () => lsp.pluginClear(),
+    filePaths: async () => {
+      const root = lsp.projectRoot
+      return root ? luauFilePaths(root, SKIP_DIRS) : null
+    }
+  },
+  log: (stream, text) => logs.push({ service: 'lsp', stream, text }),
+  onStatus: (status) => emit('lsp:companion', status)
 })
 
 let project: Project | null = null
@@ -231,6 +249,7 @@ function syncSettings(): SyncSettings {
 }
 
 function appSettings(): AppSettings {
+  const pluginPort = settings.get<number>('lsp.studioPlugin.port', DEFAULT_COMPANION_PORT)
   return {
     serveAllPlaces: settings.get<boolean>('serveAllPlaces', false) === true,
     autoRoute: settings.get<boolean>('autoRoute', true) !== false,
@@ -238,8 +257,15 @@ function appSettings(): AppSettings {
     confirmStudioDelete: settings.get<boolean>('confirmStudioDelete', true) !== false,
     lunePath: settings.get<string | null>('tests.lunePath', null) ?? '',
     autoCompact: settings.get<boolean>('autoCompact', true) !== false,
-    autoCompactPct: clampCompactPct(settings.get<number>('autoCompactPct', AUTO_COMPACT_DEFAULT.pct))
+    autoCompactPct: clampCompactPct(settings.get<number>('autoCompactPct', AUTO_COMPACT_DEFAULT.pct)),
+    lspStudioPlugin: settings.get<boolean>('lsp.studioPlugin.enabled', true) !== false,
+    lspStudioPluginPort: validPort(pluginPort) ? pluginPort : DEFAULT_COMPANION_PORT
   }
+}
+
+function configureLspCompanion(): void {
+  const s = appSettings()
+  void lspCompanion.configure(s.lspStudioPlugin, s.lspStudioPluginPort).catch((error) => harnessLog(`Studio plugin server: ${error}`, 'stderr'))
 }
 
 function harnessLog(text: string, stream: LogLine['stream'] = 'info'): void {
@@ -455,6 +481,16 @@ const integrations = createIntegrations({
   openExternal: (url) => void shell.openExternal(url),
   summarize: (prompt) => agentIpc.summarize(prompt),
   art: artElectronDeps(),
+  // FBX upload inbox (<Documents>/ForgeModels/_upload_inbox by default; off until turned on).
+  modelInbox: {
+    documentsDir: app.getPath('documents'),
+    chooseFolder: async (title, defaultPath) => {
+      const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+      const options: Electron.OpenDialogOptions = { title, defaultPath, properties: ['openDirectory', 'createDirectory'] }
+      const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+      return picked.canceled ? null : (picked.filePaths[0] ?? null)
+    }
+  },
   // UI Preview: preview_ui screenshots through an offscreen renderer window.
   uiPreview: { capture: uiPreviewCapture(preloadPath()) },
   choosePlaceFile: async () => {
@@ -837,6 +873,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 
   getBlink: () => blink?.model ?? EMPTY_BLINK,
   lspStart: () => lsp.start(),
+  getLspCompanion: () => lspCompanion.status(),
 
   listPlaces: () => project?.listPlaces() ?? [],
   getActivePlace: () => project?.getActivePlace() ?? null,
@@ -851,7 +888,12 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     if (typeof patch.lunePath === 'string') settings.set('tests.lunePath', patch.lunePath.trim().slice(0, 1000) || null)
     if (typeof patch.autoCompact === 'boolean') settings.set('autoCompact', patch.autoCompact)
     if (typeof patch.autoCompactPct === 'number' && Number.isFinite(patch.autoCompactPct)) settings.set('autoCompactPct', clampCompactPct(patch.autoCompactPct))
+    if (typeof patch.lspStudioPlugin === 'boolean') settings.set('lsp.studioPlugin.enabled', patch.lspStudioPlugin)
+    if (validPort(patch.lspStudioPluginPort)) settings.set('lsp.studioPlugin.port', patch.lspStudioPluginPort)
     const after = appSettings()
+    if (before.lspStudioPlugin !== after.lspStudioPlugin || before.lspStudioPluginPort !== after.lspStudioPluginPort) {
+      await lspCompanion.configure(after.lspStudioPlugin, after.lspStudioPluginPort).catch((error) => harnessLog(`Studio plugin server: ${error}`, 'stderr'))
+    }
     // rojo's job list depends on serveAllPlaces; restart a running rojo so it serves the new set.
     const rojo = supervisor.statuses().find((s) => s.id === 'rojo')
     if (before.serveAllPlaces !== after.serveAllPlaces && rojo && (rojo.state === 'running' || rojo.state === 'starting')) {
@@ -921,6 +963,24 @@ for (const [name, handler] of Object.entries(editorAssist.handlers)) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
 }
+// Roblox Studio tools (agent/studioMcp.ts): Studio's MCP server found on this computer or set by
+// hand, Settings > Studio tools, Test connection.
+const studioMcpIpc = studioMcpHandlers({
+  getSetting: (key, fallback) => settings.get(key, fallback),
+  setSetting: (key, value) => settings.set(key, value),
+  emit: (status) => emit('studioMcp:status', status),
+  browse: async () => {
+    const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const filters = process.platform === 'win32' ? [{ name: 'Programs', extensions: ['exe', 'bat', 'cmd'] }, { name: 'All files', extensions: ['*'] }] : []
+    const options: Electron.OpenDialogOptions = { title: 'Studio MCP server', properties: ['openFile'], filters }
+    const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+    return picked.canceled ? null : (picked.filePaths[0] ?? null)
+  }
+})
+for (const [name, handler] of Object.entries(studioMcpIpc)) {
+  if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
+  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => (handler as (...a: unknown[]) => unknown)(...args))
+}
 
 function preloadPath(): string {
   const dir = join(__dirname, '../preload')
@@ -979,6 +1039,8 @@ app.whenReady().then(async () => {
   })
   updater.start()
   brainSync.start()
+  void integrations.modelInbox.start()
+  configureLspCompanion()
   void studio.start()
   // Studio's Roblox folder (the plugins folder's parent) exists only where Studio is installed.
   void studio.service
@@ -1013,6 +1075,7 @@ app.on('before-quit', (event) => {
   anim.service.dispose()
   void studio.dispose()
   lsp.dispose()
+  void lspCompanion.dispose()
   closeProject()
     .catch(() => undefined)
     .finally(() => app.quit())

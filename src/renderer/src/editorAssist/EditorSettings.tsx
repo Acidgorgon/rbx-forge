@@ -1,5 +1,6 @@
-// Settings > Editor: format on save (StyLua), autosave, AI inline completions, delete confirmations.
-import type { ReactNode } from 'react'
+// Settings > Editor: format on save (StyLua), autosave, AI inline completions, delete confirmations,
+// the luau-lsp Studio Companion plugin server.
+import { useEffect, useState, type ReactNode } from 'react'
 import type { AutoSaveMode } from '@shared/types'
 import { useStore } from '../store'
 import { openDoctor } from '../pages/qolc/events'
@@ -22,6 +23,33 @@ const AUTO_SAVE: [AutoSaveMode, string][] = [
   ['afterDelay', 'After delay'],
   ['onFocusChange', 'On focus change']
 ]
+
+// Saved on Enter or blur, so typing a port does not restart the server for every digit.
+function PortInput({ value, disabled, onSave }: { value: number; disabled: boolean; onSave: (port: number) => void }) {
+  const [text, setText] = useState(String(value))
+  useEffect(() => setText(String(value)), [value])
+  const commit = () => {
+    const port = Number(text)
+    if (Number.isInteger(port) && port >= 1 && port <= 65535) {
+      if (port !== value) onSave(port)
+    } else setText(String(value))
+  }
+  return (
+    <input
+      className="input"
+      type="number"
+      min={1}
+      max={65535}
+      value={text}
+      disabled={disabled}
+      onChange={(e) => setText(e.target.value)}
+      onBlur={commit}
+      onKeyDown={(e) => e.key === 'Enter' && commit()}
+      style={{ width: 90 }}
+      aria-label="luau-lsp Studio plugin port"
+    />
+  )
+}
 
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 
@@ -78,6 +106,22 @@ export function EditorSettingsSection() {
         }
       >
         <input type="checkbox" className="switch" checked={!!s?.effective.aiCompletions} disabled={!s || !ready} onChange={(e) => save({ aiCompletions: e.target.checked })} aria-label="AI completions" />
+      </Row>
+      <Row
+        title="luau-lsp Studio plugin"
+        desc={
+          <>
+            Serves the luau-lsp Studio Companion plugin on localhost (what VS Code's luau-lsp.studioPlugin.enabled does), so Studio-only instances autocomplete and type check. Turn
+            it off if VS Code should take the plugin's connection.{' '}
+            {state.lspCompanion?.state === 'portInUse' && <>Port {state.lspCompanion.port} is in use right now (VS Code?); RBX Forge retries every 30 seconds.</>}
+            {state.lspCompanion?.state === 'error' && <>{state.lspCompanion.detail}</>}
+          </>
+        }
+      >
+        <input type="checkbox" className="switch" checked={app?.lspStudioPlugin !== false} disabled={!app} onChange={(e) => void actions.setAppSettings({ lspStudioPlugin: e.target.checked })} aria-label="luau-lsp Studio plugin" />
+      </Row>
+      <Row title="luau-lsp Studio plugin port" desc="Must match the port in the plugin's settings (default 3667, like luau-lsp.studioPlugin.port).">
+        <PortInput value={app?.lspStudioPluginPort ?? 3667} disabled={!app || app.lspStudioPlugin === false} onSave={(port) => void actions.setAppSettings({ lspStudioPluginPort: port })} />
       </Row>
       <Row title="Confirm file deletes" desc={`Ask before Delete moves a file, folder or feature to the ${bin} (you can restore it from there). Deletes that would lose unsaved changes always ask.`}>
         <input type="checkbox" className="switch" checked={app?.confirmFileDelete !== false} disabled={!app} onChange={(e) => void actions.setAppSettings({ confirmFileDelete: e.target.checked })} aria-label="Confirm file deletes" />

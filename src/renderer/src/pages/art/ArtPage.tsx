@@ -11,6 +11,7 @@ import { Lightbox, type LightboxItem } from '../../components/Lightbox'
 import { errorText } from '../../lib/format'
 import { CODEX_IMAGE_NOTE } from '@shared/artTypes'
 import { attachImageToChat } from '../../assistant/attachments'
+import { ModelInboxSettings } from '../settings/ModelInboxSettings'
 import { insertIntoComponent, isComponentPath, videImageLabel, IMAGES_REQUIRE } from './videSnippet'
 import './art.css'
 
@@ -193,6 +194,8 @@ function KeyCard({ status, onStatus }: { status: ArtStatus; onStatus: (s: ArtSta
           </div>
         </div>
       </div>
+      <div className="set-sub">FBX upload inbox</div>
+      <ModelInboxSettings refresh={`${status.robloxKey}:${status.settings.creatorUserId ?? ''}:${status.settings.creatorGroupId ?? ''}`} />
     </section>
   )
 }

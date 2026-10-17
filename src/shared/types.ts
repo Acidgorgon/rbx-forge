@@ -66,6 +66,9 @@ import type { EditorAssistApi, EditorAssistEvents } from './editorAssist/types.t
 export type * from './editorAssist/types.ts'
 import type { AddToGameApi } from './addToGame/types.ts'
 export type * from './addToGame/types.ts'
+// Roblox Studio's MCP server (live Studio tools for the Assistant).
+import type { StudioMcpApi, StudioMcpEvents } from './studioMcp.ts'
+export type * from './studioMcp.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -232,6 +235,20 @@ export interface AppSettings {
   // Auto-compact (shared/autoCompact.ts): summarize older turns at autoCompactPct % of the window.
   autoCompact: boolean
   autoCompactPct: number
+  // HTTP server for the luau-lsp Studio Companion plugin (main/services/lspCompanion.ts), like
+  // the VS Code extension's luau-lsp.studioPlugin.enabled / .port. On by default, port 3667.
+  lspStudioPlugin: boolean
+  lspStudioPluginPort: number
+}
+
+// The Studio Companion plugin server (lspCompanion.ts), for the luau-lsp status bar tooltip.
+export interface LspCompanionStatus {
+  // off: disabled in Settings; portInUse: another server (VS Code?) has the port, retried.
+  state: 'off' | 'listening' | 'portInUse' | 'error'
+  port: number
+  detail?: string
+  // Last DataModel the plugin posted (/full), ms; null before one or after its /clear.
+  lastActivityAt: number | null
 }
 
 export interface PlacesChanged {
@@ -557,7 +574,7 @@ export interface BlinkModel {
   blinkVersion?: string
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents, ModelEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents, ModelEvents, StudioMcpEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   'project:changed': ProjectInfo | null
@@ -577,6 +594,8 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   // Codex sign-in progress (url: the login page, for when the browser did not open).
   // JSON-RPC message from luau-lsp (or a harness/lsp* bridge notification), see lsp/index.ts.
   'lsp:message': unknown
+  // The luau-lsp Studio Companion plugin server's state changed.
+  'lsp:companion': LspCompanionStatus
   // events.blink (or an import) was re-parsed or re-checked.
   'blink:changed': BlinkModel
   // Wally deps or Rokit tools changed, or an install started/finished.
@@ -585,7 +604,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi, AccountsApi, EditorAssistApi, ModelApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi, AccountsApi, EditorAssistApi, ModelApi, StudioMcpApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>
@@ -667,6 +686,8 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   // project (true when running); lspSend passes one JSON-RPC message to it.
   lspStart(): Promise<boolean>
   lspSend(message: unknown): void
+  // The luau-lsp Studio Companion plugin server (settings: AppSettings.lspStudioPlugin*).
+  getLspCompanion(): Promise<LspCompanionStatus>
 
   // Packages (main/services/packages.ts). Wally search hits api.wally.run; wally.toml and rokit.toml
   // edits keep comments and order. Changes return the new list and install in the background

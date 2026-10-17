@@ -16,7 +16,7 @@ const methods = [
   'accountsList', 'accountsSignIn', 'accountsCancelSignIn', 'accountsSubmitCode', 'accountsSignOut', 'accountsUseExistingLogin',
   'accountsTest', 'accountsCancelTest',
   'getAgents', 'runAgents', 'cancelAgent',
-  'lspStart',
+  'lspStart', 'getLspCompanion',
   'getBlink',
   'listPlaces', 'getActivePlace', 'setActivePlace', 'getAppSettings', 'setAppSettings',
   'searchWally', 'wallyPackage', 'listWallyDeps', 'addWallyDep', 'removeWallyDep', 'updateWallyDep',
@@ -58,6 +58,7 @@ const methods = [
   // Art concepts (OpenAI images, Roblox import)
   'artStatus', 'artSetSettings', 'artSetRobloxKey', 'artClearRobloxKey', 'artList', 'artEstimate', 'artGenerate',
   'artThumbnail', 'artDelete', 'artUndoDelete', 'artImportToRoblox', 'artSaveToProject', 'artRegistry', 'artChooseReferences', 'artReveal',
+  'fbxInboxStatus', 'fbxInboxSetSettings', 'fbxInboxChooseFolder',
   // UI Preview (UI Labs stories)
   'uiPreviewStories', 'uiPreviewOpen', 'uiPreviewClose', 'uiPreviewInput', 'uiPreviewState', 'uiPreviewImages', 'uiPreviewSaveExport',
   // VFX Lab (library, recipes, render / critique / refine)
@@ -113,7 +114,9 @@ const methods = [
   'spendState', 'spendSetSettings', 'spendRaiseToday', 'spendClearOverride',
   'addToGameOptions', 'addToGamePreview', 'addToGameApply',
   // Editor assist (StyLua format, autosave settings, AI inline completions)
-  'editorAssistStatus', 'editorAssistSetSettings', 'formatLuau', 'inlineComplete', 'inlineCompleteCancel'
+  'editorAssistStatus', 'editorAssistSetSettings', 'formatLuau', 'inlineComplete', 'inlineCompleteCancel',
+  // Roblox Studio tools (MCP) for the Assistant
+  'studioMcpStatus', 'studioMcpSetSettings', 'studioMcpTest', 'studioMcpBrowse'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]
 
 // Compile-time check: every HarnessApi method is exposed (tsc names any that is missing).

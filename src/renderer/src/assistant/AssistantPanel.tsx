@@ -22,6 +22,8 @@ import './chatextras.css'
 import { ModePill, cycleMode, useChatMode } from './commands/ModePill'
 import { slashMatches, useCommandList, useSlashRunner } from './commands/slash'
 import { MessageList, turnStart, useTick } from './Thread'
+import { StudioPill } from './StudioPill'
+import { DEFAULT_CHAT_MODE } from '@shared/chatModes'
 import { elapsed } from './chatItems'
 import { queueWhenBusy } from './queue'
 import { QueueList } from './QueueList'
@@ -617,6 +619,7 @@ export function AssistantPanel() {
           <button className="pill" onClick={(e) => modeMenu(e.currentTarget)} title="Single agent, team, or automatic">
             {mode === 'team' ? 'team' : mode === 'single' ? 'single' : 'auto'} <span className="caret">▼</span>
           </button>
+          <StudioPill mode={chat?.chatMode ?? DEFAULT_CHAT_MODE} />
           <span className="grow" />
           {problems.length > 0 && (
             <button className={`badge-o ${problems.some((p) => p.severity === 'error') ? 'err' : 'warn'}`} onClick={() => actions.showBottom('problems')} title="Problems">

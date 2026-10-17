@@ -41,6 +41,7 @@ import {
   executableOption,
   isAuthHelp,
   OPENAI_TOOLS_NOTE,
+  OPENAI_TOOLS_NOTE_STUDIO,
   sdkQuery,
   studioMcp,
   STUDIO_SERVER,
@@ -52,6 +53,7 @@ import {
   type QueryFn
 } from './sdk.ts'
 import { gentreeTools, SERVER_NAME, toolJsonSchema, wrapInSdkServer, type GentreeTool, type ToolFs } from './tools.ts'
+import { codexStudioConfig, noteSdkInit, openStudioBridge, resolveStudioMcp, type StudioBridge } from './studioMcp.ts'
 import type { Restater } from './restate.ts'
 import { parseRestateCommand } from '../../shared/restate/heuristic.ts'
 import { formatRestatement, withRestatement } from '../../shared/restate/prompt.ts'
@@ -152,6 +154,8 @@ export interface ChatDeps {
   gitDiff?: (root: string) => Promise<string>
   // Codex CLI (ChatGPT plan); default: the process-wide service.
   codex?: () => CodexService
+  // Roblox Studio's MCP tools for the OpenAI-compatible loop (tests stub it); default openStudioBridge.
+  studioBridge?: typeof openStudioBridge
 }
 
 // OpenAI-compatible chats: the window when the provider does not report one (setting
@@ -963,6 +967,8 @@ export class ChatManager {
       const input = payloads.length ? anthropicPrompt(prompt, payloads) : prompt
       for await (const m of queryFn({ prompt: input, options: this.buildOptions(chat, root, abort, modelId, env, rules, effort) })) {
         if ('session_id' in m && m.session_id && chat.sdkSessionId !== m.session_id) chat.sdkSessionId = m.session_id
+        // Whether the Studio MCP server came up (Settings > Studio tools and the chat's Studio pill).
+        if (m.type === 'system' && m.subtype === 'init') noteSdkInit(m, STUDIO_SERVER)
         for (const cm of toChatMessages(m, 'main', subs, { model: modelId })) this.push(chat, cm)
         // Context meter: prompt side of the main loop's latest request.
         if (m.type === 'assistant' && !m.parent_tool_use_id && (m.message as { usage?: unknown })?.usage) {
@@ -1053,34 +1059,43 @@ export class ChatManager {
     history = [...history, { role: 'user', content: userContentWithRefs(text, images.map((i) => i.id)) }]
     const meter = this.deps.meter
     const maxTurns = Number(this.ctx.getSetting('chatMaxTurns', 50)) || 50
-    const result = await (usesResponsesApi(provider, modelId) ? runResponsesLoop : runOpenAiLoop)({
-      baseUrl,
-      headers,
-      model: modelId,
-      system: withRules(SYSTEM_PROMPT + OPENAI_TOOLS_NOTE, rules) + modeNote(mode, false),
-      history,
-      // Chat mode gating: Ask / Plan keep only read tools; Edit asks before every other tool.
-      tools: gateOpenAiTools(mode, mt.all, toolCatalog(mt.read), (name, input) => this.modes.approveOpenAi(chat, name, input, abort.signal)),
-      refuseTool: refuseRemovedTool(mode, mt.all.map((t) => t.name)),
-      maxTurns,
-      signal: abort.signal,
-      agentId: 'main',
-      emit: (m) => this.push(chat, m),
-      extraBody: extraBody(provider, modelId, effort, await this.deps.providers?.modelMeta(provider, modelId).catch(() => undefined)),
-      fetchFn: this.deps.fetchFn,
-      resolveImage: this.imageResolver(),
-      onUsage: (raw) => {
-        const u = fromOpenAiUsage(raw)
-        if (u && promptTokens(u)) chat.contextTokens = promptTokens(u)
-        if (u) this.recordUsage(chat, this.hostSpeaker(chat), u)
-        meter?.ledger.recordOpenAi(raw, { provider, model: modelId, chatId: chat.id })
-      },
-      // Hard caps (chatMaxCostUsd, daily) end the loop between requests.
-      stop: meter ? () => meter.checkChat(chat.id).level === 'stop' : undefined
-    })
-    chat.oaiHistory = trimHistory(result.history)
-    if (result.outcome === 'aborted') this.push(chat, systemMessage('main', 'Stopped.'))
-    if (result.outcome === 'error') this.ctx.log({ service: 'agent', stream: 'stderr', text: `${PROVIDERS[provider].label}: ${result.error}` })
+    // Roblox Studio's MCP tools, bridged for this turn (not in Ask / Plan, like the SDK path).
+    const studio = isReadOnlyMode(mode) ? null : resolveStudioMcp((k, f) => this.ctx.getSetting(k, f)).active
+    const bridge: StudioBridge | null = studio
+      ? await (this.deps.studioBridge ?? openStudioBridge)(studio, { signal: abort.signal, log: (t) => this.ctx.log({ service: 'agent', stream: 'stderr', text: t }) })
+      : null
+    try {
+      const result = await (usesResponsesApi(provider, modelId) ? runResponsesLoop : runOpenAiLoop)({
+        baseUrl,
+        headers,
+        model: modelId,
+        system: withRules(SYSTEM_PROMPT + (bridge ? OPENAI_TOOLS_NOTE_STUDIO : OPENAI_TOOLS_NOTE), rules) + modeNote(mode, false),
+        history,
+        // Chat mode gating: Ask / Plan keep only read tools; Edit asks before every other tool.
+        tools: gateOpenAiTools(mode, [...mt.all, ...(bridge?.tools ?? [])], toolCatalog(mt.read), (name, input) => this.modes.approveOpenAi(chat, name, input, abort.signal)),
+        refuseTool: refuseRemovedTool(mode, mt.all.map((t) => t.name)),
+        maxTurns,
+        signal: abort.signal,
+        agentId: 'main',
+        emit: (m) => this.push(chat, m),
+        extraBody: extraBody(provider, modelId, effort, await this.deps.providers?.modelMeta(provider, modelId).catch(() => undefined)),
+        fetchFn: this.deps.fetchFn,
+        resolveImage: this.imageResolver(),
+        onUsage: (raw) => {
+          const u = fromOpenAiUsage(raw)
+          if (u && promptTokens(u)) chat.contextTokens = promptTokens(u)
+          if (u) this.recordUsage(chat, this.hostSpeaker(chat), u)
+          meter?.ledger.recordOpenAi(raw, { provider, model: modelId, chatId: chat.id })
+        },
+        // Hard caps (chatMaxCostUsd, daily) end the loop between requests.
+        stop: meter ? () => meter.checkChat(chat.id).level === 'stop' : undefined
+      })
+      chat.oaiHistory = trimHistory(result.history)
+      if (result.outcome === 'aborted') this.push(chat, systemMessage('main', 'Stopped.'))
+      if (result.outcome === 'error') this.ctx.log({ service: 'agent', stream: 'stderr', text: `${PROVIDERS[provider].label}: ${result.error}` })
+    } finally {
+      await bridge?.close()
+    }
   }
 
   // One turn on Codex: `codex exec --json` in the project root (resuming the chat's Codex thread),
@@ -1104,6 +1119,8 @@ export class ChatManager {
       }
     }
     const speaker = this.hostSpeaker(chat)
+    // Roblox Studio's MCP server for this run (`codex exec -c mcp_servers.studio...`), not in Ask / Plan.
+    const studioConfig = isReadOnlyMode(mode) ? [] : codexStudioConfig(resolveStudioMcp((k, f) => this.ctx.getSetting(k, f)).active)
     const run = async (resume: string | undefined) => {
       const ids = new Map<string, string>()
       const idOf = (key: string) => {
@@ -1112,10 +1129,11 @@ export class ChatManager {
         return id
       }
       let errorShown = false
-      const prompt = codexPrompt({ text, mode, rules, fresh: !resume, transcript: resume ? '' : transcript(), basePrompt: SYSTEM_PROMPT, images: paths })
+      const prompt = codexPrompt({ text, mode, rules, fresh: !resume, transcript: resume ? '' : transcript(), basePrompt: SYSTEM_PROMPT, images: paths, ...(studioConfig.length ? { studio: true } : {}) })
       const r = await codex.exec({
         cwd: root,
         prompt,
+        ...(studioConfig.length ? { config: studioConfig } : {}),
         sandbox: codexSandboxFor(mode),
         model: modelId,
         resumeId: resume,

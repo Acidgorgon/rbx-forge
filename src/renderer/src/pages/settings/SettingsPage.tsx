@@ -14,6 +14,7 @@ import { ToolchainSection } from '../../setup/Toolchain'
 import { DefaultEffortSetting } from '../../assistant/EffortPicker'
 import { UpdatesSection } from '../../updates/UpdatesSection'
 import { ForgeSyncSettings } from './ForgeSyncSettings'
+import { StudioMcpSettings } from './StudioMcpSettings'
 import { LabsSettings } from './LabsSettings'
 import { RestateSettingRow } from './RestateSettings'
 import { AutoCompactSettingRows } from './AutoCompactSettings'
@@ -21,12 +22,13 @@ import { QolSettings } from '../../qol/QolSettings'
 import { DoctorBanner } from '../qolc/Doctor'
 import { SpendSettingsSection } from '../qolc/Spend'
 import { FigmaTokenSettings } from './FigmaTokenSettings'
+import { ModelInboxSettings } from './ModelInboxSettings'
 import { AccountsSection } from '../../accounts/AccountsSection'
 import { EditorSettingsSection } from '../../editorAssist/EditorSettings'
 import { categoryOf, loadCategory, saveCategory, SETTINGS_CATEGORIES, SETTINGS_SECTION_EVENT, takePendingSection, type SettingsCategory } from './settingsNav'
 
 const BLURB: Record<ProviderId, string> = {
-  anthropic: 'Claude through the Claude Agent SDK. The only provider with Roblox Studio (MCP) tools.',
+  anthropic: 'Claude through the Claude Agent SDK, with every Forge tool.',
   openai: 'GPT models through api.openai.com.',
   openrouter: 'Hundreds of models from many labs with one key.',
   gemini: "Google's Gemini models through their OpenAI-compatible endpoint.",
@@ -450,8 +452,8 @@ export function SettingsPage() {
             <section className="set-sec" id="set-providers">
               <h2>Providers</h2>
               <p className="note">
-                Server URLs for local and self-hosted models; sign-ins and API keys for the hosted providers are under Accounts above. Studio MCP tools are only
-                available on Claude; other providers get the project tools.
+                Server URLs for local and self-hosted models; sign-ins and API keys for the hosted providers are under Accounts above. Roblox Studio tools
+                (Studio &amp; sync &gt; Studio tools) work on Claude, the OpenAI-compatible providers and Codex.
               </p>
               <div className="pv-list">{providers?.filter((p) => p.id === 'ollama' || p.id === 'custom').map((p) => <ProviderCard key={p.id} p={p} />)}</div>
             </section>
@@ -522,6 +524,10 @@ export function SettingsPage() {
                 <button className="btn small" onClick={() => actions.showSide('team')}><Icon name="team" size={12} /> Team</button>
               </Row>
             </section>
+            <section className="set-sec" id="set-studio-mcp">
+              <h2>Roblox Studio tools (MCP)</h2>
+              <StudioMcpSettings />
+            </section>
             <section className="set-sec" id="set-toolchain">
               <h2>Toolchain</h2>
               <ToolchainSection />
@@ -536,6 +542,7 @@ export function SettingsPage() {
             <section className="set-sec" id="set-integrations">
               <h2>Integrations</h2>
               <FigmaTokenSettings />
+              <ModelInboxSettings />
             </section>
             </div>
           </div>

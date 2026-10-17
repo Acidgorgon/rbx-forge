@@ -49,6 +49,7 @@ import { defineTool, gentreeTools, runTool, SERVER_NAME, wrapInSdkServer, type G
 import { codexService, type CodexService } from './codex/service.ts'
 import { CODEX_GROUP_SANDBOX, codexGroupPrompt, codexMessage, staleThread } from './codex/chat.ts'
 import { generatedImagesMessage, importGeneratedImages } from './codex/imageSink.ts'
+import { codexStudioConfig, resolveStudioMcp } from './studioMcp.ts'
 
 // Read tools a guest may use, when guest tools are on. Never any of WRITE_TOOLS.
 // Group chat v2 adds git_diff, read_diagnostics (group/readTools.ts), service_logs and blink_check.
@@ -572,6 +573,8 @@ export class GroupChat {
           ...(root ? { root } : {}),
           prompt: codexGroupPrompt({ system: o.system, prompt, fresh: !resumeId, projectFiles: !scratch, images }),
           sandbox: CODEX_GROUP_SANDBOX,
+          // With guest tools on: Studio's look-only tools (no Luau, playtests or edits).
+          ...(o.tools && !scratch ? { config: codexStudioConfig(resolveStudioMcp((k, f) => this.ctx.getSetting(k, f)).active, { readOnly: true }) } : {}),
           model: p.model,
           resumeId,
           images,
@@ -826,7 +829,7 @@ function lastUserText(room: Room): string {
 // What a Codex guest can and cannot do, for its join notice.
 function codexGuestNote(guestTools: boolean): string {
   return guestTools
-    ? "It answers through the Codex CLI on your ChatGPT plan, in the CLI's read-only sandbox: it reads the project with its own read-only commands and cannot edit files."
+    ? "It answers through the Codex CLI on your ChatGPT plan, in the CLI's read-only sandbox: it reads the project with its own read-only commands (and, when Studio tools are set up, Studio's look-only tools) and cannot edit files."
     : "It answers through the Codex CLI on your ChatGPT plan, in the CLI's read-only sandbox. Guest file access is off, so it runs in an empty scratch folder and is told not to read project files (the sandbox blocks writes, not reads)."
 }
 

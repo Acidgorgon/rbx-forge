@@ -1,6 +1,6 @@
 // Browser-preview mock of ArtApi: placeholder "generated" images as inline SVG data URLs, so the
 // Art page and its gallery render without Electron, OpenAI or Roblox.
-import type { ArtApi, ArtCostEstimate, ArtGenerateInput, ArtItem, ArtRegistryEntry, ArtSettings, ArtStatus, ArtStylePreset, HarnessEvents } from '@shared/types'
+import type { ArtApi, ArtCostEstimate, ArtGenerateInput, ArtItem, ArtRegistryEntry, ArtSettings, ArtStatus, ArtStylePreset, HarnessEvents, ModelInboxStatus } from '@shared/types'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 const delay = (ms: number) => new Promise((r) => setTimeout(r, ms))
@@ -18,6 +18,18 @@ const PER_IMAGE: Record<string, number> = { low: 0.0059, medium: 0.0132, high: 0
 
 let settings: ArtSettings = { model: 'gpt-image-2.5-flare', quality: 'high', gitPolicy: 'track-small', dailyCapUsd: 5, assetType: 'Image', creatorUserId: 1234567 }
 let robloxKey = false
+const INBOX_DEFAULT = '/Users/you/Documents/ForgeModels/_upload_inbox'
+let inbox = { enabled: false, dir: null as string | null }
+const inboxStatus = (): ModelInboxStatus => ({
+  enabled: inbox.enabled,
+  dir: inbox.dir ?? INBOX_DEFAULT,
+  defaultDir: INBOX_DEFAULT,
+  modelsDir: '/Users/you/Documents/ForgeModels',
+  robloxKey,
+  creator: !!(settings.creatorUserId || settings.creatorGroupId),
+  watching: inbox.enabled,
+  recent: inbox.enabled ? [{ id: 'emberstag-head', name: 'EmberstagHead', status: 'done', assetId: 18_200_000_123, at: new Date().toISOString() }] : []
+})
 
 // Deterministic placeholder art: a soft gradient, a shape, a highlight.
 function placeholder(seed: number, w: number, h: number, transparent: boolean): string {
@@ -231,6 +243,18 @@ export function artMock(emit: Emit): ArtApi {
     },
     async artReveal(path) {
       if (!items.some((i) => i.path === path)) throw new Error(`${path} does not exist`)
+    },
+    async fbxInboxStatus() {
+      return inboxStatus()
+    },
+    async fbxInboxSetSettings(patch) {
+      if (patch.enabled && !robloxKey) throw new Error('Add an Open Cloud API key (Art page > Roblox import) before turning on the inbox.')
+      inbox = { enabled: patch.enabled ?? inbox.enabled, dir: 'dir' in patch ? (patch.dir ?? null) : inbox.dir }
+      return inboxStatus()
+    },
+    async fbxInboxChooseFolder() {
+      inbox = { ...inbox, dir: '/Users/you/Desktop/fbx-inbox' }
+      return inboxStatus()
     }
   }
 }

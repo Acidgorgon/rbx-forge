@@ -42,6 +42,7 @@ import { gatingMock } from './mockGating'
 import { thumbsMock } from './mockThumbs'
 import { addToGameMock, doctorMock, spendMock } from './mockQolc'
 import { editorAssistMock } from './mockEditorAssist'
+import { studioMcpMock } from './mockStudioMcp'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -967,6 +968,7 @@ const api: HarnessApi = {
   ...doctorMock(emit),
   ...spendMock(emit),
   ...editorAssistMock(emit),
+  ...studioMcpMock(emit),
   ...addToGameMock(),
 
   on(event, handler) {

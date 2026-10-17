@@ -82,6 +82,7 @@ import { createDoctorWiring } from './services/doctor/wire.ts'
 import { doctorMarkdown } from '../shared/doctor/format.ts'
 import { createAddToGameWiring } from './services/addToGame/wire.ts'
 import { createEditorAssistWiring } from './services/editorAssist/wire.ts'
+import { studioMcpHandlers } from './agent/studioMcp.ts'
 import { completionBlock } from './services/editorAssist/completions.ts'
 import { spendBlock } from './services/spend/gate.ts'
 
@@ -915,6 +916,24 @@ const editorAssist = createEditorAssistWiring({
 for (const [name, handler] of Object.entries(editorAssist.handlers)) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => handler(...args))
+}
+// Roblox Studio tools (agent/studioMcp.ts): Studio's MCP server found on this computer or set by
+// hand, Settings > Studio tools, Test connection.
+const studioMcpIpc = studioMcpHandlers({
+  getSetting: (key, fallback) => settings.get(key, fallback),
+  setSetting: (key, value) => settings.set(key, value),
+  emit: (status) => emit('studioMcp:status', status),
+  browse: async () => {
+    const window = BrowserWindow.getFocusedWindow() ?? BrowserWindow.getAllWindows()[0]
+    const filters = process.platform === 'win32' ? [{ name: 'Programs', extensions: ['exe', 'bat', 'cmd'] }, { name: 'All files', extensions: ['*'] }] : []
+    const options: Electron.OpenDialogOptions = { title: 'Studio MCP server', properties: ['openFile'], filters }
+    const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
+    return picked.canceled ? null : (picked.filePaths[0] ?? null)
+  }
+})
+for (const [name, handler] of Object.entries(studioMcpIpc)) {
+  if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
+  ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => (handler as (...a: unknown[]) => unknown)(...args))
 }
 
 function preloadPath(): string {

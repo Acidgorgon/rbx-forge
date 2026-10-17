@@ -5,6 +5,7 @@ import { coreFlows } from './core.ts'
 import { editorAssistFlows } from './editorAssist.ts'
 import { editorGroupFlows } from './editorGroups.ts'
 import { pageFlows } from './pages.ts'
+import { studioMcpFlows } from './studioMcp.ts'
 import { artFlows } from './art.ts'
 import { labFlows } from './labs.ts'
 import { studioFlows, syncFlows } from './sync.ts'
@@ -15,4 +16,4 @@ import type { Flow } from './types.ts'
 
 export type { Flow, FlowCtx } from './types.ts'
 
-export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...editorGroupFlows, ...syncFlows, ...labFlows, ...modelFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...artFlows, ...aiFlows, ...modelAiFlows, ...providerQolFlows, ...webglOffFlows]
+export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...editorGroupFlows, ...syncFlows, ...labFlows, ...modelFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...studioMcpFlows, ...artFlows, ...aiFlows, ...modelAiFlows, ...providerQolFlows, ...webglOffFlows]

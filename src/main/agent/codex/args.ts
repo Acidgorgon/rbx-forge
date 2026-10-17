@@ -9,6 +9,8 @@
 //   --model, -m               model override (else the user's Codex config)
 //   --skip-git-repo-check     allow a folder that is not a git repo
 //   --ephemeral               do not persist the session rollout (one-shot calls)
+//   -c, --config key=value    a config.toml override for this run (value parsed as TOML), e.g.
+//                             mcp_servers.<name>.command / .args (learn.chatgpt.com/codex/mcp)
 //   --image, -i               images for the prompt; on `exec` it takes 1.. values split on ',', so the
 //                             prompt goes after `--` and paths with commas are refused
 //   resume <SESSION_ID>       continue a thread (root flags apply to it)
@@ -27,6 +29,7 @@ export interface ExecArgsInput {
   resumeId?: string
   images?: string[]
   ephemeral?: boolean
+  config?: string[]
 }
 
 export function buildExecArgs(i: ExecArgsInput): string[] {
@@ -34,6 +37,7 @@ export function buildExecArgs(i: ExecArgsInput): string[] {
   const model = i.model?.trim()
   if (model && model !== CODEX_DEFAULT_MODEL) args.push('--model', model)
   if (i.ephemeral) args.push('--ephemeral')
+  for (const c of i.config ?? []) if (/^[\w.-]+=/.test(c)) args.push('-c', c)
   // A resumed thread keeps its id only when the id is a plain UUID-ish token.
   if (i.resumeId && /^[\w-]+$/.test(i.resumeId)) args.push('resume', i.resumeId)
   for (const img of i.images ?? []) {

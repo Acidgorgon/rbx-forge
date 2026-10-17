@@ -10,15 +10,17 @@
 //    for size "auto" and quality "auto". One image per call; n variants = n calls.
 //  - Output: saved as $CODEX_HOME/generated_images/<thread id>/<call id>.png (artifact.rs). The
 //    thread id is the `thread.started` event's thread_id. `codex exec --json` has no image item,
-//    so the files are collected from that folder after the run.
+//    so the files are collected from that folder after the run (generated.ts; chats watch it
+//    during the run, service.ts exec onImages).
 // Forge runs it in a fresh scratch folder (references copied there) with the read-only sandbox:
 // nothing in the project can change, and image saving is done by Codex itself, not by a command.
 
-import { mkdtemp, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import type { CodexImages } from '../../services/art/imageBackend.ts'
 import { codexHome, codexService, type CodexService } from './service.ts'
+import { IMAGE_FILE, imagesIn } from './generated.ts'
 
 export const CODEX_MAX_IMAGES = 4
 export const CODEX_MAX_REFS = 5
@@ -80,20 +82,7 @@ function extOf(buf: Buffer): string {
   return 'png'
 }
 
-const IMAGE_FILE = /\.(png|jpe?g|webp)$/i
-
-// Image files in a folder (one level), oldest first. Missing folder = [].
-export async function imagesIn(dir: string, skip: (name: string) => boolean = () => false): Promise<string[]> {
-  const names = await readdir(dir).catch(() => [] as string[])
-  const files: { path: string; at: number }[] = []
-  for (const name of names) {
-    if (!IMAGE_FILE.test(name) || skip(name)) continue
-    const p = join(dir, name)
-    const s = await stat(p).catch(() => null)
-    if (s?.isFile()) files.push({ path: p, at: s.mtimeMs })
-  }
-  return files.sort((a, b) => a.at - b.at || a.path.localeCompare(b.path)).map((f) => f.path)
-}
+export { imagesIn }
 
 // Where this run's images are: the thread's folder under $CODEX_HOME/generated_images, any path the
 // event stream reported, then (older CLIs / remote executors) the scratch folder itself.

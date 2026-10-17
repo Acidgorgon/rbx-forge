@@ -38,6 +38,7 @@ import { git as runGit } from './services/collab/git.ts'
 import { renameFeature, FEATURE_NAME } from './services/featureOps.ts'
 import * as release from './services/release/index.ts'
 import { createArtWiring, type ArtWireDeps } from './services/art/wire.ts'
+import { setCodexConceptSaver } from './agent/codex/imageSink.ts'
 import { backendOf, type CodexImages } from './services/art/imageBackend.ts'
 import { codexImages } from './agent/codex/images.ts'
 import type { ImageBackend } from '../shared/artTypes.ts'
@@ -133,6 +134,9 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     emit,
     ...(deps.art ?? {})
   })
+
+  // Images Codex makes in a chat land in art/concepts too (agent/codex/imageSink.ts).
+  setCodexConceptSaver(async ({ images, prompt }) => (await art.service.saveGenerated({ images, prompt })).map((i) => i.path))
 
   // ---------------------------------------------------------------- Lune tests
   const tests = new TestService({
@@ -515,6 +519,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
       notifiers.clear()
     },
     dispose() {
+      setCodexConceptSaver(null)
       uiPreview.dispose()
       tests.stopWatch()
       tests.cancel()

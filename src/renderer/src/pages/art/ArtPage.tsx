@@ -502,6 +502,9 @@ export function ArtPage() {
     if (viewing && !items.some((i) => i.path === viewing)) setViewing(null)
   }, [items, viewing])
   const loadFull = useCallback((it: LightboxItem) => fullUrl(it.key), [])
+  // Puts a concept into the chat composer (the Assistant panel opens) so a model can edit that image.
+  const sendToChat = (item: ArtItem) =>
+    void attachImageToChat({ path: item.absPath, name: base(item.path) }).then((ref) => actions.toast(ref ? { text: `${base(item.path)} attached to the chat message`, kind: 'ok' } : { text: 'Could not attach the image', kind: 'err' }))
   const reveal = (path: string, how: 'open' | 'folder') =>
     void h.artReveal(path, how).catch((e) => actions.toast({ text: how === 'open' ? 'Could not open the file' : 'Could not show the file', detail: errorText(e), kind: 'err' }))
 
@@ -719,8 +722,11 @@ export function ArtPage() {
                 </div>
                 <div className="art-grid">
                   {list.map((i) => (
-                    <div key={i.path} draggable onDragStart={(e) => e.dataTransfer.setData('text/x-forge-art', i.path)}>
+                    <div key={i.path} className="art-cell" draggable onDragStart={(e) => e.dataTransfer.setData('text/x-forge-art', i.path)}>
                       <Thumb item={i} selected={i.path === selected} onSelect={() => setSelected(i.path === selected ? null : i.path)} onOpen={() => openViewer(i.path)} />
+                      <button className="art-send" onClick={() => sendToChat(i)} title="Attach this image to the chat message you are writing, to ask a model to change it" aria-label={`Send ${base(i.path)} to chat`}>
+                        <Icon name="at" size={11} /> Chat
+                      </button>
                     </div>
                   ))}
                 </div>
@@ -739,6 +745,16 @@ export function ArtPage() {
           load={loadFull}
           actions={(it) => (
             <>
+              <button
+                className="btn small ghost"
+                onClick={() => {
+                  const found = items.find((x) => x.path === it.key)
+                  if (found) sendToChat(found)
+                }}
+                title="Attach this image to the chat message you are writing"
+              >
+                <Icon name="at" size={12} /> Send to chat
+              </button>
               <button className="btn small ghost" onClick={() => reveal(it.key, 'open')} title="Open in the system image viewer">
                 <Icon name="external" size={12} /> Open file
               </button>

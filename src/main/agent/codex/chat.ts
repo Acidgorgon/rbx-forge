@@ -22,11 +22,16 @@ export function projectBrief(basePrompt: string): string {
   return (cut > 0 ? basePrompt.slice(0, cut) : basePrompt).trim()
 }
 
+// Images: Forge shows what image_gen makes in the chat and saves it to art/concepts by itself
+// (codex/imageSink.ts), so Codex must not copy the files (a read-only sandbox refuses it anyway).
+export const CODEX_IMAGE_RULES = `- Images you make with the built-in image_gen tool appear in this chat automatically and Forge saves them to art/concepts (the Art page). Do not copy, move or re-save them, and do not tell the user to look in another folder.`
+
 export const CODEX_RULES = `Working rules (you are Codex, running inside RBX Forge on the user's project):
 - Never edit Packages/ (Wally) or generated files (src/shared/events/client.luau and server.luau come from events.blink).
 - Keep edits minimal and in the existing style. Scripts are Luau (.luau).
 - Roblox Studio is not reachable from here; Studio-only instances (marked * in Forge) are not in the repo.
-- Be concise in replies.`
+- Be concise in replies.
+${CODEX_IMAGE_RULES}`
 
 export interface CodexPromptInput {
   text: string
@@ -37,17 +42,27 @@ export interface CodexPromptInput {
   fresh: boolean
   transcript: string
   basePrompt: string
+  // Paths of the images attached to this message (also passed with --image).
+  images?: string[]
 }
 
 export function codexPrompt(i: CodexPromptInput): string {
   const note = modeNote(i.mode, false).trim()
-  if (!i.fresh) return note ? `${note}\n\n${i.text}` : i.text
+  const attached = attachedImagesNote(i.images ?? [])
+  if (!i.fresh) return [note, attached, i.text].filter(Boolean).join('\n\n')
   const parts = [projectBrief(i.basePrompt), CODEX_RULES]
   if (i.rules.trim()) parts.push(i.rules.trim())
   if (note) parts.push(note)
   if (i.transcript.trim()) parts.push(`Earlier in this conversation:\n${i.transcript.trim()}`)
+  if (attached) parts.push(attached)
   parts.push(`New message:\n${i.text}`)
   return parts.join('\n\n')
+}
+
+// Attached images (`codex exec --image`) as local files too, so image_gen can edit them.
+export function attachedImagesNote(paths: string[]): string {
+  if (!paths.length) return ''
+  return `Attached image${paths.length === 1 ? '' : 's'} (also local files; to edit or vary ${paths.length === 1 ? 'it' : 'one'} with image_gen, pass the path in referenced_image_paths):\n${paths.map((p) => `- ${p}`).join('\n')}`
 }
 
 // `codex exec resume` with a thread id the CLI no longer has.
@@ -75,7 +90,7 @@ const NO_PROJECT = 'You run in an empty scratch folder: the user turned off proj
 // Prompt of one group call on Codex. A fresh thread gets the participant's system prompt; a
 // resumed one already has it. The file-access line comes every time (guest tools can be switched
 // between calls).
-export function codexGroupPrompt(i: { system: string; prompt: string; fresh: boolean; projectFiles: boolean }): string {
+export function codexGroupPrompt(i: { system: string; prompt: string; fresh: boolean; projectFiles: boolean; images?: string[] }): string {
   const access = i.projectFiles ? READ_PROJECT : NO_PROJECT
-  return [i.fresh ? i.system.trim() : '', access, i.prompt.trim()].filter(Boolean).join('\n\n')
+  return [i.fresh ? i.system.trim() : '', `${access}\n${CODEX_IMAGE_RULES.slice(2)}`, attachedImagesNote(i.images ?? []), i.prompt.trim()].filter(Boolean).join('\n\n')
 }

@@ -29,6 +29,10 @@
 .art-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(148px, 1fr)); gap: 10px; }
 .art-card { display: flex; flex-direction: column; width: 100%; text-align: left; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-panel); overflow: hidden; transition: border-color var(--dur-fast), transform var(--dur-fast) var(--ease-out); }
 .art-card:hover { border-color: var(--line-strong); }
+.art-cell { position: relative; min-width: 0; }
+.art-send { position: absolute; top: 6px; right: 6px; display: inline-flex; align-items: center; gap: 3px; padding: 2px 6px; font-size: 11px; border: 1px solid var(--line-strong); border-radius: var(--r-md, 6px); background: var(--bg-panel); color: var(--fg-1); opacity: 0; transition: opacity var(--dur-fast); }
+.art-cell:hover .art-send, .art-send:focus-visible { opacity: 1; }
+.art-send:hover { border-color: var(--line-focus); }
 .art-card.on { border-color: var(--ember-lo); box-shadow: 0 0 0 1px var(--ember-lo); }
 .art-card:focus-visible { outline: none; border-color: var(--line-focus); }
 .art-img { aspect-ratio: 1 / 1; display: grid; place-items: center; background: var(--bg-editor); border-bottom: 1px solid var(--line); overflow: hidden; }

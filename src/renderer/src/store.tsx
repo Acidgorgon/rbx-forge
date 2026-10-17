@@ -1111,7 +1111,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }),
       h.on('collab:claims', (claims) => set({ claims })),
       h.on('features:renamed', (r) => actions.toast({ text: `Feature renamed: ${r.from} → ${r.to}`, detail: `${r.moved.length} moves · ${r.updated.length} files updated`, kind: 'hot' })),
-      h.on('release:webhookGone', () => actions.toast({ text: 'Discord webhook was deleted', detail: 'Add a new one in Release settings', kind: 'err' }))
+      h.on('release:webhookGone', () => actions.toast({ text: 'Discord webhook was deleted', detail: 'Add a new one in Release settings', kind: 'err' })),
+      h.on('fbxInbox:upload', (e) =>
+        actions.toast(e.status === 'done' ? { text: `Model uploaded: ${e.name ?? e.id} → ${e.assetId}`, detail: `rbxassetid://${e.assetId}`, kind: 'ok' } : { text: `Model upload failed: ${e.name ?? e.id}`, detail: e.error, kind: 'err' })
+      )
     ]
 
     void (async () => {

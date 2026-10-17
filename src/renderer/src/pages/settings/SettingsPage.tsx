@@ -20,6 +20,7 @@ import { QolSettings } from '../../qol/QolSettings'
 import { DoctorBanner } from '../qolc/Doctor'
 import { SpendSettingsSection } from '../qolc/Spend'
 import { FigmaTokenSettings } from './FigmaTokenSettings'
+import { ModelInboxSettings } from './ModelInboxSettings'
 import { AccountsSection } from '../../accounts/AccountsSection'
 import { EditorSettingsSection } from '../../editorAssist/EditorSettings'
 import { categoryOf, loadCategory, saveCategory, SETTINGS_CATEGORIES, SETTINGS_SECTION_EVENT, takePendingSection, type SettingsCategory } from './settingsNav'
@@ -534,6 +535,7 @@ export function SettingsPage() {
             <section className="set-sec" id="set-integrations">
               <h2>Integrations</h2>
               <FigmaTokenSettings />
+              <ModelInboxSettings />
             </section>
             </div>
           </div>

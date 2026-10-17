@@ -27,7 +27,9 @@ export const SERVICE_WRITE_TOOLS = [
   // services/art/tools.ts: spend money (OpenAI images), upload to Roblox and edit Images.luau.
   'generate_image',
   'import_image_to_roblox',
-  'list_art'
+  'list_art',
+  // services/art/modelInbox.ts: uploads an FBX to Roblox as a Model asset.
+  'roblox_upload_model'
 ] as const
 
 // ---------------------------------------------------------------- Blink

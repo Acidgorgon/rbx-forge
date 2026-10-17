@@ -8,7 +8,7 @@
 // and no handler returns a secret value.
 
 import { readFile } from 'node:fs/promises'
-import { join } from 'node:path'
+import { isAbsolute, join } from 'node:path'
 import { z } from 'zod'
 import type {
   ActivityQuery,
@@ -40,7 +40,8 @@ import * as release from './services/release/index.ts'
 import { createArtWiring, type ArtWireDeps } from './services/art/wire.ts'
 import { backendOf, type CodexImages } from './services/art/imageBackend.ts'
 import { codexImages } from './agent/codex/images.ts'
-import type { ImageBackend } from '../shared/artTypes.ts'
+import type { ImageBackend, ModelInboxStatus } from '../shared/artTypes.ts'
+import { createModelUploader, inboxDirs, ModelInbox, modelUploadTools, NO_CREATOR_ERROR, NO_KEY_ERROR } from './services/art/modelInbox.ts'
 import { Credentials } from './agent/credentials.ts'
 import { TestService, testTools } from './services/tests/index.ts'
 import { createUiPreviewWiring, type UiPreviewWireDeps } from './services/uiPreview/wire.ts'
@@ -78,6 +79,8 @@ export interface IntegrationDeps {
   art?: Pick<ArtWireDeps, 'thumbnail' | 'chooseImages' | 'reveal' | 'chatImage' | 'resolveReference'>
   // UI Preview: the offscreen screenshot for preview_ui (Electron).
   uiPreview?: Pick<UiPreviewWireDeps, 'capture'>
+  // FBX upload inbox: the OS Documents folder and a folder picker. Without it the inbox never runs.
+  modelInbox?: { documentsDir: string; chooseFolder?: (title: string, defaultPath?: string) => Promise<string | null> }
 }
 
 export interface Integrations {
@@ -95,6 +98,8 @@ export interface Integrations {
   secrets: release.SecretStore
   // Open Cloud asset uploads outside the Art page (Animation Lab): the key and creator set there.
   openCloud: { key(): Promise<string | null>; creator(): { userId?: number; groupId?: number } }
+  // FBX upload inbox watcher: start() after launch (and again on settings changes, done here).
+  modelInbox: { start(): Promise<void> }
   // OpenAI image generation outside the Art page (VFX Lab textures): the key, model and budget set there.
   images: { openAiKey(): Promise<string | null>; settings(): { model: string; quality: string; dailyCapUsd: number; backend?: ImageBackend }; spentToday(): Promise<number>; codex?: CodexImages }
 }
@@ -132,6 +137,45 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     codex: imageCodex,
     emit,
     ...(deps.art ?? {})
+  })
+
+  // Open Cloud uploads outside the Art page use the key and creator set there.
+  const openCloud: Integrations['openCloud'] = {
+    key: async () => (await art.robloxKey().catch(() => null))?.key ?? null,
+    creator: () => {
+      const s = art.service.settings()
+      return { ...(s.creatorUserId ? { userId: s.creatorUserId } : {}), ...(s.creatorGroupId ? { groupId: s.creatorGroupId } : {}) }
+    }
+  }
+
+  // ---------------------------------------------------------------- FBX upload inbox (Model assets)
+  // Opt-in (modelInbox.enabled, off by default). See services/art/modelInbox.ts for the file formats.
+  const inboxPaths = inboxDirs(deps.modelInbox?.documentsDir ?? join(deps.userDataDir, 'Documents'))
+  const inboxDir = () => settings.get<string | null>('modelInbox.dir', null) || inboxPaths.inboxDir
+  const inboxEnabled = () => !!deps.modelInbox && settings.get<boolean>('modelInbox.enabled', false) === true
+  const hasCreator = () => {
+    const c = openCloud.creator()
+    return !!(c.userId || c.groupId)
+  }
+  const uploadModel = createModelUploader({ key: openCloud.key, creator: openCloud.creator })
+  const modelInbox = new ModelInbox({
+    dir: inboxDir,
+    modelsDir: () => inboxPaths.modelsDir,
+    enabled: inboxEnabled,
+    upload: uploadModel,
+    blocked: async () => (!(await openCloud.key()) ? NO_KEY_ERROR : !hasCreator() ? NO_CREATOR_ERROR : null),
+    log: (text, stream = 'info') => log({ service: 'harness', stream, text }),
+    onResult: (entry) => emit('fbxInbox:upload', entry)
+  })
+  const inboxStatus = async (): Promise<ModelInboxStatus> => ({
+    enabled: inboxEnabled(),
+    dir: inboxDir(),
+    defaultDir: inboxPaths.inboxDir,
+    modelsDir: inboxPaths.modelsDir,
+    robloxKey: !!(await openCloud.key()),
+    creator: hasCreator(),
+    watching: modelInbox.watching(),
+    recent: modelInbox.recent()
   })
 
   // ---------------------------------------------------------------- Lune tests
@@ -277,7 +321,13 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
       // Fixed order: the tool list is part of the cached prompt prefix.
       read: [...budget, ...blink.read, ...pkgs.read, ...(analyticsSvc.createAnalyticsTools(analytics) as ServiceTool[])],
       tests: testTools(tests) as ServiceTool[],
-      write: [...blink.write, ...pkgs.write, renameTool, ...(art.tools() as ServiceTool[])]
+      write: [
+        ...blink.write,
+        ...pkgs.write,
+        renameTool,
+        ...(art.tools() as ServiceTool[]),
+        ...(modelUploadTools({ upload: uploadModel, roots: () => [inboxDir(), inboxPaths.modelsDir], projectRoot: deps.root }) as unknown as ServiceTool[])
+      ]
     }, uiPreview.tools() as unknown as ServiceTool[])
     return toolSets
   }
@@ -464,6 +514,30 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     // Art concepts
     ...art.handlers,
 
+    // FBX upload inbox
+    fbxInboxStatus: () => inboxStatus(),
+    fbxInboxSetSettings: async (patch?: { enabled?: boolean; dir?: string | null }) => {
+      if (patch && 'dir' in patch) {
+        const d = typeof patch.dir === 'string' ? patch.dir.trim() : ''
+        if (d && !isAbsolute(d)) throw new Error('The inbox must be an absolute folder path.')
+        settings.set('modelInbox.dir', d || null)
+      }
+      if (typeof patch?.enabled === 'boolean') {
+        if (patch.enabled && !(await openCloud.key())) throw new Error('Add an Open Cloud API key (Art page > Roblox import) before turning on the inbox.')
+        settings.set('modelInbox.enabled', patch.enabled)
+      }
+      await modelInbox.start()
+      return inboxStatus()
+    },
+    fbxInboxChooseFolder: async () => {
+      const picked = await deps.modelInbox?.chooseFolder?.('Choose the FBX upload inbox', inboxDir())
+      if (picked) {
+        settings.set('modelInbox.dir', picked)
+        await modelInbox.start()
+      }
+      return inboxStatus()
+    },
+
     // UI Preview
     ...uiPreview.handlers
   }
@@ -471,13 +545,8 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
   return {
     handlers,
     serviceTools,
-    openCloud: {
-      key: async () => (await art.robloxKey().catch(() => null))?.key ?? null,
-      creator: () => {
-        const s = art.service.settings()
-        return { ...(s.creatorUserId ? { userId: s.creatorUserId } : {}), ...(s.creatorGroupId ? { groupId: s.creatorGroupId } : {}) }
-      }
-    },
+    openCloud,
+    modelInbox: { start: () => modelInbox.start() },
     images: {
       openAiKey: () => (credentials ??= new Credentials(deps.ctx)).getKey('openai'),
       settings: () => {
@@ -515,6 +584,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
       notifiers.clear()
     },
     dispose() {
+      modelInbox.stop()
       uiPreview.dispose()
       tests.stopWatch()
       tests.cancel()

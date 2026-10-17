@@ -18,6 +18,15 @@
 //  - Animation assets (Animation Lab): the same Create Asset call with assetType "Animation" and a
 //    .rbxm / .rbxmx file holding a KeyframeSequence, content type model/x-rbxm, up to 20 MB
 //    (usage-assets "Supported asset types and limits" table).
+//  - Model assets (FBX upload inbox, roblox_upload_model): the same call with assetType "Model" and
+//    an .fbx file, content type model/fbx, up to 20 MB (the table also lists .gltf / .glb / .rbxm;
+//    Forge sends FBX only). Roblox imports it as a Model holding one or more MeshParts and stores it
+//    as a package (Toolbox > Inventory > My Packages, or Group Packages). Moderation states are
+//    Reviewing / Rejected / Approved (OpenAPI ModerationResult; the guide's example spells them
+//    MODERATION_STATE_APPROVED). Example request in the guide:
+//      --form 'request={"assetType":"Model","displayName":"Name","description":"...",
+//               "creationContext":{"creator":{"userId":"${userId}"}}}'
+//      --form 'fileContent=@"/filepath/model.fbx";type=model/fbx'
 
 import { randomUUID } from 'node:crypto'
 import { defaultSleep, globalArtFetch, mimeOf, parseRetryAfter, type ArtFetch, type Sleep } from './openaiImages.ts'
@@ -46,7 +55,7 @@ export interface UploadInput {
   fileName: string
   displayName: string
   description?: string
-  assetType: 'Image' | 'Decal' | 'Animation'
+  assetType: 'Image' | 'Decal' | 'Animation' | 'Model'
   // Defaults to the image type sniffed from the bytes (contentTypeFor).
   contentType?: string
   creator: Creator
@@ -88,6 +97,7 @@ function statusHelp(status: number, body: string): string {
     401: 'The Open Cloud API key is not valid (401): expired, revoked, or this IP is not allowed',
     403: `The Open Cloud API key cannot create assets (403). Give it the Assets API with ${ASSET_SCOPES.join(' + ')} and make sure the creator matches the key owner or group`,
     404: 'Roblox did not find that resource (404)',
+    413: 'The file is too large for Roblox (413): uploads are limited to 20 MB',
     429: 'Too many requests to Roblox (429)'
   }
   const head = help[status] ?? (status >= 500 ? `Roblox server error (${status})` : `Unexpected response ${status} from Roblox`)
@@ -221,4 +231,45 @@ export function uploadAnimationAsset(input: Omit<UploadInput, 'assetType' | 'con
   if (!input.bytes.byteLength) throw new AssetUploadError('The animation file is empty')
   if (input.bytes.byteLength > MAX_UPLOAD_BYTES) throw new AssetUploadError('Roblox accepts animation files up to 20 MB')
   return uploadImageAsset({ ...input, assetType: 'Animation', contentType: ANIMATION_CONTENT_TYPE })
+}
+
+export const MODEL_CONTENT_TYPE = 'model/fbx'
+
+// FBX binary files start with "Kaydara FBX Binary"; ASCII FBX files open with a "; FBX" comment.
+export function looksLikeFbx(bytes: Uint8Array): boolean {
+  const head = Buffer.from(bytes.subarray(0, 1024)).toString('latin1')
+  return head.startsWith('Kaydara FBX Binary') || /^\s*;\s*FBX\b/.test(head) || /FBXHeaderExtension/.test(head)
+}
+
+// Turns a failed operation (Operation.error: code + message, no HTTP status here) into a message that
+// says what to change. HTTP errors already carry statusHelp's explanation and pass through.
+export function modelUploadErrorText(message: string, status?: number): string {
+  if (status !== undefined) return message
+  if (/moderat|rejected|inappropriate/i.test(message)) return `Roblox moderation rejected the model. Rename it or change the mesh, then upload again. (${message})`
+  if (/permission|forbidden|unauthori[sz]ed|scope/i.test(message)) {
+    return `The Open Cloud key cannot create Model assets for this creator. Give it the Assets API with ${ASSET_SCOPES.join(' + ')}; a group creator needs a key owned by that group. (${message})`
+  }
+  if (/too large|file size|size limit|exceed/i.test(message)) return `Roblox refused the file size: Model uploads are limited to 20 MB. Decimate the mesh or split it. (${message})`
+  return message
+}
+
+// An .fbx file as a Model asset. Moderation "Rejected" is an error; "Reviewing" still returns the id
+// (Studio can insert it once moderation approves it).
+export async function uploadModelAsset(input: Omit<UploadInput, 'assetType' | 'contentType'>): Promise<UploadResult> {
+  if (!/\.fbx$/i.test(input.fileName)) throw new AssetUploadError('Model uploads must be .fbx files')
+  if (!input.bytes.byteLength) throw new AssetUploadError('The FBX file is empty')
+  if (input.bytes.byteLength > MAX_UPLOAD_BYTES) throw new AssetUploadError(`Roblox accepts model files up to 20 MB; this one is ${(input.bytes.byteLength / 1024 / 1024).toFixed(1)} MB`)
+  if (!looksLikeFbx(input.bytes)) throw new AssetUploadError('That file is not an FBX (no FBX header)')
+  let result: UploadResult
+  try {
+    // Mesh processing takes longer than images; wait up to 5 minutes by default.
+    result = await uploadImageAsset({ timeoutMs: 300_000, ...input, assetType: 'Model', contentType: MODEL_CONTENT_TYPE })
+  } catch (error) {
+    if (error instanceof AssetUploadError) throw new AssetUploadError(modelUploadErrorText(error.message, error.status), error.status)
+    throw error
+  }
+  if (result.moderation && /rejected/i.test(result.moderation)) {
+    throw new AssetUploadError(`Roblox moderation rejected the model (asset ${result.assetId}). Rename it or change the mesh, then upload again.`)
+  }
+  return result
 }

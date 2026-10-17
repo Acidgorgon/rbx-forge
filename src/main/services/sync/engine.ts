@@ -4,9 +4,17 @@
 // this to the bridge and the UI.
 //
 // Per file with Studio S, disk D, base B (compared normalised):
-//   S==D same | S==B,D!=B disk-ahead | D==B,S!=B pulled | else diff3(B,D,S) merged or conflict
+//   S==D same | S==B,D!=B disk-ahead | D==B,S!=B pulled | else (both changed) conflict
 //   no base and S!=D -> conflict (first-run); Studio-only -> created; disk-only with base -> trashed
 //   (deleted in Studio; conflict if the disk copy changed since), disk-only without base -> disk-ahead.
+// The base is what this place's Studio and the disk last agreed on, and it only ever moves to a copy
+// Studio itself reported holding (same / pulled / created / a resolve). A pull also needs S to be new:
+// a Studio copy equal to a base this place already moved on from (BaseStore.superseded) is a stale
+// Studio (a second window or DataModel of the place, a script tab written back after a playtest), held
+// as a conflict, never written. A file that changed on both sides is never written either (no
+// automatic diff3 merge: the merge would carry a stale Studio line over a newer disk edit); the
+// conflict offers the merge. Every overwrite of an existing disk file first copies the old disk text
+// to .forge/sync/trash/overwritten/<stamp>/ and logs it (options.log), like the delete guard.
 // A file another place maps too: a snapshot's pull/merge is held as a conflict when that place's base
 // or Studio copy differs from what would be written, and a Studio delete never trashes it.
 // Delete guard: a large script (more than GUARD_LINES lines) or one another synced script requires is
@@ -42,6 +50,8 @@ export interface SyncEngineOptions {
   // with rojo serve for that place file paused, so Rojo, on reconnect, adopts the Studio instance
   // instead of adding a second same-name sibling for the new file. Absent: written as is (tests).
   guardNewFile?: <T>(projectFile: string, file: string, fn: () => Promise<T>) => Promise<T>
+  // Output-panel line for every disk file Forge Sync overwrites (where the old copy went).
+  log?: (text: string, stream?: 'info' | 'stderr') => void
 }
 
 // Thrown by applyChanges when the engine has no tree for the place (e.g. after a restart):
@@ -114,6 +124,8 @@ interface HeldConflict {
 
 // Last synced copies of files that left disk and Studio without Forge removing them.
 export const RECOVERED_DIR = '.forge/sync/recovered'
+// Disk copies Forge Sync replaced (a pull from Studio, a resolve): .forge/sync/trash/overwritten/<stamp>/.
+export const OVERWRITTEN_DIR = `${TRASH_DIR}/overwritten`
 
 // Why removing `file` needs the user's word ("1587 lines", "required by src/x.luau"), or null.
 type DeleteGuard = (file: string, text: string) => Promise<string | null>
@@ -227,6 +239,7 @@ export class SyncEngine {
   // Recovery copies already saved (place, file, base hash): a re-held loss is not copied again.
   private readonly recovered = new Map<string, string>()
   private readonly guardNewFile?: SyncEngineOptions['guardNewFile']
+  private readonly log?: SyncEngineOptions['log']
   // drift(): disk digests by absolute path, reused while size and mtime are unchanged.
   private readonly diskHashes = new Map<string, { size: number; mtime: number; hash: string }>()
 
@@ -236,6 +249,7 @@ export class SyncEngine {
     this.now = options.now ?? Date.now
     this.store = new BaseStore(this.root, this.fs)
     this.guardNewFile = options.guardNewFile
+    this.log = options.log
   }
 
   // ---- public API ----
@@ -726,6 +740,24 @@ export class SyncEngine {
     await ensureTrashIgnored(this.root, this.fs).catch(() => undefined)
     await this.fs.rename(from, to)
     await this.pruneEmpty(map, dirOf(rel))
+    return dest
+  }
+
+  // Before Forge Sync writes over an existing disk file: a copy of the current disk text goes to
+  // .forge/sync/trash/overwritten/<stamp>/ (the file stays) and the output panel says so. Returns the
+  // copy's path, or undefined when there is no file (nothing is overwritten). Not directly under the
+  // trash's stamps: git auto-sync reads a copy there as "Forge removed this file" (findHeldDeletions),
+  // and an older version kept here must not let a later delete of the file through.
+  private async backup(map: PlaceMap, rel: string, why: string, stamp = this.stamp()): Promise<string | undefined> {
+    await this.guard(map, rel)
+    const text = await this.read(rel)
+    if (text === null) return undefined
+    let dest = `${OVERWRITTEN_DIR}/${stamp}/${rel}`
+    // Two overwrites of one file in one pass (or one millisecond): keep both copies.
+    for (let n = 2; await this.fs.lstat(join(this.root, ...dest.split('/'))).then(() => true, () => false); n++) dest = `${OVERWRITTEN_DIR}/${stamp}-${n}/${rel}`
+    await ensureTrashIgnored(this.root, this.fs).catch(() => undefined)
+    await atomicWrite(this.fs, join(this.root, ...dest.split('/')), text)
+    this.log?.(`sync: ${rel}: ${why}; the disk copy it replaced is saved in ${dest}`)
     return dest
   }
 
@@ -1432,7 +1464,9 @@ export class SyncEngine {
     this.confirmedDeletes.get(s.placeKey)?.delete(u.file)
     const cD = canon(u.kind, diskText)
     if (cS === cD) {
-      await this.store.set(s.placeKey, u.file, cS)
+      // Studio confirms the disk copy: with an older base, Studio just caught up with a disk edit (Rojo
+      // delivered it), and that older copy is now superseded for this place.
+      await this.store.set(s.placeKey, u.file, cS, !!base && base.hash !== hashText(cS))
       return this.entry(u.file, 'same', u.instancePath)
     }
     if (!base || s.firstSync) {
@@ -1446,27 +1480,23 @@ export class SyncEngine {
         this.hold(s, u, studioText, cS, diskText, base.text, 'both-changed', { note: shared, shared: true })
         return this.entry(u.file, 'conflict', u.instancePath, { note: shared })
       }
+      // Studio shows a copy it had before it confirmed the disk's newer one: not an edit made in Studio
+      // but a stale DataModel or window (see the header). Held; the disk keeps its copy.
+      if (this.store.superseded(s.placeKey, u.file, hashText(cS))) {
+        const note = `Studio shows an older copy than the disk copy it already confirmed (a second Studio window or a playtest copy of this place, or Rojo's change undone in Studio): nothing was written. Take disk keeps the disk copy (Rojo pushes it to Studio), Take Studio writes the older copy to disk`
+        this.hold(s, u, studioText, cS, diskText, base.text, 'both-changed', { note })
+        return this.entry(u.file, 'conflict', u.instancePath, { note })
+      }
+      const trashPath = await this.backup(map, u.file, 'edited in Studio, written to disk (pulled)')
       await this.writeFile(map, u.file, toFileText(studioText, diskText))
       await this.store.set(s.placeKey, u.file, cS)
-      return this.entry(u.file, 'pulled', u.instancePath)
+      return this.entry(u.file, 'pulled', u.instancePath, trashPath ? { trashPath } : {})
     }
-    if (base.text !== null) {
-      const merged = diff3(base.text, cD, cS)
-      const out = merged.clean ? this.renderMerged(u.kind, merged.text, diskText) : null
-      const shared = out !== null && checkShared ? await this.sharedDiffers(s, u, canon(u.kind, out)) : null
-      if (shared) {
-        this.hold(s, u, studioText, cS, diskText, base.text, 'both-changed', { note: shared, shared: true })
-        return this.entry(u.file, 'conflict', u.instancePath, { note: shared })
-      }
-      if (out !== null) {
-        await this.writeFile(map, u.file, toFileText(out, diskText))
-        // Base stays at Studio's text until Studio receives the merge (through Rojo) and they agree.
-        await this.store.set(s.placeKey, u.file, cS)
-        return this.entry(u.file, 'merged', u.instancePath)
-      }
-    }
-    this.hold(s, u, studioText, cS, diskText, base.text, 'both-changed')
-    return this.entry(u.file, 'conflict', u.instancePath)
+    // Changed on both sides since the last sync: never written (the user picks; a merge is offered).
+    const merged = base.text !== null ? diff3(base.text, cD, cS) : null
+    const note = merged?.clean ? 'changed on disk and in Studio since the last sync, nothing was written: pick a side, or merge (the edits do not overlap)' : 'changed on disk and in Studio since the last sync, nothing was written: pick a side or merge'
+    this.hold(s, u, studioText, cS, diskText, base.text, 'both-changed', { note })
+    return this.entry(u.file, 'conflict', u.instancePath, { note })
   }
 
   // Writing `canonText` to a file another place maps too would leave that place's copy behind: why
@@ -1606,12 +1636,14 @@ export class SyncEngine {
         if (held.kind === 'folder') throw new Error(`Studio has several instances named ${held.info.instancePath.join('.')}: rename or delete the extra one in Studio`)
         const out = take === 'merged' ? text : held.studioText
         if (typeof out !== 'string') throw new Error('merged resolution needs text')
+        trashPath = await this.backup(map, file, `resolved duplicate: ${take}, written to disk`)
         await this.writeFile(map, file, toFileText(out, current))
-        await this.store.set(s.placeKey, file, canon(held.kind, out))
+        // Base: the copy Studio holds (a merged text is not in Studio until Rojo pushes it).
+        await this.store.set(s.placeKey, file, take === 'merged' ? held.studioCanon : canon(held.kind, out))
       }
       s.dupAccepted.set(file, held.duplicate)
       s.conflicts.delete(file)
-      this.recentEntries.unshift(this.entry(file, take === 'disk' ? 'disk-ahead' : 'pulled', held.info.instancePath, { note: `resolved duplicate: ${take}; delete the extra copy in Studio` }))
+      this.recentEntries.unshift(this.entry(file, take === 'disk' ? 'disk-ahead' : 'pulled', held.info.instancePath, { note: `resolved duplicate: ${take}; delete the extra copy in Studio`, ...(trashPath ? { trashPath } : {}) }))
       this.recentEntries.splice(RECENT_LIMIT)
       return
     }
@@ -1622,11 +1654,13 @@ export class SyncEngine {
       else {
         const out = take === 'merged' ? text : held.info.base
         if (typeof out !== 'string') throw new Error(take === 'merged' ? 'merged resolution needs text' : `no synced copy of ${file} to restore`)
+        trashPath = await this.backup(map, file, 'restored to disk')
         await this.writeFile(map, file, toFileText(out))
-        await this.store.set(s.placeKey, file, canon(held.kind, out))
+        // No base: Studio does not have it (Rojo puts it back); until then it is new on disk.
+        await this.store.delete(s.placeKey, file)
       }
       s.conflicts.delete(file)
-      this.recentEntries.unshift(this.entry(file, take === 'studio' ? 'disk-ahead' : 'created', held.info.instancePath, { note: take === 'studio' ? 'resolved: delete confirmed' : 'resolved: restored to disk' }))
+      this.recentEntries.unshift(this.entry(file, take === 'studio' ? 'disk-ahead' : 'created', held.info.instancePath, { note: take === 'studio' ? 'resolved: delete confirmed' : 'resolved: restored to disk', ...(trashPath ? { trashPath } : {}) }))
       this.recentEntries.splice(RECENT_LIMIT)
       return
     }
@@ -1635,6 +1669,7 @@ export class SyncEngine {
         if (current !== null) trashPath = await this.trash(map, file, this.stamp())
         await this.store.delete(s.placeKey, file)
       } else {
+        trashPath = await this.backup(map, file, 'resolved: Studio, written to disk')
         await this.writeFile(map, file, toFileText(held.studioText, current))
         await this.store.set(s.placeKey, file, held.studioCanon)
       }
@@ -1648,6 +1683,7 @@ export class SyncEngine {
       if (typeof text !== 'string') throw new Error('merged resolution needs text')
       const out = held.kind === 'model' || held.kind === 'meta' ? this.renderMerged(held.kind, canon(held.kind, text), current ?? '') : text
       if (out === null) throw new Error('merged text is not valid JSON')
+      trashPath = await this.backup(map, file, 'resolved: merged, written to disk')
       await this.writeFile(map, file, toFileText(out, current))
       if (held.studioDeleted) await this.store.delete(s.placeKey, file)
       else await this.store.set(s.placeKey, file, held.studioCanon)

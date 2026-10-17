@@ -382,15 +382,27 @@ test('a full snapshot missing a file trashes it; a snapshot missing a whole root
   assert.ok(existsSync(join(ctx.root, 'src/skills/Server/Catalog.luau')))
 })
 
-test('both changed: disjoint edits merge cleanly, overlapping edits conflict and block the gate', async () => {
+test('both changed: never written, even when the edits do not overlap; the merge is the user\'s pick', async () => {
   const ctx = await setup()
   await agreed(ctx)
   const file = 'src/skills/Server/Moves/Dash/Config.luau'
-  put(ctx.root, file, 'return {\n\tdamage = 12,\n\trange = 4,\n\tspeed = 20,\n\tduration = 0.4,\n}\n')
+  const diskText = 'return {\n\tdamage = 12,\n\trange = 4,\n\tspeed = 20,\n\tduration = 0.4,\n}\n'
+  put(ctx.root, file, diskText)
   const node = find(studio(ctx), [...MOVES, 'Dash', 'Config'])
-  const merged = await ctx.engine.applyChanges(MK, [{ kind: 'source', node: { ...node, source: 'return {\n\tdamage = 10,\n\trange = 4,\n\tspeed = 20,\n\tduration = 0.6,\n}' } }])
-  assert.deepEqual(actions(merged, 'merged'), [file])
-  assert.equal(get(ctx.root, file), 'return {\n\tdamage = 12,\n\trange = 4,\n\tspeed = 20,\n\tduration = 0.6,\n}\n')
+  // Disjoint edits: before, a diff3 merge was written to disk (a stale Studio line rode along).
+  const disjoint = await ctx.engine.applyChanges(MK, [{ kind: 'source', node: { ...node, source: 'return {\n\tdamage = 10,\n\trange = 4,\n\tspeed = 20,\n\tduration = 0.6,\n}' } }])
+  assert.deepEqual(actions(disjoint, 'merged'), [])
+  assert.deepEqual(actions(disjoint, 'conflict'), [file])
+  assert.match(disjoint.find((e) => e.file === file)!.note!, /nothing was written/)
+  assert.equal(get(ctx.root, file), diskText)
+  assert.equal(ctx.engine.gate(MK), 'blocked')
+  // The user takes the merge: written, with the replaced disk copy kept in the trash.
+  const mergedText = 'return {\n\tdamage = 12,\n\trange = 4,\n\tspeed = 20,\n\tduration = 0.6,\n}\n'
+  await ctx.engine.resolve(MK, file, 'merged', mergedText)
+  assert.equal(get(ctx.root, file), mergedText)
+  const kept = ctx.engine.recent().find((e) => e.file === file && e.action === 'merged')!.trashPath!
+  assert.match(kept, /^\.forge\/sync\/trash\/overwritten\//)
+  assert.equal(get(ctx.root, kept), diskText)
   assert.equal(ctx.engine.gate(MK), 'clear')
   // Rojo pushes the merge to Studio; Studio's next change equals the disk -> same.
   const same = await ctx.engine.applyChanges(MK, [{ kind: 'source', node: { ...node, source: get(ctx.root, file) } }])
@@ -591,7 +603,8 @@ test('writes are atomic (temp file + rename) and a failed write leaves the file 
   const node = find(studio(ctx), [...SKILLS, 'Dash'])
   await ctx.engine.applyChanges(MK, [{ kind: 'source', node: { ...node, source: 'return "v2"' } }])
   const target = join(ctx.root, 'src/skills/Definitions/Dash.luau')
-  const tmp = writes.find((w) => w.includes('Dash.luau'))!
+  // (The first write is the copy of the old disk text kept in .forge/sync/trash.)
+  const tmp = writes.find((w) => w.includes('Dash.luau') && !w.includes(join('.forge', 'sync', 'trash')))!
   assert.match(tmp, /\.Dash\.luau\.\d+-[0-9a-f]+\.forge-tmp$/)
   assert.ok(renames.some(([a, b]) => a === tmp && b === target))
   assert.ok(!writes.includes(target))

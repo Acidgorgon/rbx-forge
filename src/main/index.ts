@@ -573,6 +573,8 @@ const forgeSync = createSync({
   engine: (root) =>
     new SyncEngine({
       root,
+      // Every disk file Forge Sync overwrites: where the replaced copy was kept.
+      log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[sync] ${text}` }),
       guardNewFile: (file, rel, fn) => {
         const serving = supervisor.rojoState(file) === 'serving'
         if (serving) logs.push({ service: 'harness', stream: 'info', text: `[sync] ${rel} is new on disk for an instance made in Studio: rojo serve restarts around the write so Rojo adopts Studio's instance instead of adding a second one. Reconnect Rojo in Studio.` })

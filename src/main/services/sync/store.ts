@@ -14,6 +14,8 @@ export const INDEX_FILE = '.forge/sync/index.json'
 export const BLOB_DIR = '.forge/sync/blobs'
 export const TRASH_DIR = '.forge/sync/trash'
 export const LEGACY_STATE = '.studio-sync/state.json'
+// Superseded base digests kept per file (BaseStore.superseded).
+const HISTORY_KEEP = 16
 
 export function hashText(text: string): string {
   return createHash('sha1').update(normalise(text), 'utf8').digest('hex')
@@ -56,6 +58,10 @@ export class BaseStore {
   private loaded = false
   private dirty = false
   private readonly blobCache = new Map<string, string | null>()
+  // Per (place, file): digests the base moved on from (newest last), in memory. A Studio copy equal to
+  // one of them is a copy that Studio already had and then confirmed a newer one over (a stale
+  // DataModel, a script editor tab written back after a playtest): never a Studio edit to pull.
+  private readonly history = new Map<string, string[]>()
 
   constructor(root: string, fs: SyncFs = nodeFs) {
     this.root = root
@@ -96,7 +102,10 @@ export class BaseStore {
     return { hash, text: this.blobCache.get(hash) ?? null }
   }
 
-  async set(placeKey: string, file: string, text: string): Promise<void> {
+  // caughtUp: Studio just confirmed a copy the disk had first (Rojo delivered a disk edit): the base it
+  // moves on from is remembered as superseded. Not for a copy pulled from Studio (an undo in Studio
+  // that goes back to it is a real edit).
+  async set(placeKey: string, file: string, text: string, caughtUp = false): Promise<void> {
     await this.ready()
     const body = normalise(text)
     const hash = hashText(body)
@@ -106,6 +115,8 @@ export class BaseStore {
       if (!exists) await atomicWrite(this.fs, path, body)
       this.blobCache.set(hash, body)
     }
+    const old = this.index.places[placeKey]?.[file]
+    if (old && old !== hash) this.supersede(placeKey, file, old, hash, caughtUp)
     this.setHash(placeKey, file, hash)
   }
 
@@ -116,6 +127,21 @@ export class BaseStore {
       place[file] = hash
       this.dirty = true
     }
+  }
+
+  // The base of a file moves from `old` to `next`: `next` is current again (never superseded), `old`
+  // is superseded when Studio caught up with the disk.
+  private supersede(placeKey: string, file: string, old: string, next: string, caughtUp: boolean): void {
+    const key = `${placeKey}\u0000${file}`
+    const list = (this.history.get(key) ?? []).filter((h) => h !== old && h !== next)
+    if (caughtUp) list.push(old)
+    if (list.length) this.history.set(key, list.slice(-HISTORY_KEEP))
+    else this.history.delete(key)
+  }
+
+  // True when `hash` is a copy this place's base already moved on from (see history).
+  superseded(placeKey: string, file: string, hash: string): boolean {
+    return this.history.get(`${placeKey}\u0000${file}`)?.includes(hash) ?? false
   }
 
   // The base's digest only (no blob read), or null.
@@ -150,6 +176,11 @@ export class BaseStore {
       if (next !== null) {
         place[next] = place[key]
         delete place[key]
+        const h = this.history.get(`${placeKey}\u0000${key}`)
+        if (h) {
+          this.history.set(`${placeKey}\u0000${next}`, h)
+          this.history.delete(`${placeKey}\u0000${key}`)
+        }
         this.dirty = true
       }
     }

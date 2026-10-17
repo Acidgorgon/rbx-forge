@@ -289,6 +289,12 @@ local stubs = {
 		IsRunning = function()
 			return false
 		end,
+		IsEdit = function()
+			return true
+		end,
+		IsRunMode = function()
+			return false
+		end,
 		Heartbeat = Signal.new(),
 	},
 	CollectionService = {

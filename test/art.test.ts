@@ -379,6 +379,26 @@ test('wiring: Roblox key falls back to the Release key; no handler returns a key
   }
 })
 
+test('wiring: artReveal opens or shows a concept, and refuses files outside art/', async () => {
+  const t = await tempProject()
+  try {
+    const rel = 'art/concepts/2026-10-17/coin-1.png'
+    await mkdir(join(t.root, 'art/concepts/2026-10-17'), { recursive: true })
+    await writeFile(join(t.root, rel), PNG)
+    const calls: [string, string][] = []
+    const w = createArtWiring({ root: () => t.root, settings: new MemSettings(), secrets: new MemorySecretStore(), userDataDir: t.user, openAiKey: async () => null, emit: () => undefined, reveal: (abs, how) => void calls.push([abs, how]) })
+    await w.handlers.artReveal(rel, 'open')
+    await w.handlers.artReveal(rel, 'folder')
+    assert.deepEqual(calls, [[join(t.root, ...rel.split('/')), 'open'], [join(t.root, ...rel.split('/')), 'folder']])
+    await assert.rejects(Promise.resolve().then(() => w.handlers.artReveal('src/server/Main.server.luau', 'open')), /not an art file/)
+    await assert.rejects(Promise.resolve().then(() => w.handlers.artReveal('../outside.png', 'folder')), /not an art file/)
+    await assert.rejects(Promise.resolve().then(() => w.handlers.artReveal('art/concepts/2026-10-17/missing-1.png', 'open')), /does not exist/)
+    assert.equal(calls.length, 2)
+  } finally {
+    await t.cleanup()
+  }
+})
+
 test('wiring: generated images become chat image markers; forge-image refs resolve to the store', async () => {
   const { ChatImageStore, setChatImageStore, extractImageMarkers } = await import('../src/main/agent/chatImages.ts')
   const { defaultChatImage, defaultResolveReference } = await import('../src/main/services/art/wire.ts')

@@ -8,6 +8,7 @@ import { chatImageStore, hasChatImageStore, imageMarker } from '../../agent/chat
 import type { ArtGenerateInput, ArtImportInput, ArtSettings, HarnessEvents } from '../../../shared/types.ts'
 import { ArtService, type ArtServiceDeps } from './service.ts'
 import { artTools, type ArtTool } from './tools.ts'
+import { readItem } from './store.ts'
 import { looksLikeApiKey } from '../release/openCloud.ts'
 import { projectScope, readSecret } from '../release/secrets.ts'
 import type { SecretStore } from '../release/types.ts'
@@ -22,6 +23,8 @@ export interface ArtWireDeps {
   emit: <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
   thumbnail?: ArtServiceDeps['thumbnail']
   chooseImages?: () => Promise<string[]>
+  // Opens a file with the OS ('open') or shows it in the file manager ('folder').
+  reveal?: (absPath: string, how: 'open' | 'folder') => Promise<void> | void
   chatImage?: (absPath: string, name: string) => Promise<string | null>
   resolveReference?: (ref: string) => Promise<string | null>
   fetch?: ArtServiceDeps['fetch']
@@ -108,7 +111,13 @@ export function createArtWiring(deps: ArtWireDeps): ArtWiring {
     artImportToRoblox: (input: ArtImportInput) => service.importToRoblox(input),
     artSaveToProject: (path: string, name?: string) => service.saveToProject(String(path ?? ''), name ? String(name) : undefined),
     artRegistry: () => service.registry(),
-    artChooseReferences: async () => (deps.chooseImages ? deps.chooseImages() : [])
+    artChooseReferences: async () => (deps.chooseImages ? deps.chooseImages() : []),
+    // Only concepts under art/ of the open project (readItem refuses other paths).
+    artReveal: async (path: string, how: 'open' | 'folder') => {
+      const item = await readItem(root(), String(path ?? ''))
+      if (!item) throw new Error(`${path} does not exist`)
+      await deps.reveal?.(item.absPath, how === 'open' ? 'open' : 'folder')
+    }
   }
   let tools: ArtTool[] | null = null
   return {

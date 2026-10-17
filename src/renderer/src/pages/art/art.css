@@ -11,8 +11,11 @@
 .art-opt select.input { height: 24px; width: auto; font-size: 11.5px; }
 .art-opt .seg button { flex: none; min-width: 26px; }
 .art-refs { display: flex; flex-wrap: wrap; align-items: center; gap: 6px; margin-top: 12px; padding-top: 10px; border-top: 1px dashed var(--line); }
-.art-ref { max-width: 260px; }
-.art-ref .art-x { display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: var(--r-xs); color: var(--fg-faint); margin-right: -4px; }
+.art-ref { max-width: min(260px, 100%); min-width: 0; overflow: hidden; }
+.art-ref > .i { flex: none; }
+/* Long file names truncate inside the chip (the full path is the chip's tooltip). */
+.art-ref-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.art-ref .art-x { flex: none; display: inline-grid; place-items: center; width: 14px; height: 14px; border-radius: var(--r-xs); color: var(--fg-faint); margin-right: -4px; }
 .art-ref .art-x:hover { color: var(--fg); background: var(--bg-hover); }
 .art-go { display: flex; align-items: center; gap: 12px; margin-top: 12px; flex-wrap: wrap; }
 .art-go b { font-weight: 500; color: var(--fg); }
@@ -37,7 +40,9 @@
 
 .art-detail { position: sticky; top: 12px; border: 1px solid var(--line); border-radius: var(--r-lg); background: var(--bg-panel); padding: 10px 12px 12px; display: flex; flex-direction: column; gap: 10px; min-width: 0; max-height: calc(100vh - 140px); overflow: auto; }
 .art-detail-head { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg); }
-.art-preview { border: 1px solid var(--line); border-radius: var(--r-md); min-height: 160px; display: grid; place-items: center; overflow: hidden; }
+.art-preview { width: 100%; padding: 0; border: 1px solid var(--line); border-radius: var(--r-md); min-height: 160px; display: grid; place-items: center; overflow: hidden; cursor: zoom-in; transition: border-color var(--dur-fast); }
+.art-preview:hover { border-color: var(--line-strong); }
+.art-preview:focus-visible { outline: none; border-color: var(--line-focus); }
 .art-preview img { max-width: 100%; max-height: 340px; display: block; object-fit: contain; }
 .art-prompt { margin: 0; font: 12px/1.55 var(--font-mono); color: var(--fg); white-space: pre-wrap; overflow-wrap: anywhere; user-select: text; }
 .art-meta { display: grid; grid-template-columns: 56px minmax(0, 1fr); gap: 4px 10px; margin: 0; font-size: 11.5px; }
@@ -56,5 +61,5 @@
   .art-detail { position: static; max-height: none; order: -1; }
 }
 @media (prefers-reduced-motion: reduce) {
-  .art-card, .art-compose { transition: none; }
+  .art-card, .art-compose, .art-preview { transition: none; }
 }

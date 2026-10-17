@@ -3,7 +3,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { killTree } from '../../services/supervisor.ts'
 import { planSpawn } from '../../services/tools.ts'
-import { LineSplitter } from './events.ts'
+import { isCodexWarning, LineSplitter } from './events.ts'
 
 export interface SpawnedRun {
   code: number | null
@@ -98,12 +98,12 @@ export function runCli(o: RunOptions): Promise<SpawnedRun> {
   })
 }
 
-// Last meaningful stderr line (codex prints errors there), without ANSI codes.
+// Last meaningful stderr line (codex prints errors there), without ANSI codes or config warnings.
 export function lastErrorLine(stderr: string): string {
   const lines = stderr
     .replace(/\x1b\[[0-9;]*m/g, '')
     .split(/\r?\n/)
     .map((l) => l.trim())
-    .filter((l) => l && !/^Reading (prompt|additional input) from stdin/i.test(l) && !/^WARNING: proceeding\b/i.test(l))
+    .filter((l) => l && !/^Reading (prompt|additional input) from stdin/i.test(l) && !/^WARNING: proceeding\b/i.test(l) && !isCodexWarning(l))
   return lines.slice(-3).join(' ').slice(0, 400)
 }

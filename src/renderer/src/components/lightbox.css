@@ -1,0 +1,46 @@
+/* Fullscreen image viewer (Lightbox.tsx). Covers the window above menus, dialogs and toasts; no-drag so
+   the Windows title bar never takes its clicks. The right padding keeps clear of the native window
+   controls (same calc as .titlebar). */
+.lb { position: fixed; inset: 0; z-index: 90; display: flex; flex-direction: column; background: var(--bg-chrome); color: var(--fg-2); -webkit-app-region: no-drag; outline: none; animation: rf-fade-in var(--dur-base) var(--ease-out); }
+.lb-head { flex: none; display: flex; align-items: center; gap: 10px; height: var(--titlebar-h); padding: 0 calc(10px + 100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw)) 0 14px; border-bottom: 1px solid var(--line); font-size: 11.5px; min-width: 0; }
+.lb-name { min-width: 0; color: var(--fg); font-size: 12px; }
+.lb-detail, .lb-count { flex: none; white-space: nowrap; }
+.lb-zoom { display: inline-flex; align-items: center; gap: 2px; flex: none; }
+.lb-pct { min-width: 44px; text-align: center; color: var(--fg-2); font-variant-numeric: tabular-nums; }
+.lb-seg { flex: none; }
+.lb-seg button { flex: none; }
+.lb-bg { gap: 6px; }
+.lb-swatch { width: 10px; height: 10px; border-radius: 2px; border: 1px solid var(--line-strong); }
+.lb-close { width: 26px; padding: 0; }
+
+.lb-stage { position: relative; flex: 1; min-height: 0; overflow: hidden; touch-action: none; user-select: none; }
+.lb-stage.pan { cursor: grab; }
+.lb-stage.dragging { cursor: grabbing; }
+.lb-stage img { position: absolute; left: 50%; top: 50%; max-width: none; display: block; pointer-events: none; }
+.lb-stage img.smooth { transition: width var(--dur-base) var(--ease-out), height var(--dur-base) var(--ease-out), transform var(--dur-base) var(--ease-out); }
+/* Zoomed in, pixels stay crisp so UI edges can be checked. */
+.lb-stage img.px { image-rendering: pixelated; }
+.lb-spin, .lb-missing { position: absolute; left: 50%; top: 50%; transform: translate(-50%, -50%); }
+.lb-missing { font-size: 12px; color: var(--fg-muted); }
+
+/* Backdrops are fixed colours, not theme tokens: they are for judging the art, not the chrome. */
+.lb-dark { background: #111112; }
+.lb-light { background: #ececec; }
+.lb-checker { background-color: #1e1e1e; background-image: linear-gradient(45deg, #2b2b2b 25%, transparent 25%), linear-gradient(-45deg, #2b2b2b 25%, transparent 25%), linear-gradient(45deg, transparent 75%, #2b2b2b 75%), linear-gradient(-45deg, transparent 75%, #2b2b2b 75%); background-size: 20px 20px; background-position: 0 0, 0 10px, 10px -10px, -10px 0; }
+.lb-swatch.lb-checker { background-size: 6px 6px; background-position: 0 0, 0 3px, 3px -3px, -3px 0; }
+
+.lb-nav { position: absolute; top: 50%; transform: translateY(-50%); width: 34px; height: 56px; display: grid; place-items: center; border-radius: var(--r-md); border: 1px solid var(--line-strong); background: color-mix(in srgb, var(--bg-chrome) 82%, transparent); color: var(--fg-2); opacity: .7; transition: opacity var(--dur-fast), border-color var(--dur-fast), color var(--dur-fast); }
+.lb-nav:hover, .lb-nav:focus-visible { opacity: 1; border-color: var(--fg-faint); color: var(--fg); }
+.lb-nav.prev { left: 14px; }
+.lb-nav.next { right: 14px; }
+
+.lb-foot { flex: none; height: var(--status-h); display: flex; align-items: center; justify-content: center; padding: 0 14px; border-top: 1px solid var(--line); font-size: 11px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+@media (max-width: 760px) {
+  .lb-detail, .lb-foot { display: none; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .lb { animation: none; }
+  .lb-stage img.smooth { transition: none; }
+}
+:root[data-motion='reduced'] .lb-stage img.smooth, :root[data-motion='off'] .lb-stage img.smooth { transition: none; }

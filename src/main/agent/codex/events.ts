@@ -12,6 +12,11 @@
 // add|delete|update}], status}, mcp_tool_call {server, tool, arguments, result, error, status},
 // collab_tool_call {tool, status}, web_search {query}, todo_list {items:[{text, completed}]},
 // error {message}. Unknown types are ignored, so newer CLIs keep working.
+//
+// The CLI reports its own non-fatal warnings as `error` items (and some as top-level `error` or
+// `warning` events): "Codex is ignoring 1 unrecognized configuration setting … config.toml …". They
+// are about the user's Codex setup, not the answer, so they become `warning` updates, which the
+// service logs instead of showing in the chat (service.ts). Fatal errors stay `error`.
 
 import { isAbsolute, relative } from 'node:path'
 
@@ -26,6 +31,7 @@ export type CodexUpdate =
   | { kind: 'text'; key: string; text: string }
   | { kind: 'tool'; key: string; name: string; input: string; text: string; done: boolean; error?: boolean }
   | { kind: 'notice'; key: string; text: string }
+  | { kind: 'warning'; text: string }
   | { kind: 'usage'; usage: CodexUsage }
   | { kind: 'error'; message: string }
 
@@ -53,6 +59,14 @@ function short(v: unknown, max = 160): string {
   }
   s = s.replace(/\s+/g, ' ').trim()
   return s.length > max ? `${s.slice(0, max - 1)}…` : s
+}
+
+// A CLI notice about the user's Codex config or setup that does not stop the run.
+// Narrow on purpose: a config file that fails to parse is fatal and must still be shown.
+const WARNING_RE = /unrecognized configuration setting|\bis ignoring\b|\bis ignored\b|\bdeprecated (config|configuration|setting|option|flag|key)/i
+
+export function isCodexWarning(message: string): boolean {
+  return WARNING_RE.test(message.trim())
 }
 
 export class CodexEventMapper {
@@ -103,10 +117,13 @@ export class CodexEventMapper {
         this.failed = message
         return [{ kind: 'error', message }]
       }
+      case 'warning':
+        return str(e.message) ? [{ kind: 'warning', text: str(e.message) }] : []
       case 'error': {
         const message = str(e.message) || 'Codex error'
         // A reconnect notice ("Reconnecting... 1/5") is not the end of the run.
         if (/^reconnecting/i.test(message)) return [{ kind: 'notice', key: 'reconnect', text: message }]
+        if (isCodexWarning(message)) return [{ kind: 'warning', text: message }]
         this.failed = message
         return [{ kind: 'error', message }]
       }
@@ -178,9 +195,10 @@ export class CodexEventMapper {
         if (!items.length) return []
         return [{ kind: 'notice', key, text: items.map((t: any) => `${t?.completed ? '[x]' : '[ ]'} ${str(t?.text)}`).join('\n') }]
       }
+      // Error items never end the run (turn.failed / error do): CLI warnings, logged not shown.
       case 'error': {
         const message = str(item.message)
-        return message ? [{ kind: 'notice', key, text: `Codex: ${message}` }] : []
+        return message ? [{ kind: 'warning', text: message }] : []
       }
       default:
         return []

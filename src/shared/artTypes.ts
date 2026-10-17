@@ -185,4 +185,6 @@ export interface ArtApi {
   artSaveToProject(path: string, name?: string): Promise<ArtItem>
   artRegistry(): Promise<ArtRegistryEntry[]>
   artChooseReferences(): Promise<string[]>
+  // Opens a concept in the OS image viewer ('open') or shows it in its folder ('folder').
+  artReveal(path: string, how: 'open' | 'folder'): Promise<void>
 }

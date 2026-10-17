@@ -28,13 +28,6 @@
 .ci-thumb:hover .ci-x, .ci-x:focus-visible { opacity: 1; }
 .ci-x:hover { color: var(--fg); }
 
-/* viewer */
-.ci-viewer { position: fixed; inset: 0; z-index: 400; display: grid; place-items: center; background: color-mix(in srgb, var(--bg-chrome) 72%, transparent); padding: 32px; animation: rf-menu-in var(--dur-fast) var(--ease-out); }
-.ci-viewer-box { max-width: min(1100px, 100%); max-height: 100%; display: flex; flex-direction: column; background: var(--bg-overlay); border-radius: var(--r-lg); box-shadow: var(--sh-3); overflow: hidden; }
-.ci-viewer-head { display: flex; align-items: center; gap: 10px; height: 34px; padding: 0 6px 0 12px; font-size: 11.5px; color: var(--fg-2); border-bottom: 1px solid var(--line); flex: none; min-width: 0; }
-.ci-viewer-box > img { display: block; max-width: 100%; max-height: calc(100vh - 120px); object-fit: contain; background: var(--bg-editor); }
-.ci-loading.big { width: 480px; height: 300px; border-radius: 0; }
-
 /* composer attachments */
 .cmp-box.drop { border-color: var(--ember-lo); background: color-mix(in srgb, var(--ember-fill) 50%, var(--bg-editor)); }
 .cmp-images { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; margin: 2px 0 8px; }
@@ -47,7 +40,6 @@
 
 @media (prefers-reduced-motion: reduce) {
   .ci-loading { animation: none; }
-  .ci-viewer { animation: none; }
 }
 :root[data-motion='reduced'] .ci-loading, :root[data-motion='off'] .ci-loading { animation: none; }
 

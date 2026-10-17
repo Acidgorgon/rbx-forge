@@ -30,7 +30,7 @@ interface ExecCall {
 
 // A fake `codex`: signed in with ChatGPT; each exec answers with `reply(n)` (n counts exec runs)
 // on a new thread, or on the thread it resumes.
-function fakeCodex(reply: (n: number, call: ExecCall) => { text?: string; error?: string; stderr?: string; code?: number } = (n) => ({ text: `Codex says ${n}` })) {
+function fakeCodex(reply: (n: number, call: ExecCall) => { text?: string; error?: string; stderr?: string; code?: number; warnings?: string[] } = (n) => ({ text: `Codex says ${n}` })) {
   const execs: ExecCall[] = []
   const run: CliRunner = async (o) => {
     if (o.args[0] === 'login' && o.args[1] === 'status') return { code: 0, stderr: 'Logged in using ChatGPT\n', aborted: false, timedOut: false }
@@ -48,6 +48,7 @@ function fakeCodex(reply: (n: number, call: ExecCall) => { text?: string; error?
     if (r.code && !r.text) return { code: r.code, stderr: r.stderr ?? '', aborted: false, timedOut: false }
     const out = (e: unknown) => o.onStdoutLine?.(JSON.stringify(e))
     out({ type: 'thread.started', thread_id: thread })
+    for (const [k, w] of (r.warnings ?? []).entries()) out({ type: 'item.completed', item: { id: `item_w${k}`, type: 'error', message: w } })
     if (r.text) out({ type: 'item.completed', item: { id: 'item_1', type: 'agent_message', text: r.text } })
     if (r.error) out({ type: 'turn.failed', error: { message: r.error } })
     else out({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 20, output_tokens: 30, reasoning_output_tokens: 0 } })
@@ -189,6 +190,20 @@ test('a Codex guest whose thread is gone starts a new one; errors are shown once
   await chats.send(c.id, '@sol three')
   await idle(chats, c.id)
   assert.ok(!execs[3].args.includes('resume'))
+})
+
+test('a Codex guest: CLI config warnings stay out of the chat; only its reply is posted', async () => {
+  const warning = 'Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings. user (/home/you/.codex/config.toml): `mcp_servers.Neon.type` is ignored.'
+  const { svc } = fakeCodex(() => ({ text: 'Hi!', warnings: [warning, warning] }))
+  const { chats } = await setup(svc)
+  const c = chats.create({ provider: 'anthropic', model: 'claude-opus-5-5' })
+  chats.addGuest(c.id, { provider: 'codex', model: 'gpt-6.1-sol' })
+  const before = chats.messages(c.id)!.length
+  await chats.send(c.id, '@sol hi')
+  await idle(chats, c.id)
+  const added = chats.messages(c.id)!.slice(before).filter((m) => m.role !== 'user')
+  assert.ok(!added.some((m) => /ignoring|unrecognized|is ignored/.test(m.text)), `no warning in the chat: ${added.map((m) => m.text).join(' | ')}`)
+  assert.deepEqual(added.filter((m) => m.role === 'assistant').map((m) => m.text), ['Hi!'])
 })
 
 test('Codex not signed in: the guest says so with a Settings link, no CLI run, no thrown error', async () => {

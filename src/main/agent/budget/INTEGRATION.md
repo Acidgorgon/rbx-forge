@@ -230,8 +230,13 @@ Agent SDK extras for the cheap path: `effort: 'low'` for test agents and summari
 
 ## 7. Compaction (OpenAI-compatible chats)
 
-The SDK auto-compacts its own sessions (`Options.settings: { autoCompactWindow }` tunes it).
-For `runOpenAi` in chat.ts, before calling the loop:
+Auto-compact is one setting (Settings > AI > Chat: `autoCompact`, `autoCompactPct`, default on at
+80%; `shared/autoCompact.ts`). The SDK auto-compacts its own sessions: chat.ts passes the share as
+`CLAUDE_AUTOCOMPACT_PCT_OVERRIDE` (or `DISABLE_AUTO_COMPACT=1` when off) and turns the
+`compact_boundary` message + `PostCompact` hook summary into the chat's "Compacted" divider. The
+Codex CLI manages its thread's context itself. `/compact [focus]` works the same on every provider
+(summary on the cheap tier, the next turn starts fresh from it).
+For `runOpenAi` in chat.ts (trigger = share of the window, target = half of it), before the loop:
 
 ```ts
 const window = 120_000                                   // or a per-model setting

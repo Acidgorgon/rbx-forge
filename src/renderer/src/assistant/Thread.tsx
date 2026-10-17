@@ -21,6 +21,7 @@ import { PlanModeCard } from './commands/PlanModeCard'
 import { DiffCard } from './commands/DiffCard'
 import { CommandOutput } from './commands/slash'
 import { activityRows, activitySummary, buildItems, callCount, elapsed, runningLabel, toolFailed, type ActivityRow, type ChatItem } from './chatItems'
+import { compactLabel } from '@shared/autoCompact'
 
 // ---------------------------------------------------------------- time
 
@@ -66,6 +67,7 @@ export const Message = memo(function Message({ m, chat }: { m: ChatMessage; chat
       </div>
     )
   }
+  if (m.compact) return <CompactDivider m={m} />
   if (m.command) return <CommandOutput m={m} />
   if (m.role === 'system') return m.settingsLink ? <SettingsNotice m={m} /> : <div className="m-system selectable">{m.text}</div>
   if (m.planMode) return <PlanModeCard m={m} />
@@ -90,6 +92,28 @@ export const Message = memo(function Message({ m, chat }: { m: ChatMessage; chat
     </div>
   )
 })
+
+// A compaction (auto or /compact): one divider line; the summary folds out under it.
+function CompactDivider({ m }: { m: ChatMessage }) {
+  const [open, setOpen] = useState(false)
+  const c = m.compact!
+  const label = `${compactLabel(c.before, c.after)} · ${c.trigger === 'manual' ? m.command ?? '/compact' : 'auto'}`
+  return (
+    <div className={`m-compact${open ? ' open' : ''}`} data-testid="compact-divider">
+      <button type="button" className="mc-line" onClick={() => c.summary && setOpen(!open)} aria-expanded={c.summary ? open : undefined} disabled={!c.summary} title={c.summary ? 'Show the summary the chat continues from' : undefined}>
+        <span className="mc-rule" aria-hidden />
+        {c.summary && <Icon name={open ? 'chevDown' : 'chev'} size={10} />}
+        <span className="mc-label">{label}</span>
+        <span className="mc-rule" aria-hidden />
+      </button>
+      {open && c.summary && (
+        <div className="mc-summary selectable">
+          <Markdown text={c.summary} />
+        </div>
+      )}
+    </div>
+  )
+}
 
 // ---------------------------------------------------------------- activity
 

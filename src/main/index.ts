@@ -84,6 +84,7 @@ import { createAddToGameWiring } from './services/addToGame/wire.ts'
 import { createEditorAssistWiring } from './services/editorAssist/wire.ts'
 import { completionBlock } from './services/editorAssist/completions.ts'
 import { spendBlock } from './services/spend/gate.ts'
+import { AUTO_COMPACT_DEFAULT, clampCompactPct } from '../shared/autoCompact.ts'
 
 // Name and data folder. The data folder stays "rbx-forge" (what development builds have always
 // used), so settings, the stored API key and the luau-lsp cache carry over to the installed app.
@@ -235,7 +236,9 @@ function appSettings(): AppSettings {
     autoRoute: settings.get<boolean>('autoRoute', true) !== false,
     confirmFileDelete: settings.get<boolean>('confirmFileDelete', true) !== false,
     confirmStudioDelete: settings.get<boolean>('confirmStudioDelete', true) !== false,
-    lunePath: settings.get<string | null>('tests.lunePath', null) ?? ''
+    lunePath: settings.get<string | null>('tests.lunePath', null) ?? '',
+    autoCompact: settings.get<boolean>('autoCompact', true) !== false,
+    autoCompactPct: clampCompactPct(settings.get<number>('autoCompactPct', AUTO_COMPACT_DEFAULT.pct))
   }
 }
 
@@ -846,6 +849,8 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     if (typeof patch.confirmFileDelete === 'boolean') settings.set('confirmFileDelete', patch.confirmFileDelete)
     if (typeof patch.confirmStudioDelete === 'boolean') settings.set('confirmStudioDelete', patch.confirmStudioDelete)
     if (typeof patch.lunePath === 'string') settings.set('tests.lunePath', patch.lunePath.trim().slice(0, 1000) || null)
+    if (typeof patch.autoCompact === 'boolean') settings.set('autoCompact', patch.autoCompact)
+    if (typeof patch.autoCompactPct === 'number' && Number.isFinite(patch.autoCompactPct)) settings.set('autoCompactPct', clampCompactPct(patch.autoCompactPct))
     const after = appSettings()
     // rojo's job list depends on serveAllPlaces; restart a running rojo so it serves the new set.
     const rojo = supervisor.statuses().find((s) => s.id === 'rojo')

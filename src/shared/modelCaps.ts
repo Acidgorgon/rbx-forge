@@ -39,6 +39,8 @@ export interface ModelMeta {
   vision?: boolean
   // OpenRouter reasoning.supported_efforts: null = every value; undefined = not exposed.
   efforts?: string[] | null
+  // Context window in tokens, when the provider lists it (OpenRouter context_length).
+  contextWindow?: number
 }
 
 export interface EffortSupport {

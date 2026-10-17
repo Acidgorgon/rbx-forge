@@ -229,6 +229,9 @@ export interface AppSettings {
   // An explicit lune binary for tests, stories and lab previews (settings key tests.lunePath);
   // '' = find it through rokit / PATH.
   lunePath: string
+  // Auto-compact (shared/autoCompact.ts): summarize older turns at autoCompactPct % of the window.
+  autoCompact: boolean
+  autoCompactPct: number
 }
 
 export interface PlacesChanged {
@@ -269,6 +272,9 @@ export interface ChatMessage {
   diff?: DiffCardData
   planMode?: PlanCardData
   command?: string
+  // A compaction (auto or /compact): shown as a divider "Compacted · 142k → 48k tokens", with the
+  // summary folded under it when there is one. Never sent to a model.
+  compact?: { trigger: 'auto' | 'manual'; before: number; after?: number; summary?: string }
 }
 
 // A model taking part in a group chat. label is for display ("GPT-6.1 Sol"), alias is the
@@ -372,6 +378,9 @@ export interface ChatSession {
   busy?: boolean
   // The agent's task list (update_todos), shown as a checklist card in the thread.
   todos?: ChatTodo[]
+  // Context window use (shared/autoCompact.ts): prompt tokens of the last request, the window Forge
+  // assumes for the model, and where auto-compact runs (unset: off, or the CLI manages it).
+  context?: { tokens: number; window: number; trigger?: number }
 }
 
 export type TestAgentState = 'queued' | 'running' | 'passed' | 'failed' | 'error' | 'cancelled'

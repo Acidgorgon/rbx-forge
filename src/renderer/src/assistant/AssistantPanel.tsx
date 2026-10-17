@@ -23,6 +23,9 @@ import { ModePill, cycleMode, useChatMode } from './commands/ModePill'
 import { slashMatches, useCommandList, useSlashRunner } from './commands/slash'
 import { MessageList, turnStart, useTick } from './Thread'
 import { elapsed } from './chatItems'
+import { queueWhenBusy } from './queue'
+import { QueueList } from './QueueList'
+import { fmtCompactTokens } from '@shared/autoCompact'
 
 export { Message, MessageList } from './Thread'
 
@@ -247,9 +250,27 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
     } else insertAt(mq.start, `\`${opt.path}\` `)
   }
 
+  // Context chips (current file, problem list) attached to a message.
+  const contextBlock = () => {
+    const extras: string[] = []
+    if (fileChip && state.activeFile) extras.push(`Current file: \`${state.activeFile}\``)
+    if (probChip && problems.length) extras.push(`Problems:\n${problems.slice(0, 20).map((p) => `- ${p.path}:${p.line}:${p.col} ${p.severity}: ${p.message.split('\n')[0]} (${p.source})`).join('\n')}`)
+    return extras.join('\n')
+  }
+
   const submit = () => {
     let t = text.trim()
-    if ((!t && !images.length) || busy || adding) return
+    if ((!t && !images.length) || adding) return
+    // While a turn runs, a message (or a command that starts a turn) waits in this chat's queue with
+    // its images and context; read-only commands (/help, /cost, ...) still run at once.
+    if (busy && id && (!t.startsWith('/') || queueWhenBusy(t))) {
+      const context = t.startsWith('/') && !/^\/restate\b/i.test(t) ? '' : contextBlock()
+      actions.queuePrompt(id, { text: t, images: vision ? images : [], ...(context ? { context } : {}) })
+      setText('')
+      setImages([])
+      setProbChip(false)
+      return
+    }
     if (!t) {
       const sent = images
       setImages([])
@@ -291,10 +312,8 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
         setText('')
         return void window.harness.syncNow().then((git) => actions.set({ git }))
     }
-    const extras: string[] = []
-    if (fileChip && state.activeFile) extras.push(`Current file: \`${state.activeFile}\``)
-    if (probChip && problems.length) extras.push(`Problems:\n${problems.slice(0, 20).map((p) => `- ${p.path}:${p.line}:${p.col} ${p.severity}: ${p.message.split('\n')[0]} (${p.source})`).join('\n')}`)
-    if (extras.length) t += `\n\n${extras.join('\n')}`
+    const extras = contextBlock()
+    if (extras) t += `\n\n${extras}`
     setText('')
     setProbChip(false)
     const sent = vision ? images : []
@@ -349,6 +368,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
 
   return (
     <div className="composer">
+      <QueueList chatId={id} />
       {(slash.length > 0 || (mq && options.length > 0)) && (
         <div className="cmp-pop" onMouseDown={(e) => e.preventDefault()}>
           {slash.length > 0
@@ -446,7 +466,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
               type="button"
               className="cmp-attach"
               aria-label="Attach images"
-              disabled={!vision || busy || images.length >= MAX_IMAGES_PER_MESSAGE}
+              disabled={!vision || images.length >= MAX_IMAGES_PER_MESSAGE}
               onClick={() => fileInput.current?.click()}
             >
               <AttachGlyph size={14} />
@@ -458,6 +478,11 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
           </span>
           <span className="grow" />
           {busy && started && <span className="cmp-elapsed" title="Time this turn has been working">{elapsed(now - started)}</span>}
+          {busy && (text.trim() || images.length > 0) && (
+            <button type="button" className="cmp-send cmp-queue-btn" onClick={submit} disabled={adding > 0} title="Queue (Enter): sends when this turn ends" aria-label="Queue message">
+              <Icon name="plus" size={14} />
+            </button>
+          )}
           {busy ? (
             <button type="button" className="cmp-send stop" onClick={() => void actions.stop()} title="Stop" aria-label="Stop">
               <Icon name="stop" size={12} />
@@ -488,11 +513,21 @@ function Meter() {
   const level = snap?.budget?.level ?? 'ok'
   const route = snap?.route ?? chat?.route
   if (!chat) return null
+  // Context window use of the last request, and where auto-compact runs (Settings > Chat).
+  const cw = chat.context
+  const pct = cw ? Math.min(999, Math.round((100 * cw.tokens) / cw.window)) : 0
+  const at = cw?.trigger ? Math.round((100 * cw.trigger) / cw.window) : null
+  const ctxTitle = cw ? `Context: ${fmtCompactTokens(cw.tokens)} of ${fmtCompactTokens(cw.window)} tokens (${pct}%)\n${at !== null ? `Auto-compact at ${at}% (${fmtCompactTokens(cw.trigger!)}); /compact now` : 'Auto-compact is off (Settings > Chat); /compact now'}` : ''
   return (
-    <div className={`meter ${level}`} title={`${snap?.budget?.reason ?? 'Within budget'}${route ? `\nLast turn: ${route.tier} model · ${route.reason}` : ''}${t?.unpricedRequests ? `\nCost partly unknown (${t.unpricedRequests} unpriced requests)` : ''}\nToday: ${fmtUsd(state.usage.day?.totals.costUsd ?? 0)}`}>
+    <div className={`meter ${level}`} title={`${snap?.budget?.reason ?? 'Within budget'}${route ? `\nLast turn: ${route.tier} model · ${route.reason}` : ''}${t?.unpricedRequests ? `\nCost partly unknown (${t.unpricedRequests} unpriced requests)` : ''}\nToday: ${fmtUsd(state.usage.day?.totals.costUsd ?? 0)}${ctxTitle ? `\n${ctxTitle}` : ''}`}>
       <span>budget</span>
       <span className="meter-bar"><span style={{ width: `${Math.round(fraction * 100)}%` }} /></span>
       <span>{fmtTokens(tokens)} · {fmtUsd(cost)}{t?.unpricedRequests ? '+' : ''}</span>
+      {cw && (
+        <span className={`meter-ctx${at !== null && pct >= at ? ' hot' : ''}`} data-testid="context-meter">
+          ctx {pct}%{at !== null ? <span className="faint">/{at}</span> : null}
+        </span>
+      )}
       {chat.route ? <RouteSummary chat={chat} /> : route && route.tier !== 'chosen' && <span className="tag">{route.tier}</span>}
       <GroupTokens />
     </div>

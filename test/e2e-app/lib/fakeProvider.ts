@@ -26,12 +26,17 @@ export interface FakeRule {
   name: string
   match: (r: FakeRequest) => boolean
   reply: (r: FakeRequest) => FakeReply
+  // Answer after this long (a turn that is still running when the flow acts).
+  delayMs?: number
 }
 
 export const FAKE_MODEL = 'fake-forge-model'
 
 // Flows that need a write attempt put this marker in their message.
 export const WRITE_MARKER = 'E2E-WRITE'
+// Messages with this marker are answered after SLOW_MS (the queue flows type while it runs).
+export const SLOW_MARKER = 'E2E-SLOW'
+export const SLOW_MS = 4000
 
 export const DEFAULT_RULES: FakeRule[] = [
   {
@@ -65,6 +70,7 @@ export const DEFAULT_RULES: FakeRule[] = [
       })
   },
   { name: 'title', match: (r) => /title/i.test(r.system) && r.user.length < 2000 && !r.tools, reply: () => 'Fake chat title' },
+  { name: 'slow', match: (r) => r.user.includes(SLOW_MARKER), reply: (r) => `FAKE-REPLY: ok (${r.user.slice(0, 40).replace(/\s+/g, ' ')})`, delayMs: SLOW_MS },
   { name: 'default', match: () => true, reply: (r) => `FAKE-REPLY: ok (${r.user.slice(0, 40).replace(/\s+/g, ' ')})` }
 ]
 
@@ -84,13 +90,14 @@ export interface FakeProvider {
   baseUrl: string
   // Reported in usage.cost (USD, OpenRouter style) on every answer; 0 = not reported.
   costUsd: number
-  requests: (FakeRequest & { rule: string })[]
+  // at: when the request arrived (ms).
+  requests: (FakeRequest & { rule: string; at: number })[]
   rules: FakeRule[]
   close(): Promise<void>
 }
 
 export async function startFakeProvider(rules: FakeRule[] = DEFAULT_RULES): Promise<FakeProvider> {
-  const requests: (FakeRequest & { rule: string })[] = []
+  const requests: (FakeRequest & { rule: string; at: number })[] = []
   const state = { costUsd: 0 }
   const server: Server = createServer(async (req, res) => {
     const url = req.url ?? ''
@@ -119,7 +126,14 @@ export async function startFakeProvider(rules: FakeRule[] = DEFAULT_RULES): Prom
         lastTool: messages.at(-1)?.role === 'tool' ? text(messages.at(-1)?.content) : ''
       }
       const rule = rules.find((x) => x.match(r)) ?? DEFAULT_RULES[DEFAULT_RULES.length - 1]
-      requests.push({ ...r, rule: rule.name })
+      requests.push({ ...r, rule: rule.name, at: Date.now() })
+      if (rule.delayMs) {
+        // The app stops the turn meanwhile (aborted fetch): the socket closes, nothing to answer.
+        let gone = false
+        res.on('close', () => (gone = true))
+        await new Promise((resolve) => setTimeout(resolve, rule.delayMs))
+        if (gone) return
+      }
       const reply = rule.reply(r)
       const usage = { prompt_tokens: 10, completion_tokens: 5, total_tokens: 15, ...(state.costUsd ? { cost: state.costUsd } : {}) }
       const call = typeof reply === 'string' ? null : { id: `call_${requests.length}`, type: 'function', function: { name: reply.tool, arguments: JSON.stringify(reply.args) } }

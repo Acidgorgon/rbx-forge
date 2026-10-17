@@ -45,3 +45,16 @@
 
 /* Participants bar inside the narrow Assistant panel: its own row, no negative margin. */
 .panel.right .gc-bar:not(.compact) { margin: 0; padding: 8px 10px; max-width: none; border-bottom: 1px solid var(--line); flex-wrap: wrap; }
+
+/* Compaction divider (Thread.tsx CompactDivider): "Compacted · 142k → 48k tokens", summary folds out. */
+.m-compact { margin: 2px 0; }
+.mc-line { display: flex; align-items: center; gap: 8px; width: 100%; color: var(--fg-faint); font-size: 10.5px; font-variant-numeric: tabular-nums; }
+.mc-line:not(:disabled):hover { color: var(--fg-2); }
+.mc-line:disabled { cursor: default; opacity: 1; }
+.mc-rule { flex: 1; min-width: 12px; border-top: 1px dashed var(--line-strong); }
+.mc-label { flex: none; white-space: nowrap; }
+.mc-summary { margin: 6px 0 2px; padding: 6px 10px; border-left: 1px solid var(--line-strong); color: var(--fg-2); font-size: 12px; }
+
+/* Context window use in the meter: "ctx 34%/80" (auto-compact at 80%). */
+.meter-ctx { flex: none; font-variant-numeric: tabular-nums; }
+.meter-ctx.hot { color: var(--warn); }

@@ -10,9 +10,10 @@ import type { CanUseTool, McpServerConfig, Options } from '@anthropic-ai/claude-
 import type { BoardItem, ChatImage, ChatMessage, ChatSession, EffortChoice, GroupParticipant, GroupSettings, ModelChoice, NewChatOptions, ProviderId, Speaker } from '@shared/types'
 import type { HarnessContext } from '../context.ts'
 import type { Credentials } from './credentials.ts'
-import { addUsage, emptyUsage, estimateCost, fromAnthropicUsage, fromOpenAiUsage, SdkUsageTracker, type Usage } from './budget/usage.ts'
+import { addUsage, emptyUsage, estimateCost, fromAnthropicUsage, fromOpenAiUsage, promptTokens, SdkUsageTracker, type Usage } from './budget/usage.ts'
 import { routeModel, type Route } from './budget/budget.ts'
-import { compactHistory, needsCompaction, SUMMARY_INSTRUCTIONS } from './budget/compact.ts'
+import { compactHistory, SUMMARY_INSTRUCTIONS } from './budget/compact.ts'
+import { compactLabel, compactTarget, compactTrigger, contextWindow, OAI_WINDOW, readAutoCompact, sdkCompactEnv } from '../../shared/autoCompact.ts'
 import { shouldOrchestrate, type OrchestrateMode } from './orchestrator/heuristic.ts'
 import type { Meter } from './meter.ts'
 import { SPEND_CAP_PREFIX } from '../../shared/spend/types.ts'
@@ -62,7 +63,7 @@ import { ChatCommands, type CommandHost, type GatingCostRow } from './commands/i
 import { Checkpoints } from './checkpoints.ts'
 import { codexService, type CodexService } from './codex/service.ts'
 import { codexMessage, codexPrompt, codexSandboxFor, staleThread } from './codex/chat.ts'
-import { estimateTokens } from './budget/tokens.ts'
+import { estimateMessagesTokens, estimateTokens } from './budget/tokens.ts'
 import { LAST_CHAT_MODEL_SETTING } from '../../shared/labModels.ts'
 
 const SETTING = 'chats'
@@ -103,6 +104,10 @@ interface StoredChat extends Omit<ChatSession, 'provider' | 'model'>, ModeChatFi
   orchestrations?: string[]
   // Last budget warning shown, so it is not repeated every turn.
   budgetWarned?: string
+  // Prompt tokens of the last request (the context meter and the auto-compact trigger), and the
+  // window the provider reported for that model (OpenRouter context_length).
+  contextTokens?: number
+  reportedWindow?: { model: string; tokens: number }
 }
 
 // Runs a multi-agent orchestration for a chat message (agent/index.ts wires the Orchestrator).
@@ -147,8 +152,9 @@ export interface ChatDeps {
   codex?: () => CodexService
 }
 
-// OpenAI-compatible chats: compact the history at 80% of this window, down to 40%.
-const COMPACT_WINDOW = 120_000
+// OpenAI-compatible chats: the window when the provider does not report one (setting
+// compactWindowTokens). Auto-compact runs at the Settings share of it (default 80% -> 40%).
+const COMPACT_WINDOW = OAI_WINDOW
 
 const EDIT_TOOLS = new Set(['Edit', 'Write', 'MultiEdit', 'NotebookEdit'])
 
@@ -203,6 +209,9 @@ export class ChatManager {
   readonly cmds: ChatCommands
   private turnModes = new Map<string, ChatMode>()
   private turnEnd = new Map<string, ((chat: StoredChat, from: number) => Promise<void> | void)[]>()
+  // Agent SDK compaction of the running turn: the boundary (token counts) and the PostCompact hook
+  // (summary) arrive separately and fill one divider message.
+  private sdkCompacts = new Map<string, { msg?: ChatMessage; trigger?: 'auto' | 'manual'; before?: number; after?: number; summary?: string }>()
 
   constructor(ctx: HarnessContext, deps: ChatDeps) {
     this.ctx = ctx
@@ -281,6 +290,22 @@ export class ChatManager {
     return this.session(chat)
   }
 
+  // The context meter: last request's prompt tokens against the window Forge assumes for the model,
+  // and the auto-compact point. Codex keeps its own window (no meter).
+  private contextOf(c: StoredChat): ChatSession['context'] | undefined {
+    if (!c.contextTokens) return undefined
+    const { provider, model } = this.choice(c)
+    const window = this.windowOf(c, provider, model)
+    if (!window) return undefined
+    const trigger = compactTrigger(window, readAutoCompact((k, f) => this.ctx.getSetting(k, f)))
+    return { tokens: c.contextTokens, window, ...(trigger ? { trigger } : {}) }
+  }
+
+  private windowOf(c: StoredChat, provider: ProviderId, modelId: string): number | null {
+    const reported = c.reportedWindow?.model === modelId ? c.reportedWindow.tokens : undefined
+    return contextWindow(provider, modelId, { reported, fallback: Number(this.ctx.getSetting('compactWindowTokens', COMPACT_WINDOW)) || COMPACT_WINDOW })
+  }
+
   private defaultChoice(): ModelChoice {
     return this.deps.providers?.defaultModel() ?? { provider: 'anthropic', model: model(this.ctx) }
   }
@@ -309,6 +334,8 @@ export class ChatManager {
     if (c.orchestrate && c.orchestrate !== 'auto') s.orchestrate = c.orchestrate
     if (c.orchestrations?.length) s.orchestrations = c.orchestrations
     if (c.mode && c.mode !== DEFAULT_CHAT_MODE) s.chatMode = c.mode
+    const ctxUse = this.contextOf(c)
+    if (ctxUse) s.context = ctxUse
     // A turn still running in main (the renderer reloaded mid-turn): it shows "working" and Stop.
     if (this.busy(c.id)) s.busy = true
     return s
@@ -868,7 +895,8 @@ export class ChatManager {
       // Subagents (and Bash) run in the foreground: the turn waits for them, Stop ends them and
       // their usage is in this turn's result. The CLI's own Explore / Plan agents are replaced by
       // the chat's named subagents (modes.ts chatSubagents).
-      env: { ...(env ?? process.env), CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS: '1' },
+      // Auto-compact (Settings > Chat): the CLI compacts its own session at that share of its window.
+      env: { ...(env ?? process.env), CLAUDE_CODE_DISABLE_BACKGROUND_TASKS: '1', CLAUDE_CODE_DISABLE_EXPLORE_PLAN_AGENTS: '1', ...sdkCompactEnv(readAutoCompact((k, f) => this.ctx.getSetting(k, f))) },
       ...(this.deps.meter?.guard.sdkOptions('chat') ?? {}),
       ...executableOption(),
       abortController: abort,
@@ -883,6 +911,11 @@ export class ChatManager {
       canUseTool: chatPermissions(this.ctx),
       // Chat mode (agent/modes.ts): permission mode, tool lists, approvals and the read-only guard.
       ...gated,
+      // The summary of an SDK compaction, for the divider in the chat.
+      hooks: {
+        ...gated.hooks,
+        PostCompact: [{ hooks: [async (input) => (this.sdkCompacted(chat, { summary: String((input as { compact_summary?: unknown }).compact_summary ?? '').trim() || undefined }), { continue: true })] }]
+      },
       // Do not pick up user/project settings files whose permission rules could widen access.
       settingSources: [],
       ...(chat.sdkSessionId ? { resume: chat.sdkSessionId } : {})
@@ -918,6 +951,7 @@ export class ChatManager {
     // Ledger: per-model deltas of the SDK's cumulative modelUsage (baseline per SDK session).
     const tracker = new SdkUsageTracker(modelId, chat.sdkSessionId && meter ? meter.ledger.sdkBaseline(chat.sdkSessionId) : {})
     const subs = new SubagentChips()
+    this.sdkCompacts.delete(chat.id)
     try {
       // Images: the SDK's streaming input with image content blocks.
       const payloads = await this.payloads(images)
@@ -925,6 +959,16 @@ export class ChatManager {
       for await (const m of queryFn({ prompt: input, options: this.buildOptions(chat, root, abort, modelId, env, rules, effort) })) {
         if ('session_id' in m && m.session_id && chat.sdkSessionId !== m.session_id) chat.sdkSessionId = m.session_id
         for (const cm of toChatMessages(m, 'main', subs, { model: modelId })) this.push(chat, cm)
+        // Context meter: prompt side of the main loop's latest request.
+        if (m.type === 'assistant' && !m.parent_tool_use_id && (m.message as { usage?: unknown })?.usage) {
+          const p = promptTokens(fromAnthropicUsage((m.message as { usage?: any }).usage))
+          if (p) chat.contextTokens = p
+        }
+        if (m.type === 'system' && (m as { subtype?: string }).subtype === 'compact_boundary') {
+          const meta = (m as { compact_metadata?: { trigger?: 'manual' | 'auto'; pre_tokens?: number; post_tokens?: number } }).compact_metadata ?? {}
+          this.sdkCompacted(chat, { trigger: meta.trigger === 'manual' ? 'manual' : 'auto', before: Number(meta.pre_tokens) || 0, ...(typeof meta.post_tokens === 'number' ? { after: meta.post_tokens } : {}) })
+          chat.contextTokens = typeof meta.post_tokens === 'number' ? meta.post_tokens : undefined
+        }
         const records = tracker.onMessage(m)
         // Per-model usage of the chat: the result's modelUsage delta (main loop + subagents) when
         // the meter keeps the session baseline, else the main loop's usage.
@@ -951,11 +995,27 @@ export class ChatManager {
         } else this.push(chat, systemMessage('main', `Error: ${(e as Error).message}`))
       }
     } finally {
+      this.sdkCompacts.delete(chat.id)
       if (meter) {
         meter.ledger.recordAll(tracker.finish(), { chatId: chat.id })
         meter.setLive(chat.id, null)
       }
     }
+  }
+
+  // One SDK compaction: posts the divider once the token counts are known and adds the summary when
+  // the PostCompact hook brings it (either may come first).
+  private sdkCompacted(chat: StoredChat, part: { trigger?: 'auto' | 'manual'; before?: number; after?: number; summary?: string }): void {
+    const cur = this.sdkCompacts.get(chat.id) ?? {}
+    // A second compaction in the same turn starts a new divider.
+    const fresh = part.before !== undefined && cur.before !== undefined
+    const next = fresh ? { ...part } : { ...cur, ...part, ...(part.summary === undefined && cur.summary ? { summary: cur.summary } : {}) }
+    if (next.before !== undefined) {
+      const base = (!fresh && cur.msg) || systemMessage('main', '')
+      next.msg = { ...base, text: compactLabel(next.before, next.after), compact: { trigger: next.trigger ?? 'auto', before: next.before, ...(next.after !== undefined ? { after: next.after } : {}), ...(next.summary ? { summary: next.summary } : {}) } }
+      this.push(chat, next.msg)
+    }
+    this.sdkCompacts.set(chat.id, next)
   }
 
   private async runOpenAi(
@@ -979,8 +1039,12 @@ export class ChatManager {
     }
     const mode = this.modeOf(chat)
     const mt = this.modeTools(chat)
-    // Long histories: summarize the older turns with the cheap model (80% -> 40% of the window).
-    history = await this.compact(history, baseUrl, headers, provider, modelId, abort.signal)
+    // Long histories: summarize the older turns with the cheap model (auto-compact setting, default
+    // 80% -> 40% of the window).
+    const meta = await this.deps.providers?.modelMeta(provider, modelId).catch(() => undefined)
+    if (meta?.contextWindow) chat.reportedWindow = { model: modelId, tokens: meta.contextWindow }
+    if (chat.lastProvider !== provider) chat.contextTokens = undefined
+    history = await this.compact(chat, history, baseUrl, headers, provider, modelId, abort.signal)
     history = [...history, { role: 'user', content: userContentWithRefs(text, images.map((i) => i.id)) }]
     const meter = this.deps.meter
     const maxTurns = Number(this.ctx.getSetting('chatMaxTurns', 50)) || 50
@@ -1002,6 +1066,7 @@ export class ChatManager {
       resolveImage: this.imageResolver(),
       onUsage: (raw) => {
         const u = fromOpenAiUsage(raw)
+        if (u && promptTokens(u)) chat.contextTokens = promptTokens(u)
         if (u) this.recordUsage(chat, this.hostSpeaker(chat), u)
         meter?.ledger.recordOpenAi(raw, { provider, model: modelId, chatId: chat.id })
       },
@@ -1083,17 +1148,27 @@ export class ChatManager {
     }
   }
 
-  // Summarizes old turns when the history nears the window. Errors keep the history as is.
-  private async compact(history: OaiMessage[], baseUrl: string, headers: Record<string, string>, provider: ProviderId, modelId: string, signal: AbortSignal): Promise<OaiMessage[]> {
-    const window = Number(this.ctx.getSetting('compactWindowTokens', COMPACT_WINDOW)) || COMPACT_WINDOW
+  // Summarizes old turns when the context reaches the auto-compact point (Settings > Chat): the larger
+  // of the history estimate and the last request's real prompt tokens (system prompt and tool
+  // schemas included). Posts the "Compacted" divider. Errors keep the history as is.
+  private async compact(chat: StoredChat, history: OaiMessage[], baseUrl: string, headers: Record<string, string>, provider: ProviderId, modelId: string, signal: AbortSignal): Promise<OaiMessage[]> {
+    const trigger = compactTrigger(this.windowOf(chat, provider, modelId), readAutoCompact((k, f) => this.ctx.getSetting(k, f)))
+    if (!trigger) return history
     // Older images become "[N images]" text when the history is summarized.
     const flat = history.map((m) => (m.role === 'user' && Array.isArray(m.content) ? { ...m, content: contentText(m.content) } : m))
-    if (!needsCompaction(flat as any, 0.8 * window)) return history
+    const estimate = estimateMessagesTokens(flat as any)
+    const used = Math.max(estimate, chat.contextTokens ?? 0)
+    if (used <= trigger) return history
+    // What the history cannot shed (system prompt, tool schemas) stays in the count after.
+    const fixed = Math.max(0, used - estimate)
+    const target = Math.max(1000, compactTarget(trigger) - fixed)
+    // Nothing the summary could shed (the fixed part alone is over the point): no divider every turn.
+    if (estimate <= target) return history
     history = flat
     const cheap = routeModel({ task: 'summary', text: '', settings: { provider, model: modelId, tiers: this.ctx.getSetting('modelTiers', undefined) } }).model
     try {
       const r = await compactHistory(history as any, {
-        budgetTokens: 0.4 * window,
+        budgetTokens: target,
         keepTurns: 4,
         toolMaxTokens: 2000,
         summarize: async (t: string) => {
@@ -1118,6 +1193,9 @@ export class ChatManager {
           return out
         }
       })
+      const after = r.tokensAfter + fixed
+      chat.contextTokens = after
+      this.push(chat, { ...systemMessage('main', compactLabel(used, after)), compact: { trigger: 'auto', before: used, after, ...(r.summary ? { summary: r.summary } : {}) } })
       return r.messages as OaiMessage[]
     } catch (e) {
       this.ctx.log({ service: 'agent', stream: 'stderr', text: `compaction skipped: ${(e as Error).message}` })

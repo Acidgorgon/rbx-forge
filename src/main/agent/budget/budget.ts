@@ -131,7 +131,7 @@ export function checkChat(used: Usage, limits: BudgetLimits, daySpend?: number):
   const cost = used.costUsd ?? 0
   return evaluate(
     [
-      { limit: limits.chatSoftTokens, used: tokens, hard: false, label: `chat is at ${fmtTok(tokens)} tokens (soft cap ${fmtTok(limits.chatSoftTokens ?? 0)}); consider a new chat or compacting` },
+      { limit: limits.chatSoftTokens, used: tokens, hard: false, label: `chat is at ${fmtTok(tokens)} tokens (soft cap ${fmtTok(limits.chatSoftTokens ?? 0)}); consider a new chat or /compact` },
       { limit: limits.chatSoftCostUsd, used: cost, hard: false, label: `chat cost $${cost.toFixed(2)} (soft cap $${(limits.chatSoftCostUsd ?? 0).toFixed(2)})` },
       { limit: limits.chatMaxCostUsd, used: cost, hard: true, label: `chat reached its $${(limits.chatMaxCostUsd ?? 0).toFixed(2)} cap` },
       ...dayCap(limits, daySpend)

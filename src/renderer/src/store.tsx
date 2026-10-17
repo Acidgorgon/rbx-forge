@@ -40,6 +40,8 @@ import { runBeforeSave } from './editorAssist/saveHooks'
 import * as EG from '@shared/editorGroups'
 import { scriptInjectionToasts } from '@shared/studio/errors'
 import type { GroupsState } from '@shared/editorGroups'
+import { isBuiltin, parseSlash } from '@shared/chatCommands'
+import { afterTurn, editQueued as editIn, enqueue, moveToFront, outgoingText, removeQueued as removeFrom, turnOutcome, type QueuedPrompt, type QueuePause } from './assistant/queue'
 
 // ---------------------------------------------------------------- types
 
@@ -128,6 +130,10 @@ export interface State {
   messages: Record<string, ChatMessage[]>
   busy: Record<string, boolean>
   streamingSession: string | null
+  // Prompts typed while a turn runs (assistant/queue.ts), per chat, sent one at a time as turns end;
+  // and why a chat's queue waits for "Resume queue". In memory only (not kept across a restart).
+  queues: Record<string, QueuedPrompt[]>
+  queuePaused: Record<string, QueuePause>
   agents: TestAgent[]
   agentMessages: Record<string, ChatMessage[]>
   hasApiKey: boolean | null
@@ -231,6 +237,8 @@ const initial: State = {
   messages: {},
   busy: {},
   streamingSession: null,
+  queues: {},
+  queuePaused: {},
   agents: [],
   agentMessages: {},
   hasApiKey: null,
@@ -277,6 +285,9 @@ type Action =
   | { type: 'agentMessages'; agentId: string; messages: ChatMessage[] }
   | { type: 'chatMessage'; message: ChatMessage }
   | { type: 'busy'; sessionId: string; busy: boolean }
+  | { type: 'dropMessage'; sessionId: string; id: string }
+  | { type: 'queue'; sessionId: string; update: (q: QueuedPrompt[]) => QueuedPrompt[] }
+  | { type: 'queuePause'; sessionId: string; pause: QueuePause | null }
   | { type: 'openTab'; tab: Tab; preview?: boolean }
   | { type: 'projectSwitched' }
   | { type: 'activate'; id: string; group?: string }
@@ -391,6 +402,27 @@ function reducer(state: State, a: Action): State {
     }
     case 'busy':
       return { ...state, busy: { ...state.busy, [a.sessionId]: a.busy }, streamingSession: a.busy ? a.sessionId : state.streamingSession }
+    case 'dropMessage': {
+      const list = state.messages[a.sessionId]
+      return list ? { ...state, messages: { ...state.messages, [a.sessionId]: list.filter((m) => m.id !== a.id) } } : state
+    }
+    case 'queue': {
+      const q = a.update(state.queues[a.sessionId] ?? [])
+      const queues = { ...state.queues }
+      if (q.length) queues[a.sessionId] = q
+      else delete queues[a.sessionId]
+      // An emptied queue has nothing to resume.
+      if (q.length || !state.queuePaused[a.sessionId]) return { ...state, queues }
+      const queuePaused = { ...state.queuePaused }
+      delete queuePaused[a.sessionId]
+      return { ...state, queues, queuePaused }
+    }
+    case 'queuePause': {
+      const queuePaused = { ...state.queuePaused }
+      if (a.pause) queuePaused[a.sessionId] = a.pause
+      else delete queuePaused[a.sessionId]
+      return { ...state, queuePaused }
+    }
     case 'openTab': {
       const gs = state.editor
       const group = EG.activeGroupOf(gs)
@@ -562,6 +594,16 @@ export interface Actions {
   // The active chat's id, creating the chat first when there is none (slash commands).
   ensureChat(): Promise<string>
   stop(): Promise<void>
+  // Queued prompts (assistant/queue.ts): typed while chatId's turn runs, sent when it ends.
+  queuePrompt(chatId: string, item: Omit<QueuedPrompt, 'id' | 'at'>): void
+  editQueued(chatId: string, itemId: string, text: string): void
+  removeQueued(chatId: string, itemId: string): void
+  clearQueue(chatId: string): void
+  // Stops the running turn (the usual Stop) and sends this prompt next.
+  sendQueuedNow(chatId: string, itemId: string): Promise<void>
+  resumeQueue(chatId: string): void
+  // chat:busy from main: marks the chat and, when a turn ends, sends the next queued prompt.
+  chatBusy(sessionId: string, busy: boolean): void
   chooseModel(choice: ModelChoice): Promise<void>
   openSettings(focus?: ProviderId): void
   refreshProviders(): Promise<void>
@@ -634,6 +676,108 @@ export function StoreProvider({ children }: { children: ReactNode }) {
     }
     const updateChat = (chat: ChatSession) => dispatch({ type: 'set', patch: { chats: stateRef.current.chats.map((c) => (c.id === chat.id ? chat : c)) } })
     const layout = (patch: Partial<Layout>) => dispatch({ type: 'layout', patch })
+
+    // One message to a given chat. queued: a prompt from the queue, where "chat is busy" (another
+    // turn got there first, e.g. a cross-check fix) puts it back instead of failing.
+    const sendTo = async (id: string, text: string, images: ChatImage[], opts: { mode?: ChatMode; queued?: boolean } = {}): Promise<'turn' | 'busy' | 'error'> => {
+      const local: ChatMessage = { id: `local-${Date.now()}-${Math.random().toString(36).slice(2, 6)}`, role: 'user', text, at: Date.now(), agentId: 'main', sessionId: id, ...(images.length ? { images } : {}), ...(opts.mode ? { mode: opts.mode } : {}) }
+      dispatch({ type: 'chatMessage', message: local })
+      dispatch({ type: 'busy', sessionId: id, busy: true })
+      try {
+        if (opts.mode) await h.sendChatMode(id, text, opts.mode, images.length ? images.map((i) => i.id) : undefined)
+        else await h.sendChat(id, text, images.length ? images.map((i) => i.id) : undefined)
+        return 'turn'
+      } catch (e) {
+        if (opts.queued && /busy/i.test(errorText(e))) {
+          dispatch({ type: 'dropMessage', sessionId: id, id: local.id })
+          return 'busy'
+        }
+        dispatch({ type: 'busy', sessionId: id, busy: false })
+        dispatch({ type: 'chatMessage', message: { id: `err-${Date.now()}`, role: 'system', text: `Could not send: ${errorText(e)}`, at: Date.now(), agentId: 'main', sessionId: id } })
+        return 'error'
+      }
+    }
+
+    // ---- queued prompts (assistant/queue.ts)
+    // Stop pressed / "Send now" on a chat's running turn: read when that turn ends.
+    const stopAsked = new Set<string>()
+    const sendNowAsked = new Set<string>()
+    const draining = new Set<string>()
+    const settle = new Map<string, ReturnType<typeof setTimeout>>()
+    const queue = (sessionId: string, update: (q: QueuedPrompt[]) => QueuedPrompt[]) => dispatch({ type: 'queue', sessionId, update })
+    const pause = (sessionId: string, p: QueuePause | null) => dispatch({ type: 'queuePause', sessionId, pause: p })
+
+    // A turn ended: decide a moment later, once the turn's last messages are in state and a follow-up
+    // turn main starts at once (a cross-check fix) is busy again. go: send the next one whatever the
+    // last turn's outcome (Resume, Send now while idle, a queued command that ran without a turn).
+    const turnEnded = (id: string, go = false) => {
+      clearTimeout(settle.get(id))
+      settle.set(
+        id,
+        setTimeout(() => {
+          settle.delete(id)
+          const s = stateRef.current
+          if (s.busy[id]) return
+          const d = afterTurn({ queued: s.queues[id]?.length ?? 0, outcome: turnOutcome(s.messages[id] ?? []), stopRequested: stopAsked.has(id), sendNow: go || sendNowAsked.has(id), paused: s.queuePaused[id] ?? null })
+          stopAsked.delete(id)
+          sendNowAsked.delete(id)
+          if (d.pause && d.pause !== s.queuePaused[id]) pause(id, d.pause)
+          if (d.send) void drain(id)
+        }, 200)
+      )
+    }
+
+    // Sends the chat's next queued prompt.
+    const drain = async (id: string) => {
+      const s = stateRef.current
+      const item = s.queues[id]?.[0]
+      if (!item || draining.has(id) || s.busy[id] || s.queuePaused[id]) return
+      if (!s.chats.some((c) => c.id === id)) return queue(id, () => [])
+      draining.add(id)
+      queue(id, (q) => removeFrom(q, item.id))
+      try {
+        const r = await runQueued(id, item)
+        // Lost the race to another turn: back to the front; that turn's end sends it.
+        if (r === 'busy') queue(id, (q) => (q.some((x) => x.id === item.id) ? q : [item, ...q]))
+        else if (r === 'error') pause(id, 'error')
+        // Ran without a turn (/compact, /clear, /team): on to the next one.
+        else if (r === 'idle') turnEnded(id, true)
+      } finally {
+        draining.delete(id)
+      }
+    }
+
+    // One queued prompt, routed like the composer routes it. 'turn': busy events follow (their end
+    // sends the next prompt); 'idle': it ran without a turn.
+    const runQueued = async (id: string, item: QueuedPrompt): Promise<'turn' | 'idle' | 'busy' | 'error'> => {
+      const text = outgoingText(item)
+      const cmd = text.startsWith('/') ? parseSlash(text) : null
+      if (!cmd || cmd.name === 'restate') return sendTo(id, text, item.images, { queued: true })
+      if ((cmd.name === 'ask' || cmd.name === 'plan') && cmd.args) return sendTo(id, cmd.args, item.images, { mode: cmd.name, queued: true })
+      try {
+        if (cmd.name === 'team') {
+          if (cmd.args) dispatch({ type: 'board', board: await h.startOrchestration(id, cmd.args, stateRef.current.pendingModel ?? undefined) })
+          return 'idle'
+        }
+        if (cmd.name === 'roundtable') {
+          if (!cmd.args) return 'idle'
+          dispatch({ type: 'busy', sessionId: id, busy: true })
+          await h.startRoundtable(id, cmd.args, 2)
+          return 'turn'
+        }
+        const r = await h.runChatCommand(id, cmd.name, cmd.args)
+        const a = r.action
+        if (a?.kind === 'send') return sendTo(id, a.text, [], { ...(a.mode ? { mode: a.mode } : {}), queued: true })
+        // /clear: the conversation was replaced.
+        if (a?.kind === 'selectChat' && a.id === id) dispatch({ type: 'chatMessages', sessionId: id, messages: await h.getChat(id) })
+        return r.started ? 'turn' : 'idle'
+      } catch (e) {
+        if (/busy/i.test(errorText(e))) return 'busy'
+        if (cmd.name === 'roundtable') dispatch({ type: 'busy', sessionId: id, busy: false })
+        toast({ text: `${isBuiltin(cmd.name) ? `/${cmd.name}` : 'The queued command'} failed`, detail: errorText(e), kind: 'err' })
+        return 'error'
+      }
+    }
 
     const self: Actions = {
       set: (patch) => dispatch({ type: 'set', patch }),
@@ -818,11 +962,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         const cur = stateRef.current
         const messages = { ...cur.messages }
         const busy = { ...cur.busy }
+        const queues = { ...cur.queues }
+        const queuePaused = { ...cur.queuePaused }
         for (const id of ids) {
           delete messages[id]
           delete busy[id]
+          delete queues[id]
+          delete queuePaused[id]
         }
-        dispatch({ type: 'set', patch: { chats: cur.chats.filter((c) => !gone.has(c.id)), messages, busy, ...(cur.streamingSession && gone.has(cur.streamingSession) ? { streamingSession: null } : {}) } })
+        dispatch({ type: 'set', patch: { chats: cur.chats.filter((c) => !gone.has(c.id)), messages, busy, queues, queuePaused, ...(cur.streamingSession && gone.has(cur.streamingSession) ? { streamingSession: null } : {}) } })
         const active = cur.activeChatId
         if (active && gone.has(active)) {
           const at = before.findIndex((c) => c.id === active)
@@ -841,20 +989,50 @@ export function StoreProvider({ children }: { children: ReactNode }) {
           toast({ text: 'Could not start a chat', detail: errorText(e), kind: 'err' })
           return
         }
-        const local: ChatMessage = { id: `local-${Date.now()}`, role: 'user', text, at: Date.now(), agentId: 'main', sessionId: id, ...(images.length ? { images } : {}), ...(opts.mode ? { mode: opts.mode } : {}) }
-        dispatch({ type: 'chatMessage', message: local })
-        dispatch({ type: 'busy', sessionId: id, busy: true })
-        try {
-          if (opts.mode) await h.sendChatMode(id, text, opts.mode, images.length ? images.map((i) => i.id) : undefined)
-          else await h.sendChat(id, text, images.length ? images.map((i) => i.id) : undefined)
-        } catch (e) {
-          dispatch({ type: 'busy', sessionId: id, busy: false })
-          dispatch({ type: 'chatMessage', message: { id: `err-${Date.now()}`, role: 'system', text: `Could not send: ${errorText(e)}`, at: Date.now(), agentId: 'main', sessionId: id } })
-        }
+        await sendTo(id, text, images, opts)
       },
       async stop() {
         const id = stateRef.current.activeChatId
-        if (id) await h.stopChat(id)
+        if (!id) return
+        // A queue behind this turn pauses instead of sending the next prompt.
+        if (stateRef.current.busy[id]) stopAsked.add(id)
+        await h.stopChat(id)
+      },
+      queuePrompt(chatId, item) {
+        queue(chatId, (q) => enqueue(q, { ...item, id: `q-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`, at: Date.now() }))
+        // Queued just as the turn ended: send it now.
+        if (!stateRef.current.busy[chatId]) turnEnded(chatId)
+      },
+      editQueued(chatId, itemId, text) {
+        // Emptied: the prompt goes.
+        queue(chatId, (q) => (text.trim() ? editIn(q, itemId, text) : removeFrom(q, itemId)))
+      },
+      removeQueued(chatId, itemId) {
+        queue(chatId, (q) => removeFrom(q, itemId))
+      },
+      clearQueue(chatId) {
+        queue(chatId, () => [])
+      },
+      async sendQueuedNow(chatId, itemId) {
+        queue(chatId, (q) => moveToFront(q, itemId))
+        pause(chatId, null)
+        if (!stateRef.current.busy[chatId]) return turnEnded(chatId, true)
+        sendNowAsked.add(chatId)
+        try {
+          await h.stopChat(chatId)
+        } catch (e) {
+          sendNowAsked.delete(chatId)
+          toast({ text: 'Could not stop the turn', detail: errorText(e), kind: 'err' })
+        }
+      },
+      resumeQueue(chatId) {
+        pause(chatId, null)
+        if (!stateRef.current.busy[chatId]) turnEnded(chatId, true)
+      },
+      chatBusy(sessionId, busy) {
+        dispatch({ type: 'busy', sessionId, busy })
+        if (busy) clearTimeout(settle.get(sessionId))
+        else turnEnded(sessionId)
       },
       async chooseModel(choice) {
         const id = stateRef.current.activeChatId
@@ -1078,7 +1256,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       h.on('studio:conflicts', (studioConflicts) => set({ studioConflicts })),
       h.on('chat:message', (message) => dispatch({ type: 'chatMessage', message })),
       h.on('chat:busy', ({ sessionId, busy }) => {
-        dispatch({ type: 'busy', sessionId, busy })
+        actions.chatBusy(sessionId, busy)
         if (!busy) void h.listChats().then((chats) => set({ chats }))
       }),
       h.on('agents:changed', (agents) => set({ agents })),

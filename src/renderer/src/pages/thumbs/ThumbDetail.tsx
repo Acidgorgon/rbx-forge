@@ -1,11 +1,13 @@
 // The critique panel for one variation: the image, rating / would ship, refine with a note, the
 // principle scorecard (critic + code checks), copy-guard flags, small-size numbers, CTR entry and the
 // Roblox actions (upload as an Image asset; adding it to the experience's thumbnails behind a confirm).
+// Clicking the image opens it fullscreen.
 import { useState } from 'react'
 import type { Thumb, ThumbStatus } from '@shared/types'
 import { ctrOf, ctrTotals, formatCtr, wilson } from '@shared/thumbs/ctr'
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
+import { Lightbox } from '../../components/Lightbox'
 import { errorText } from '../../lib/format'
 import { PrincipleScorecard, usePrincipleWeights } from '../principles/Principles'
 import { RestatedBrief } from '../../components/RestateCard'
@@ -20,6 +22,7 @@ export function ThumbDetail({ thumb, status, busy, onClose, onRefined }: { thumb
   const [working, setWorking] = useState<string | null>(null)
   const [ctr, setCtr] = useState({ impressions: '', clicks: '', period: '' })
   const [confirmExp, setConfirmExp] = useState(false)
+  const [full, setFull] = useState(false)
   const [universe, setUniverse] = useState(String(status?.universeId ?? ''))
   const c = thumb.critique
   const run = async (label: string, fn: () => Promise<unknown>, ok?: string) => {
@@ -85,7 +88,10 @@ export function ThumbDetail({ thumb, status, busy, onClose, onRefined }: { thumb
         </button>
       </div>
 
-      <div className="th-big">{url ? <img src={url} alt={`Variation ${thumb.id}`} draggable={false} /> : <span className="th-ph" />}</div>
+      <button type="button" className="th-big" onClick={() => setFull(true)} disabled={!url} aria-label="View fullscreen" title="View fullscreen">
+        {url ? <img src={url} alt={`Variation ${thumb.id}`} draggable={false} /> : <span className="th-ph" />}
+      </button>
+      {full && url && <Lightbox items={[{ key: thumb.id, name: `Variation #${thumb.id.split('-').pop()}`, src: url }]} index={0} onIndex={() => undefined} onClose={() => setFull(false)} />}
 
       <div className="vfx-actions">
         <input className="input grow th-note" value={note} onChange={(e) => setNote(e.target.value)} placeholder="what to change (optional): bigger shark, fewer words…" aria-label="Refine note" />

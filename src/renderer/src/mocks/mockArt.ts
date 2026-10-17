@@ -228,6 +228,9 @@ export function artMock(emit: Emit): ArtApi {
     },
     async artChooseReferences() {
       return ['/Users/you/Desktop/hud-screenshot.png']
+    },
+    async artReveal(path) {
+      if (!items.some((i) => i.path === path)) throw new Error(`${path} does not exist`)
     }
   }
 }

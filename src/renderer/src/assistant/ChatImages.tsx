@@ -1,8 +1,9 @@
-// Image thumbnails for chat messages and composer attachments, and a full-size viewer.
-import { useEffect, useState } from 'react'
-import { createPortal } from 'react-dom'
+// Image thumbnails for chat messages and composer attachments; a message's images open in the
+// fullscreen viewer (components/Lightbox.tsx).
+import { useEffect, useMemo, useState } from 'react'
 import type { ChatImage } from '@shared/types'
 import { Icon } from '../components/Icons'
+import { Lightbox, type LightboxItem } from '../components/Lightbox'
 import { chatImageUrl } from './attachments'
 import { sizeLabel } from './imageScale'
 
@@ -48,45 +49,18 @@ export function ImageThumb({ img, onRemove, onOpen, size = 'md' }: { img: ChatIm
   )
 }
 
-function Viewer({ img, onClose }: { img: ChatImage; onClose: () => void }) {
-  const url = useChatImageUrl(img.id)
-  useEffect(() => {
-    const key = (e: KeyboardEvent) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation()
-        onClose()
-      }
-    }
-    window.addEventListener('keydown', key, true)
-    return () => window.removeEventListener('keydown', key, true)
-  }, [onClose])
-  return createPortal(
-    <div className="ci-viewer" role="dialog" aria-label={img.name ?? 'Image'} onClick={onClose}>
-      <div className="ci-viewer-box" onClick={(e) => e.stopPropagation()}>
-        <div className="ci-viewer-head">
-          <span className="ellipsis">{img.name ?? 'image'}</span>
-          <span className="faint">{sizeLabel(img.bytes, img.width, img.height)}</span>
-          <span className="grow" />
-          <button type="button" className="icon-btn" onClick={onClose} aria-label="Close">
-            <Icon name="x" size={14} />
-          </button>
-        </div>
-        {url ? <img src={url} alt={img.name ?? 'image'} /> : <div className="ci-loading big" />}
-      </div>
-    </div>,
-    document.body
-  )
-}
+const loadChatImage = (it: LightboxItem) => chatImageUrl(it.key)
 
 export function MessageImages({ images, size = 'md' }: { images: ChatImage[]; size?: 'sm' | 'md' | 'lg' }) {
-  const [open, setOpen] = useState<ChatImage | null>(null)
+  const [open, setOpen] = useState<number | null>(null)
+  const items = useMemo<LightboxItem[]>(() => images.map((i) => ({ key: i.id, name: i.name ?? 'image', detail: sizeLabel(i.bytes) || undefined })), [images])
   if (!images.length) return null
   return (
     <div className={`ci-row${images.length === 1 ? ' single' : ''}`}>
-      {images.map((i) => (
-        <ImageThumb key={i.id} img={i} size={images.length === 1 && size === 'md' ? 'lg' : size} onOpen={() => setOpen(i)} />
+      {images.map((i, k) => (
+        <ImageThumb key={i.id} img={i} size={images.length === 1 && size === 'md' ? 'lg' : size} onOpen={() => setOpen(k)} />
       ))}
-      {open && <Viewer img={open} onClose={() => setOpen(null)} />}
+      {open !== null && <Lightbox items={items} index={open} onIndex={setOpen} onClose={() => setOpen(null)} load={loadChatImage} />}
     </div>
   )
 }

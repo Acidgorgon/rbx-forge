@@ -10,7 +10,8 @@ import { tmpdir } from 'node:os'
 import path, { join } from 'node:path'
 import { codexDirs, findCodex, loginUrl, parseLoginStatus, parseVersion } from '../src/main/agent/codex/binary.ts'
 import { buildExecArgs, CODEX_DEFAULT_MODEL, codexEnv } from '../src/main/agent/codex/args.ts'
-import { CodexEventMapper, LineSplitter, type CodexUpdate } from '../src/main/agent/codex/events.ts'
+import { CodexEventMapper, isCodexWarning, LineSplitter, type CodexUpdate } from '../src/main/agent/codex/events.ts'
+import { lastErrorLine } from '../src/main/agent/codex/process.ts'
 import { CodexService, codexHome, type CliRunner } from '../src/main/agent/codex/service.ts'
 import { codexPrompt, codexSandboxFor, projectBrief } from '../src/main/agent/codex/chat.ts'
 import { collectImages, generateWithCodex, imagePrompt, shapeOf } from '../src/main/agent/codex/images.ts'
@@ -160,6 +161,27 @@ test('CodexEventMapper: text, tool chips, usage, thread id, failures', () => {
   assert.deepEqual(f.line('{"type":"item.completed","item":{"id":"x","type":"future_thing"}}'), [])
 })
 
+// What `codex exec --json` printed for a user whose ~/.codex/config.toml has a setting it does not know.
+const CONFIG_WARNING = 'Codex is ignoring 1 unrecognized configuration setting. Check for typos or deprecated settings. user (C:\\Users\\you\\.codex\\config.toml): `mcp_servers.Neon.type` is ignored.'
+
+test('CodexEventMapper: CLI config warnings are warnings, not chat notices or failures; real errors stay errors', () => {
+  const m = new CodexEventMapper()
+  assert.deepEqual(m.line(JSON.stringify({ type: 'item.completed', item: { id: 'item_0', type: 'error', message: CONFIG_WARNING } })), [{ kind: 'warning', text: CONFIG_WARNING }])
+  assert.deepEqual(m.line(JSON.stringify({ type: 'error', message: CONFIG_WARNING })), [{ kind: 'warning', text: CONFIG_WARNING }])
+  assert.deepEqual(m.line(JSON.stringify({ type: 'warning', message: 'deprecated setting `foo`' })), [{ kind: 'warning', text: 'deprecated setting `foo`' }])
+  assert.equal(m.failed, null, 'a warning does not fail the run')
+  assert.deepEqual(m.line(JSON.stringify({ type: 'error', message: 'stream disconnected before completion' })), [{ kind: 'error', message: 'stream disconnected before completion' }])
+  assert.equal(m.failed, 'stream disconnected before completion')
+  assert.ok(isCodexWarning(CONFIG_WARNING))
+  assert.ok(!isCodexWarning('Error loading config.toml: invalid type: string, expected a map'), 'a config file that does not parse is a real error')
+  assert.ok(!isCodexWarning('You have hit your usage limit'))
+})
+
+test('lastErrorLine: config warnings on stderr do not hide the real error', () => {
+  assert.equal(lastErrorLine(`${CONFIG_WARNING}\nError: unexpected status 500\n`), 'Error: unexpected status 500')
+  assert.equal(lastErrorLine(`${CONFIG_WARNING}\n`), '')
+})
+
 test('LineSplitter: CRLF and partial chunks', () => {
   const s = new LineSplitter()
   assert.deepEqual(s.push('{"a":1}\r\n{"b"'), ['{"a":1}'])
@@ -235,6 +257,32 @@ test('ChatManager on codex: streams messages, resumes the thread, records plan u
   assert.deepEqual(exec2.args.slice(exec2.args.indexOf('resume'), exec2.args.indexOf('resume') + 2), ['resume', 'th-9'])
   assert.ok(exec2.args.includes('read-only'), 'Ask mode is read-only')
   assert.ok(exec2.stdin!.startsWith('# Mode: Ask') && exec2.stdin!.endsWith('what changed?'))
+})
+
+test('ChatManager on codex: CLI config warnings go to the output log once, not into the chat', async () => {
+  const s = scripted([
+    { type: 'thread.started', thread_id: 'th-w' },
+    { type: 'item.completed', item: { id: 'item_0', type: 'error', message: CONFIG_WARNING } },
+    { type: 'item.completed', item: { id: 'item_1', type: 'error', message: CONFIG_WARNING } },
+    { type: 'item.completed', item: { id: 'item_2', type: 'agent_message', text: 'Hi!' } },
+    { type: 'turn.completed', usage: { input_tokens: 5, cached_input_tokens: 0, output_tokens: 1, reasoning_output_tokens: 0 } }
+  ])
+  const logged: string[] = []
+  const svc = new CodexService({ findBin: () => '/bin/codex', run: s.run, env: () => ({}), log: (text) => logged.push(text) })
+  const fake = fakeContext()
+  const credentials = new Credentials(fake.ctx, async () => null, {})
+  const chats = new ChatManager(fake.ctx, { credentials, toolFs: fake.fs, checkpoints: null, codex: () => svc } as any)
+  const c = chats.create({ provider: 'codex', model: 'codex-default' })
+  await chats.setMode(c.id, 'ask')
+  await chats.send(c.id, 'hi')
+  await until(() => !chats.busy(c.id))
+  await chats.send(c.id, 'hi again')
+  await until(() => !chats.busy(c.id))
+  const msgs = chats.messages(c.id)!
+  assert.ok(!msgs.some((m) => /ignoring|unrecognized|is ignored/.test(m.text)), 'no warning in the chat')
+  assert.ok(!msgs.some((m) => /^Error/.test(m.text)), 'a warning is not an error')
+  assert.equal(msgs.filter((m) => m.role === 'assistant' && m.text === 'Hi!').length, 2)
+  assert.deepEqual(logged.filter((l) => l.includes('unrecognized configuration setting')), [`warning: ${CONFIG_WARNING}`], 'logged once per distinct warning')
 })
 
 test('ChatManager on codex: not signed in -> a notice with a Settings link, no run', async () => {

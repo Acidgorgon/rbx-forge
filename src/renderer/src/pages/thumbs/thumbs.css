@@ -62,7 +62,9 @@
 
 /* Critique panel (extends .vfx-detail) */
 .th-detail .btn.on { color: var(--ember-text); background: var(--ember-fill); border-color: var(--ember-lo); }
-.th-big { aspect-ratio: 16 / 9; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: #0c0c0e; }
+.th-big { display: block; width: 100%; padding: 0; aspect-ratio: 16 / 9; border: 1px solid var(--line); border-radius: var(--r-md); overflow: hidden; background: #0c0c0e; cursor: zoom-in; }
+.th-big:disabled { cursor: default; opacity: 1; }
+.th-big:focus-visible { outline: none; border-color: var(--line-focus); }
 .th-big img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .th-note { height: 26px; min-width: 120px; font-size: 11.5px; }
 .th-meta { grid-template-columns: 52px minmax(0, 1fr); }

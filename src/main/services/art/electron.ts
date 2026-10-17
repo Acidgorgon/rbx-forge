@@ -1,9 +1,9 @@
-// Electron pieces for the art workflow (thumbnails, image picker). Only main/index.ts imports this;
-// tested code never does.
-import { BrowserWindow, dialog, nativeImage } from 'electron'
+// Electron pieces for the art workflow (thumbnails, image picker, open / show in folder). Only
+// main/index.ts imports this; tested code never does.
+import { BrowserWindow, dialog, nativeImage, shell } from 'electron'
 import type { ArtWireDeps } from './wire.ts'
 
-export function artElectronDeps(): Pick<ArtWireDeps, 'thumbnail' | 'chooseImages'> {
+export function artElectronDeps(): Pick<ArtWireDeps, 'thumbnail' | 'chooseImages' | 'reveal'> {
   return {
     thumbnail: async (bytes, width) => {
       const img = nativeImage.createFromBuffer(bytes)
@@ -21,6 +21,12 @@ export function artElectronDeps(): Pick<ArtWireDeps, 'thumbnail' | 'chooseImages
       }
       const picked = window ? await dialog.showOpenDialog(window, options) : await dialog.showOpenDialog(options)
       return picked.canceled ? [] : picked.filePaths.slice(0, 8)
+    },
+    reveal: async (absPath, how) => {
+      if (how === 'folder') return shell.showItemInFolder(absPath)
+      // openPath resolves to an error message ('' on success).
+      const err = await shell.openPath(absPath)
+      if (err) throw new Error(err)
     }
   }
 }

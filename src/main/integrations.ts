@@ -75,7 +75,7 @@ export interface IntegrationDeps {
   // One-shot model call for "summarize incoming changes" (agent layer); optional.
   summarize?: (prompt: string) => Promise<string>
   // Art page: Electron nativeImage thumbnailer, image file picker, chat image bridge (optional).
-  art?: Pick<ArtWireDeps, 'thumbnail' | 'chooseImages' | 'chatImage' | 'resolveReference'>
+  art?: Pick<ArtWireDeps, 'thumbnail' | 'chooseImages' | 'reveal' | 'chatImage' | 'resolveReference'>
   // UI Preview: the offscreen screenshot for preview_ui (Electron).
   uiPreview?: Pick<UiPreviewWireDeps, 'capture'>
 }

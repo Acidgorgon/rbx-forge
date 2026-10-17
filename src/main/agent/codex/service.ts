@@ -117,6 +117,8 @@ export class CodexService {
   private listeners = new Set<(s: CodexStatus) => void>()
   private modelList: { at: number; models: string[] } | null = null
   private modelsPending: Promise<string[]> | null = null
+  // CLI warnings already written to the log (the same config warning comes with every run).
+  private warned = new Set<string>()
 
   constructor(deps: CodexServiceDeps = {}) {
     this.deps = deps
@@ -393,7 +395,11 @@ export class CodexService {
       signal: i.signal,
       timeoutMs: i.timeoutMs,
       onStdoutLine: (line) => {
-        for (const u of mapper.line(line)) i.onUpdate?.(u)
+        for (const u of mapper.line(line)) {
+          // Warnings about the user's Codex setup go to the output log, never into a chat.
+          if (u.kind === 'warning') this.warn(u.text)
+          else i.onUpdate?.(u)
+        }
       }
     })
     const out: ExecResult = { threadId: mapper.threadId, lastMessage: mapper.lastMessage, usage: mapper.usage, savedImages: mapper.savedImages, aborted: r.aborted }
@@ -406,6 +412,12 @@ export class CodexService {
       this.cached = null
     }
     return out
+  }
+
+  private warn(text: string): void {
+    if (this.warned.has(text)) return
+    this.warned.add(text)
+    this.deps.log?.(`warning: ${text}`, 'info')
   }
 
   // A single answer (Labs, summaries, critiques): read-only sandbox, a scratch folder, nothing kept.

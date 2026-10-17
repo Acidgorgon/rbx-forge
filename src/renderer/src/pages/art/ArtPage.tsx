@@ -1,10 +1,13 @@
 // Art page: prompt box with presets and a cost estimate, a gallery of concepts by date, and a detail
 // view (regenerate, variations, edit, import to Roblox, copy id, insert a Vide ImageLabel, save,
-// send to chat, delete with undo). Keys never reach this page; it only sees whether they are set.
+// send to chat, delete with undo), and a fullscreen viewer over the gallery list (click the preview,
+// Fullscreen, double-click a thumbnail or press F). Keys never reach this page; it only sees whether
+// they are set.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ArtCostEstimate, ArtGenerateInput, ArtItem, ArtQuality, ArtRegistryEntry, ArtSettings, ArtStatus, ArtStyleId } from '@shared/types'
 import { useStore } from '../../store'
 import { Icon } from '../../components/Icons'
+import { Lightbox, type LightboxItem } from '../../components/Lightbox'
 import { errorText } from '../../lib/format'
 import { CODEX_IMAGE_NOTE } from '@shared/artTypes'
 import { attachImageToChat } from '../../assistant/attachments'
@@ -59,10 +62,30 @@ function useThumb(path: string | null, full = false): string | null {
   return url
 }
 
-function Thumb({ item, selected, onSelect }: { item: ArtItem; selected: boolean; onSelect: () => void }) {
+// Full-size image for the fullscreen viewer (shares the preview cache).
+async function fullUrl(path: string): Promise<string> {
+  const key = `f:${path}`
+  const hit = thumbCache.get(key)
+  if (hit) return hit
+  const u = await window.harness.artThumbnail(path, true)
+  thumbCache.set(key, u)
+  return u
+}
+
+const sizeOf = (item: ArtItem) => (item.width && item.height ? `${item.width}×${item.height}` : item.size)
+const bytesOf = (n: number) => (n >= 1024 * 1024 ? `${(n / 1024 / 1024).toFixed(1)} MB` : `${Math.max(1, Math.round(n / 1024))} KB`)
+const lightboxItem = (item: ArtItem): LightboxItem => ({
+  key: item.path,
+  name: base(item.path),
+  title: item.absPath || item.path,
+  detail: [item.bytes ? bytesOf(item.bytes) : '', item.quality].filter(Boolean).join(' · '),
+  transparent: item.background === 'transparent'
+})
+
+function Thumb({ item, selected, onSelect, onOpen }: { item: ArtItem; selected: boolean; onSelect: () => void; onOpen: () => void }) {
   const url = useThumb(item.path)
   return (
-    <button className={`art-card${selected ? ' on' : ''}`} onClick={onSelect} aria-pressed={selected} title={item.prompt || item.path}>
+    <button className={`art-card${selected ? ' on' : ''}`} onClick={onSelect} onDoubleClick={onOpen} aria-pressed={selected} title={`${item.prompt || item.path}\nDouble-click for fullscreen`}>
       <div className={`art-img${item.background === 'transparent' ? ' checker' : ''}`}>{url ? <img src={url} alt={item.prompt || base(item.path)} loading="lazy" draggable={false} /> : <span className="art-ph" />}</div>
       <div className="art-cap">
         <span className="art-name">
@@ -174,13 +197,14 @@ function KeyCard({ status, onStatus }: { status: ArtStatus; onStatus: (s: ArtSta
   )
 }
 
-function Detail({ item, status, registry, onClose, onChanged, onCompose }: {
+function Detail({ item, status, registry, onClose, onChanged, onCompose, onFullscreen }: {
   item: ArtItem
   status: ArtStatus
   registry: ArtRegistryEntry[]
   onClose: () => void
   onChanged: (next?: ArtItem) => void
   onCompose: (patch: Partial<ArtGenerateInput>, run?: boolean) => void
+  onFullscreen: () => void
 }) {
   const { state, actions } = useStore()
   const full = useThumb(item.path, true)
@@ -225,7 +249,7 @@ function Detail({ item, status, registry, onClose, onChanged, onCompose }: {
       if (line === null) throw new Error(`could not open ${path}`)
       actions.toast({ text: `Inserted ImageLabel in ${base(path)}:${line}`, detail: 'Unsaved; move it into the right children table and save.', kind: 'ok' })
     })
-  const sizeTxt = item.width && item.height ? `${item.width}×${item.height}` : item.size
+  const sizeTxt = sizeOf(item)
 
   return (
     <aside className="art-detail" aria-label="Concept details">
@@ -233,11 +257,16 @@ function Detail({ item, status, registry, onClose, onChanged, onCompose }: {
         <span className="mono grow ellipsis" title={item.path}>
           {base(item.path)}
         </span>
+        <button className="btn ghost small" onClick={onFullscreen} title="Fullscreen (F)">
+          <Icon name="expand" size={12} /> Fullscreen
+        </button>
         <button className="btn ghost small" onClick={onClose} aria-label="Close details">
           <Icon name="x" size={12} />
         </button>
       </div>
-      <div className={`art-preview${item.background === 'transparent' ? ' checker' : ''}`}>{full ? <img src={full} alt={item.prompt || base(item.path)} /> : <span className="art-ph" />}</div>
+      <button type="button" className={`art-preview${item.background === 'transparent' ? ' checker' : ''}`} onClick={onFullscreen} aria-label="View fullscreen" title="View fullscreen (F)">
+        {full ? <img src={full} alt={item.prompt || base(item.path)} /> : <span className="art-ph" />}
+      </button>
       {item.prompt && <p className="art-prompt">{item.prompt}</p>}
       <dl className="art-meta">
         <dt>model</dt>
@@ -366,7 +395,10 @@ export function ArtPage() {
   const [drag, setDrag] = useState(false)
   const [filter, setFilter] = useState('')
   const [showSetup, setShowSetup] = useState(false)
+  // Path of the concept open in the fullscreen viewer.
+  const [viewing, setViewing] = useState<string | null>(null)
   const promptRef = useRef<HTMLTextAreaElement>(null)
+  const pageRef = useRef<HTMLDivElement>(null)
 
   const load = useCallback(async () => {
     try {
@@ -455,6 +487,37 @@ export function ArtPage() {
     return [...m]
   }, [shown])
   const current = items.find((i) => i.path === selected) ?? null
+  // The viewer steps through the gallery as filtered; a concept the filter hides is shown alone.
+  const viewList = useMemo(() => {
+    if (!viewing) return []
+    const list = shown.some((i) => i.path === viewing) ? shown : items.filter((i) => i.path === viewing)
+    return list.map(lightboxItem)
+  }, [viewing, shown, items])
+  const openViewer = useCallback((path: string) => {
+    setSelected(path)
+    setViewing(path)
+  }, [])
+  const closeViewer = useCallback(() => setViewing(null), [])
+  useEffect(() => {
+    if (viewing && !items.some((i) => i.path === viewing)) setViewing(null)
+  }, [items, viewing])
+  const loadFull = useCallback((it: LightboxItem) => fullUrl(it.key), [])
+  const reveal = (path: string, how: 'open' | 'folder') =>
+    void h.artReveal(path, how).catch((e) => actions.toast({ text: how === 'open' ? 'Could not open the file' : 'Could not show the file', detail: errorText(e), kind: 'err' }))
+
+  // F opens the selected concept fullscreen (not while typing, nor from another part of the window).
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if (viewing || !selected || e.ctrlKey || e.metaKey || e.altKey || (e.key !== 'f' && e.key !== 'F')) return
+      const t = e.target as HTMLElement | null
+      if (t && t !== document.body && !pageRef.current?.contains(t)) return
+      if (t?.closest('input, textarea, select, [contenteditable="true"]')) return
+      e.preventDefault()
+      setViewing(selected)
+    }
+    window.addEventListener('keydown', onKey)
+    return () => window.removeEventListener('keydown', onKey)
+  }, [viewing, selected])
   const overCap = !!estimate && estimate.dailyCapUsd > 0 && estimate.spentTodayUsd + estimate.totalUsd > estimate.dailyCapUsd
   // Image backend 'codex': the ChatGPT plan through the Codex CLI (no key, cost or cap; Codex picks the size).
   const codex = status?.settings.backend === 'codex'
@@ -469,7 +532,7 @@ export function ArtPage() {
   }
 
   return (
-    <div className="page">
+    <div className="page" ref={pageRef}>
       <div className="page-inner art">
         <div className="page-head">
           <div>
@@ -587,7 +650,8 @@ export function ArtPage() {
           <div className="art-refs">
             {refs.map((r) => (
               <span key={r} className="badge-o art-ref" title={r}>
-                <Icon name="file" size={11} /> {base(r)}
+                <Icon name="file" size={11} />
+                <span className="art-ref-name">{base(r)}</span>
                 <button className="art-x" onClick={() => setRefs(refs.filter((x) => x !== r))} aria-label={`Remove ${base(r)}`}>
                   <Icon name="x" size={10} />
                 </button>
@@ -595,7 +659,7 @@ export function ArtPage() {
             ))}
             {mask && (
               <span className="badge-o art-ref" title={mask}>
-                mask {base(mask)}
+                <span className="art-ref-name">mask {base(mask)}</span>
                 <button className="art-x" onClick={() => setMask(null)} aria-label="Remove mask">
                   <Icon name="x" size={10} />
                 </button>
@@ -656,16 +720,35 @@ export function ArtPage() {
                 <div className="art-grid">
                   {list.map((i) => (
                     <div key={i.path} draggable onDragStart={(e) => e.dataTransfer.setData('text/x-forge-art', i.path)}>
-                      <Thumb item={i} selected={i.path === selected} onSelect={() => setSelected(i.path === selected ? null : i.path)} />
+                      <Thumb item={i} selected={i.path === selected} onSelect={() => setSelected(i.path === selected ? null : i.path)} onOpen={() => openViewer(i.path)} />
                     </div>
                   ))}
                 </div>
               </div>
             ))}
           </div>
-          {current && status && <Detail item={current} status={status} registry={registry} onClose={() => setSelected(null)} onChanged={() => void load()} onCompose={compose} />}
+          {current && status && <Detail item={current} status={status} registry={registry} onClose={() => setSelected(null)} onChanged={() => void load()} onCompose={compose} onFullscreen={() => openViewer(current.path)} />}
         </div>
       </div>
+      {viewing && viewList.length > 0 && (
+        <Lightbox
+          items={viewList}
+          index={Math.max(0, viewList.findIndex((i) => i.key === viewing))}
+          onIndex={(k) => openViewer(viewList[k].key)}
+          onClose={closeViewer}
+          load={loadFull}
+          actions={(it) => (
+            <>
+              <button className="btn small ghost" onClick={() => reveal(it.key, 'open')} title="Open in the system image viewer">
+                <Icon name="external" size={12} /> Open file
+              </button>
+              <button className="btn small ghost" onClick={() => reveal(it.key, 'folder')} title="Show in the file manager">
+                <Icon name="reveal" size={12} /> Show in folder
+              </button>
+            </>
+          )}
+        />
+      )}
     </div>
   )
 }

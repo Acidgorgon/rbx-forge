@@ -13,6 +13,12 @@
 // never removed on its own. A Studio delete of it, a disk delete Rojo would carry into Studio, or a
 // file gone from both sides without Forge doing it (Rojo two-way sync, another tool) is held as a
 // conflict; the last synced copy of a file gone from both sides is saved under RECOVERED_DIR.
+// Same-name siblings: one file can hold only one instance, and Rojo keeps one and deletes the rest
+// when it connects. Forge never picks one silently: the group is held as a 'duplicate' conflict
+// (rojo serve waits) until the user picks a side. A new file for a script made in Studio is written
+// with rojo serve paused (options.guardNewFile): Rojo adds its own instance for a file that appears
+// while it serves (a second sibling next to the Studio one) but adopts the Studio one on connect.
+// drift(): how many files a place's Studio is behind the disk (its base vs the disk now).
 
 import * as nodeFs from 'node:fs/promises'
 import { join, resolve as resolvePath } from 'node:path'
@@ -32,6 +38,10 @@ export interface SyncEngineOptions {
   root: string
   fs?: SyncFs
   now?: () => number
+  // Runs a live write of a NEW file (a script or model made in Studio while rojo may serve the place)
+  // with rojo serve for that place file paused, so Rojo, on reconnect, adopts the Studio instance
+  // instead of adding a second same-name sibling for the new file. Absent: written as is (tests).
+  guardNewFile?: <T>(projectFile: string, file: string, fn: () => Promise<T>) => Promise<T>
 }
 
 // Thrown by applyChanges when the engine has no tree for the place (e.g. after a restart):
@@ -68,9 +78,18 @@ interface Unit {
   formFrom?: string
 }
 
+// Same-name siblings (ignoring case) under one parent, and the file the name maps to when Forge can
+// write one of them (a script or a model file). render: the member's file text.
+interface DuplicateGroup {
+  nodes: { node: StudioNode; render?: (disk: string | null) => string }[]
+  file?: string
+  kind?: UnitKind
+}
+
 interface Plan {
   units: Unit[]
   refused: { path: string[]; note: string }[]
+  duplicates: DuplicateGroup[]
   present: SyncRoot[]
   // Files never trashed/written this pass (Rojo-owned, oversize, root meta ...).
   keep: Set<string>
@@ -89,6 +108,8 @@ interface HeldConflict {
   // Gone from disk and from Studio, not by Forge: "disk" restores the last synced copy (base),
   // "studio" confirms the delete.
   lost?: boolean
+  // Same-name siblings in Studio: the group's signature (accepted once the user picks a side).
+  duplicate?: string
 }
 
 // Last synced copies of files that left disk and Studio without Forge removing them.
@@ -132,6 +153,8 @@ interface Session {
   // Ctrl+D makes a copy with the original's name, children included): renames, moves and removes
   // carry a subtree by these ids.
   parents: Map<string, string>
+  // Duplicate groups the user decided (file -> group signature): not held again while unchanged.
+  dupAccepted: Map<string, string>
 }
 
 interface HeldStudioOnly extends StudioOnlyScript {
@@ -153,6 +176,20 @@ function canon(kind: UnitKind | 'meta', text: string): string {
   if (kind === 'model') return canonicalModel(text) ?? normalise(text)
   if (kind === 'meta') return canonicalJson(text) ?? normalise(text)
   return normalise(text)
+}
+
+// Lines in one text and not the other (a multiset difference), for "N lines differ".
+function changedLines(a: string, b: string): number {
+  const count = new Map<string, number>()
+  for (const l of a.split('\n')) count.set(l, (count.get(l) ?? 0) + 1)
+  let only = 0
+  for (const l of b.split('\n')) {
+    const n = count.get(l) ?? 0
+    if (n > 0) count.set(l, n - 1)
+    else only++
+  }
+  for (const n of count.values()) only += n
+  return only
 }
 
 function kindOfFile(rel: string): UnitKind | null {
@@ -189,12 +226,16 @@ export class SyncEngine {
   private readonly confirmedDeletes = new Map<string, Set<string>>()
   // Recovery copies already saved (place, file, base hash): a re-held loss is not copied again.
   private readonly recovered = new Map<string, string>()
+  private readonly guardNewFile?: SyncEngineOptions['guardNewFile']
+  // drift(): disk digests by absolute path, reused while size and mtime are unchanged.
+  private readonly diskHashes = new Map<string, { size: number; mtime: number; hash: string }>()
 
   constructor(options: SyncEngineOptions) {
     this.root = resolvePath(options.root)
     this.fs = options.fs ?? nodeFs
     this.now = options.now ?? Date.now
     this.store = new BaseStore(this.root, this.fs)
+    this.guardNewFile = options.guardNewFile
   }
 
   // ---- public API ----
@@ -295,8 +336,13 @@ export class SyncEngine {
         } else {
           const old = s.tree.get(change.node.id)
           if (old && pkey(old.path) !== pkey(change.node.path)) this.removeSubtree(s, old.id, old.path)
-          // Unknown id (e.g. the plugin's table was rebuilt): the node at that path is the same instance.
-          if (!old) for (const [id, n] of s.tree) if (pkey(n.path) === pkey(change.node.path) && n.className === change.node.className) s.tree.delete(id)
+          // Unknown id (e.g. the plugin's table was rebuilt): the one node at that path with that class is
+          // the same instance. With two or more there (same-name siblings) Forge cannot tell which one it
+          // is, and must not drop one silently: the new id is kept next to them (a duplicate, held).
+          if (!old) {
+            const same = [...s.tree].filter(([, n]) => pkey(n.path) === pkey(change.node.path) && n.className === change.node.className)
+            if (same.length === 1) s.tree.delete(same[0][0])
+          }
           s.tree.set(change.node.id, change.node)
           if (!old || pkey(old.path) !== pkey(change.node.path)) this.linkParents(s, [change.node])
           scope.push(change.node.path)
@@ -415,7 +461,7 @@ export class SyncEngine {
       if ('reason' in target) throw new Error(target.reason)
       const subtree = [...s.tree.values()].filter((n) => n.path.length > path.length && startsWith(n.path, path))
       const text = writeModel(modelFromStudio(found.node, subtree))
-      await this.writeFile(s.map, target.file, toFileText(text))
+      await this.writeNew(s.map, target.file, () => this.writeFile(s.map, target.file, toFileText(text)))
       await this.store.set(s.placeKey, target.file, canon('model', text))
       const entry = this.entry(target.file, 'created', [...path], { note: 'saved to repo from Studio' })
       // Settle the rest of the pass (base, gate) for that subtree.
@@ -450,6 +496,50 @@ export class SyncEngine {
 
   gate(placeKey: string): GateState {
     return this.sessions.get(placeKey)?.gate ?? 'idle'
+  }
+
+  // How far this place's Studio is behind the disk: the place file's mapped files whose disk copy
+  // differs from the place's base (what its Studio and the disk last agreed on), files new on disk
+  // (no base: its Studio never had them) and files deleted on disk that it still has. Conflicts held
+  // for the place are not counted (they are shown as conflicts). Newest first. null: the place has no
+  // shared version yet (never synced, or its first sync is undecided), so nothing can be said.
+  // Disk digests are cached by size and mtime, so a status refresh only reads files that changed.
+  drift(projectFile: string, placeKey: string): Promise<{ behind: number; files: { file: string; mtime: number }[] } | null> {
+    return this.serial(async () => {
+      await this.ensureLoaded()
+      const map = this.maps.find((m) => m.projectFile === projectFile)
+      if (!map || !(await this.store.hasPlace(placeKey)) || this.store.isFirstSync(placeKey)) return null
+      const held = new Set(this.sessions.get(placeKey)?.conflicts.keys() ?? [])
+      const rootMeta = new Set(map.roots.filter((r) => !r.isFile).map((r) => `${r.path}/init.meta.json`))
+      const disk = await this.scan(map)
+      const out: { file: string; mtime: number }[] = []
+      for (const file of [...disk.files].sort()) {
+        const kind = kindOfFile(file)
+        if (!kind || isGitkeep(file) || rootMeta.has(file) || held.has(file)) continue
+        const abs = this.abs(file)
+        const info = await this.fs.stat(abs).catch(() => null)
+        if (!info) continue
+        const base = await this.store.hashOf(placeKey, file)
+        if (!base) {
+          if (fromDisk(map, file)) out.push({ file, mtime: info.mtimeMs })
+          continue
+        }
+        let cached = this.diskHashes.get(abs)
+        if (!cached || cached.size !== info.size || cached.mtime !== info.mtimeMs) {
+          const text = await this.read(file)
+          if (text === null) continue
+          cached = { size: info.size, mtime: info.mtimeMs, hash: hashText(canon(kind, text)) }
+          this.diskHashes.set(abs, cached)
+        }
+        if (cached.hash !== base) out.push({ file, mtime: info.mtimeMs })
+      }
+      for (const file of (await this.store.files(placeKey)).sort()) {
+        if (disk.files.has(file) || held.has(file) || isGitkeep(file) || rootMeta.has(file) || !kindOfFile(file) || !insideMappedRoots(map, file)) continue
+        out.push({ file, mtime: 0 })
+      }
+      out.sort((a, b) => b.mtime - a.mtime || a.file.localeCompare(b.file))
+      return { behind: out.length, files: out }
+    })
   }
 
   conflicts(placeKey?: string): SyncConflictInfo[] {
@@ -543,7 +633,7 @@ export class SyncEngine {
     const projectFile = this.projectFiles.get(placeKey)
     const map = this.mapFor(place, projectFile) ?? { projectFile: 'default.project.json', name: '', root: this.root, placeIds: [], emitLegacyScripts: true, roots: [], skipped: [], virtual: [], skipGlobs: [] }
     if (!s) {
-      s = { placeKey, place, map, gate: 'idle', connected: false, buffer: null, tree: null, counts: {}, conflicts: new Map(), protect: new Set(), version: 0, leftInStudio: [], projectFile, firstSync: false, studioOnly: [], restore: [], parents: new Map() }
+      s = { placeKey, place, map, gate: 'idle', connected: false, buffer: null, tree: null, counts: {}, conflicts: new Map(), protect: new Set(), version: 0, leftInStudio: [], projectFile, firstSync: false, studioOnly: [], restore: [], parents: new Map(), dupAccepted: new Map() }
       this.sessions.set(placeKey, s)
     } else {
       s.place = place
@@ -617,6 +707,14 @@ export class SyncEngine {
 
   private async writeFile(map: PlaceMap, rel: string, text: string): Promise<void> {
     await atomicWrite(this.fs, await this.guard(map, rel), text)
+  }
+
+  // A file or directory that is new on disk for an instance Studio already has. Rojo, if it serves the
+  // place right now, would add its own instance for it next to Studio's (two same-name siblings): the
+  // write runs with rojo serve paused (guardNewFile), and Rojo adopts Studio's instance on reconnect.
+  private async writeNew(map: PlaceMap, rel: string, fn: () => Promise<void>): Promise<void> {
+    if (this.guardNewFile) await this.guardNewFile(map.projectFile, rel, fn)
+    else await fn()
   }
 
   // Moves a project file into .forge/sync/trash/<stamp>/ (never a hard delete); returns where it went.
@@ -759,7 +857,7 @@ export class SyncEngine {
       visit(node)
       return out
     }
-    const plan: Plan = { units: [], refused: [], present: [], keep: new Set() }
+    const plan: Plan = { units: [], refused: [], duplicates: [], present: [], keep: new Set() }
 
     const scriptUnits = (node: StudioNode, file: string, metaFile: string | undefined, runContext: string | undefined, hasChildren: boolean): void => {
       const init = isInitFile(file)
@@ -796,6 +894,7 @@ export class SyncEngine {
         const name = c.path[c.path.length - 1].toLowerCase()
         counts.set(name, (counts.get(name) ?? 0) + 1)
       }
+      const groups = new Map<string, StudioNode[]>()
       for (const c of children) {
         const name = c.path[c.path.length - 1]
         const unsafe = unsafeName(name)
@@ -805,10 +904,43 @@ export class SyncEngine {
         }
         if ((counts.get(name.toLowerCase()) ?? 0) > 1) {
           plan.refused.push({ path: c.path, note: 'duplicate sibling name' })
+          const lower = name.toLowerCase()
+          ;(groups.get(lower) ?? groups.set(lower, []).get(lower)!).push(c)
           continue
         }
         planNode(c)
       }
+      for (const nodes of groups.values()) plan.duplicates.push(duplicateGroup(nodes))
+    }
+
+    // What one file would hold for each member of a same-name group (the first member Forge can write
+    // names the file): reconcile holds the group as a 'duplicate' conflict on it.
+    const duplicateGroup = (nodes: StudioNode[]): DuplicateGroup => {
+      const group: DuplicateGroup = { nodes: [] }
+      for (const node of nodes) {
+        const hasChildren = childrenOf(node.path).length > 0
+        const script = isScriptClass(node.className)
+        const m = toDisk(map, { path: node.path, className: node.className, runContext: node.runContext, hasChildren, hasScriptDescendants: script ? undefined : hasScripts(node) }, probe)
+        let render: ((disk: string | null) => string) | undefined
+        let kind: UnitKind | undefined
+        if (m?.kind === 'script' && typeof node.source === 'string' && !node.oversize) {
+          const source = node.source
+          render = () => source
+          kind = 'script'
+        } else if (m?.kind === 'model' && !m.modelPath && !script) {
+          const model = modelFromStudio(node, subtree(node))
+          render = (disk) => writeModel(model, detectStyle(disk))
+          kind = 'model'
+        } else if (m?.kind === 'folder') kind = 'folder'
+        group.nodes.push({ node, ...(render ? { render } : {}) })
+        // A script or model file names the group; a folder only when no member is one.
+        if (m && kind && (!group.file || (group.kind === 'folder' && kind !== 'folder'))) {
+          group.file = m.file
+          group.kind = kind
+        }
+      }
+      if (group.file) plan.keep.add(group.file)
+      return group
     }
 
     const planNode = (node: StudioNode): void => {
@@ -890,7 +1022,20 @@ export class SyncEngine {
     const entries: SyncEntry[] = []
     const stamp = this.stamp()
 
-    for (const r of plan.refused) if (inScope(r.path)) entries.push(this.entry('', 'unmapped', r.path, { note: r.note }))
+    // Same-name siblings: held as one 'duplicate' conflict per group (their refusals say nothing more).
+    const dupHeld = new Set<string>()
+    for (const group of plan.duplicates) {
+      const path = group.nodes[0].node.path
+      if (!inScope(path) || !group.file || !group.kind) continue
+      try {
+        const e = await this.holdDuplicate(s, group)
+        entries.push(e)
+        if (e.action === 'conflict') for (const m of group.nodes) dupHeld.add(pkey(m.node.path))
+      } catch (err) {
+        entries.push(this.entry(group.file, 'unmapped', path, { note: `refused: ${(err as Error).message}` }))
+      }
+    }
+    for (const r of plan.refused) if (inScope(r.path) && !(r.note === 'duplicate sibling name' && dupHeld.has(pkey(r.path)))) entries.push(this.entry('', 'unmapped', r.path, { note: r.note }))
 
     const claimed = new Set<string>()
     for (const u of plan.units) claimed.add(u.file)
@@ -920,7 +1065,8 @@ export class SyncEngine {
             await this.guard(map, u.file + '/x')
             // Present under another case (case-insensitive disk): not a new folder.
             const existed = await this.fs.lstat(this.abs(u.file)).then((i) => i.isDirectory(), () => false)
-            await this.fs.mkdir(this.abs(u.file), { recursive: true })
+            if (existed) await this.fs.mkdir(this.abs(u.file), { recursive: true })
+            else await this.writeNew(map, u.file, async () => void (await this.fs.mkdir(this.abs(u.file), { recursive: true })))
             disk.dirs.add(u.file)
             if (!existed) entries.push(this.entry(u.file, 'created', u.instancePath))
           }
@@ -1054,8 +1200,12 @@ export class SyncEngine {
     for (const r of plan.refused) notes.set(pkey(r.path), r.note)
     const present = new Set(plan.present.map((r) => r.path))
     const candidates: { node: StudioNode; root: SyncRoot; unit?: Unit }[] = []
+    // Same-name siblings (and what is under them) are the duplicate conflict's business.
+    const dups = new Set(plan.duplicates.filter((g) => g.file).flatMap((g) => g.nodes.map((m) => pkey(m.node.path))))
+    const inDup = (path: string[]): boolean => dups.size > 0 && path.some((_, i) => dups.has(pkey(path.slice(0, i + 1))))
     for (const node of s.tree?.values() ?? []) {
       if (!isScriptClass(node.className)) continue
+      if (inDup(node.path)) continue
       const hit = findRoot(map, node.path)
       if (!hit?.root || !present.has(hit.root.path)) continue
       const unit = units.get(pkey(node.path))
@@ -1169,6 +1319,54 @@ export class SyncEngine {
     return this.entry(keep, 'trashed', u.instancePath, { note: 'folder has children now: .gitkeep removed', trashPath })
   }
 
+  // A same-name group in Studio: one file can hold only one of them, and Rojo keeps one and deletes
+  // the others when it connects. Held as a 'duplicate' conflict (rojo serve waits) unless the user
+  // already decided this exact group. Studio's side is the copy edited since the base (or, without a
+  // base, the one that differs from the disk).
+  private async holdDuplicate(s: Session, group: DuplicateGroup): Promise<SyncEntry> {
+    const file = group.file!
+    const kind = group.kind!
+    const first = group.nodes[0].node
+    const path = first.path
+    const diskText = kind === 'folder' ? null : await this.read(file)
+    const texts = group.nodes.map((m) => (m.render ? m.render(diskText) : null))
+    const sig = `${kind}|` + group.nodes.map((m, i) => `${m.node.className}:${texts[i] === null ? '-' : hashText(canon(kind, texts[i]!))}`).sort().join('|')
+    s.conflicts.delete(file)
+    const parent = path.slice(0, -1).join('.') || 'the place'
+    const name = path[path.length - 1]
+    const classes = [...new Set(group.nodes.map((m) => m.node.className))]
+    const what = classes.length === 1 ? `${group.nodes.length} ${classes[0]}s named ${name}` : `${group.nodes.length} instances named ${name} (${classes.join(', ')})`
+    if (s.dupAccepted.get(file) === sig) return this.entry(file, 'unmapped', path, { note: `duplicate sibling name: ${what} in ${parent}; you picked a side, Rojo keeps one when it connects` })
+    const base = kind === 'folder' ? null : await this.store.get(s.placeKey, file)
+    const diskCanon = diskText === null ? null : canon(kind, diskText)
+    const hashes = texts.map((t) => (t === null ? null : hashText(canon(kind, t))))
+    const reference = base?.hash ?? (diskCanon === null ? null : hashText(diskCanon))
+    const edited = texts.map((_, i) => i).filter((i) => hashes[i] !== null && hashes[i] !== reference)
+    const pick = edited.length ? edited[0] : texts.findIndex((t) => t !== null)
+    const studioText = pick >= 0 ? texts[pick]! : ''
+    const describe = group.nodes.map((m, i) => {
+      const t = texts[i]
+      const label = `copy ${i + 1} (${m.node.className})`
+      if (t === null) return label
+      if (diskCanon !== null && hashes[i] === hashText(diskCanon)) return `${label} = disk`
+      if (base && hashes[i] === base.hash) return `${label} = last synced, ${diskCanon === null ? 'no file on disk' : `${changedLines(canon(kind, t), diskCanon)} line(s) differ from disk`}`
+      return `${label}: ${diskCanon === null ? 'no file on disk' : `${changedLines(canon(kind, t), diskCanon)} line(s) differ from disk`}`
+    })
+    const take = kind === 'folder' ? 'Rename or delete the extra one in Studio' : `Take Studio writes copy ${pick + 1} to disk, Take disk keeps the file; then delete the extra copy in Studio (or accept Rojo's dialog, which deletes it)`
+    const note = `Studio has ${what} in ${parent} (one file, ${file}, can hold only one; Rojo would keep one and delete the rest): ${describe.join('; ')}. ${take}`
+    s.conflicts.set(file, {
+      info: { placeKey: s.placeKey, file, instancePath: path, base: base?.text ?? null, disk: diskText ?? '', studio: studioText, reason: 'duplicate', note, copies: group.nodes.length },
+      kind,
+      studioText,
+      studioCanon: kind === 'folder' ? '' : canon(kind, studioText),
+      studioDeleted: false,
+      diskDeleted: diskText === null && kind !== 'folder',
+      shared: false,
+      duplicate: sig
+    })
+    return this.entry(file, 'conflict', path, { note })
+  }
+
   // The Studio copy that stands for a file several mapped instances share: the one edited since the
   // base (or, without a base, the one that differs from the disk). Copies edited differently conflict.
   private async pickMount(s: Session, copies: Unit[]): Promise<{ unit: Unit; conflict?: string }> {
@@ -1207,7 +1405,7 @@ export class SyncEngine {
         return this.entry(u.file, 'conflict', u.instancePath, { note: 'first sync: only in Studio, waits for your choice' })
       }
       if (!base) {
-        await this.writeFile(map, u.file, toFileText(studioText))
+        await this.writeNew(map, u.file, () => this.writeFile(map, u.file, toFileText(studioText)))
         await this.store.set(s.placeKey, u.file, cS)
         return this.entry(u.file, 'created', u.instancePath)
       }
@@ -1215,7 +1413,7 @@ export class SyncEngine {
         // "Pull to disk": the user wants Studio's copy back on disk. A form change: the script is on
         // disk in its other form (trashed below), so this base is stale.
         if (u.formFrom || s.restore.some((p) => startsWith(u.instancePath, p))) {
-          await this.writeFile(map, u.file, toFileText(studioText))
+          await this.writeNew(map, u.file, () => this.writeFile(map, u.file, toFileText(studioText)))
           await this.store.set(s.placeKey, u.file, cS)
           return this.entry(u.file, 'created', u.instancePath, { note: u.formFrom ? `form changed in Studio (was ${u.formFrom})` : 'pulled to disk (only Studio had it)' })
         }
@@ -1401,6 +1599,22 @@ export class SyncEngine {
     const map = s.map
     const current = await this.read(file)
     let trashPath: string | undefined
+    if (held.duplicate) {
+      // Same-name siblings: the file gets the side picked; Studio keeps both copies until the user (or
+      // Rojo's connect dialog) removes the extra one. Not held again while the group stays the same.
+      if (take !== 'disk') {
+        if (held.kind === 'folder') throw new Error(`Studio has several instances named ${held.info.instancePath.join('.')}: rename or delete the extra one in Studio`)
+        const out = take === 'merged' ? text : held.studioText
+        if (typeof out !== 'string') throw new Error('merged resolution needs text')
+        await this.writeFile(map, file, toFileText(out, current))
+        await this.store.set(s.placeKey, file, canon(held.kind, out))
+      }
+      s.dupAccepted.set(file, held.duplicate)
+      s.conflicts.delete(file)
+      this.recentEntries.unshift(this.entry(file, take === 'disk' ? 'disk-ahead' : 'pulled', held.info.instancePath, { note: `resolved duplicate: ${take}; delete the extra copy in Studio` }))
+      this.recentEntries.splice(RECENT_LIMIT)
+      return
+    }
     if (held.lost) {
       // Gone from both sides: "disk" restores the last synced copy (Rojo then puts it back in
       // Studio), "studio" confirms the delete, "merged" writes the given text.

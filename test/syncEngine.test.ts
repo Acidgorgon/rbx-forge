@@ -520,12 +520,14 @@ test('unsafe instance names are refused, never written, and nothing outside the 
   assert.equal(entries.filter((e) => e.action === 'unmapped' && /unsafe name/.test(e.note ?? '')).length, bad.length)
   assert.deepEqual(entries.filter((e) => e.action !== 'unmapped' && e.action !== 'same'), [])
   assert.deepEqual(listFiles(ctx.root, notForge), before)
-  // Duplicate sibling names cannot both live on disk: both refused.
+  // Duplicate sibling names cannot both live on disk: neither is written; held as one duplicate
+  // conflict (never one picked silently).
   const dup = await ctx.engine.applyChanges(MK, [
     { kind: 'added', node: { id: 'd1', path: [...SKILLS, 'Twin'], className: 'ModuleScript', source: 'return 1' } },
     { kind: 'added', node: { id: 'd2', path: [...SKILLS, 'twin'], className: 'ModuleScript', source: 'return 2' } }
   ])
-  assert.equal(dup.filter((e) => e.note === 'duplicate sibling name').length, 2)
+  assert.equal(dup.filter((e) => e.action === 'conflict').length, 1)
+  assert.deepEqual(ctx.engine.conflicts(MK).map((c) => [c.reason, c.copies]), [['duplicate', 2]])
   assert.deepEqual(listFiles(ctx.root, notForge), before)
 })
 

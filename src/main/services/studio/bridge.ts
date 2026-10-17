@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { CONNECTED_MS, parseEvent, POLL_HOLD_MS, type BridgeEvent, type BridgeJob } from '../../../shared/studio/protocol.ts'
 import { isScriptInjectionError, SCRIPT_INJECTION_MESSAGE } from '../../../shared/studio/errors.ts'
 import { matchesTarget, placeLabel, targetKey, type StudioTarget } from '../../../shared/studio/target.ts'
-import { parseChangesBody, parseConfigQuery, parseOutlineBody, parseSnapshotBody, sanitizeConfig, SYNC_LIMITS, SyncProtocolError, type SyncHandler } from '../../../shared/sync/protocol.ts'
+import { parseChangesBody, parseConfigQuery, parseOutlineBody, parsePollSync, parseSnapshotBody, sanitizeConfig, SYNC_LIMITS, SyncProtocolError, type SyncHandler } from '../../../shared/sync/protocol.ts'
 
 export class BridgeError extends Error {
   // 'script-injection': Studio refused the plugin's ModuleScript.Source writes (its Script Injection
@@ -26,6 +26,11 @@ export interface StudioInfo {
   place?: string
   placeId?: number
   pluginVersion?: number
+  // Plugin v12: the window's Forge Sync session token ('' while it has none), its run id and, for an
+  // unpublished place, its ForgeSyncLink. Absent for older plugins.
+  syncSession?: string
+  probe?: string
+  link?: string
 }
 
 export type EventHandler = (ev: BridgeEvent, receivedAt: number) => unknown | Promise<unknown>
@@ -284,6 +289,12 @@ export class StudioBridge {
       ...(Number.isFinite(placeId) && placeId > 0 ? { placeId } : {}),
       ...(Number.isFinite(v) && v > 0 ? { pluginVersion: v } : {})
     }
+    const sync = parsePollSync(url.searchParams)
+    if (sync) {
+      this.info.syncSession = sync.session
+      if (sync.probe) this.info.probe = sync.probe
+      if (sync.link) this.info.link = sync.link
+    }
     this.pollers.delete(key)
     this.pollers.set(key, this.info)
     if (this.pollers.size > 32) this.pollers.delete(this.pollers.keys().next().value!)
@@ -305,6 +316,16 @@ export class StudioBridge {
       if (req.method === 'GET' && path === '/forge-bridge/ping') return send(200, { now: this.now() })
       if (req.method === 'GET' && path === '/forge-bridge/poll') {
         this.seen(url)
+        // Plugin v12: a linked place's window that Forge has no live sync session with starts its
+        // check again now (answered at once; the next poll picks up any job).
+        const sync = parsePollSync(url.searchParams)
+        let hint = null
+        try {
+          hint = sync ? (this.sync?.pollHint?.(sync) ?? null) : null
+        } catch (e) {
+          this.log?.(`studio bridge: sync poll hint failed: ${(e as Error).message}`, 'stderr')
+        }
+        if (hint?.resync) return send(200, { idle: true, resync: true })
         const job = await this.nextJob(req, this.info!)
         if (job) {
           this.log?.(`studio bridge: job ${job.id} (${job.kind} ${job.name}) sent to Studio`)

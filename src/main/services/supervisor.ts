@@ -2,7 +2,7 @@ import { execFile, execFileSync, type ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { LogLine, PlaceInfo, ServiceId, ServiceState, ServiceStatus } from '@shared/types'
-import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState, type WaitReason } from '../../shared/sync/types.ts'
+import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState, type RojoServeState, type WaitReason } from '../../shared/sync/types.ts'
 import { findBash, findPowerShell, findTool, run, spawnTool, toolEnv } from './tools.ts'
 import { gateAction, isRojoPanic, RestartPolicy, ROJO_STABLE_MS, secondsText, type RestartPolicyOptions } from './rojoRestart.ts'
 
@@ -327,6 +327,18 @@ export class Supervisor {
     return g.gate === 'waiting' ? { gate: 'waiting', file, reason: g.reason ?? 'studio' } : { gate: g.gate as 'checking' | 'blocked', file }
   }
 
+  // rojo serve for one place file: running (or coming up), held by the Forge Sync gate, or not
+  // running (not the active place with "Serve all places" off, stopped, or paused).
+  rojoState(file: string): RojoServeState {
+    let held = false
+    for (const [key, proc] of Object.entries(this.procs)) {
+      if (!proc?.wanted || this.servedPlace(key) !== file) continue
+      if (proc.held) held = true
+      else return 'serving'
+    }
+    return held ? 'held' : 'stopped'
+  }
+
   gateOf(file: string): GateState {
     return this.gates.get(file)?.gate ?? 'idle'
   }
@@ -584,7 +596,7 @@ export class Supervisor {
     // Only a running rojo can trip; a held or stopped one stays as it is.
     const running = Object.entries(this.procs).some(([key, proc]) => key !== 'dev' && proc?.wanted && proc.child)
     if (!this.root || !this.procs.rojo?.wanted || !running) return false
-    this.info('rojo', `Stopping rojo serve during a ${reason} (rojo can crash on folders that vanish while it serves)`)
+    this.info('rojo', `Stopping rojo serve during a ${reason}${/folder/.test(reason) ? ' (rojo can crash on folders that vanish while it serves)' : ''}`)
     await this.stop('rojo')
     this.update('rojo', { state: 'starting', detail: `Paused for a ${reason}` })
     return true

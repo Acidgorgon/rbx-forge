@@ -89,6 +89,7 @@ export function ConflictPage({ path }: { path: string }) {
               : c.reason === 'deleted-vs-edited'
                 ? 'One side deleted this script while the other edited it.'
                 : 'Changed in Studio and on disk since they last agreed, and the edits overlap.'}
+          {c.reason === 'duplicate' ? ' Pick the copy to keep on disk, then delete the extra one in Studio.' : ''}
           {' '}Rojo waits for this place until you pick a side.
           {c.instancePath?.length ? <span className="mono"> · {c.instancePath.join('.')}</span> : null}
         </div>

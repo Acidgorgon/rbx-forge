@@ -8,7 +8,9 @@ import { randomUUID } from 'node:crypto'
 import { mkdir, readFile, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import type {
+  DriftCause,
   GateState,
+  PlaceDrift,
   PlaceFingerprint,
   PlaceSyncStatus,
   StudioChange,
@@ -22,10 +24,12 @@ import type {
   StudioOnlyScript,
   SyncRef,
   SyncStatus,
+  RojoServeState,
   UnlinkedPlace,
   WaitReason
 } from '../../../shared/sync/types.ts'
-import { STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
+import { DRIFT_FILES_MAX, STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
+import type { SyncPollHint, SyncPollInfo } from '../../../shared/sync/protocol.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import { PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
@@ -63,10 +67,15 @@ export interface SyncEngineLike {
   // "Pull to disk" for them.
   studioOnly?(placeKey: string): { items: StudioOnlyScript[]; holds: boolean }
   pullStudioOnly?(placeKey: string): Promise<SyncEntry[]>
+  // How many files the place's Studio is behind the disk (engine.ts drift), null without a base.
+  drift?(projectFile: string, placeKey: string): Promise<{ behind: number; files: { file: string; mtime: number }[] } | null>
 }
 
 export interface PlaceMapLike {
   projectFile: string
+  // The project file's "name" and servePort (mapping.ts PlaceMap), for messages.
+  name?: string
+  servePort?: number
   placeIds: number[]
   roots: { instance: string[]; path: string; isFile?: boolean; ignoreUnknown?: boolean }[]
   skipped?: { instance: string[] }[]
@@ -146,6 +155,7 @@ export interface SyncHandler {
   snapshot(body: SnapshotBody): Promise<SyncAnswer>
   changes(body: ChangesBody): Promise<SyncAnswer>
   outline?(body: OutlineBody): Promise<SyncAnswer>
+  pollHint?(info: SyncPollInfo): SyncPollHint | null
 }
 
 export interface GitRun {
@@ -163,8 +173,13 @@ export interface SyncServiceDeps {
   // The Forge Bridge's view of Studio (the plugin long-polls), to show "connected" per place.
   studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
   // Every Studio window polling the bridge right now (several places can be open at once), with the
-  // Forge Bridge plugin version it runs.
-  studios?: () => { placeId?: number; place?: string; pluginVersion?: number }[]
+  // Forge Bridge plugin version it runs and (plugin v12) its sync session token, run id and link id.
+  studios?: () => StudioWindow[]
+  // rojo serve for a place file right now (supervisor). Absent: unknown (treated as serving).
+  rojo?: (projectFile: string) => RojoServeState
+  // Tests: how long disk may be ahead of a served, synced place before it counts as drift (Rojo
+  // normally carries an edit into Studio within a second or two). Default DRIFT_GRACE_MS.
+  driftGraceMs?: number
   // The Forge Bridge plugin file in Studio's plugins folder (null: no plugins folder on this OS).
   plugin?: () => Promise<{ installed: boolean; version?: number } | null>
   // Gate per project file, for the supervisor (rojo serve waits while 'waiting' / 'checking' /
@@ -181,6 +196,23 @@ export interface SyncServiceDeps {
   // Tests: throttle for onStudioTree (default TREE_THROTTLE_MS).
   treeThrottleMs?: number
 }
+
+// A Studio window as the bridge sees it (bridge.ts StudioInfo).
+export interface StudioWindow {
+  placeId?: number
+  place?: string
+  pluginVersion?: number
+  // Plugin v12: '' while it has no sync session; undefined for older plugins.
+  syncSession?: string
+  probe?: string
+  link?: string
+}
+
+// Plugin v12 resync: a linked window Forge has no session with is asked again at most this often, and
+// not while its own config request is this recent (its check is on its way).
+export const RESYNC_EVERY_MS = 30_000
+export const RESYNC_QUIET_MS = 15_000
+export const DRIFT_GRACE_MS = 15_000
 
 const RECENT_MAX = 200
 // Game-tab outline: the plugin sends at most this many instances outside the synced roots.
@@ -332,6 +364,11 @@ export class SyncService {
   // Place files the user chose to serve without a Studio check ("Serve without Studio check"). Taken
   // back as soon as a Studio session for that file starts its check.
   private noCheck = new Set<string>()
+  // Plugin v12 resync: when each window last asked for config / was asked to check again, and the
+  // place files the user asked to re-check ("Check now").
+  private configSeen = new Map<string, number>()
+  private resyncAt = new Map<string, number>()
+  private recheck = new Set<string>()
 
   constructor(deps: SyncServiceDeps) {
     this.deps = deps
@@ -442,6 +479,7 @@ export class SyncService {
       changed = true
     }
     for (const [id, u] of this.unlinked) if (now - u.lastSeen > UNLINKED_SHOW_MS) this.unlinked.delete(id)
+    for (const m of [this.configSeen, this.resyncAt]) for (const [k, at] of m) if (now - at > 10 * 60_000) m.delete(k)
     // Gates also follow the bridge's view of Studio (plugin version, unlinked places going away).
     if (this.pushGates() || changed) this.refresh()
   }
@@ -461,12 +499,71 @@ export class SyncService {
     config: (q) => this.config(q),
     snapshot: (body) => this.snapshot(body),
     changes: (body) => this.changes(body),
-    outline: (body) => this.outline(body)
+    outline: (body) => this.outline(body),
+    pollHint: (info) => this.pollHint(info)
+  }
+
+  // One Studio window: its plugin run (v12) or its place.
+  private windowKey(w: { placeId?: number; place?: string; probe?: string }): string {
+    return w.probe ? `probe:${w.probe}` : `place:${w.placeId ?? 0}:${w.place ?? ''}`
+  }
+
+  // The place file a Studio window's place is linked to, or null.
+  private windowMatch(w: { placeId?: number; link?: string }): ReturnType<typeof matchPlace> {
+    const placeId = Number(w.placeId) || 0
+    return matchPlace(this.maps, this.links.all(), { placeId, ...(!placeId && w.link ? { linkId: w.link } : {}) })
+  }
+
+  // Studio windows (polling now) whose place is linked to this place file.
+  private windowsFor(projectFile: string): StudioWindow[] {
+    return (this.deps.studios?.() ?? []).filter((w) => this.windowMatch(w)?.projectFile === projectFile)
+  }
+
+  // Plugin v12 polls: a window of a linked place that Forge has no live session with (Forge restarted,
+  // the project was reopened, the session expired while Studio was busy) is asked to check again, so
+  // it never sits unchecked until its next edit. Also "Check now" (recheckPlace).
+  private pollHint(info: SyncPollInfo): SyncPollHint | null {
+    if (this.closed || !this.active()) return null
+    const match = this.windowMatch(info)
+    if (!match) return null
+    const now = this.now()
+    const key = this.windowKey(info)
+    if (this.recheck.has(match.projectFile)) {
+      this.recheck.delete(match.projectFile)
+      this.resyncAt.set(key, now)
+      this.deps.log?.(`sync: re-checking ${match.projectFile}: asked Studio${info.place ? ` ("${info.place}")` : ''} for a fresh sync check`)
+      return { resync: true }
+    }
+    if (info.session && this.sessions.has(info.session)) return null
+    if (now - (this.configSeen.get(key) ?? 0) < RESYNC_QUIET_MS) return null
+    if (now - (this.resyncAt.get(key) ?? 0) < RESYNC_EVERY_MS) return null
+    this.resyncAt.set(key, now)
+    this.deps.log?.(`sync: Studio has ${info.place ? `"${info.place}"` : 'a place'} open for ${match.projectFile}, but Forge has no sync session with it; asked it to check again`)
+    return { resync: true }
+  }
+
+  // "Check now": the Studio window(s) of this place file start a fresh sync check on their next poll
+  // (plugin v12). Older plugins cannot be asked: restart Studio.
+  async recheckPlace(projectFile: string): Promise<SyncStatus> {
+    if (!this.maps.some((m) => m.projectFile === projectFile)) throw new Error(`No ${projectFile} in this project`)
+    const windows = this.windowsFor(projectFile)
+    if (!windows.length) throw new Error(`No Studio window has ${this.placeName(projectFile)} open (with the Forge Bridge plugin on)`)
+    if (!windows.some((w) => w.syncSession !== undefined)) throw new Error(`Restart Studio to load Forge Bridge v${PLUGIN_VERSION}: the plugin it runs cannot be asked to check again`)
+    this.recheck.add(projectFile)
+    for (const w of windows) this.configSeen.delete(this.windowKey(w))
+    this.refresh()
+    return this.status()
+  }
+
+  private placeName(projectFile: string): string {
+    const map = this.maps.find((m) => m.projectFile === projectFile)
+    return map?.name || projectFile.replace(/\.project\.json$/, '')
   }
 
   private async config(q: SyncConfigQuery): Promise<SyncConfigAnswer> {
     const seen: ConfigSeen = { at: this.now(), placeId: Number(q.placeId) || 0, ...(q.place ? { name: String(q.place) } : {}) }
     this.lastConfig = seen
+    this.configSeen.set(this.windowKey({ placeId: seen.placeId, place: q.place, probe: q.probe }), seen.at)
     const off = (reason: string): SyncConfigAnswer => {
       seen.reason = reason
       this.refresh()
@@ -931,12 +1028,13 @@ export class SyncService {
       return { gate: 'waiting', ...(file.reason ? { waitReason: file.reason } : {}), ...(file.detail ? { gateDetail: file.detail } : {}) }
     }
     for (const state of this.placeStates.values()) {
-      const viaBridge = !!studio?.connected && this.isStudioPlace(studio, state.place)
+      const viaBridge = (!!studio?.connected && this.isStudioPlace(studio, state.place)) || this.windowsFor(state.projectFile).some((w) => this.isStudioPlace(w, state.place))
       const pluginVersion = this.pluginVersionOf(state.place)
       out.push({
         placeKey: state.placeKey,
         projectFile: state.projectFile,
         place: state.place,
+        ...this.openAndRojo(state.projectFile),
         ...shown(this.gate(state.placeKey), state.projectFile),
         ...(pluginVersion ? { pluginVersion } : {}),
         ...(this.fingerprints.has(state.placeKey) ? { fingerprint: this.fingerprints.get(state.placeKey)! } : {}),
@@ -952,10 +1050,108 @@ export class SyncService {
     // Places no Studio session has opened yet ('waiting' for one with Forge Sync gating rojo).
     for (const map of this.maps) {
       if (out.some((p) => p.projectFile === map.projectFile)) continue
-      const placeId = map.placeIds[0] ?? 0
-      out.push({ placeKey: placeKeyOf({ placeId }, map.projectFile), projectFile: map.projectFile, ...shown('idle', map.projectFile), connected: false, counts: {}, conflicts: 0 })
+      // The open window's place when one is open (a place file may list several PlaceIds).
+      const open = this.windowsFor(map.projectFile).find((w) => (w.placeId ?? 0) > 0)
+      const placeId = open?.placeId ?? map.placeIds[0] ?? 0
+      out.push({ placeKey: placeKeyOf({ placeId }, map.projectFile), projectFile: map.projectFile, ...this.openAndRojo(map.projectFile), ...shown('idle', map.projectFile), connected: false, counts: {}, conflicts: 0 })
     }
     return out.sort((a, b) => a.projectFile.localeCompare(b.projectFile))
+  }
+
+  private openAndRojo(projectFile: string): Pick<PlaceSyncStatus, 'studioOpen' | 'rojo'> {
+    const rojo = this.deps.rojo?.(projectFile)
+    return { ...(this.windowsFor(projectFile).length ? { studioOpen: true } : {}), ...(rojo ? { rojo } : {}) }
+  }
+
+  // A live (snapshot reconciled) session for this place key.
+  private liveSession(placeKey: string): boolean {
+    return [...this.sessions.values()].some((x) => x.placeKey === placeKey && x.ready)
+  }
+
+  // Drift for one place row whose Studio is open: why its Studio is behind disk and the fix.
+  private async driftOf(p: PlaceSyncStatus): Promise<PlaceDrift | undefined> {
+    const engine = this.deps.engine
+    if (!engine?.drift || !this.active()) return undefined
+    const windows = this.windowsFor(p.projectFile)
+    const live = this.liveSession(p.placeKey)
+    if (!live && !windows.length) return undefined
+    // A check under way (snapshot arriving, or a window that just asked for config): wait for it.
+    if ([...this.sessions.values()].some((x) => x.placeKey === p.placeKey && !x.ready)) return undefined
+    if (!live && windows.some((w) => this.now() - (this.configSeen.get(this.windowKey(w)) ?? 0) < RESYNC_QUIET_MS)) return undefined
+    let cause: DriftCause
+    let fix: PlaceDrift['fix']
+    if (!live) {
+      cause = 'not-syncing'
+      fix = windows.some((w) => w.syncSession !== undefined) ? 'recheck' : 'restart-studio'
+    } else if (p.rojo === 'stopped') {
+      cause = 'rojo-stopped'
+      fix = 'start-rojo'
+    } else if (p.rojo === 'held' || p.gate === 'blocked' || p.gate === 'waiting' || p.gate === 'checking') cause = 'rojo-held'
+    else cause = 'rojo-not-connected'
+    // The base to compare with: the live session's, else the open window's place (its PlaceId or link).
+    const keys = live ? [p.placeKey] : windows.map((w) => this.windowMatch(w)?.placeKey).filter((k): k is string => !!k)
+    let d: Awaited<ReturnType<NonNullable<SyncEngineLike['drift']>>> = null
+    for (const key of [...new Set(keys)]) {
+      d = await engine.drift(p.projectFile, key).catch(() => null)
+      if (d?.behind) break
+    }
+    if (!d?.behind) return undefined
+    const newest = d.files.reduce((m, f) => Math.max(m, f.mtime), 0)
+    // Served and synced: Rojo usually carries an edit into Studio within a second or two.
+    if (cause === 'rojo-not-connected' && this.now() - newest < (this.deps.driftGraceMs ?? DRIFT_GRACE_MS)) return undefined
+    const map = this.maps.find((m) => m.projectFile === p.projectFile)
+    const name = this.placeName(p.projectFile)
+    const n = d.behind
+    const head = `${name} is ${n} file${n === 1 ? '' : 's'} behind disk`
+    const why: Record<DriftCause, string> = {
+      'not-linked': "its Studio window isn't linked to this project",
+      'not-syncing': fix === 'recheck' ? "Studio has it open, but Forge has no sync session with that window: check it now" : `Studio has it open, but Forge has no sync session with that window: restart Studio to load Forge Bridge v${PLUGIN_VERSION}`,
+      'rojo-stopped': `rojo serve isn't running for ${p.projectFile}, so disk edits don't reach its Studio`,
+      'rojo-held': 'rojo serve is held for it until its sync check clears (see below)',
+      'rojo-not-connected': `rojo serves it, but the edits are not reaching Studio: connect Rojo in that Studio window (port ${map?.servePort ?? 34872})`
+    }
+    return {
+      behind: n,
+      place: name,
+      files: d.files.slice(0, DRIFT_FILES_MAX).map((f) => f.file),
+      ...(newest ? { newest } : {}),
+      cause,
+      text: `${head}: ${why[cause]}`,
+      ...(fix ? { fix } : {})
+    }
+  }
+
+  // An unlinked Studio place that synced with this project before (a base under its PlaceId), behind
+  // the place file it would link to.
+  private async unlinkedDrift(u: UnlinkedPlace): Promise<PlaceDrift | undefined> {
+    const engine = this.deps.engine
+    if (!engine?.drift || !u.suggest || u.placeId <= 0 || !u.canLink) return undefined
+    const d = await engine.drift(u.suggest, String(u.placeId)).catch(() => null)
+    if (!d?.behind) return undefined
+    const newest = d.files.reduce((m, f) => Math.max(m, f.mtime), 0)
+    const n = d.behind
+    return {
+      behind: n,
+      place: u.label ?? u.name,
+      files: d.files.slice(0, DRIFT_FILES_MAX).map((f) => f.file),
+      ...(newest ? { newest } : {}),
+      cause: 'not-linked',
+      text: `${u.label ?? u.name} is ${n} file${n === 1 ? '' : 's'} behind disk: its Studio window isn't linked to this project (link it to ${this.placeName(u.suggest)})`,
+      fix: 'link',
+      unlinkedId: u.id,
+      linkTo: u.suggest
+    }
+  }
+
+  // The place file a one-click Link should use for an unlinked Studio place: one named like it, else
+  // the only place file no Studio window is syncing or has open, else the only place file.
+  private suggestFor(u: { name: string }): string | undefined {
+    const name = u.name.trim().toLowerCase()
+    const byName = name ? this.maps.find((m) => (m.name ?? '').toLowerCase() === name || m.projectFile.replace(/\.project\.json$/, '').toLowerCase() === name) : undefined
+    if (byName) return byName.projectFile
+    if (this.maps.length === 1) return this.maps[0].projectFile
+    const free = this.maps.filter((m) => !this.windowsFor(m.projectFile).length && ![...this.placeStates.values()].some((st) => st.projectFile === m.projectFile && this.liveSession(st.placeKey)))
+    return free.length === 1 ? free[0].projectFile : undefined
   }
 
   async status(): Promise<SyncStatus> {
@@ -975,9 +1171,19 @@ export class SyncService {
     }
     if (this.warning && status.pendingStudioEdits.length) status.warning = this.warning
     if (status.engine === 'forge') {
-      const unlinked = this.shownUnlinked().map(({ probe: _probe, ...u }) => u)
+      const unlinked: UnlinkedPlace[] = []
+      for (const { probe: _probe, ...u } of this.shownUnlinked()) {
+        const suggest = u.canLink ? this.suggestFor(u) : undefined
+        const entry: UnlinkedPlace = { ...u, ...(suggest ? { suggest } : {}) }
+        const drift = await this.unlinkedDrift(entry)
+        unlinked.push(drift ? { ...entry, drift } : entry)
+      }
       if (unlinked.length) status.unlinked = unlinked
       if (this.discarded) status.discarded = this.discarded
+      for (const p of status.places) {
+        const drift = await this.driftOf(p)
+        if (drift) p.drift = drift
+      }
     }
     if (status.engine === 'forge') {
       const notice = await this.notice(status.places)

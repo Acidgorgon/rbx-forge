@@ -336,3 +336,39 @@ test('plugin: Ctrl+D a cutscene module and rename the copy: both trees sync, del
   })
   assert.ok(checked, out)
 })
+
+test('plugin v12: after Forge restarts, an idle Studio window is asked to check again and keeps syncing (repro: Match left unchecked)', { skip }, async () => {
+  let second: SyncService | null = null
+  const live = async (s: SyncService) => (await s.status()).places.some((p) => p.projectFile === 'default.project.json' && p.connected && p.gate === 'clear')
+  const until = async (check: () => Promise<boolean>, what: string) => {
+    const end = Date.now() + 30_000
+    while (!(await check())) {
+      if (Date.now() > end) throw new Error(`timed out waiting for ${what}`)
+      await new Promise((r) => setTimeout(r, 100))
+    }
+  }
+  const { root, out } = await runStudio('forge-restart', async ({ bridge, service, mark }) => {
+    await until(() => live(service), 'the first sync check')
+    // Forge restarts: a new SyncService with no sessions takes over the bridge. Studio does nothing.
+    second = new SyncService({
+      root: service.root,
+      engine: new SyncEngine({ root: service.root }),
+      mapping: { loadPlaces, placeFor },
+      settings: { get: <T>(_k: string, fb: T) => fb },
+      git: async () => ({ code: 1, stdout: '', stderr: '' }),
+      pluginsDir: () => null,
+      emit: () => undefined
+    })
+    await second.start()
+    bridge.setSyncHandler(second.handler)
+    mark('swapped')
+    await until(() => live(second!), 'the check after the restart (without a Studio edit)')
+    mark('resynced')
+  })
+  try {
+    assert.match(out, /RBX Forge asked for a fresh check of this place/, out)
+    assert.equal(readFileSync(join(root, 'src/client/Client/init.client.luau'), 'utf8'), 'print("after restart")\n', out)
+  } finally {
+    ;(second as SyncService | null)?.close()
+  }
+})

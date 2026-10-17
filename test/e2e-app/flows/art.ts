@@ -3,7 +3,7 @@
 // the arrow keys, and close with Esc and the close button. A long reference file name truncates in its
 // chip instead of running over "+ Reference image". No image backend is needed.
 
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { encodePng } from '../../../src/main/services/vfx/textures/png.ts'
 import { check, CENTER, openPage } from '../lib/ui.ts'
@@ -154,6 +154,51 @@ export const artFlows: Flow[] = [
         for (const f of files) rmSync(f, { force: true })
         rmSync(join(dir, 'e2e-lightbox-1.json'), { force: true })
         rmSync(join(dir, 'e2e-lightbox-2.json'), { force: true })
+      }
+    }
+  },
+  {
+    name: 'art-split-layers',
+    title: 'Art: Split into layers opens from a card over the real IPC; with no vision model or key it offers an editable starter list and cannot generate',
+    // No provider is configured yet: the vision call fails and the panel falls back (a Labs toast says why).
+    allowErrors: [/vision|provider|model/i],
+    async run({ page, root, shot, note }) {
+      const dir = join(root, 'art', 'concepts', today())
+      mkdirSync(dir, { recursive: true })
+      const file = join(dir, 'e2e-main-menu-1.png')
+      writeFileSync(file, png(640, 360, [60, 140, 90]))
+      try {
+        await openPage(page, 'Art (image concepts)')
+        const cell = page.locator(`${CENTER} .art-cell`, { hasText: 'e2e-main-menu-1' })
+        if (!(await cell.isVisible().catch(() => false))) {
+          await openPage(page, 'Settings')
+          await openPage(page, 'Art (image concepts)')
+        }
+        await cell.waitFor({ state: 'visible', timeout: 10_000 })
+        await cell.hover()
+        await cell.getByRole('button', { name: /^Split .* into layers$/ }).click()
+        const panel = page.locator('[data-testid="art-layers"]')
+        await panel.waitFor({ state: 'visible', timeout: 5000 })
+        await page.waitForFunction(() => document.querySelectorAll('[data-testid="art-layers"] .art-layer').length > 0, undefined, { timeout: 30_000 }).catch(() => {
+          throw new Error('no layer list appeared')
+        })
+        const names = await panel.locator('input[aria-label="Layer name"]').evaluateAll((els: Element[]) => els.map((e) => (e as HTMLInputElement).value))
+        check(names[0] === 'Background', `the list does not start with the background plate: ${names.join(', ')}`)
+        check(await panel.locator('.callout.warn').isVisible(), 'no note says this is a starter list')
+        check((await panel.getByLabel('Concept name').inputValue()) === 'E2eMainMenu', `concept name ${await panel.getByLabel('Concept name').inputValue()}`)
+        const go = panel.getByRole('button', { name: /^Generate \d+ layers?$/ })
+        check(await go.isDisabled(), 'Generate is enabled without an image backend')
+        await panel.getByRole('button', { name: /Add layer/ }).click()
+        check((await panel.locator('.art-layer').count()) === names.length + 1, 'Add layer did not add a row')
+        await panel.locator('.art-layer').last().getByRole('button', { name: /^Remove/ }).click()
+        check((await panel.locator('.art-layer').count()) === names.length, 'Remove did not remove the row')
+        await shot('split-panel')
+        await page.keyboard.press('Escape')
+        await panel.waitFor({ state: 'detached', timeout: 3000 })
+        check(!existsSync(join(root, 'art', 'ui', 'E2eMainMenu')), 'opening the panel wrote files')
+        note(`starter list ${names.join(', ')}; generate disabled without a backend`)
+      } finally {
+        rmSync(file, { force: true })
       }
     }
   }

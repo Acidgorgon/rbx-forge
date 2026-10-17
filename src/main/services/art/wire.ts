@@ -5,7 +5,7 @@
 import { stat } from 'node:fs/promises'
 import { join } from 'node:path'
 import { chatImageStore, hasChatImageStore, imageMarker } from '../../agent/chatImages.ts'
-import type { ArtGenerateInput, ArtImportInput, ArtSettings, HarnessEvents } from '../../../shared/types.ts'
+import type { ArtGenerateInput, ArtImportInput, ArtLayersInput, ArtSettings, HarnessEvents } from '../../../shared/types.ts'
 import { ArtService, type ArtServiceDeps } from './service.ts'
 import { artTools, type ArtTool } from './tools.ts'
 import { readItem } from './store.ts'
@@ -31,6 +31,8 @@ export interface ArtWireDeps {
   sleep?: ArtServiceDeps['sleep']
   // Image backend 'codex' (ChatGPT plan through the Codex CLI).
   codex?: ArtServiceDeps['codex']
+  // Vision model for "Split into layers" (main/index.ts: the Labs critic tier).
+  vision?: ArtServiceDeps['vision']
 }
 
 export interface ArtWiring {
@@ -81,6 +83,7 @@ export function createArtWiring(deps: ArtWireDeps): ArtWiring {
     ...(deps.fetch ? { fetch: deps.fetch } : {}),
     ...(deps.sleep ? { sleep: deps.sleep } : {}),
     ...(deps.codex ? { codex: deps.codex } : {}),
+    ...(deps.vision ? { vision: deps.vision } : {}),
     onChanged: (root) => deps.emit('art:changed', { root }),
     onProgress: (p) => deps.emit('art:progress', p)
   })
@@ -111,6 +114,12 @@ export function createArtWiring(deps: ArtWireDeps): ArtWiring {
     artImportToRoblox: (input: ArtImportInput) => service.importToRoblox(input),
     artSaveToProject: (path: string, name?: string) => service.saveToProject(String(path ?? ''), name ? String(name) : undefined),
     artRegistry: () => service.registry(),
+    // Split into layers
+    artLayersPropose: (concept: string) => service.layers.propose(String(concept ?? '')),
+    artLayersEstimate: (input: ArtLayersInput) => service.layers.estimate({ ...(input ?? { concept: '', layers: [] }), source: 'page' }),
+    artLayersGenerate: (input: ArtLayersInput) => service.layers.generate({ ...(input ?? { concept: '', layers: [] }), source: 'page' }),
+    artLayersGet: (conceptOrName: string) => service.layers.get(String(conceptOrName ?? '')),
+    artLayersImport: (name: string, opts?: { force?: boolean }) => service.layers.importAll(String(name ?? ''), { force: opts?.force === true }),
     artChooseReferences: async () => (deps.chooseImages ? deps.chooseImages() : []),
     // Only concepts under art/ of the open project (readItem refuses other paths).
     artReveal: async (path: string, how: 'open' | 'folder') => {

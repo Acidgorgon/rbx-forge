@@ -23,6 +23,18 @@ Needs: Playwright installed globally (`npm i -g playwright`; the suite imports
 binary in `node_modules/electron`, `git`, and `xvfb-run` on Linux (macOS / Windows run it directly
 with `node --experimental-strip-types test/e2e-app/run.ts`).
 
+### Mock-renderer flows
+
+`test/e2e-app/mock.ts` opens the built renderer in Electron without the preload bridge, so it runs on
+the browser mocks (`src/renderer/src/mocks`). It covers flows that need backends the real-app run
+never has, such as a vision model, an image backend or Open Cloud. One example is Art's
+**Split into layers** (`flows/mockArt.ts`).
+
+```sh
+npm run build
+xvfb-run -a -s "-screen 0 1920x1080x24" node --experimental-strip-types test/e2e-app/mock.ts
+```
+
 ## What it sets up
 
 - **Isolation**: a temp `HOME` and `XDG_CONFIG_HOME`, so userData is `<tmp>/config/rbx-forge`

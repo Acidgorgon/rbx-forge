@@ -480,7 +480,8 @@ const integrations = createIntegrations({
   withRojoPaused: (fn, reason) => rojoPause.run(fn, reason),
   openExternal: (url) => void shell.openExternal(url),
   summarize: (prompt) => agentIpc.summarize(prompt),
-  art: artElectronDeps(),
+  // "Split into layers" proposes the layer list with the Labs critic-tier vision model (labModel below).
+  art: { ...artElectronDeps(), vision: (system, prompt, images) => labModel(undefined, 'critic', false)(system, prompt, images) },
   // FBX upload inbox (<Documents>/ForgeModels/_upload_inbox by default; off until turned on).
   modelInbox: {
     documentsDir: app.getPath('documents'),

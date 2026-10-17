@@ -402,7 +402,9 @@ export class ChatCommands {
     if (what !== 'chat') {
       const root = this.host.ctx.project()?.root
       if (!root || !this.host.checkpoints) throw new Error('no project open')
-      files = (await this.host.checkpoints(root).restore(cp.commit)).files
+      const done = await this.host.checkpoints(root).restore(cp.commit)
+      files = done.files
+      if (done.removed.length) this.host.ctx.log({ service: 'agent', stream: 'stdout', text: `rewind: removed ${done.removed.length} file${done.removed.length === 1 ? '' : 's'} added since the checkpoint; copies in ${done.trash}: ${done.removed.slice(0, 10).join(', ')}${done.removed.length > 10 ? ', …' : ''}` })
     }
     let removed = 0
     if (what !== 'files') {

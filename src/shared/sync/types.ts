@@ -113,6 +113,9 @@ export interface SyncEntry {
   at: number
   // Why an instance was refused or left alone (unsafe name, duplicate sibling, oversize ...).
   note?: string
+  // Where Forge put a copy of the file before it left the project (trashed: .forge/sync/trash/<stamp>/...;
+  // gone from disk and Studio outside Forge: .forge/sync/recovered/<stamp>/...).
+  trashPath?: string
 }
 
 export interface SyncConflictInfo {

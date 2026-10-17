@@ -31,6 +31,7 @@ import { PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../../../shared/studio
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
 import { isLinkedKey, linkKey, matchPlace, PlaceLinks } from './links.ts'
 import { BaseStore } from './store.ts'
+import { findHeldDeletions } from '../gitSync.ts'
 import { LIVE_FOLDER } from '../../../shared/vfx/live.ts'
 import { collisionLabels, fingerprintText } from '../../../shared/sync/labels.ts'
 
@@ -779,7 +780,9 @@ export class SyncService {
 
   // Stages and commits ONLY the files Forge wrote from Studio that git still shows as changed.
   async commitStudioEdits(message?: string): Promise<SyncCommitResult> {
-    const files = await this.pendingStudioEdits()
+    // A guarded script that left the disk outside Forge is not committed as deleted (gitSync.ts).
+    const held = new Set((await findHeldDeletions(this.root, (args) => this.deps.git(args)).catch(() => [])).map((h) => h.path))
+    const files = (await this.pendingStudioEdits()).filter((f) => !held.has(f))
     if (!files.length) return { committed: [], error: 'No uncommitted Studio edits' }
     const text = message?.trim() || commitMessage(files)
     // Paths are literal (a Roblox name like "Sword [Gold]" is not a glob). Many paths go through a
@@ -1297,6 +1300,9 @@ export class SyncService {
       }
       if (state) state.counts[entry.action] = (state.counts[entry.action] ?? 0) + 1
       if (entry.action === 'same') continue
+      // Every file leaving the project, and every delete the guard holds, is in the output panel.
+      if (entry.action === 'trashed') this.deps.log?.(`sync: ${entry.file}: deleted in Studio, moved to ${entry.trashPath ?? '.forge/sync/trash'}${entry.note ? ` (${entry.note})` : ''}`)
+      else if (entry.trashPath || (entry.action === 'conflict' && /keep or delete|not by Forge Sync|not removed by Forge Sync/.test(entry.note ?? ''))) this.deps.log?.(`sync: ${entry.file}: ${entry.note ?? `copy saved to ${entry.trashPath}`}`, 'stderr')
       shown.push(entry)
       if (WRITES.includes(entry.action)) {
         writes.push(entry.file)

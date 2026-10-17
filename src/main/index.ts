@@ -800,6 +800,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   trashPath: async (path: string, isDir?: boolean) => {
     const opened = requireProject()
     const change = await rojoPause.aroundPath(entryFull(opened.root, path, isDir), () => trashEntry(opened.root, opened.info.mounts ?? [], path, (full) => shell.trashItem(full), !!isDir), 'folder delete')
+    harnessLog(`deleted ${change.from} (to the system trash${change.backup ? `; copy in ${change.backup}` : ''})`)
     projectChanged(opened, await opened.refresh())
     return change
   },
@@ -809,6 +810,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     const opened = requireProject()
     const list = (Array.isArray(entries) ? entries : []).filter((e): e is { path: string; isDir?: boolean } => !!e && typeof e === 'object' && typeof (e as { path?: unknown }).path === 'string').map((e) => ({ path: e.path, isDir: !!e.isDir }))
     const result = await rojoPause.aroundPaths(list.map((e) => entryFull(opened.root, e.path, e.isDir)), () => trashEntries(opened.root, opened.info.mounts ?? [], list, (full) => shell.trashItem(full)), 'folder delete')
+    for (const c of result.changes) harnessLog(`deleted ${c.from} (to the system trash${c.backup ? `; copy in ${c.backup}` : ''})`)
     if (result.changes.length) projectChanged(opened, await opened.refresh())
     return result
   },

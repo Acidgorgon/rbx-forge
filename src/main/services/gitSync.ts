@@ -1,7 +1,12 @@
-import { existsSync } from 'node:fs'
-import { resolve } from 'node:path'
+import { existsSync, readdirSync } from 'node:fs'
+import { readFile } from 'node:fs/promises'
+import { join, resolve } from 'node:path'
 import type { GitStatus, SyncSettings } from '@shared/types'
 import { findTool, outputLines, run, toolEnv, toRepoPath, type RunResult } from './tools.ts'
+import { guardReason, moduleName } from './sync/deleteGuard.ts'
+
+// Forge's own removals leave a copy here (Forge Sync, Explorer delete, rewind): such a delete was meant.
+const FORGE_TRASH = ['.forge', 'sync', 'trash']
 
 export const DEFAULT_SYNC: SyncSettings = { autoSyncMinutes: 5, autoCommit: true }
 
@@ -27,6 +32,8 @@ export class GitSync {
   private timer: ReturnType<typeof setInterval> | null = null
   private lastSync?: number
   private lastError?: string
+  // Deletes the auto-commit holds back, already reported (logged once each).
+  private heldReported = new Set<string>()
 
   constructor(options: GitSyncOptions) {
     this.options = options
@@ -137,9 +144,16 @@ export class GitSync {
     if (await this.rebaseInProgress()) return this.finish('A rebase is in progress. Finish or abort it first.')
 
     if (this.options.settings().autoCommit && before.dirty > 0) {
+      const held = await this.heldDeletions()
       await this.git(['add', '-A'])
-      const commit = await this.git(['commit', '-m', 'harness: sync'])
-      if (commit.code !== 0) return this.finish(firstLine(commit) || 'git commit failed')
+      if (held.length) await this.quiet(['reset', '-q', '--', ...held.map((h) => h.path)])
+      this.reportHeld(held)
+      // Only held deletes changed: nothing to commit.
+      const staged = await this.quiet(['diff', '--cached', '--quiet'])
+      if (staged.code !== 0) {
+        const commit = await this.git(['commit', '-m', 'harness: sync'])
+        if (commit.code !== 0) return this.finish(firstLine(commit) || 'git commit failed')
+      }
     }
     if (!before.hasRemote) return this.finish(undefined, true)
 
@@ -177,6 +191,21 @@ export class GitSync {
       if (pushed.code !== 0) return this.finish(firstLine(pushed) || 'git push failed')
     }
     return this.finish(undefined, true)
+  }
+
+  // See findHeldDeletions.
+  heldDeletions(): Promise<{ path: string; why: string }[]> {
+    return findHeldDeletions(this.root, (args) => this.quiet(args))
+  }
+
+  private reportHeld(held: { path: string; why: string }[]): void {
+    const now = new Set(held.map((h) => h.path))
+    for (const p of [...this.heldReported]) if (!now.has(p)) this.heldReported.delete(p)
+    for (const h of held) {
+      if (this.heldReported.has(h.path)) continue
+      this.heldReported.add(h.path)
+      this.options.log?.(`git: not committing the delete of ${h.path} (${h.why}): it left the disk outside Forge (no copy in .forge/sync/trash). Restore it with "git checkout -- ${h.path}", or confirm with "git rm ${h.path}".`, 'stderr')
+    }
   }
 
   private async finish(error?: string, synced = false): Promise<GitStatus> {
@@ -230,6 +259,39 @@ export class GitSync {
     if (this.timer) clearInterval(this.timer)
     this.timer = null
   }
+}
+
+// Tracked scripts missing from disk that Forge did not remove (no copy in .forge/sync/trash) and that
+// the delete guard protects (large, or required by another script): the auto-commit leaves them out,
+// so the delete never reaches the remote and git still has the file. `git rm` (a staged delete)
+// confirms a delete; so does deleting it in Forge (which keeps a copy in the trash).
+export async function findHeldDeletions(root: string, git: (args: string[]) => Promise<RunResult>): Promise<{ path: string; why: string }[]> {
+  if ((await git(['rev-parse', '--verify', 'HEAD'])).code !== 0) return []
+  const listed = await git(['-c', 'core.quotepath=false', 'ls-files', '--deleted', '-z'])
+  if (listed.code !== 0) return []
+  const deleted = listed.stdout.split('\0').filter(Boolean).map(toRepoPath)
+  if (!deleted.length) return []
+  const trash = join(root, ...FORGE_TRASH)
+  let stamps: string[] = []
+  try {
+    stamps = readdirSync(trash)
+  } catch {
+    stamps = []
+  }
+  const tracked = (await git(['-c', 'core.quotepath=false', 'ls-files', '-z'])).stdout.split('\0').filter(Boolean).map(toRepoPath)
+  const gone = new Set(deleted)
+  const others = tracked.filter((f) => !gone.has(f) && moduleName(f) !== null)
+  const read = (rel: string) => readFile(join(root, ...rel.split('/')), 'utf8').catch(() => null)
+  const out: { path: string; why: string }[] = []
+  for (const path of deleted) {
+    if (moduleName(path) === null) continue
+    if (stamps.some((s) => existsSync(join(trash, s, ...path.split('/'))))) continue
+    const head = await git(['show', `HEAD:${path}`])
+    if (head.code !== 0) continue
+    const why = await guardReason({ file: path, text: head.stdout, others, read })
+    if (why) out.push({ path, why })
+  }
+  return out
 }
 
 function firstLine(result: RunResult): string {

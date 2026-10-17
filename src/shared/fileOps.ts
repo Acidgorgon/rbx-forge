@@ -8,6 +8,8 @@ export interface PathChange {
   // New repo-relative path (rename), or null (moved to the trash).
   to: string | null
   isDir: boolean
+  // Moved to the trash: the copy kept in the project first (.forge/sync/trash/<stamp>/<path>).
+  backup?: string
 }
 
 // Result of an Explorer multi-select delete (HarnessApi.trashPaths): what went to the trash, and

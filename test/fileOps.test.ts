@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs'
+import { existsSync, mkdtempSync, readFileSync, rmSync, symlinkSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
@@ -128,11 +128,15 @@ test('trashEntry: hands the full path to the trash, folders for init scripts, re
     trashed.push(full)
     rmSync(full, { recursive: true, force: true })
   }
-  const r = await trashEntry(root, MOUNTS, 'src/server/Data/PlayerData.luau', trash)
-  assert.deepEqual(r, { from: 'src/server/Data/PlayerData.luau', to: null, isDir: false })
+  const r = await trashEntry(root, MOUNTS, 'src/server/Data/PlayerData.luau', trash, false, () => Date.UTC(2026, 9, 17, 0, 45))
+  assert.deepEqual(r, { from: 'src/server/Data/PlayerData.luau', to: null, isDir: false, backup: '.forge/sync/trash/2026-10-17T00-45-00-000Z/src/server/Data/PlayerData.luau' })
+  // A copy stays in the project trash (never committed: the trash ignores itself).
+  assert.ok(existsSync(join(root, r.backup!)))
+  assert.equal(readFileSync(join(root, '.forge/sync/trash/.gitignore'), 'utf8'), '*\n')
   assert.deepEqual(trashed, [join(root, 'src/server/Data/PlayerData.luau')])
   const folder = await trashEntry(root, MOUNTS, 'src/client/Client/Controllers/InventoryController/init.luau', trash)
-  assert.deepEqual(folder, { from: 'src/client/Client/Controllers/InventoryController', to: null, isDir: true })
+  assert.deepEqual({ ...folder, backup: undefined }, { from: 'src/client/Client/Controllers/InventoryController', to: null, isDir: true, backup: undefined })
+  assert.ok(existsSync(join(root, folder.backup!, 'init.luau')), 'the whole folder is copied first')
   assert.ok(!existsSync(join(root, 'src/client/Client/Controllers/InventoryController')))
   await assert.rejects(trashEntry(root, MOUNTS, 'src/server', trash, true), /mapped/)
   await assert.rejects(trashEntry(root, MOUNTS, 'default.project.json', trash), /Project files/)

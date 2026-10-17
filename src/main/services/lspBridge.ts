@@ -18,6 +18,10 @@
 // see lspDataModel.ts. Sent once the server can take them, again when the tree changes
 // (debounced), and again to every new server process.
 //
+// Studio companion plugin: lspCompanion.ts serves the plugin's HTTP endpoints and hands its tree
+// to pluginFull() / pluginClear(), which go through the same sync (the plugin's tree wins while
+// it is connected). A project switch drops the plugin's tree: it belongs to the previous game.
+//
 // Bridge-made notifications sent to the renderer (not part of LSP):
 //   harness/lspRestarted { rootUri }  a new server process is up; initialize it again
 //   harness/lspStopped   {}           the server is gone (no project, or luau-lsp missing)
@@ -259,6 +263,8 @@ export class LspBridge {
   private pendingChanges = new Map<string, number>()
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   private versionText: string | null | undefined
+  // The last spawn found no luau-lsp binary.
+  private missing = false
   // Studio DataModel -> $/plugin/full. Ready once initialized, configured and a file is open.
   private dataModel: DataModelSync
   private configRequests = new Set<number | string>()
@@ -303,6 +309,25 @@ export class LspBridge {
     this.dataModel.setTree(tree)
   }
 
+  // The Studio companion plugin's tree (POST /full) and clear (POST /clear), see lspCompanion.ts.
+  pluginFull(tree: unknown): void {
+    this.dataModel.setPluginTree(tree)
+  }
+
+  pluginClear(): void {
+    this.dataModel.clearPluginTree()
+  }
+
+  // A project is open and luau-lsp was not found missing: plugin posts are kept and sent once the
+  // server is up and can take them (the editor starts it), and again to restarted servers.
+  get acceptsPlugin(): boolean {
+    return this.root !== null && !this.missing
+  }
+
+  get projectRoot(): string | null {
+    return this.root
+  }
+
   private logLine(stream: LogLine['stream'], text: string): void {
     this.options.log({ service: 'lsp', stream, text })
   }
@@ -316,6 +341,7 @@ export class LspBridge {
     if (root === this.root) return
     this.root = root
     this.stopProcess()
+    this.dataModel.clearPluginTree()
     if (!root) {
       if (this.wanted) this.options.send({ jsonrpc: '2.0', method: 'harness/lspStopped', params: {} })
       return
@@ -444,6 +470,7 @@ export class LspBridge {
     if (!files.definitions) this.logLine('info', 'starting luau-lsp without Roblox type definitions')
 
     const child = this.options.spawn(args)
+    this.missing = !child
     if (!child) {
       this.logLine('info', 'luau-lsp not found; editor language features are off. Run rokit install (or add luau-lsp to rokit.toml).')
       return false
@@ -540,7 +567,7 @@ export class LspBridge {
   }
 }
 
-const SKIP_DIRS = new Set(['node_modules', '.git', 'out', 'dist'])
+export const SKIP_DIRS = new Set(['node_modules', '.git', 'out', 'dist'])
 
 // Files the server cares about: sources, sourcemap.json and Luau config files.
 export function isWatched(relPath: string): boolean {

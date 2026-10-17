@@ -16,7 +16,7 @@ const methods = [
   'accountsList', 'accountsSignIn', 'accountsCancelSignIn', 'accountsSubmitCode', 'accountsSignOut', 'accountsUseExistingLogin',
   'accountsTest', 'accountsCancelTest',
   'getAgents', 'runAgents', 'cancelAgent',
-  'lspStart',
+  'lspStart', 'getLspCompanion',
   'getBlink',
   'listPlaces', 'getActivePlace', 'setActivePlace', 'getAppSettings', 'setAppSettings',
   'searchWally', 'wallyPackage', 'listWallyDeps', 'addWallyDep', 'removeWallyDep', 'updateWallyDep',

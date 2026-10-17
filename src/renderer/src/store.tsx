@@ -13,6 +13,7 @@ import type {
   ClaimView,
   GitStatus,
   LogLine,
+  LspCompanionStatus,
   LuneStatus,
   ModelChoice,
   PlaceInfo,
@@ -158,6 +159,8 @@ export interface State {
   lint: ProblemItem[]
   lintAt: number | null
   lsp: { state: 'starting' | 'ready' | 'stopped' | 'off'; detail?: string }
+  // luau-lsp Studio Companion plugin server (main/services/lspCompanion.ts).
+  lspCompanion: LspCompanionStatus | null
   // UI
   layout: Layout
   logServices: string[]
@@ -255,6 +258,7 @@ const initial: State = {
   lint: [],
   lintAt: null,
   lsp: { state: 'off' },
+  lspCompanion: null,
   layout: loadLayout(),
   logServices: [],
   palette: null,
@@ -1074,6 +1078,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       h.on('tree:changed', (tree) => set({ tree })),
       h.on('scripts:changed', (scripts) => set({ scripts })),
       h.on('places:changed', ({ places, active }) => set({ places, activePlace: active })),
+      h.on('lsp:companion', (lspCompanion) => set({ lspCompanion })),
       h.on('git:status', (git) => set({ git })),
       h.on('studio:conflicts', (studioConflicts) => set({ studioConflicts })),
       h.on('chat:message', (message) => dispatch({ type: 'chatMessage', message })),
@@ -1135,6 +1140,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         .then(([providers, defaultModel]) => set({ providers, defaultModel }))
         .catch(() => set({ providers: [] }))
       void h.getBlink().then((blink) => set({ blink })).catch(() => undefined)
+      void h.getLspCompanion().then((lspCompanion) => set({ lspCompanion })).catch(() => undefined)
       void h.getUsage('day').then((day) => set({ usage: { ...stateRef.current.usage, day } })).catch(() => undefined)
       void h.getOrchestrations().then((boards) => set({ boards })).catch(() => undefined)
       void h.listClaims().then((claims) => set({ claims })).catch(() => undefined)

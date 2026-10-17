@@ -19,7 +19,8 @@ import type { HarnessContext } from './context.ts'
 import { registerAgentIpc } from './agent/index.ts'
 import { DEFAULT_SYNC, emptyStatus, GitSync } from './services/gitSync.ts'
 import { LogBuffer } from './services/logs.ts'
-import { LspBridge } from './services/lspBridge.ts'
+import { LspBridge, SKIP_DIRS } from './services/lspBridge.ts'
+import { DEFAULT_COMPANION_PORT, StudioCompanionServer, luauFilePaths, validPort } from './services/lspCompanion.ts'
 import { Project, type ProjectChange } from './services/project.ts'
 import { renameEntry, trashEntries, trashEntry } from './services/fileOps.ts'
 import { Settings } from './services/settings.ts'
@@ -154,6 +155,22 @@ const lsp = new LspBridge({
   }
 })
 
+// luau-lsp Studio Companion plugin: the HTTP server the VS Code extension would run (port 3667),
+// forwarding the plugin's DataModel to the luau-lsp above. Settings > Editor turns it off.
+const lspCompanion = new StudioCompanionServer({
+  target: {
+    available: () => lsp.acceptsPlugin,
+    full: (tree) => lsp.pluginFull(tree),
+    clear: () => lsp.pluginClear(),
+    filePaths: async () => {
+      const root = lsp.projectRoot
+      return root ? luauFilePaths(root, SKIP_DIRS) : null
+    }
+  },
+  log: (stream, text) => logs.push({ service: 'lsp', stream, text }),
+  onStatus: (status) => emit('lsp:companion', status)
+})
+
 let project: Project | null = null
 
 // Integrated terminal (node-pty), bottom panel + the main chat's run_in_terminal.
@@ -230,13 +247,21 @@ function syncSettings(): SyncSettings {
 }
 
 function appSettings(): AppSettings {
+  const pluginPort = settings.get<number>('lsp.studioPlugin.port', DEFAULT_COMPANION_PORT)
   return {
     serveAllPlaces: settings.get<boolean>('serveAllPlaces', false) === true,
     autoRoute: settings.get<boolean>('autoRoute', true) !== false,
     confirmFileDelete: settings.get<boolean>('confirmFileDelete', true) !== false,
     confirmStudioDelete: settings.get<boolean>('confirmStudioDelete', true) !== false,
-    lunePath: settings.get<string | null>('tests.lunePath', null) ?? ''
+    lunePath: settings.get<string | null>('tests.lunePath', null) ?? '',
+    lspStudioPlugin: settings.get<boolean>('lsp.studioPlugin.enabled', true) !== false,
+    lspStudioPluginPort: validPort(pluginPort) ? pluginPort : DEFAULT_COMPANION_PORT
   }
+}
+
+function configureLspCompanion(): void {
+  const s = appSettings()
+  void lspCompanion.configure(s.lspStudioPlugin, s.lspStudioPluginPort).catch((error) => harnessLog(`Studio plugin server: ${error}`, 'stderr'))
 }
 
 function harnessLog(text: string, stream: LogLine['stream'] = 'info'): void {
@@ -834,6 +859,7 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
 
   getBlink: () => blink?.model ?? EMPTY_BLINK,
   lspStart: () => lsp.start(),
+  getLspCompanion: () => lspCompanion.status(),
 
   listPlaces: () => project?.listPlaces() ?? [],
   getActivePlace: () => project?.getActivePlace() ?? null,
@@ -846,7 +872,12 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     if (typeof patch.confirmFileDelete === 'boolean') settings.set('confirmFileDelete', patch.confirmFileDelete)
     if (typeof patch.confirmStudioDelete === 'boolean') settings.set('confirmStudioDelete', patch.confirmStudioDelete)
     if (typeof patch.lunePath === 'string') settings.set('tests.lunePath', patch.lunePath.trim().slice(0, 1000) || null)
+    if (typeof patch.lspStudioPlugin === 'boolean') settings.set('lsp.studioPlugin.enabled', patch.lspStudioPlugin)
+    if (validPort(patch.lspStudioPluginPort)) settings.set('lsp.studioPlugin.port', patch.lspStudioPluginPort)
     const after = appSettings()
+    if (before.lspStudioPlugin !== after.lspStudioPlugin || before.lspStudioPluginPort !== after.lspStudioPluginPort) {
+      await lspCompanion.configure(after.lspStudioPlugin, after.lspStudioPluginPort).catch((error) => harnessLog(`Studio plugin server: ${error}`, 'stderr'))
+    }
     // rojo's job list depends on serveAllPlaces; restart a running rojo so it serves the new set.
     const rojo = supervisor.statuses().find((s) => s.id === 'rojo')
     if (before.serveAllPlaces !== after.serveAllPlaces && rojo && (rojo.state === 'running' || rojo.state === 'starting')) {
@@ -974,6 +1005,7 @@ app.whenReady().then(async () => {
   })
   updater.start()
   brainSync.start()
+  configureLspCompanion()
   void studio.start()
   // Studio's Roblox folder (the plugins folder's parent) exists only where Studio is installed.
   void studio.service
@@ -1008,6 +1040,7 @@ app.on('before-quit', (event) => {
   anim.service.dispose()
   void studio.dispose()
   lsp.dispose()
+  void lspCompanion.dispose()
   closeProject()
     .catch(() => undefined)
     .finally(() => app.quit())

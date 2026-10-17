@@ -1,6 +1,6 @@
 // Status bar (SPEC §7.7): home, branch, services, problems, realm, cursor, LSP, assistant meter, bell.
 import { useEffect, useRef, useState } from 'react'
-import type { ServiceStatus } from '@shared/types'
+import type { LspCompanionStatus, ServiceStatus } from '@shared/types'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
@@ -18,6 +18,15 @@ export function ledOf(s: ServiceStatus | undefined): 'ok' | 'warn' | 'err' | 'id
   if (s.state === 'starting') return 'warn'
   if (s.state === 'crashed') return 'err'
   return 'idle'
+}
+
+// Second tooltip line of the luau-lsp segment: the Studio Companion plugin server (lspCompanion.ts).
+export function companionLine(c: LspCompanionStatus | null): string | null {
+  if (!c) return null
+  if (c.state === 'off') return 'Studio plugin server: off (Settings > Editor)'
+  if (c.state === 'portInUse') return `Studio plugin server: port ${c.port} is in use (VS Code's luau-lsp extension, or another RBX Forge?); retrying`
+  if (c.state === 'error') return `Studio plugin server: ${c.detail ?? 'not running'}`
+  return c.lastActivityAt ? `Studio plugin: connected on port ${c.port}, DataModel ${ago(c.lastActivityAt)}` : `Studio plugin server: listening on localhost:${c.port}`
 }
 
 const LABEL: Record<string, string> = { rojo: 'Rojo', dev: 'Watcher', studioSync: 'Studio', lsp: 'luau-lsp' }
@@ -135,7 +144,7 @@ export function StatusBar() {
         </span>
       )}
       {cursor && state.activeFile && <span className="sb static opt-1">{cursor.insertSpaces ? 'Spaces' : 'Tabs'}: {cursor.tabSize}</span>}
-      <span className="sb opt-1" title={`luau-lsp: ${state.lsp.detail ?? lspService?.detail ?? state.lsp.state}`} onClick={() => actions.showBottom('output', ['lsp'])}>
+      <span className="sb opt-1" title={[`luau-lsp: ${state.lsp.detail ?? lspService?.detail ?? state.lsp.state}`, companionLine(state.lspCompanion)].filter(Boolean).join('\n')} onClick={() => actions.showBottom('output', ['lsp'])}>
         <span className={`led ${lspLed}`} />
         luau-lsp
       </span>

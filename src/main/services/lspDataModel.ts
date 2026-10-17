@@ -23,6 +23,11 @@
 // (game.Workspace.Map.Spawn, ReplicatedStorage.Assets...) autocomplete and type check.
 // FilePaths are left out on purpose: sourcemap.json (rojo sourcemap --watch) owns the
 // script <-> file mapping, and a plugin node with FilePaths would overwrite the sourcemap's.
+//
+// The real companion plugin can post too (lspCompanion.ts serves its HTTP endpoints). Its tree
+// comes straight from Studio and wins while it is connected: setPluginTree() replaces Forge's
+// own payload, clearPluginTree() sends $/plugin/clear and goes back to Forge's snapshot. Its
+// FilePaths are passed through unchanged, as the VS Code extension does.
 
 import type { TreeNode } from '@shared/types'
 
@@ -107,6 +112,10 @@ export class DataModelSync {
   private tree: Node[] | null = null
   private isReady = false
   private lastSent: string | null = null // JSON of the last payload, or 'clear'
+  // The companion plugin's last /full tree (JSON), forwarded as is; null when none.
+  private pluginTree: string | null = null
+  // Logged the first plugin tree sent to this process (later updates come every few seconds).
+  private pluginLogged = false
   private timer: ReturnType<typeof setTimeout> | null = null
   private retries = 0
 
@@ -118,6 +127,33 @@ export class DataModelSync {
   setTree(tree: Node[] | null): void {
     this.tree = tree
     this.schedule()
+  }
+
+  // The Studio companion plugin posted its tree (/full). Sent at once when the server is ready
+  // (the plugin debounces its own updates), else as soon as it is; kept for restarted servers.
+  setPluginTree(tree: unknown): void {
+    this.pluginTree = JSON.stringify(tree)
+    if (!this.isReady) return
+    this.cancel()
+    this.flush()
+  }
+
+  // The plugin posted /clear: $/plugin/clear now (as the VS Code extension does), then Forge's
+  // own snapshot again if it has one.
+  clearPluginTree(): void {
+    const had = this.pluginTree !== null
+    this.pluginTree = null
+    this.pluginLogged = false
+    if (!this.isReady) return
+    this.cancel()
+    this.lastSent = 'clear'
+    this.options.notify('$/plugin/clear')
+    if (had) this.options.log?.('luau-lsp: the Studio plugin cleared its DataModel')
+    this.flush()
+  }
+
+  get hasPluginTree(): boolean {
+    return this.pluginTree !== null
   }
 
   // The server can take $/plugin/* now.
@@ -132,6 +168,7 @@ export class DataModelSync {
     this.isReady = false
     this.lastSent = null
     this.retries = 0
+    this.pluginLogged = false
     this.cancel()
   }
 
@@ -154,6 +191,7 @@ export class DataModelSync {
   dispose(): void {
     this.cancel()
     this.tree = null
+    this.pluginTree = null
   }
 
   private cancel(): void {
@@ -174,6 +212,14 @@ export class DataModelSync {
   // Sends now if anything changed since the last send to this process.
   flush(): void {
     if (!this.isReady) return
+    if (this.pluginTree !== null) {
+      if (this.pluginTree === this.lastSent) return
+      this.lastSent = this.pluginTree
+      this.options.notify('$/plugin/full', JSON.parse(this.pluginTree))
+      if (!this.pluginLogged) this.options.log?.(`luau-lsp: sent the Studio plugin's DataModel (${Math.max(1, Math.round(this.pluginTree.length / 1024))} KB); updates follow as Studio changes`)
+      this.pluginLogged = true
+      return
+    }
     if (!hasStudioNodes(this.tree)) {
       // No Studio snapshot (any more): drop plugin-managed nodes if we added some.
       if (this.lastSent !== null && this.lastSent !== 'clear') {

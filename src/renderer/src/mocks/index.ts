@@ -926,6 +926,7 @@ const api: HarnessApi = {
   // No luau-lsp in the browser preview; the LSP client stays idle.
   lspStart: async () => false,
   lspSend: () => {},
+  getLspCompanion: async () => ({ state: appSettings.lspStudioPlugin ? 'listening' : 'off', port: appSettings.lspStudioPluginPort, lastActivityAt: null }),
 
   // Wally deps and Rokit tools (mockPackages.ts).
   ...packagesMock(emit, (text) => log('harness', text, 'info')),
@@ -977,7 +978,7 @@ const api: HarnessApi = {
   }
 }
 
-let appSettings: AppSettings = { serveAllPlaces: false, autoRoute: true, confirmFileDelete: true, confirmStudioDelete: true, lunePath: '' }
+let appSettings: AppSettings = { serveAllPlaces: false, autoRoute: true, confirmFileDelete: true, confirmStudioDelete: true, lunePath: '', lspStudioPlugin: true, lspStudioPluginPort: 3667 }
 
 // A new file from the create flow shows up in the tree and the scripts list, like the dev watcher's
 // sourcemap refresh would do.

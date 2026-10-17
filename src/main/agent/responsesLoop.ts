@@ -40,7 +40,7 @@ import {
 } from './openaiLoop.ts'
 import { summarizeInput } from './sdk.ts'
 import { resolveHistoryImages, responsesContent } from './imageParts.ts'
-import { runTool, toolJsonSchema, type GentreeTool } from './tools.ts'
+import { runTool, toolParameters, type GentreeTool } from './tools.ts'
 
 // Models that need the Responses API for tools. OpenAI only (OpenRouter and others normalize
 // everything to Chat Completions).
@@ -53,7 +53,7 @@ export function usesResponsesApi(provider: ProviderId, model: string): boolean {
 export type ResponsesItem = Record<string, any>
 
 export function responsesToolSpecs(tools: GentreeTool<any>[]): { type: 'function'; name: string; description: string; parameters: Record<string, unknown>; strict: false }[] {
-  return tools.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: toolJsonSchema(t.inputSchema), strict: false }))
+  return tools.map((t) => ({ type: 'function', name: t.name, description: t.description, parameters: toolParameters(t), strict: false }))
 }
 
 // Chat-format history to Responses input items.

@@ -86,6 +86,9 @@ export interface GentreeTool<S extends ZodRawShape = ZodRawShape> {
   description: string
   inputSchema: S
   handler: (args: z.infer<z.ZodObject<S>>, extra: unknown) => Promise<ToolResult>
+  // A tool bridged from an external MCP server (agent/studioMcp.ts): its own JSON Schema, sent
+  // as is; the server validates the arguments, so runTool does not.
+  jsonSchema?: Record<string, unknown>
 }
 
 export function defineTool<S extends ZodRawShape>(
@@ -117,14 +120,26 @@ export function toolJsonSchema(shape: ZodRawShape): Record<string, unknown> {
   return schema
 }
 
+// A tool's parameters schema for function-calling APIs.
+export function toolParameters(t: GentreeTool<any>): Record<string, unknown> {
+  return t.jsonSchema ?? toolJsonSchema(t.inputSchema)
+}
+
 // OpenAI-style function definitions for a tool list.
 export function toFunctionSpecs(tools: GentreeTool<any>[]): { type: 'function'; function: { name: string; description: string; parameters: Record<string, unknown> } }[] {
-  return tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: toolJsonSchema(t.inputSchema) } }))
+  return tools.map((t) => ({ type: 'function', function: { name: t.name, description: t.description, parameters: toolParameters(t) } }))
 }
 
 // Validates model-supplied arguments against the tool's zod shape, then runs the handler.
 // The SDK's MCP server does the same validation on the anthropic path.
 export async function runTool(t: GentreeTool<any>, args: unknown): Promise<ToolResult> {
+  if (t.jsonSchema) {
+    try {
+      return await t.handler((args && typeof args === 'object' && !Array.isArray(args) ? args : {}) as never, {})
+    } catch (e) {
+      return fail(`${t.name} failed: ${(e as Error).message}`)
+    }
+  }
   const parsed = z.object(t.inputSchema).safeParse(args ?? {})
   if (!parsed.success) {
     const issues = parsed.error.issues.map((i) => `${i.path.join('.') || 'input'}: ${i.message}`).join('; ')

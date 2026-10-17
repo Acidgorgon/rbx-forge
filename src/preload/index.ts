@@ -114,7 +114,9 @@ const methods = [
   'spendState', 'spendSetSettings', 'spendRaiseToday', 'spendClearOverride',
   'addToGameOptions', 'addToGamePreview', 'addToGameApply',
   // Editor assist (StyLua format, autosave settings, AI inline completions)
-  'editorAssistStatus', 'editorAssistSetSettings', 'formatLuau', 'inlineComplete', 'inlineCompleteCancel'
+  'editorAssistStatus', 'editorAssistSetSettings', 'formatLuau', 'inlineComplete', 'inlineCompleteCancel',
+  // Roblox Studio tools (MCP) for the Assistant
+  'studioMcpStatus', 'studioMcpSetSettings', 'studioMcpTest', 'studioMcpBrowse'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]
 
 // Compile-time check: every HarnessApi method is exposed (tsc names any that is missing).

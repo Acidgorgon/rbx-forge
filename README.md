@@ -294,7 +294,7 @@ The VFX Lab, Animation Lab and Ability Composer decide cheap things in code, so 
 ![Tests panel with Lune specs, Run all and Watch, and test agent scenarios](docs/screenshots/26-tests-dark.png)
 
 - **Lune tests.** `*.spec.luau` files run headless under Lune, against a bundled Roblox-like world built from the Rojo tree (`require` of instances, services, signals). The runner supports `describe`/`it`, Jest-style `expect` and mocks. Run everything, one spec or a name filter, or **Watch** to rerun on save. Failures link to the line.
-- **Test agents.** Give one scenario per line and Forge runs them as parallel agents (3 at a time by default), each reporting passed or failed. If Roblox Studio's MCP server is configured (`studioMcp`), one agent at a time gets Studio to play-test; the others review the code.
+- **Test agents.** Give one scenario per line and Forge runs them as parallel agents (3 at a time by default), each reporting passed or failed. If Roblox Studio's MCP server is available (found automatically, or set in Settings > Studio & sync > Studio tools), one agent at a time gets Studio to play-test; the others review the code.
 
 ### Packages (Wally and rokit)
 
@@ -548,7 +548,8 @@ Most settings are in the app (gear at the bottom of the activity bar): providers
 
 - `defaultModel` (`{ "provider": "anthropic", "model": "claude-opus-5-5" }`) and `defaultEffort`
 - `providerConfig` (base URLs for `ollama`/`custom`) and `anthropicUseClaudeLogin` (default `false`)
-- `chatMaxTurns`, `studioMcp` (`{ "command": "...", "args": [] }`), `maxParallelAgents` and `agentMaxTurns`
+- `chatMaxTurns`, `maxParallelAgents` and `agentMaxTurns`
+- `studioMcpEnabled` (default `true`) and `studioMcp` (`{ "command": "...", "args": [] }`, overrides the Studio MCP server Forge finds: `cmd.exe /c %LOCALAPPDATA%\Roblox\mcp.bat` on Windows, `/Applications/RobloxStudio.app/Contents/MacOS/StudioMCP` on macOS)
 - `serveAllPlaces` and `allowTemplateDisconnect`
 - `sync.engine` (`forge` default, `project`, `off`) and `sync.gateRojo` (default `true`)
 

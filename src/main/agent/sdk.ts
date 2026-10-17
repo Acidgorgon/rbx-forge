@@ -10,6 +10,7 @@ import { bundledClaudeExecutable } from '../services/sdkBinary.ts'
 import { extractImageMarkers, imageMarker } from './chatImages.ts'
 import { classifyAuthError, isAuthError } from '../accounts/authErrors.ts'
 import { modelLabel } from '../../shared/modelResolve.ts'
+import { resolveStudioMcp, STUDIO_GUIDE } from './studioMcp.ts'
 
 export const DEFAULT_MODEL = 'claude-opus-5-5'
 export const STUDIO_SERVER = 'studio'
@@ -38,11 +39,11 @@ export function model(ctx: HarnessContext): string {
   return ctx.getSetting<string>('model', DEFAULT_MODEL) || DEFAULT_MODEL
 }
 
-// Roblox Studio's MCP server (external stdio process), when the user configured one.
+// Roblox Studio's MCP server (external stdio process): the manual 'studioMcp' command, else the one
+// found on this computer, unless 'studioMcpEnabled' is off (agent/studioMcp.ts).
 export function studioMcp(ctx: HarnessContext): McpStdioServerConfig | null {
-  const s = ctx.getSetting<StudioMcpSetting | null>('studioMcp', null)
-  if (!s || typeof s.command !== 'string' || !s.command.trim()) return null
-  return { type: 'stdio', command: s.command, args: Array.isArray(s.args) ? s.args : [] }
+  const s = resolveStudioMcp((k, f) => ctx.getSetting(k, f)).active
+  return s ? { type: 'stdio', command: s.command, args: s.args } : null
 }
 
 // Allow rules for every tool of an MCP server. Claude Code permission rules accept the bare
@@ -69,7 +70,8 @@ Working rules:
 - Users paste Roblox paths like game.ReplicatedStorage.Assets.Sword or game:GetService("Workspace").Map; resolve them with find_instance or explorer_tree. Nodes marked * exist only in Studio (assets, models, sounds, GUIs), not in the repo.
 - Never edit Packages/ or generated files. Keep edits minimal and in the existing style.
 - Studio edits sync back into the repo via studio-sync; conflicts are listed by studio_conflicts.
-- If mcp__studio__* tools are available they act on the live Roblox Studio (run Luau, play tests).
+- Live Roblox Studio, when mcp__studio__* tools are listed (Roblox's Studio MCP server):
+${STUDIO_GUIDE}
 - A message may end with [Confirmed restatement ...]: Forge restated a big request and the user approved (or corrected) that reading. Treat it as the agreed goal, problem and assumptions; do not restate it again, start the work.
 - Big multi-file features (a new system with server, client, UI and data parts): suggest the user run /team <request>. Team mode is a separate run where a lead plans the work and specialist agents build the parts in parallel, with its own progress board; it suits large builds, while a focused change is faster right here.
 - In a group chat, the other models (guests) are read-only advisers the user invited; they comment and critique, you own the project and make the edits.
@@ -78,6 +80,10 @@ Working rules:
 // Appended to SYSTEM_PROMPT on OpenAI-compatible providers, where tools have bare names.
 export const OPENAI_TOOLS_NOTE = `
 On this provider the gentree tools are named without the mcp__gentree__ prefix (project_overview, read_script, edit_script, ...). There are no generic file tools, no shell and no Studio tools.`
+
+// OPENAI_TOOLS_NOTE when the chat bridged Studio's MCP tools in (agent/studioMcp.ts openStudioBridge).
+export const OPENAI_TOOLS_NOTE_STUDIO = `
+On this provider the gentree tools are named without the mcp__gentree__ prefix (project_overview, read_script, edit_script, ...); the live Studio tools keep their mcp__studio__ names. There are no generic file tools and no shell.`
 
 // Short, one-line summary of a tool call's input for the UI.
 export function summarizeInput(input: unknown): string {

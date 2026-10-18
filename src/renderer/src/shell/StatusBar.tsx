@@ -85,7 +85,7 @@ function SyncDriftPill() {
     <span className="sb" onClick={() => actions.showSide('sync')} title={`${drifts.map((d) => d.text).join('\n')}\nClick: open Forge Sync to fix`}>
       <Icon name="warn" size={12} style={{ color: 'var(--warn)' }} />
       <span className="mono" style={{ color: 'var(--warn)' }}>
-        {first.place} {first.behind} behind{drifts.length > 1 ? ` +${drifts.length - 1}` : ''}
+        {first.place} {first.cause === 'rojo-disconnected' ? 'reconnect Rojo' : `${first.behind} behind`}{drifts.length > 1 ? ` +${drifts.length - 1}` : ''}
       </span>
     </span>
   )

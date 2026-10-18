@@ -26,8 +26,13 @@ export interface SyncApi {
   // Bulk decision, e.g. first run: "Studio wins" / "Disk wins" for every conflict of that place, or
   // only those held for `reason`.
   syncResolveAll(placeKey: string, take: 'studio' | 'disk', reason?: SyncConflictInfo['reason']): Promise<SyncStatus>
-  // Lets rojo serve a blocked place now; the held conflicts stay listed.
+  // Lets rojo serve a blocked place now and until "Hold again" (through re-checks and Studio sessions);
+  // the held conflicts stay listed.
   syncServeAnyway(placeKey: string): Promise<SyncStatus>
+  // "Hold again": the place file's Studio sync gate applies to rojo serve again.
+  syncStopServingAnyway(projectFile: string): Promise<SyncStatus>
+  // The user connected Rojo in Studio again: drops the "Rojo plugin was disconnected" notice.
+  syncRojoReconnected(projectFile: string): Promise<SyncStatus>
   // Lets rojo serve place files no Studio check has cleared ('waiting': Studio not open, the open place
   // not linked, or an old plugin), the given one or all, until a Studio session for one starts its check.
   syncServeWithoutCheck(projectFile?: string): Promise<SyncStatus>

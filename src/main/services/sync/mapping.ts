@@ -36,6 +36,8 @@ export interface PlaceMap {
   virtual: string[][]
   // Disk path globs never written (studio-sync.json "skip" + .forge/project.json sync.skip).
   skipGlobs: string[]
+  // The project file's globIgnorePaths (Rojo: paths below a $path folder it does not build).
+  ignoreGlobs?: string[]
 }
 
 // Wally output folders: never mapped.
@@ -169,6 +171,107 @@ export function isSkipped(globs: string[], rel: string): boolean {
   return false
 }
 
+// ---- Rojo globIgnorePaths ----
+// Rojo (7.x) turns each globIgnorePaths entry into a rule relative to the project file's folder and
+// checks it on every entry it reads below a $path directory (the $path itself is never filtered, and
+// an ignored directory hides everything in it). The globs are globset's defaults: `*` and `?` also
+// match `/`, `**/x` matches x at any depth, `x/**` matches what is inside x (not x itself), `[...]`
+// classes and `{a,b}` alternatives. A pattern that does not parse ignores nothing (Rojo refuses the
+// project file then).
+
+const rojoGlobCache = new Map<string, RegExp | null>()
+
+function globBody(glob: string, i: number, stop: string | null): { re: string; end: number } | null {
+  let re = ''
+  while (i < glob.length) {
+    const c = glob[i]
+    if (stop && (c === ',' || c === '}') && stop.includes(c)) return { re, end: i }
+    if (c === '*' && glob[i + 1] === '*') {
+      const before = i === 0 || glob[i - 1] === '/'
+      const after = i + 2 === glob.length || glob[i + 2] === '/'
+      if (before && after) {
+        if (i === 0 && i + 2 === glob.length) re += '.*'
+        else if (i === 0) {
+          re += '(?:/?|.*/)'
+          i += 3
+          continue
+        } else if (i + 2 === glob.length) {
+          // "x/**": the "/" before it is already in `re`.
+          re = re.replace(/\/$/, '') + '/.*'
+        } else {
+          re = re.replace(/\/$/, '') + '(?:/|/.*/)'
+          i += 3
+          continue
+        }
+        i += 2
+        continue
+      }
+      re += '.*'
+      i += 2
+      continue
+    }
+    if (c === '*') re += '.*'
+    else if (c === '?') re += '.'
+    else if (c === '[') {
+      const close = glob.indexOf(']', i + 2)
+      if (close < 0) return null
+      let body = glob.slice(i + 1, close)
+      const negate = body[0] === '!' || body[0] === '^'
+      if (negate) body = body.slice(1)
+      re += `[${negate ? '^' : ''}${body.replace(/[\\\]^]/g, (m) => (m === '-' ? m : `\\${m}`))}]`
+      i = close
+    } else if (c === '{') {
+      if (stop) return null
+      const alts: string[] = []
+      let j = i + 1
+      for (;;) {
+        const part = globBody(glob, j, ',}')
+        if (!part) return null
+        alts.push(part.re)
+        if (glob[part.end] === '}') {
+          j = part.end
+          break
+        }
+        j = part.end + 1
+      }
+      re += `(?:${alts.join('|')})`
+      i = j
+    } else re += c.replace(/[.+^$(){}|[\]\\]/g, '\\$&')
+    i++
+  }
+  return stop ? null : { re, end: i }
+}
+
+export function rojoGlob(pattern: string): RegExp | null {
+  const glob = pattern.trim().replace(/\\/g, '/').replace(/^\.\//, '')
+  if (rojoGlobCache.has(glob)) return rojoGlobCache.get(glob)!
+  const body = glob ? globBody(glob, 0, null) : null
+  let re: RegExp | null = null
+  try {
+    re = body ? new RegExp(`^${body.re}$`) : null
+  } catch {
+    re = null
+  }
+  rojoGlobCache.set(glob, re)
+  return re
+}
+
+// True when Rojo skips `rel` (repo-relative) for this place: it, or a directory between its $path
+// root and it, matches one of the project file's globIgnorePaths.
+export function rojoIgnored(map: Pick<PlaceMap, 'roots' | 'ignoreGlobs'>, rel: string): boolean {
+  const globs = (map.ignoreGlobs ?? []).map(rojoGlob).filter((re): re is RegExp => !!re)
+  if (!globs.length) return false
+  let best: SyncRoot | null = null
+  for (const r of map.roots) if (!r.isFile && rel.startsWith(r.path + '/') && (!best || r.path.length > best.path.length)) best = r
+  if (!best) return false
+  const segs = rel.slice(best.path.length + 1).split('/')
+  for (let i = 1; i <= segs.length; i++) {
+    const candidate = `${best.path}/${segs.slice(0, i).join('/')}`
+    if (globs.some((re) => re.test(candidate))) return true
+  }
+  return false
+}
+
 const startsWith = (path: string[], prefix: string[]): boolean => prefix.length <= path.length && prefix.every((p, i) => path[i] === p)
 const samePath = (a: string[], b: string[]): boolean => a.length === b.length && startsWith(a, b)
 
@@ -214,7 +317,8 @@ export async function loadPlaces(root: string): Promise<PlaceMap[]> {
       roots: [],
       skipped: [],
       virtual: [],
-      skipGlobs
+      skipGlobs,
+      ignoreGlobs: (Array.isArray(project.globIgnorePaths) ? project.globIgnorePaths : []).filter((g): g is string => typeof g === 'string' && !!g.trim())
     }
     const walk = async (node: Json, names: string[]): Promise<void> => {
       let raw = node.$path as unknown
@@ -236,6 +340,58 @@ export async function loadPlaces(root: string): Promise<PlaceMap[]> {
     maps.push(map)
   }
   return maps
+}
+
+// A project node that also comes out of its parent's $path folder: Rojo builds two same-name
+// instances (Doctor warns; Forge Sync takes the explicit child). `copies`: the folder entries
+// (repo-relative) Rojo builds next to the explicit child; globIgnorePaths entries are not counted.
+export interface DuplicateMapping {
+  projectFile: string
+  instance: string[]
+  // What the project maps there: the explicit $path, or null for a $className container.
+  explicit: string | null
+  // The parent's $path folder and the entries in it that build the same name.
+  folder: string
+  copies: string[]
+}
+
+export async function duplicateMappings(map: PlaceMap): Promise<DuplicateMapping[]> {
+  const out: DuplicateMapping[] = []
+  const nodes: { instance: string[]; explicit: string | null }[] = [
+    ...map.roots.map((r) => ({ instance: r.instance, explicit: r.path })),
+    ...map.skipped.map((x) => ({ instance: x.instance, explicit: x.path })),
+    ...map.virtual.map((v) => ({ instance: v, explicit: null }))
+  ]
+  const listings = new Map<string, { name: string; dir: boolean }[]>()
+  for (const node of nodes) {
+    if (node.instance.length < 2) continue
+    const parent = map.roots.find((r) => !r.isFile && samePath(r.instance, node.instance.slice(0, -1)))
+    if (!parent) continue
+    let entries = listings.get(parent.path)
+    if (!entries) {
+      entries = (await readdir(join(map.root, parent.path), { withFileTypes: true }).catch(() => [])).map((e) => ({ name: e.name, dir: e.isDirectory() }))
+      listings.set(parent.path, entries)
+    }
+    const leaf = node.instance[node.instance.length - 1]
+    const copies: string[] = []
+    for (const e of entries) {
+      const rel = `${parent.path}/${e.name}`
+      if (rel === node.explicit || PACKAGE_DIRS.has(e.name) || e.name.startsWith('.')) continue
+      const info = e.dir ? null : parseFileName(e.name, map.emitLegacyScripts)
+      const name = e.dir ? e.name : info && info.kind !== 'meta' ? info.stem : null
+      if (name !== leaf || rojoIgnored({ roots: [parent], ignoreGlobs: map.ignoreGlobs }, rel)) continue
+      copies.push(e.dir ? `${rel}/` : rel)
+    }
+    if (copies.length) out.push({ projectFile: map.projectFile, instance: node.instance, explicit: node.explicit, folder: parent.path, copies: copies.sort() })
+  }
+  return out
+}
+
+// "menu.project.json maps ReplicatedStorage.Shared.Modules.MatchSfx twice: src/shared/MatchSfx.luau
+// and src/menu/shared/Modules/MatchSfx.luau (inside Modules' $path src/menu/shared/Modules) ..."
+export function duplicateMappingText(d: DuplicateMapping): string {
+  const what = d.explicit ? d.explicit : 'a $className node'
+  return `${d.projectFile} maps ${d.instance.join('.')} twice: ${what} and ${d.copies.join(', ')} (inside the $path folder ${d.folder}). Rojo builds both, so Studio gets two instances named ${d.instance[d.instance.length - 1]}; add ${d.copies.length === 1 ? 'the copy' : 'the copies'} to "globIgnorePaths" in ${d.projectFile}, or delete ${d.copies.length === 1 ? 'it' : 'them'}`
 }
 
 export function placeFor(maps: PlaceMap[], placeId: number | null | undefined): PlaceMap | null {
@@ -324,6 +480,12 @@ function scriptFile(map: PlaceMap, dir: string, leaf: string | null, node: ToDis
 // kind 'folder': `file` is the directory. kind 'model' with modelPath: inside that model file.
 // kind 'other': a file Rojo owns that Forge never writes (.txt, .csv, .json, .rbxm ...).
 export function toDisk(map: PlaceMap, node: ToDiskNode, probe: DiskProbe = fsProbe(map.root)): MappedFile | null {
+  const m = toDiskRaw(map, node, probe)
+  // Where Rojo would not read it back (globIgnorePaths): not on disk for this place.
+  return m && rojoIgnored(map, m.file) ? null : m
+}
+
+function toDiskRaw(map: PlaceMap, node: ToDiskNode, probe: DiskProbe): MappedFile | null {
   const hit = findRoot(map, node.path)
   if (!hit || !hit.root) return null
   const { root, rest } = hit
@@ -359,10 +521,31 @@ export function toDisk(map: PlaceMap, node: ToDiskNode, probe: DiskProbe = fsPro
 
 // ---- file -> instance ----
 
+// The project node (explicit child, or a $className container) that shadows what a file or folder
+// inside a $path directory would build: the project file maps that instance path itself, deeper than
+// the $path folder. Rojo builds both (two same-name siblings in Studio); Forge Sync and the Explorer
+// take the explicit child and leave the folder copy alone (Doctor names it). Null when not shadowed.
+export function shadowedBy(map: Pick<PlaceMap, 'roots' | 'skipped' | 'virtual' | 'emitLegacyScripts'>, rel: string): string[] | null {
+  let best: SyncRoot | null = null
+  for (const root of map.roots) if (!root.isFile && rel.startsWith(root.path + '/') && (!best || root.path.length > best.path.length)) best = root
+  if (!best) return null
+  const segs = rel.slice(best.path.length + 1).split('/')
+  const last = parseFileName(segs[segs.length - 1], map.emitLegacyScripts)
+  // A directory, or the instance a file builds (init files: their directory).
+  const names = last ? (last.stem === null ? segs.slice(0, -1) : [...segs.slice(0, -1), last.stem]) : segs
+  if (!names.length) return null
+  const inst = [...best.instance, ...names]
+  const nodes = [...map.roots.map((r) => r.instance), ...map.skipped.map((x) => x.instance), ...map.virtual]
+  let hit: string[] | null = null
+  for (const n of nodes) if (n.length > best.instance.length && startsWith(inst, n) && (!hit || n.length < hit.length)) hit = n
+  return hit
+}
+
 // Instance path a repo-relative file builds (meta files: the instance they describe), or null.
+// Files Rojo ignores (globIgnorePaths) and folder copies an explicit child shadows build nothing here.
 export function fromDisk(map: PlaceMap, file: string): string[] | null {
   const rel = cleanRel(file)
-  if (!rel || isSkipped(map.skipGlobs, rel)) return null
+  if (!rel || isSkipped(map.skipGlobs, rel) || rojoIgnored(map, rel) || shadowedBy(map, rel)) return null
   let best: SyncRoot | null = null
   for (const root of map.roots) {
     const inside = root.isFile ? rel === root.path : rel.startsWith(root.path + '/')
@@ -384,7 +567,7 @@ export function sharedWith(maps: PlaceMap[], self: PlaceMap, file: string): Plac
 
 // Every repo-relative path Forge may write under for this place.
 export function insideMappedRoots(map: PlaceMap, rel: string): boolean {
-  if (isSkipped(map.skipGlobs, rel)) return false
+  if (isSkipped(map.skipGlobs, rel) || rojoIgnored(map, rel) || shadowedBy(map, rel)) return false
   return map.roots.some((r) => (r.isFile ? rel === r.path : rel.startsWith(r.path + '/')))
 }
 

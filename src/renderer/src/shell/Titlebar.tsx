@@ -9,7 +9,7 @@ import { sparks } from '../lib/sparks'
 import { setThemeMode, useAppearance } from '../theme'
 import { requestBugReport } from '../qol/QolRoot'
 import { helpMenuItems } from './helpMenu'
-import { serveNotice, serveView } from '@shared/rojoView'
+import { placeServeText, serveNotice, serveView } from '@shared/rojoView'
 
 function parentDir(root: string): string {
   const parts = root.split(/[\\/]/).filter(Boolean)
@@ -161,9 +161,23 @@ export function Titlebar() {
     else actions.toast({ text: 'rojo serve is held', detail: `${notice.file}: ${notice.detail || 'Studio sync conflicts'}. Resolve them or serve anyway.`, kind: 'hot', ms: 15000, action: { label: 'Resolve', run: resolveHeld } })
   }, [rojo])
 
+  // Another served place is held, crashed or needs Rojo connected again: say which, before a restart
+  // (which cuts off every Studio window's Rojo plugin).
+  const placesMenu = (anchor: HTMLElement) => {
+    const attention = serveView(rojo, port).attention ?? []
+    menu.openUnder(anchor, [
+      { header: 'rojo serve per place', mono: true },
+      ...attention.map((p) => ({ label: placeServeText(p, true), icon: <Icon name="warn" />, sub: p.state === 'serving' ? `Click Connect in Rojo (port ${p.port ?? ''}) in ${p.name} Studio` : 'Open Forge Sync', onSelect: () => actions.showSide('sync') })),
+      { label: 'Start the places that are not serving', icon: <Icon name="play" />, sub: 'Running serves stay up', onSelect: () => void window.harness.startService('rojo') },
+      { label: 'Restart rojo', icon: <Icon name="restart" />, sub: 'Disconnects Rojo in every Studio window', onSelect: () => void window.harness.restartService('rojo') },
+      { label: 'Show log', icon: <Icon name="terminal" />, onSelect: () => actions.showBottom('output', ['rojo']) }
+    ], { minWidth: 320 })
+  }
+
   const serve = async () => {
     const h = window.harness
     if (rojo?.hold) return heldMenu(serveRef.current as HTMLElement)
+    if (rojo?.state === 'running' && serveView(rojo, port).attention?.length) return placesMenu(serveRef.current as HTMLElement)
     try {
       if (rojo?.state === 'running') {
         sparks(serveRef.current)
@@ -234,7 +248,7 @@ export function Titlebar() {
           disabled={serveState === 'starting'}
           aria-haspopup={serveState === 'held' || serveState === 'checking' || serveState === 'waiting' ? 'menu' : undefined}
         >
-          {serveState === 'starting' || serveState === 'checking' ? <span className="spinner" /> : serveState === 'held' || serveState === 'waiting' ? <Icon name="warn" size={12} /> : serveState === 'crashed' || serveState === 'failed' ? <Icon name="restart" size={12} /> : serveState === 'running' ? <span className="led ok" /> : <Icon name="play" size={12} />}
+          {serveState === 'starting' || serveState === 'checking' ? <span className="spinner" /> : serveState === 'held' || serveState === 'waiting' ? <Icon name="warn" size={12} /> : serveState === 'crashed' || serveState === 'failed' ? <Icon name="restart" size={12} /> : serveState === 'running' ? (view.attention ? <span className="led warn" /> : <span className="led ok" />) : <Icon name="play" size={12} />}
           {view.label}
           <span className="serve-port" style={{ opacity: 0.7, fontSize: 11 }}>:{port}</span>
         </button>

@@ -88,6 +88,21 @@ export interface ServiceStatus {
   hold?: { gate: 'checking' | 'blocked' | 'waiting'; file: string; reason?: 'studio' | 'unlinked' | 'plugin' }
   // rojo: crashed several times in a row and is no longer restarted automatically (Restart button).
   gaveUp?: boolean
+  // rojo with more than one place served ("Serve all places"): each place's own serve, so a held or
+  // crashed secondary place shows next to a primary that serves.
+  places?: RojoPlaceStatus[]
+}
+
+// One place's rojo serve. `error`: its last error line (crash, "port 34875 is in use ..."); `reconnect`:
+// Forge restarted it under a connected Rojo plugin, which has to be connected again in Studio.
+export interface RojoPlaceStatus {
+  file: string
+  name: string
+  port?: number
+  primary: boolean
+  state: 'serving' | 'starting' | 'checking' | 'waiting' | 'held' | 'crashed' | 'gave-up' | 'stopped'
+  error?: string
+  reconnect?: boolean
 }
 
 export interface LogLine {

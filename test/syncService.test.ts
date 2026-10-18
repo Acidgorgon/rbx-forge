@@ -270,7 +270,7 @@ test('commitStudioEdits: bracket names are literal paths, and hundreds of files 
   assert.match(execFileSync('git', ['-C', root, 'status', '--porcelain'], { encoding: 'utf8' }), /^ M "?src\/skills\/Sword G\.luau/m)
 })
 
-test('conflicts block the gate; serve anyway clears it; resolve writes and clears', async () => {
+test('conflicts block the gate; serve anyway clears it until Hold again; resolve writes and clears', async () => {
   const { root, engine, service, gates } = setup()
   await service.start()
   const { sessionToken } = await service.handler.config({ placeId: 111 })
@@ -283,9 +283,19 @@ test('conflicts block the gate; serve anyway clears it; resolve writes and clear
   assert.deepEqual(gates.at(-1), ['default.project.json', 'blocked', '2 conflicts: resolve or serve anyway'])
   await service.serveAnyway('111')
   await tick()
-  assert.deepEqual(gates.at(-1), ['default.project.json', 'clear', undefined])
-  // A new snapshot drops the override.
+  assert.deepEqual(gates.at(-1), ['default.project.json', 'clear', 'Serving anyway (your choice)'])
+  // Serve anyway sticks through a new snapshot and a new Studio session (it used to end there, and
+  // rojo was stopped under a connected Rojo plugin) ...
   await service.handler.snapshot({ session: sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: [] })
+  await tick()
+  assert.equal(gates.at(-1)![1], 'clear')
+  const again = await service.handler.config({ placeId: 111 })
+  await service.handler.snapshot({ session: again.sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: [] })
+  await tick()
+  assert.equal(gates.at(-1)![1], 'clear')
+  assert.equal((await service.status()).places.find((p) => p.projectFile === 'default.project.json')?.forced, true)
+  // ... until the user holds it again.
+  await service.stopServingAnyway('default.project.json')
   await tick()
   assert.equal(gates.at(-1)![1], 'blocked')
   await service.resolve('111', 'src/skills/Uppercut.luau', 'studio')

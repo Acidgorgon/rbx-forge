@@ -101,8 +101,10 @@ export function portChecks(i: DoctorInputs): DoctorCheck[] {
   } else if (i.bridge) out.push({ id: 'port-bridge', group: 'Ports', title: `Forge Bridge :${i.bridge.port}`, status: 'ok', detail: 'Listening' })
   for (const p of i.ports) {
     const id = `port-${p.port}`
-    if (p.state === 'other') {
-      out.push({ id, group: 'Ports', title: `${p.label} :${p.port}`, status: p.expected ? 'fail' : 'warn', detail: `Port ${p.port} is held by another program (another rojo serve?). Rojo cannot serve this place until it is free.`, fix: { kind: 'instruction', text: `Stop the other program on port ${p.port}, or change "servePort" in the project file.`, command: process_hint(p.port) } })
+    if (p.state === 'other' && p.owner?.rojo) {
+      out.push({ id, group: 'Ports', title: `${p.label} :${p.port}`, status: 'fail', detail: `Port ${p.port} is in use by another process: a rojo Forge does not run (${p.owner.name}, pid ${p.owner.pid}; an old rojo serve?). Rojo cannot serve this place until it is free.`, fix: { kind: 'action', action: 'stopStrayRojo', label: 'Stop stray rojo' } })
+    } else if (p.state === 'other') {
+      out.push({ id, group: 'Ports', title: `${p.label} :${p.port}`, status: p.expected ? 'fail' : 'warn', detail: `Port ${p.port} is in use by another process${p.owner ? ` (${p.owner.name || 'unknown'}, pid ${p.owner.pid})` : ' (old rojo?)'}. Rojo cannot serve this place until it is free.`, fix: { kind: 'instruction', text: `Stop the other program on port ${p.port}, or change "servePort" in the project file.`, command: process_hint(p.port) } })
     } else if (p.state === 'free' && p.expected) {
       out.push({ id, group: 'Ports', title: `${p.label} :${p.port}`, status: 'warn', detail: 'Rojo should be serving here but nothing is listening.', fix: { kind: 'action', action: 'startRojo', label: 'Start rojo' } })
     } else if (p.state === 'unknown') out.push({ id, group: 'Ports', title: `${p.label} :${p.port}`, status: 'skip', detail: 'Could not test the port.' })
@@ -177,6 +179,9 @@ export function projectChecks(i: DoctorInputs, now: number): DoctorCheck[] {
   if (!p.projectFiles.length) out.push({ id: 'project-files', group: 'Project', title: 'Rojo project files', status: 'fail', detail: 'No *.project.json at the project root: Rojo has nothing to serve.', fix: { kind: 'instruction', text: 'Open the folder that holds default.project.json, or create one with "rojo init".', command: 'rojo init' } })
   for (const f of p.projectFiles) {
     out.push(f.ok ? { id: `pf-${f.file}`, group: 'Project', title: f.file, status: 'ok', detail: f.servePort ? `parses · serves on :${f.servePort}` : 'parses' } : { id: `pf-${f.file}`, group: 'Project', title: f.file, status: 'fail', detail: `Does not parse: ${f.error ?? 'invalid JSON'}`, fix: { kind: 'open', target: `file:${f.file}`, label: 'Open file' } })
+  }
+  for (const [n, text] of (p.duplicateMappings ?? []).entries()) {
+    out.push({ id: `dup-mapping-${n}`, group: 'Project', title: 'Instance mapped twice', status: 'warn', detail: `${text}.`, fix: { kind: 'open', target: `file:${text.split(' ')[0]}`, label: 'Open file' } })
   }
   if (p.rokitToml && p.projectToolsMissing.length) out.push({ id: 'project-tools', group: 'Project', title: 'Project tools (rokit.toml)', status: 'warn', detail: `Not installed: ${p.projectToolsMissing.join(', ')}.`, fix: { kind: 'action', action: 'installProjectTools', label: 'rokit install' } })
   else if (p.rokitToml) out.push({ id: 'project-tools', group: 'Project', title: 'Project tools (rokit.toml)', status: 'ok', detail: 'Installed' })

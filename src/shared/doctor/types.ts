@@ -16,6 +16,7 @@ export type DoctorAction =
   | 'wallyInstall'
   | 'sourcemap' // rojo sourcemap for luau-lsp
   | 'startRojo'
+  | 'stopStrayRojo' // a rojo Forge does not run that holds a serve port
   | 'checkUpdates'
   | 'openScreenRecording' // macOS System Settings > Privacy > Screen Recording
 
@@ -63,6 +64,8 @@ export interface PortProbe {
   state: 'free' | 'ours' | 'other' | 'unknown'
   // Whether Forge expects something to be listening right now.
   expected: boolean
+  // state 'other': the process listening there, when Forge could tell (rojo: a stray rojo serve).
+  owner?: { pid: number; name: string; rojo: boolean }
 }
 
 export interface DiskProbe {
@@ -116,6 +119,9 @@ export interface DoctorInputs {
     rokitToml: boolean
     projectToolsMissing: string[]
     sourcemap: { exists: boolean; ageMs?: number }
+    // Project nodes Rojo builds twice (an explicit child and a same-name entry of its parent's $path
+    // folder), one line each (mapping.ts duplicateMappingText).
+    duplicateMappings?: string[]
   } | null
   updater: { state: string; version?: string; error?: string } | null
   // macOS only; null elsewhere.

@@ -10,6 +10,7 @@
 import { existsSync } from 'node:fs'
 import { readdir, readFile, stat } from 'node:fs/promises'
 import { join, posix } from 'node:path'
+import { rojoGlob } from '../sync/mapping.ts'
 import type { Realm, SpecFile } from './types.ts'
 
 export interface SourcemapNode {
@@ -81,6 +82,20 @@ interface Builder {
   root: string
   // Guards against a project that includes itself.
   depth: number
+  // globIgnorePaths of the project files on the way here (each relative to its project's folder).
+  ignore?: { base: string; globs: RegExp[] }[]
+}
+
+function withIgnore(b: Builder, base: string, project: { globIgnorePaths?: unknown }): Builder {
+  const globs = (Array.isArray(project.globIgnorePaths) ? project.globIgnorePaths : []).filter((g): g is string => typeof g === 'string').map(rojoGlob).filter((re): re is RegExp => !!re)
+  return globs.length ? { ...b, ignore: [...(b.ignore ?? []), { base, globs }] } : b
+}
+
+function ignored(b: Builder, rel: string): boolean {
+  return (b.ignore ?? []).some((r) => {
+    const sub = !r.base ? rel : rel.startsWith(r.base + '/') ? rel.slice(r.base.length + 1) : null
+    return sub !== null && r.globs.some((re) => re.test(sub))
+  })
 }
 
 // rel: repo-relative posix path of the directory.
@@ -88,9 +103,9 @@ async function fromDirectory(b: Builder, rel: string, name: string): Promise<Sou
   const abs = join(b.root, ...rel.split('/'))
   const nested = posix.join(rel, 'default.project.json')
   if (b.depth < 8 && existsSync(join(abs, 'default.project.json'))) {
-    const project = await readJson<{ tree?: Record<string, unknown> }>(join(abs, 'default.project.json'))
+    const project = await readJson<{ tree?: Record<string, unknown>; globIgnorePaths?: unknown }>(join(abs, 'default.project.json'))
     if (project?.tree) {
-      const node = await fromProjectNode({ ...b, depth: b.depth + 1 }, rel, name, project.tree)
+      const node = await fromProjectNode(withIgnore({ ...b, depth: b.depth + 1 }, rel, project), rel, name, project.tree)
       node.filePaths = [nested, ...(node.filePaths ?? [])]
       return node
     }
@@ -117,6 +132,7 @@ async function fromDirectory(b: Builder, rel: string, name: string): Promise<Sou
   for (const entry of entries.sort((a, z) => a.name.localeCompare(z.name))) {
     if (entry.name.startsWith('.')) continue
     const childRel = posix.join(rel, entry.name)
+    if (ignored(b, childRel)) continue
     if (entry.dir) {
       node.children!.push(await fromDirectory(b, childRel, entry.name))
     } else if (entry.file) {
@@ -169,9 +185,9 @@ function mapsFolder(tree: SourcemapNode, folder: string): boolean {
 // projects: e.g. menu.project.json; default.project.json otherwise). Throws when it is unreadable.
 export async function buildSourcemap(root: string, projectFile = 'default.project.json'): Promise<SourcemapNode> {
   const file = /^[^/\\]+\.project\.json$/.test(projectFile) ? projectFile : 'default.project.json'
-  const project = await readJson<{ name?: string; tree?: Record<string, unknown> }>(join(root, file))
+  const project = await readJson<{ name?: string; tree?: Record<string, unknown>; globIgnorePaths?: unknown }>(join(root, file))
   if (!project?.tree) throw new Error(`No readable ${file} in ${root}`)
-  const tree = await fromProjectNode({ root, depth: 0 }, '', project.name || 'Game', project.tree)
+  const tree = await fromProjectNode(withIgnore({ root, depth: 0 }, '', project), '', project.name || 'Game', project.tree)
   tree.filePaths = [file, ...(tree.filePaths ?? [])]
   const testsInfo = await stat(join(root, TESTS_FOLDER)).catch(() => null)
   if (testsInfo?.isDirectory() && !mapsFolder(tree, TESTS_FOLDER)) {

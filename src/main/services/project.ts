@@ -1,6 +1,7 @@
 import { watch, type Dirent, type FSWatcher } from 'node:fs'
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { rojoGlob } from './sync/mapping.ts'
 import type {
   PlaceInfo,
   ProjectInfo,
@@ -138,7 +139,16 @@ const INIT_FILES: [string, ScriptKind][] = [
   ['init.lua', 'ModuleScript']
 ]
 
-async function fromDirectory(root: string, relDir: string, name: string): Promise<TreeNode> {
+// Rojo's globIgnorePaths for one project file (repo-relative posix path -> skipped), see mapping.ts.
+type IgnoreRule = (rel: string) => boolean
+const NO_IGNORE: IgnoreRule = () => false
+
+export function ignoreRule(project: { globIgnorePaths?: unknown }): IgnoreRule {
+  const globs = (Array.isArray(project.globIgnorePaths) ? project.globIgnorePaths : []).filter((g): g is string => typeof g === 'string').map(rojoGlob).filter((re): re is RegExp => !!re)
+  return globs.length ? (rel) => globs.some((re) => re.test(rel)) : NO_IGNORE
+}
+
+async function fromDirectory(root: string, relDir: string, name: string, ignore: IgnoreRule = NO_IGNORE): Promise<TreeNode> {
   let entries: Dirent[] = []
   try {
     entries = await readdir(join(root, relDir), { withFileTypes: true })
@@ -157,8 +167,9 @@ async function fromDirectory(root: string, relDir: string, name: string): Promis
   for (const entry of entries) {
     if (entry.name.startsWith('.')) continue
     const childRel = join(relDir, entry.name)
+    if (ignore(toPosix(childRel))) continue
     if (entry.isDirectory()) {
-      node.children.push(await fromDirectory(root, childRel, entry.name))
+      node.children.push(await fromDirectory(root, childRel, entry.name, ignore))
     } else if (entry.isFile()) {
       if (/^init(\.server|\.client)?\.(luau|lua)$/.test(entry.name)) continue
       const script = scriptFromFileName(entry.name)
@@ -208,15 +219,16 @@ function projectPath(node: Record<string, unknown>): string | undefined {
   return undefined
 }
 
-async function fromProjectNode(root: string, name: string, node: Record<string, unknown>): Promise<TreeNode> {
+async function fromProjectNode(root: string, name: string, node: Record<string, unknown>, ignore: IgnoreRule = NO_IGNORE): Promise<TreeNode> {
   let className = typeof node.$className === 'string' ? node.$className : undefined
   let filePath: string | undefined
   const children: TreeNode[] = []
+  const fromProject = new Set<TreeNode>()
   const path = projectPath(node)
   if (path) {
     const info = await stat(join(root, path)).catch(() => null)
     if (info?.isDirectory()) {
-      const mapped = await fromDirectory(root, path, name)
+      const mapped = await fromDirectory(root, path, name, ignore)
       className = className ?? mapped.className
       filePath = mapped.filePath
       children.push(...mapped.children)
@@ -230,7 +242,12 @@ async function fromProjectNode(root: string, name: string, node: Record<string, 
   }
   for (const [key, value] of Object.entries(node)) {
     if (key.startsWith('$') || !value || typeof value !== 'object') continue
-    children.push(await fromProjectNode(root, key, value as Record<string, unknown>))
+    // An explicit child wins over a same-name entry of this node's $path folder (Rojo would build
+    // both; Forge Sync syncs the explicit one and Doctor names the folder copy).
+    const explicit = await fromProjectNode(root, key, value as Record<string, unknown>, ignore)
+    for (let i = children.length - 1; i >= 0; i--) if (children[i].name === key && !fromProject.has(children[i])) children.splice(i, 1)
+    fromProject.add(explicit)
+    children.push(explicit)
   }
   children.sort(byName)
   return {
@@ -242,9 +259,9 @@ async function fromProjectNode(root: string, name: string, node: Record<string, 
 }
 
 // Explorer tree from default.project.json plus the files Rojo would map. Returns the DataModel's children.
-export async function buildRepoTree(root: string, project: { tree?: Record<string, unknown> }): Promise<TreeNode[]> {
+export async function buildRepoTree(root: string, project: { tree?: Record<string, unknown>; globIgnorePaths?: unknown }): Promise<TreeNode[]> {
   if (!project.tree) return []
-  const top = await fromProjectNode(root, 'game', project.tree)
+  const top = await fromProjectNode(root, 'game', project.tree, ignoreRule(project))
   return top.className === 'DataModel' ? top.children : [top]
 }
 

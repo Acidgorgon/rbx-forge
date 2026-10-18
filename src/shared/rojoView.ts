@@ -1,7 +1,7 @@
 // How the titlebar Serve button and the status bar show rojo serve (no electron, no React; tested in
 // test/rojoRestart.test.ts). A serve held by the Forge Sync gate is its own state, not "Starting",
 // so a held rojo never looks like it is about to come up on its own.
-import type { ServiceStatus } from './types.ts'
+import type { RojoPlaceStatus, ServiceStatus } from './types.ts'
 
 export type ServeKind = 'running' | 'starting' | 'checking' | 'waiting' | 'held' | 'crashed' | 'failed' | 'stopped'
 
@@ -9,6 +9,40 @@ export interface ServeView {
   kind: ServeKind
   label: string
   title: string
+  // Served places (other than the active one) that are not serving, or that need Rojo connected again
+  // in Studio: "Serving FSF · Menu held" instead of a plain "Serving".
+  attention?: RojoPlaceStatus[]
+}
+
+const PLACE_WORD: Record<RojoPlaceStatus['state'], string> = {
+  serving: 'serving',
+  starting: 'starting',
+  checking: 'checking',
+  waiting: 'waiting',
+  held: 'held',
+  crashed: 'restarting',
+  'gave-up': 'crashed',
+  stopped: 'stopped'
+}
+
+// "Menu held", "Menu crashed: port 34875 is in use by another process (old rojo?)", "Menu reconnect Rojo".
+export function placeServeText(p: RojoPlaceStatus, long = false): string {
+  const word = p.state === 'serving' && p.reconnect ? 'reconnect Rojo' : PLACE_WORD[p.state]
+  return `${p.name} ${word}${long && p.port ? ` (:${p.port})` : ''}${long && p.error ? `: ${p.error}` : ''}`
+}
+
+function attentionOf(s: ServiceStatus): RojoPlaceStatus[] {
+  return (s.places ?? []).filter((p) => (!p.primary && p.state !== 'serving') || p.reconnect)
+}
+
+function withPlaces(view: ServeView, s: ServiceStatus): ServeView {
+  const attention = attentionOf(s)
+  if (!s.places?.length) return view
+  const lines = s.places.map((p) => `${p.primary ? '● ' : '○ '}${placeServeText(p, true)}`).join('\n')
+  const primary = s.places.find((p) => p.primary)
+  const parts = attention.map((p) => (p.primary ? 'reconnect Rojo' : placeServeText(p)))
+  const label = attention.length && view.kind === 'running' ? `${view.label}${primary ? ` ${primary.name}` : ''} · ${parts.join(' · ')}` : view.label
+  return { ...view, label, title: `${view.title}\n${lines}`, ...(attention.length ? { attention } : {}) }
 }
 
 // "default.project.json: 2 conflicts: resolve or serve anyway (default.project.json)" -> the reason.
@@ -18,6 +52,10 @@ function holdReason(s: ServiceStatus): string {
 
 export function serveView(s: ServiceStatus | undefined, port: number): ServeView {
   if (!s) return { kind: 'stopped', label: 'Serve', title: 'Start rojo serve' }
+  return withPlaces(baseView(s, port), s)
+}
+
+function baseView(s: ServiceStatus, port: number): ServeView {
   if (s.hold?.gate === 'blocked') {
     return { kind: 'held', label: 'Held', title: `Rojo is held for ${s.hold.file}: ${holdReason(s) || 'Studio sync conflicts'}. Click to resolve or serve anyway` }
   }

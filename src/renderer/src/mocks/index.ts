@@ -43,6 +43,7 @@ import { thumbsMock } from './mockThumbs'
 import { addToGameMock, doctorMock, spendMock } from './mockQolc'
 import { editorAssistMock } from './mockEditorAssist'
 import { studioMcpMock } from './mockStudioMcp'
+import { scmMock } from './mockScm'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -970,6 +971,16 @@ const api: HarnessApi = {
   ...spendMock(emit),
   ...editorAssistMock(emit),
   ...studioMcpMock(emit),
+  // Source control panel (mockScm.ts): a fake index over the mock files; ?scm=clean|held|reject.
+  ...scmMock(emit, {
+    files,
+    git: () => git,
+    setGit: (next) => {
+      git = next
+      emit('git:status', git)
+    },
+    log: (text) => log('git', text, 'info')
+  }),
   ...addToGameMock(),
 
   on(event, handler) {

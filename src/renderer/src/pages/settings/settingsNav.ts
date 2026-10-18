@@ -8,7 +8,7 @@ export const SETTINGS_CATEGORIES: { id: SettingsCategory; label: string; section
   { id: 'ai', label: 'AI & models', sections: [['accounts', 'Accounts', 'sign in api key claude openai codex chatgpt gemini openrouter'], ['model', 'Default model', 'auto-route effort reasoning'], ['chat', 'Chat', 'restate'], ['providers', 'Providers', 'ollama custom base url local']] },
   { id: 'spending', label: 'Spending', sections: [['usage', 'Usage', 'spending cap daily monthly cost'], ['budgets', 'Budgets', 'tokens warning']] },
   { id: 'editing', label: 'Editing', sections: [['editor', 'Editor', 'format stylua autosave completions delete confirm luau-lsp studio plugin companion port']] },
-  { id: 'studio', label: 'Studio & sync', sections: [['places', 'Places', 'serve rojo'], ['sync', 'Sync', 'studio engine team auto commit'], ['studio-mcp', 'Studio tools', 'roblox studio mcp assistant playtest luau execute console screen capture connection'], ['toolchain', 'Toolchain', 'rokit rojo wally lune luau-lsp install']] },
+  { id: 'studio', label: 'Studio & sync', sections: [['places', 'Places', 'serve rojo'], ['sync', 'Sync', 'studio engine team auto commit git source control stage push pull fetch'], ['studio-mcp', 'Studio tools', 'roblox studio mcp assistant playtest luau execute console screen capture connection'], ['toolchain', 'Toolchain', 'rokit rojo wally lune luau-lsp install']] },
   { id: 'labs', label: 'Labs & integrations', sections: [['labs', 'Labs', 'vfx animation ability tiers cheap default critic model dropdown decision gates models tokens'], ['integrations', 'Integrations', 'figma token fbx model upload inbox open cloud roblox']] }
 ]
 

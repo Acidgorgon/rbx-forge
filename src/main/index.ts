@@ -5,6 +5,8 @@ import {
   INVOKE_PREFIX,
   type BlinkModel,
   type GitStatus,
+  type ScmCommitOptions,
+  type ScmStatus,
   type HarnessEvents,
   type LogLine,
   type PlaceInfo,
@@ -18,6 +20,7 @@ import {
 import type { HarnessContext } from './context.ts'
 import { registerAgentIpc } from './agent/index.ts'
 import { DEFAULT_SYNC, emptyStatus, GitSync } from './services/gitSync.ts'
+import { SourceControl } from './services/sourceControl.ts'
 import { LogBuffer } from './services/logs.ts'
 import { LspBridge, SKIP_DIRS } from './services/lspBridge.ts'
 import { DEFAULT_COMPANION_PORT, StudioCompanionServer, luauFilePaths, validPort } from './services/lspCompanion.ts'
@@ -239,6 +242,8 @@ const packages = new Packages({
   emit: (payload) => emit('packages:changed', payload)
 })
 let git: GitSync | null = null
+// Source control panel (stage, commit with your message, pull / push) over the same GitSync queue.
+let scm: SourceControl | null = null
 let conflicts: StudioConflicts | null = null
 let remoteTimer: ReturnType<typeof setInterval> | null = null
 let blink: BlinkWatcher | null = null
@@ -277,6 +282,11 @@ function requireProject(): Project {
   return project
 }
 
+function requireScm(): SourceControl {
+  if (!scm) throw new Error('No project open')
+  return scm
+}
+
 async function closeProject(): Promise<void> {
   if (project) await qol.service.onProjectClose()
   terminal.onProjectClose()
@@ -291,6 +301,7 @@ async function closeProject(): Promise<void> {
   remoteTimer = null
   project = null
   git = null
+  scm = null
   conflicts = null
   await supervisor.setRoot(null)
   lsp.setDataModel(null)
@@ -378,16 +389,20 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
     (files) => emit('files:changed', files)
   )
 
-  // Forge Sync guard: a pull / branch switch first commits (or warns about) uncommitted Studio edits.
-  git = forgeSync.guardGit(
-    new GitSync({
-      root: full,
-      settings: syncSettings,
-      onStatus: (status) => emit('git:status', status),
-      log: (text, stream = 'info') => logs.push({ service: 'git', stream, text })
-    }),
-    () => syncSettings().autoCommit
-  )
+  // Forge Sync guard: a pull / branch switch first commits (or warns about) uncommitted Studio edits;
+  // only a warning while files are staged or a message is typed in Source control.
+  const gitSync = new GitSync({
+    root: full,
+    settings: syncSettings,
+    onStatus: (status) => emit('git:status', status),
+    log: (text, stream = 'info') => logs.push({ service: 'git', stream, text })
+  })
+  git = forgeSync.guardGit(gitSync, async () => {
+    if (!syncSettings().autoCommit) return false
+    const manual = await gitSync.manualWork()
+    return !manual.staged && !manual.draft
+  })
+  scm = new SourceControl({ git, trash: (path) => shell.trashItem(path), log: (text, stream = 'info') => logs.push({ service: 'git', stream, text }) })
   git.schedule()
   void git.refresh(true)
   remoteTimer = setInterval(() => void git?.refresh(true), 2 * 60 * 1000)
@@ -887,6 +902,23 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   },
   getStudioConflicts: () => ctx.studioConflicts(),
   resolveStudioConflict: (path: string, take: 'studio' | 'repo', placeKey?: string) => ctx.resolveStudioConflict(path, take, placeKey),
+
+  // Source control panel (services/sourceControl.ts). Paths are checked there.
+  scmStatus: async (): Promise<ScmStatus> => (scm ? scm.status() : { isRepo: false, hasRemote: false, ahead: 0, behind: 0, staged: [], changes: [], conflicts: [] }),
+  scmStage: (paths: unknown, confirmHeld?: unknown) => requireScm().stage(paths, confirmHeld === true),
+  scmUnstage: (paths: unknown) => requireScm().unstage(paths),
+  scmDiscard: (paths: unknown) => requireScm().discard(paths),
+  scmCommit: (message: unknown, options?: ScmCommitOptions) => {
+    const o = options && typeof options === 'object' ? options : {}
+    return requireScm().commit(message, { all: o.all === true, push: o.push === true, confirmHeld: o.confirmHeld === true })
+  },
+  scmPull: () => requireScm().pull(),
+  scmPush: () => requireScm().push(),
+  scmFetch: () => requireScm().fetch(),
+  scmDiff: (path: unknown, staged?: unknown) => requireScm().diff(path, staged === true),
+  scmSetDraft: async (draft: unknown) => {
+    git?.setDraft(draft === true)
+  },
 
   getBlink: () => blink?.model ?? EMPTY_BLINK,
   lspStart: () => lsp.start(),

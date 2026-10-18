@@ -78,3 +78,31 @@ button.fpart:hover { color: var(--fg); border-color: var(--fg-faint); }
 .textarea-box { margin: 0 10px 8px; }
 .textarea-box textarea { width: 100%; min-height: 64px; }
 .who { width: 18px; height: 18px; border-radius: 50%; display: inline-grid; place-items: center; font: 600 9.5px/1 var(--font-mono); letter-spacing: 0; color: var(--bg-chrome); background: var(--fg-muted); flex: none; }
+
+/* Source control (SourceControlSection.tsx): branch line, commit box, Staged / Changes / Merge conflicts. */
+.scm-branch { display: flex; align-items: center; gap: 6px; padding: 2px 8px 6px 12px; font-size: 12px; color: var(--fg-2); min-width: 0; }
+.scm-branch > svg { color: var(--fg-muted); flex: none; }
+.scm-branch .sub { color: var(--fg-faint); font-size: 11px; }
+/* The upstream gives way first, then the branch name; the counts never wrap. */
+.scm-branch .scm-bname { flex: 0 0 auto; max-width: 50%; }
+.scm-branch .scm-up { flex: 0 100 auto; min-width: 0; }
+.scm-branch .scm-ab { flex: none; white-space: nowrap; }
+.scm-box textarea { min-height: 44px; }
+.scm-commit { margin-top: 6px; gap: 6px; }
+.scm-box .scm-line { padding: 4px 2px 0; }
+.scm > .scm-line { padding: 2px 12px 6px; }
+.scm-ghead { cursor: pointer; font-size: 11px; font-weight: 500; color: var(--fg-muted); gap: 4px; padding-left: 8px; }
+.scm-ghead:hover { color: var(--fg-2); }
+.scm-row { gap: 6px; padding-left: 22px; padding-right: 8px; }
+.scm-row .scm-name { flex: none; max-width: 60%; }
+.scm-row .scm-name.gone { text-decoration: line-through; color: var(--fg-muted); }
+.scm-acts { display: none; align-items: center; gap: 1px; flex: none; }
+.scm-row:hover .scm-acts, .scm-ghead:hover .scm-acts, .scm-row:focus-within .scm-acts, .scm-ghead:focus-within .scm-acts { display: inline-flex; }
+.scm-acts .row-act { width: 20px; height: 20px; border-radius: var(--r-sm); display: grid; place-items: center; color: var(--fg-faint); }
+.scm-acts .row-act:hover:not(:disabled) { color: var(--fg); background: var(--bg-active); }
+.scm-letter { width: 12px; flex: none; text-align: center; font: 600 11px/1 var(--font-mono); color: var(--fg-muted); }
+.scm-letter.ok { color: var(--ok); }
+.scm-letter.warn { color: var(--warn); }
+.scm-letter.err { color: var(--err); }
+.scm-letter.info { color: var(--info); }
+.scm-more { display: block; padding: 2px 22px 4px; font-size: 11.5px; }

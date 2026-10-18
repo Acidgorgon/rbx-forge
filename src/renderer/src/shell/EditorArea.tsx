@@ -32,9 +32,10 @@ import { UiPreviewPage } from '../pages/uipreview/UiPreviewPage'
 import { MemoryPage } from '../pages/memory/MemoryPage'
 import { GroupChatsPage } from '../assistant/GroupChatsPage'
 import { ConflictPage } from '../pages/ConflictPage'
+import { GitDiffPage } from '../pages/GitDiffPage'
 import { TranscriptPage } from '../pages/TranscriptPage'
 
-const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', art: 'image', vfx: 'sparkle', anim: 'figure', ability: 'bolt', thumbs: 'thumbnail', uimotion: 'tap', model: 'cube', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', transcript: 'bot' }
+const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', art: 'image', vfx: 'sparkle', anim: 'figure', ability: 'bolt', thumbs: 'thumbnail', uimotion: 'tap', model: 'cube', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', gitdiff: 'diff', transcript: 'bot' }
 
 function TabGlyph({ tab }: { tab: Tab }) {
   if (tab.kind === 'file' && tab.path) {
@@ -470,6 +471,8 @@ function pageFor(tab: Tab): ReactNode {
       return <GroupChatsPage />
     case 'conflict':
       return <ConflictPage path={tab.path!} />
+    case 'gitdiff':
+      return <GitDiffPage key={tab.id} path={tab.path!} staged={!!tab.staged} />
     case 'transcript':
       return <TranscriptPage agentId={tab.agentId!} title={tab.title} />
     default:

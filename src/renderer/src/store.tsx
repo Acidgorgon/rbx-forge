@@ -49,14 +49,16 @@ import { afterTurn, editQueued as editIn, enqueue, moveToFront, outgoingText, re
 export type SideView = 'explorer' | 'scripts' | 'events' | 'sync' | 'tests' | 'team'
 export type BottomTab = 'output' | 'problems' | 'terminal' | 'shell'
 export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics' | 'memory' | 'groups' | 'art' | 'uipreview' | 'vfx' | 'anim' | 'ability' | 'thumbs' | 'uimotion' | 'model'
-export type TabKind = PageKind | 'file' | 'conflict' | 'transcript'
+export type TabKind = PageKind | 'file' | 'conflict' | 'transcript' | 'gitdiff'
 
 export interface Tab {
   id: string
   kind: TabKind
   title: string
-  // file / conflict: repo-relative path
+  // file / conflict / gitdiff: repo-relative path
   path?: string
+  // gitdiff: the staged change (HEAD -> index) rather than the working-tree one (index -> disk).
+  staged?: boolean
   // Preview tabs (single click) are italic and replaced by the next preview.
   preview?: boolean
   // transcript: chat id to read with getChat (test agent id, or orch:<run>:<task>)
@@ -370,7 +372,7 @@ function reducer(state: State, a: Action): State {
     case 'projectSwitched': {
       // File and conflict tabs hold repo-relative paths of the previous project: saving one would
       // write into the new project. Close them with their buffers.
-      const keep = new Set(state.tabs.filter((t) => t.kind !== 'file' && t.kind !== 'conflict').map((t) => t.id))
+      const keep = new Set(state.tabs.filter((t) => t.kind !== 'file' && t.kind !== 'conflict' && t.kind !== 'gitdiff').map((t) => t.id))
       return withGroups({ ...state, files: [] }, EG.retainTabs(state.editor, (id) => keep.has(id)))
     }
     case 'layout': {
@@ -550,6 +552,8 @@ export interface Actions {
   openFileAt(path: string, line: number, column?: number): Promise<void>
   openPage(kind: PageKind): void
   openConflict(path: string): void
+  // Source control: a read-only diff tab of one changed file.
+  openGitDiff(path: string, staged: boolean, options?: { preview?: boolean }): void
   openTranscript(agentId: string, title: string): void
   // `group`: the editor group (split editor) to act in; default the active group / wherever it is.
   activateTab(id: string, group?: string): void
@@ -815,6 +819,10 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       },
       openConflict(path) {
         dispatch({ type: 'openTab', tab: { id: `conflict:${path}`, kind: 'conflict', title: `${tabTitle(path)} ⇄ Studio`, path } })
+      },
+      openGitDiff(path, staged, options) {
+        const id = `gitdiff:${staged ? 'staged' : 'work'}:${path}`
+        dispatch({ type: 'openTab', tab: { id, kind: 'gitdiff', title: `${tabTitle(path)} (${staged ? 'staged' : 'changes'})`, path, staged }, preview: options?.preview })
       },
       openTranscript(agentId, title) {
         dispatch({ type: 'openTab', tab: { id: `transcript:${agentId}`, kind: 'transcript', title, agentId } })

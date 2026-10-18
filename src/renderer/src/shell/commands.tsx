@@ -16,6 +16,7 @@ import { formatDocumentIn } from '../editorAssist/format'
 import { editorAssistStatus, setEditorAssist } from '../editorAssist/state'
 import { groupOrder, joinAll } from '@shared/editorGroups'
 import { focusGroupAt, moveToOtherGroup, splitTab } from './groupActions'
+import { commit as scmCommit, fetchRemote, focusMessage, pull as scmPull, push as scmPush, scmStore, stage as scmStage, startScm, unstage as scmUnstage } from '../views/scmState'
 
 export interface Command {
   id: string
@@ -87,6 +88,21 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Sync', 'sync.now', 'Sync with collaborators', () => {
     void h.syncNow().then((git) => actions.set({ git })).catch((e) => actions.toast({ text: 'Sync failed', detail: String(e?.message ?? e), kind: 'err' }))
   }, { keys: 'mod+shift+s', icon: <Icon name="sync" /> })
+  // Git (views/scmState.ts): each shows the Source control section, where results and errors appear.
+  startScm()
+  const showScm = () => actions.setLayout({ sideOpen: true, sideView: 'sync' })
+  const commitCmd = (push: boolean) => () => {
+    showScm()
+    if (scmStore.get().message.trim()) void scmCommit(actions, { push })
+    else focusMessage()
+  }
+  add('Git', 'git.commit', 'Git: Commit', commitCmd(false), { icon: <Icon name="check" />, detail: 'the staged files, with your message' })
+  add('Git', 'git.commitPush', 'Git: Commit & Push', commitCmd(true), { icon: <Icon name="arrowUp" /> })
+  add('Git', 'git.stageAll', 'Git: Stage all changes', () => (showScm(), void scmStage(actions, 'all')), { icon: <Icon name="plus" /> })
+  add('Git', 'git.unstageAll', 'Git: Unstage all changes', () => (showScm(), void scmUnstage('all')), { icon: <Icon name="minus" /> })
+  add('Git', 'git.pull', 'Git: Pull', () => (showScm(), void scmPull(actions)), { icon: <Icon name="arrowDown" /> })
+  add('Git', 'git.push', 'Git: Push', () => (showScm(), void scmPush(actions)), { icon: <Icon name="arrowUp" />, detail: 'never forced' })
+  add('Git', 'git.fetch', 'Git: Fetch', () => (showScm(), void fetchRemote()), { icon: <Icon name="sync" /> })
   if (state.studioConflicts.length) add('Sync', 'sync.conflict', 'Resolve next Studio conflict', () => actions.openConflict(state.studioConflicts[0].path), { icon: <Icon name="diff" />, detail: state.studioConflicts[0].path })
   add('Sync', 'branch.start', 'Start feature branch…', () => actions.openDialog({ kind: 'featureBranch' }), { icon: <Icon name="branch" /> })
   add('Sync', 'pr.open', 'Open pull request…', () => actions.openDialog({ kind: 'pullRequest' }), { icon: <Icon name="pr" /> })

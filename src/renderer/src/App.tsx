@@ -21,6 +21,7 @@ import { AssistantPanel } from './assistant/AssistantPanel'
 import { ToolchainGate } from './setup/Toolchain'
 import { terminalOwnsKey } from './terminal/session'
 import { QolRoot } from './qol/QolRoot'
+import { startScm } from './views/scmState'
 import { activeGroupOf } from '@shared/editorGroups'
 import { focusGroupAt } from './shell/groupActions'
 import './shell/workbench.css'
@@ -161,6 +162,9 @@ function Shell() {
   const { state, actions } = useStore()
   const l = state.layout
   useShortcuts()
+  // Source control: the saved commit message draft reaches main at startup (the auto-sync skips its
+  // commit while there is one), not only once the Sync view opens.
+  useEffect(() => startScm(), [])
 
   // Narrow windows: never keep both side panels open below 1180px. The panel opened last wins, so
   // opening the side panel while narrow hides the Assistant (and the other way round).

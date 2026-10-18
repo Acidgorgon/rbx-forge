@@ -1,14 +1,16 @@
-// Source control & Sync: git state, sync now, incoming changes (grouped by feature), local changes,
-// Studio conflicts (open as diff tabs), pre-sync check, feature branch / PR, sync settings.
+// Source control & Sync: Source control on top (stage, commit with your message, pull / push; see
+// SourceControlSection), then Forge Sync, team sync (Sync now), incoming changes (grouped by feature),
+// local changes, Studio conflicts (open as diff tabs), pre-sync check, feature branch / PR, settings.
 import { useEffect, useState } from 'react'
 import type { IncomingChanges, PreSyncReport, SyncSettings } from '@shared/types'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
-import { FileGlyph } from '../components/ClassIcon'
 import { ago, errorText, keyHint } from '../lib/format'
 import { basename } from '../lib/roblox'
 import { sparks } from '../lib/sparks'
 import { ForgeSyncSection, useForgeSync } from './ForgeSyncSection'
+import { SourceControlSection } from './SourceControlSection'
+import { useScm } from './scmState'
 
 const STATUS_LETTER: Record<string, string> = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R', copied: 'C', typechange: 'T', untracked: 'U', conflicted: '!', unknown: '?' }
 
@@ -23,6 +25,7 @@ export function SyncView() {
   const [remote, setRemote] = useState('')
   const [settings, setSettings] = useState<SyncSettings | null>(state.syncSettings)
   const [forgeSync, setForgeSync] = useForgeSync()
+  const scm = useScm()
 
   useEffect(() => {
     void actions.refreshSync()
@@ -93,6 +96,7 @@ export function SyncView() {
         </button>
       </div>
       <div className="panel-body">
+        {state.project && git?.isRepo && <SourceControlSection />}
         {state.project && <ForgeSyncSection status={forgeSync} setStatus={setForgeSync} />}
         {!state.project ? (
           <div className="empty"><Icon name="branch" /><span>Open a project first.</span></div>
@@ -113,12 +117,13 @@ export function SyncView() {
                 <span className={`badge-o ${git.conflicts.length || git.error ? 'err' : inSync ? 'ok' : 'warn'}`}>
                   {git.conflicts.length ? 'conflict' : git.error ? 'failed' : inSync ? 'in sync' : git.behind ? `${git.behind} behind` : `${git.ahead} ahead`}
                 </span>
-                <span className="grow ellipsis mono">{git.branch ?? 'detached'}{git.hasRemote ? '' : ' · no remote'}</span>
+                <span className="grow ellipsis">Team sync{git.hasRemote ? '' : ' · no remote'}</span>
               </div>
               <div className="row note">
-                <span>↓{git.behind} ↑{git.ahead} · {git.dirty} changed · last sync {ago(git.lastSync)}</span>
+                <span>{git.dirty} changed · last sync {ago(git.lastSync)}{settings?.autoSyncMinutes ? ` · auto every ${settings.autoSyncMinutes} min` : ''}</span>
               </div>
-              {git.error && <div className="err-text">{git.error}</div>}
+              {git.error && git.error !== scm.error && <div className="err-text">{git.error}</div>}
+              {git.note && <div className="note warn">{git.note}</div>}
               <div className="row" style={{ marginTop: 8 }}>
                 <button className="btn primary" onClick={(e) => void syncNow(e.currentTarget)} disabled={syncing || !git.hasRemote}>
                   <Icon name="sync" size={12} className={syncing ? 'spin' : undefined} /> {syncing ? 'Syncing…' : 'Sync now'}
@@ -126,19 +131,6 @@ export function SyncView() {
                 <span className="kc">{keyHint('mod+shift+s')}</span>
               </div>
             </div>
-
-            {git.conflicts.length > 0 && (
-              <section className="vsec">
-                <div className="vsec-head">Git conflicts <span className="count">{git.conflicts.length}</span></div>
-                {git.conflicts.map((f) => (
-                  <div key={f} className="lrow" onClick={() => void actions.openFile(f)}>
-                    <FileGlyph path={f} size={14} />
-                    <span className="grow ellipsis">{basename(f)}</span>
-                    <button className="mini-btn" onClick={(e) => (e.stopPropagation(), actions.ask(`Help me resolve the merge conflict in \`${f}\` `))}>Ask</button>
-                  </div>
-                ))}
-              </section>
-            )}
 
             {forgeSync?.engine !== 'forge' && <section className="vsec">
               <div className="vsec-head">Studio conflicts <span className="count">{state.studioConflicts.length}</span></div>

@@ -513,7 +513,7 @@ export function SettingsPage() {
                       <span className="unit">min</span>
                     </div>
                   </Row>
-                  <Row title="Commit local work before pulling" desc="Keeps your edits safe when teammates' changes come in.">
+                  <Row title="Commit local work before pulling" desc="Keeps your edits safe when teammates' changes come in. Skipped while you have files staged or a commit message typed in Source control.">
                     <input type="checkbox" className="switch" checked={sync.autoCommit} onChange={(e) => saveSync({ ...sync, autoCommit: e.target.checked })} aria-label="Commit local work before pulling" />
                   </Row>
                 </>

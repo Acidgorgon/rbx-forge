@@ -486,7 +486,10 @@ export class Supervisor {
         if (proc.retry) clearTimeout(proc.retry)
         proc.retry = null
         const child = proc.child as ChildProcess
+        // Detached now, so its exit counts as superseded: mark the cut here, before a new serve can listen.
+        if (proc.listening) this.markCut(key)
         proc.child = null
+        proc.listening = false
         void killTree(child)
         if (key === 'rojo') this.update('rojo', { state: 'starting', pid: undefined, detail: `${hold.detail} (${hold.file})`, hold: this.holdView(hold.file) })
       } else if (hold && action === 'wait') {
@@ -669,10 +672,7 @@ export class Supervisor {
       }
       // Whatever ended it, a Rojo plugin connected to it is cut off (unless the project closes).
       const file = id === 'rojo' ? this.servedPlace(key) : null
-      if (listened && !bindFailed && file && !this.closing && this.root) {
-        this.cut.add(file)
-        this.reconnect.delete(file)
-      }
+      if (listened && !bindFailed && file && !superseded && !this.closing && this.root) this.markCut(key)
       if (id === 'rojo') this.placesChanged()
       if (!proc.wanted || proc.held || superseded) return
       const reason = proc.panicked ? 'panicked' : error ? error.message : signal ? `killed by ${signal}` : `exited with code ${code}`
@@ -787,6 +787,14 @@ export class Supervisor {
       if (command && proc.wanted && !proc.child) this.spawnService(key, 'rojo', command)
     }
     this.placesChanged()
+  }
+
+  // A listening serve of this place stopped while the project stays open.
+  private markCut(key: string): void {
+    const file = key.startsWith('rojo') ? this.servedPlace(key) : null
+    if (!file || this.closing || !this.root) return
+    this.cut.add(file)
+    this.reconnect.delete(file)
   }
 
   // A serve printed its port. After a cut, Studio's Rojo plugin has to be connected again by hand.

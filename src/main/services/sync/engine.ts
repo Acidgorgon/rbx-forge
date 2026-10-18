@@ -513,12 +513,16 @@ export class SyncEngine {
   }
 
   // How far this place's Studio is behind the disk: the place file's mapped files whose disk copy
-  // differs from the place's base (what its Studio and the disk last agreed on), files new on disk
-  // (no base: its Studio never had them) and files deleted on disk that it still has. Conflicts held
-  // for the place are not counted (they are shown as conflicts). Newest first. null: the place has no
-  // shared version yet (never synced, or its first sync is undecided), so nothing can be said.
+  // differs from the place's base (what its Studio and the disk last agreed on) and files new on disk
+  // (no base: its Studio never had them). Conflicts held for the place are not counted (they are shown
+  // as conflicts). Newest first. null: the place has no shared version yet (never synced, or its first
+  // sync is undecided), so nothing can be said.
+  // A base whose file is gone from disk is never "behind": `deleted` lists those the place's live
+  // Studio still has (deleted on disk; Rojo removes them when it connects, and a guarded one is held by
+  // the next check), counted apart. One Studio does not have either (or no live tree says) is a stale
+  // base: the next check drops it (see pruneIndex and goneBoth), drift just leaves it out.
   // Disk digests are cached by size and mtime, so a status refresh only reads files that changed.
-  drift(projectFile: string, placeKey: string): Promise<{ behind: number; files: { file: string; mtime: number }[] } | null> {
+  drift(projectFile: string, placeKey: string): Promise<{ behind: number; files: { file: string; mtime: number }[]; deleted?: string[] } | null> {
     return this.serial(async () => {
       await this.ensureLoaded()
       const map = this.maps.find((m) => m.projectFile === projectFile)
@@ -549,12 +553,18 @@ export class SyncEngine {
         }
         if (cached.hash !== base) out.push({ file, mtime: info.mtimeMs })
       }
+      // Instances the place's live Studio has, when its session runs this place file.
+      const s = this.sessions.get(placeKey)
+      const studio = s?.tree && s.map.projectFile === projectFile ? new Set([...s.tree.values()].map((n) => pkey(n.path))) : null
+      const diskLower = new Set([...disk.files].map((f) => f.toLowerCase()))
+      const deleted: string[] = []
       for (const file of (await this.store.files(placeKey)).sort()) {
-        if (disk.files.has(file) || held.has(file) || isGitkeep(file) || rootMeta.has(file) || !kindOfFile(file) || !insideMappedRoots(map, file)) continue
-        out.push({ file, mtime: 0 })
+        if (disk.files.has(file) || diskLower.has(file.toLowerCase()) || held.has(file) || isGitkeep(file) || rootMeta.has(file) || !kindOfFile(file) || !insideMappedRoots(map, file)) continue
+        const inst = fromDisk(map, file)
+        if (inst && studio?.has(pkey(inst))) deleted.push(file)
       }
       out.sort((a, b) => b.mtime - a.mtime || a.file.localeCompare(b.file))
-      return { behind: out.length, files: out }
+      return { behind: out.length, files: out, ...(deleted.length ? { deleted } : {}) }
     })
   }
 
@@ -1142,6 +1152,15 @@ export class SyncEngine {
     // are reconciled as one, or the last copy reconciled would overwrite an edit made to another.
     const mounts = new Map<string, Unit[]>()
     for (const u of plan.units) if (u.kind !== 'folder' && inScope(u.instancePath)) (mounts.get(u.file) ?? mounts.set(u.file, []).get(u.file)!).push(u)
+    // Studio folders missing on disk with a base below them: deleted (or renamed) on disk, not made in
+    // Studio. Not recreated: an empty directory (and its .gitkeep) would keep the old folder in Studio
+    // after Rojo carries the delete (CounterStance next to Countercoil). "Pull to disk" still writes it.
+    const bases = await this.store.files(s.placeKey)
+    const goneDirs = new Set<string>()
+    for (const u of plan.units) {
+      if (u.kind !== 'folder' || disk.dirs.has(u.file) || s.restore.some((p) => startsWith(u.instancePath, p)) || !bases.some((f) => f.startsWith(u.file + '/'))) continue
+      if (!(await this.fs.lstat(this.abs(u.file)).then((i) => i.isDirectory(), () => false))) goneDirs.add(u.file)
+    }
     // Folders first so files have a parent; then files.
     for (const u of plan.units) {
       if (!inScope(u.instancePath)) continue
@@ -1155,7 +1174,8 @@ export class SyncEngine {
         }
         if (u.kind === 'folder') {
           // First sync undecided: no folder is created (its files wait for the decision).
-          if (!disk.dirs.has(u.file) && !s.firstSync) {
+          if (goneDirs.has(u.file)) entries.push(this.entry(u.file, 'disk-ahead', u.instancePath, { note: 'deleted on disk' }))
+          else if (!disk.dirs.has(u.file) && !s.firstSync) {
             await this.guard(map, u.file + '/x')
             // Present under another case (case-insensitive disk): not a new folder.
             const existed = await this.fs.lstat(this.abs(u.file)).then((i) => i.isDirectory(), () => false)
@@ -1215,16 +1235,29 @@ export class SyncEngine {
       }
     }
 
+    // A check (full snapshot): bases of files the place file no longer maps are dropped.
+    if (!scope) await this.pruneIndex(s)
+
     // Bases of files neither side has any more: removed from disk and from Studio without Forge Sync
-    // doing it (Forge's own removals drop the base). Typical: Rojo two-way sync deleting the file when
-    // the instance was deleted in Studio, or a disk delete Rojo carried into Studio. The last synced
-    // copy is saved; a guarded file is held until the user restores it or confirms the delete.
+    // doing it (Forge's own removals drop the base), or renamed on disk (CounterStance -> Countercoil:
+    // the new path gets its own base when Studio has it). Typical: Rojo two-way sync deleting the file
+    // when the instance was deleted in Studio, or a disk delete Rojo carried into Studio. The last
+    // synced copy is saved; a guarded file is held until the user restores it or confirms the delete.
+    // A base Studio still has the instance for stays (deleted on disk: Rojo removes it from Studio):
+    // without it, the next pass would take the Studio copy for a new script and write it back.
     if (!s.firstSync) {
       const diskLower = new Set([...disk.files].map((f) => f.toLowerCase()))
       // Instances Studio still has (a base from a script's other form is not a loss).
       const live = new Set(plan.units.map((u) => pkey(u.instancePath)))
       for (const file of (await this.store.files(s.placeKey)).sort()) {
-        if (disk.files.has(file) || diskLower.has(file.toLowerCase()) || claimed.has(file) || claimedLower.has(file.toLowerCase()) || plan.keep.has(file) || s.protect.has(file) || isGitkeep(file)) continue
+        if (disk.files.has(file) || diskLower.has(file.toLowerCase()) || claimed.has(file) || claimedLower.has(file.toLowerCase()) || plan.keep.has(file) || s.protect.has(file)) continue
+        if (isGitkeep(file)) {
+          // An empty folder's marker: dropped once neither side has the folder (nothing to recover).
+          const inst = fromDisk(map, `${dirOf(file)}/init.meta.json`)
+          const hit = inst && inScope(inst) && !live.has(pkey(inst)) ? findRoot(map, inst) : null
+          if (hit?.root && present.has(hit.root.path) && !disk.dirs.has(dirOf(file))) await this.store.delete(s.placeKey, file)
+          continue
+        }
         if (s.conflicts.has(file) || [...s.protect].some((p) => file.startsWith(p + '/'))) continue
         const kind = kindOfFile(file)
         if (!kind) continue
@@ -1244,7 +1277,7 @@ export class SyncEngine {
 
     // After trashing (which prunes directories left empty): keep empty Studio folders on disk.
     for (const u of plan.units) {
-      if (s.firstSync || u.kind !== 'folder' || !inScope(u.instancePath)) continue
+      if (s.firstSync || u.kind !== 'folder' || !inScope(u.instancePath) || goneDirs.has(u.file)) continue
       try {
         const e = await this.keepFolder(s, u, stamp)
         if (e) entries.push(e)
@@ -1254,6 +1287,25 @@ export class SyncEngine {
     }
     await this.updateStudioOnly(s, plan, disk, checkpoint, entries)
     return entries
+  }
+
+  // Index hygiene on a check: a base for a file this place's project no longer maps (outside its $path
+  // roots, globIgnorePaths or a skip glob, a folder copy an explicit child shadows; typically a place
+  // relinked to another place file, or a mapping removed) stands for nothing its Studio syncs. Dropped,
+  // on disk or not: no Studio instance maps to that file, so no copy can come back through the gap.
+  // Held conflicts and protected files keep theirs. Never with a stand-in map (place file not loaded).
+  private async pruneIndex(s: Session): Promise<number> {
+    const map = s.map
+    if (!this.maps.includes(map) || !map.roots.length) return 0
+    const dropped: string[] = []
+    for (const file of await this.store.files(s.placeKey)) {
+      if (s.conflicts.has(file) || s.protect.has(file)) continue
+      if (fromDisk(map, isGitkeep(file) ? `${dirOf(file)}/init.meta.json` : file)) continue
+      await this.store.delete(s.placeKey, file)
+      dropped.push(file)
+    }
+    if (dropped.length) this.log?.(`Forge Sync: dropped ${dropped.length} sync base${dropped.length === 1 ? '' : 's'} of ${map.name || map.projectFile} for files it no longer maps (${dropped.slice(0, 3).join(', ')}${dropped.length > 3 ? ' ...' : ''})`)
+    return dropped.length
   }
 
   private async refreshStudioOnly(s: Session): Promise<void> {
@@ -1656,15 +1708,20 @@ export class SyncEngine {
 
   // A base whose file is on neither side: removed outside Forge Sync. Saves the last synced copy under
   // RECOVERED_DIR; a guarded file is held ("restore or delete?"), any other base is dropped. A delete
-  // the user already confirmed only drops the base.
+  // the user already confirmed only drops the base, and so does a digest-only base (migrated from the
+  // legacy state, or its blob gone): there is no copy to save or restore, and kept it would count
+  // forever (and trash the file as "deleted in Studio" if a checkout brought it back to disk).
   private async goneBoth(s: Session, file: string, kind: UnitKind, inst: string[], stamp: string, guard: DeleteGuard): Promise<SyncEntry | null> {
     const confirmed = this.confirmedDeletes.get(s.placeKey)
     const base = await this.store.get(s.placeKey, file)
     if (!base) return null
-    if (confirmed?.has(file) || base.text === null) {
-      // Confirmed, or a digest-only base (migrated from the legacy state): nothing to recover.
-      if (confirmed?.delete(file)) await this.store.delete(s.placeKey, file)
+    if (confirmed?.delete(file)) {
+      await this.store.delete(s.placeKey, file)
       return null
+    }
+    if (base.text === null) {
+      await this.store.delete(s.placeKey, file)
+      return this.entry(file, 'disk-ahead', inst, { note: 'gone from disk and from Studio, not removed by Forge Sync; no synced copy to save (digest-only base), base dropped' })
     }
     const trashPath = await this.saveRecovered(s.placeKey, file, base.text, stamp)
     const why = await guard(file, base.text)

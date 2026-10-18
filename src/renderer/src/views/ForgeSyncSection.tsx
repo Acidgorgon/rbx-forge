@@ -149,6 +149,10 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
       return window.harness.syncStatus()
     }, `Rojo serves ${targetName(file)}. Connect Rojo in its Studio window.`)
   const recheck = (file: string) => act(`recheck:${file}`, () => window.harness.syncRecheckPlace(file), `Asked Studio to check ${targetName(file)} again`)
+  const reconnected = (file: string) => act(`reconnected:${file}`, () => window.harness.syncRojoReconnected(file))
+  const holdAgain = (file: string) => act(`hold:${file}`, () => window.harness.syncStopServingAnyway(file), `${targetName(file)}: rojo serve follows the Studio sync check again`)
+  // Each place's own rojo serve (supervisor), for its crash / port error line.
+  const rojoPlaces = state.services.find((x) => x.id === 'rojo')?.places ?? []
   // Every drifted place (linked rows and unlinked windows), for the callouts at the top.
   const drifts: { key: string; drift: PlaceDrift; projectFile?: string; unlinked?: UnlinkedPlace }[] = [
     ...status.places.filter((p) => p.drift).map((p) => ({ key: `p:${p.placeKey}:${p.projectFile}`, drift: p.drift!, projectFile: p.projectFile })),
@@ -183,7 +187,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
             <b>{drift.text.split(': ')[0]}</b>
             {drift.text.includes(': ') ? `: ${drift.text.split(': ').slice(1).join(': ')}.` : '.'}
           </div>
-          <div className="fs-sub note ellipsis mono" style={{ padding: 0 }}>{drift.files.slice(0, 3).join(', ')}{drift.behind > 3 ? ', …' : ''}</div>
+          {drift.files.length > 0 && <div className="fs-sub note ellipsis mono" style={{ padding: 0 }}>{drift.files.slice(0, 3).join(', ')}{drift.behind > 3 ? ', …' : ''}</div>}
           <div className="row">
             {drift.fix === 'link' && unlinked && (
               <button className="mini-btn hot" disabled={!!busy} title={`Link this Studio place to ${targetName(drift.linkTo ?? linkTarget)} (${drift.linkTo ?? linkTarget}). Its first sync waits until you pick a side.`} onClick={() => link(unlinked, drift.linkTo ?? linkTarget, `Linked ${unlinkedName(unlinked)} to ${targetName(drift.linkTo ?? linkTarget)}. Forge checks it before Rojo serves.`)}>
@@ -193,6 +197,11 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
             {drift.fix === 'recheck' && projectFile && (
               <button className="mini-btn hot" disabled={!!busy} title="Ask that Studio window for a fresh sync check (Forge Bridge v12): Forge reads Studio first, then Rojo serves" onClick={() => void recheck(projectFile)}>
                 Check now
+              </button>
+            )}
+            {drift.fix === 'reconnected' && projectFile && (
+              <button className="mini-btn" disabled={!!busy} title="Rojo is connected in that Studio window again: hide this notice" onClick={() => void reconnected(projectFile)}>
+                Connected
               </button>
             )}
             {drift.fix === 'start-rojo' && projectFile && (
@@ -306,10 +315,14 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
             <div className="lrow static" title={`${p.projectFile}${p.place?.placeId ? ` · place ${p.place.placeId}` : ''}${p.fingerprint ? `\n${p.fingerprint}` : ''}\n${g.hint}`}>
               <span className={`fs-dot${p.connected ? ' on' : ''}`} title={p.connected ? 'Studio connected' : 'Studio not connected'} />
               <span className="grow ellipsis">{rowLabel(p)}</span>
-              <span className={`tag ${g.cls}`}>{p.gate === 'blocked' ? (p.conflicts || !p.studioOnly?.holds ? `${p.conflicts} held` : `${p.studioOnly.count} not on disk`) : g.label}</span>
+              <span className={`tag ${p.forced ? 'warn' : g.cls}`}>{p.gate === 'blocked' ? (p.conflicts || !p.studioOnly?.holds ? `${p.conflicts} held` : `${p.studioOnly.count} not on disk`) : p.forced ? 'serving anyway' : g.label}</span>
             </div>
             <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}{p.rojo === 'stopped' ? ' · rojo not serving it' : ''}</div>
-            {p.drift && <div className="fs-sub note" style={{ color: 'var(--warn)' }} title={p.drift.files.join('\n')}>{p.drift.behind} file{p.drift.behind === 1 ? '' : 's'} behind disk</div>}
+            {(() => {
+              const serve = rojoPlaces.find((x) => x.file === p.projectFile)
+              return serve?.error && serve.state !== 'serving' ? <div className="fs-sub note" style={{ color: 'var(--warn)' }} title={serve.error}>rojo {serve.state === 'gave-up' ? 'gave up' : serve.state}: {serve.error}</div> : null
+            })()}
+            {p.drift && <div className="fs-sub note" style={{ color: 'var(--warn)' }} title={p.drift.files.join('\n')}>{p.drift.cause === 'rojo-disconnected' ? 'Rojo disconnected: connect it again in Studio' : `${p.drift.behind} file${p.drift.behind === 1 ? '' : 's'} behind disk`}</div>}
             {p.fingerprint && rowLabel(p) !== placeName(p) && <div className="fs-sub note ellipsis" title={p.fingerprint}>{p.fingerprint}</div>}
             {p.gate === 'waiting' && !blockedWait && (
               <div className="fs-sub note fs-waiting" title={p.gateDetail}>
@@ -385,9 +398,15 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
               </div>
             ))}
 
-            {p.gate === 'blocked' && (
+            {p.gate === 'blocked' && !p.forced && (
               <div className="row fs-actions">
-                <button className="mini-btn" disabled={!!busy} title="Rojo serves now; Studio edits in the held files may be overwritten, and Rojo may offer to delete Studio-only scripts" onClick={() => void act(`serve:${p.placeKey}`, () => window.harness.syncServeAnyway(p.placeKey))}>Serve anyway</button>
+                <button className="mini-btn" disabled={!!busy} title="Rojo serves now and keeps serving through re-checks until you hold it again; Studio edits in the held files may be overwritten, and Rojo may offer to delete Studio-only scripts" onClick={() => void act(`serve:${p.placeKey}`, () => window.harness.syncServeAnyway(p.placeKey))}>Serve anyway</button>
+              </div>
+            )}
+            {p.forced && (
+              <div className="row fs-actions">
+                <span className="note grow">Serving anyway: rojo serves whatever the sync check finds.</span>
+                <button className="mini-btn" disabled={!!busy} title="Rojo serve follows the Studio sync check again (it stops now if the place has conflicts or no check)" onClick={() => void holdAgain(p.projectFile)}>Hold again</button>
               </div>
             )}
           </div>

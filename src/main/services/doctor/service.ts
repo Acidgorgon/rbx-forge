@@ -19,10 +19,15 @@ export interface DoctorProbes {
   bridge(): Promise<DoctorInputs['bridge']>
   legacyPlugins(): Promise<string[]>
   // Rojo serve ports Forge would use, and which of them rojo serves right now.
-  servePorts(): { port: number; label: string; served: boolean }[]
+  // live: `served` is the place's real serve state (supervisor), not the settings.
+  servePorts(): { port: number; label: string; served: boolean; live?: boolean }[]
   rojo(): DoctorInputs['rojo']
   // 'busy' when something accepts / holds the port.
   portBusy(port: number): Promise<boolean | null>
+  // Who listens on a port Forge does not serve (a stray rojo?).
+  portOwner?(port: number): Promise<{ pid: number; name: string; rojo: boolean } | null>
+  // Rojo project nodes mapped twice (mapping.ts duplicateMappings), one line each.
+  duplicateMappings?(root: string): Promise<string[]>
   sync(): Promise<DoctorInputs['sync']>
   keys(): Promise<DoctorInputs['keys']>
   openCloudKey(): Promise<string | null>
@@ -76,8 +81,10 @@ export async function projectProbe(probes: DoctorProbes, root: string): Promise<
   }
   const [wallyToml, packagesInstalled, rokitToml, smTime] = await Promise.all([timed(probes.exists(j('wally.toml')), false), timed(probes.exists(j('Packages')), false), timed(probes.exists(j('rokit.toml')), false), timed(probes.mtimeMs(j('sourcemap.json')), null)])
   const now = probes.now?.() ?? Date.now()
+  const duplicateMappings = probes.duplicateMappings ? await timed(probes.duplicateMappings(root), [] as string[]) : []
   return {
     root,
+    ...(duplicateMappings.length ? { duplicateMappings } : {}),
     projectFiles,
     wallyToml,
     packagesInstalled,
@@ -121,9 +128,10 @@ export async function gatherInputs(probes: DoctorProbes): Promise<DoctorInputs> 
   for (const sp of probes.servePorts()) {
     if (ports.some((p) => p.port === sp.port)) continue
     const busy = await timed(probes.portBusy(sp.port), null, 3000)
-    const expected = sp.served && (rojo === 'running' || rojo === 'starting')
+    const expected = sp.served && (sp.live || rojo === 'running' || rojo === 'starting')
     const state: PortProbe['state'] = busy === null ? 'unknown' : busy ? (expected ? 'ours' : 'other') : 'free'
-    ports.push({ port: sp.port, label: sp.label, state, expected })
+    const owner = state === 'other' && probes.portOwner ? await timed(probes.portOwner(sp.port), null, 6000) : null
+    ports.push({ port: sp.port, label: sp.label, state, expected, ...(owner ? { owner } : {}) })
   }
   let introspect: DoctorInputs['openCloud']['introspect']
   if (ocKey && probes.introspectKey) {

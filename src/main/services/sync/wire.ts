@@ -26,8 +26,10 @@ export interface SyncWireDeps {
   studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
   // Every Studio window polling the bridge right now (and its plugin version, v12: its sync session).
   studios?: () => StudioWindow[]
-  // rojo serve for a place file right now (supervisor.rojoState).
+  // rojo serve for a place file right now (supervisor.rojoState), and its "reconnect Rojo" notice.
   rojo?: (projectFile: string) => RojoServeState
+  rojoReconnect?: (projectFile: string) => { port: number; at: number } | null
+  rojoConnected?: (projectFile: string) => void
   plugin?: () => Promise<{ installed: boolean; version?: number } | null>
   // The engine worker's SyncEngine and mapping.ts (loadPlaces / placeFor). Absent: Forge Sync stays
   // off for the plugin and every place serves normally.
@@ -151,6 +153,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     syncResolveAll: (placeKey: string, take: 'studio' | 'disk', reason?: string) =>
       need().resolveAll(String(placeKey), take, reason === 'first-run' || reason === 'both-changed' || reason === 'deleted-vs-edited' ? reason : undefined),
     syncServeAnyway: (placeKey: string) => need().serveAnyway(String(placeKey)),
+    syncStopServingAnyway: (projectFile: string) => need().stopServingAnyway(String(projectFile)),
+    syncRojoReconnected: (projectFile: string) => need().rojoReconnected(String(projectFile)),
     syncServeWithoutCheck: (projectFile?: string) => need().serveWithoutCheck(typeof projectFile === 'string' && projectFile ? projectFile : undefined),
     syncPullStudioOnly: (placeKey: string) => need().pullStudioOnly(String(placeKey)),
     syncLinkPlace: (id: string, projectFile?: string) => need().linkPlace(String(id), typeof projectFile === 'string' && projectFile ? projectFile : undefined),
@@ -206,6 +210,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
         studio: deps.studio,
         studios: deps.studios,
         rojo: deps.rojo,
+        rojoReconnect: deps.rojoReconnect,
+        rojoConnected: deps.rojoConnected,
         plugin: deps.plugin,
         onGate: (file, gate, detail, reason) => deps.supervisor.setGate(file, gate, detail, reason),
         emit,

@@ -275,6 +275,18 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
       changed()
       return status()
     },
+    async syncStopServingAnyway(projectFile) {
+      for (const p of places()) if (p.projectFile === projectFile) served.delete(p.placeKey)
+      unchecked.delete(projectFile)
+      log(`${projectFile}: serve anyway is off`)
+      changed()
+      return status()
+    },
+    async syncRojoReconnected(projectFile) {
+      log(`${projectFile}: Rojo connected again`)
+      changed()
+      return status()
+    },
     async syncCommitStudioEdits(message) {
       await delay(400)
       const committed = pending

@@ -71,7 +71,7 @@ import type { LabTier } from '../shared/labModels.ts'
 import type { LabId } from '../shared/gating/types.ts'
 import { createStudioWiring } from './services/studio/wire.ts'
 import { SyncEngine } from './services/sync/engine.ts'
-import { loadPlaces, placeFor } from './services/sync/mapping.ts'
+import { duplicateMappings, duplicateMappingText, loadPlaces, type PlaceMap, placeFor } from './services/sync/mapping.ts'
 import { createSync } from './services/sync/wire.ts'
 import { pluginsDir } from '../shared/studio/plugin.ts'
 import { homedir } from 'node:os'
@@ -138,13 +138,29 @@ const logs = new LogBuffer((line) => emit('log:line', line))
 const supervisor = new Supervisor({
   log: (line) => logs.push(line),
   onStatus: (statuses) => emit('services:status', statuses),
-  getSetting: (key, fallback) => settings.get(key, fallback)
+  getSetting: (key, fallback) => settings.get(key, fallback),
+  // Forge Sync shows each place's serve and the "reconnect Rojo in Studio" notice.
+  onRojoChange: () => {
+    try {
+      forgeSync.service()?.refresh()
+    } catch {
+      // Forge Sync is not set up yet.
+    }
+  }
 })
 // Stops rojo serve around Forge's own folder deletes / renames (rojo can panic on a folder that
 // vanishes while it serves) and starts it again once they settle.
 // Absolute path of the Explorer entry an operation touches (an init script's folder, not the script).
 const entryFull = (root: string, path: string, isDir?: boolean) => join(root, entryTarget(String(path ?? ''), !!isDir).path)
 const rojoPause = new RojoPause({ pause: (reason) => supervisor.pauseRojo(reason), resume: () => supervisor.resumeRojo(), log: (text) => logs.push({ service: 'rojo', stream: 'stderr', text }) })
+// The same around a file Forge Sync writes for one place: only that place's serve stops (the other
+// places' Rojo plugins stay connected).
+const placePauses = new Map<string, RojoPause>()
+const placePause = (file: string): RojoPause => {
+  let pause = placePauses.get(file)
+  if (!pause) placePauses.set(file, (pause = new RojoPause({ pause: (reason) => supervisor.pausePlace(file, reason), resume: () => supervisor.resumePlace(file), log: (text) => logs.push({ service: 'rojo', stream: 'stderr', text }) })))
+  return pause
+}
 
 // Editor language server: luau-lsp over stdio, relayed to the renderer's Monaco client.
 const lsp = new LspBridge({
@@ -578,6 +594,8 @@ const forgeSync = createSync({
   },
   studios: () => studio.bridge.studios(),
   rojo: (file) => supervisor.rojoState(file),
+  rojoReconnect: (file) => supervisor.rojoReconnect(file),
+  rojoConnected: (file) => supervisor.clearRojoReconnect(file),
   plugin: async () => {
     const s = await studio.service.status()
     return s.plugin.dir ? { installed: s.plugin.installed, ...(s.plugin.version !== undefined ? { version: s.plugin.version } : {}) } : null
@@ -593,10 +611,10 @@ const forgeSync = createSync({
       guardNewFile: (file, rel, fn) => {
         const serving = supervisor.rojoState(file) === 'serving'
         if (serving) logs.push({ service: 'harness', stream: 'info', text: `[sync] ${rel} is new on disk for an instance made in Studio: rojo serve restarts around the write so Rojo adopts Studio's instance instead of adding a second one. Reconnect Rojo in Studio.` })
-        return rojoPause.run(fn, 'new file from Studio', serving)
+        return placePause(file).run(fn, 'new file from Studio', serving)
       }
     }),
-  mapping: { loadPlaces, placeFor },
+  mapping: { loadPlaces, placeFor, duplicates: async (maps) => (await Promise.all((maps as PlaceMap[]).map((m) => duplicateMappings(m)))).flat().map(duplicateMappingText) },
   activePlace: () => project?.activePlace ?? null,
   onStudioTree: () => project?.studioChanged(),
   bridge: () => studio.bridge
@@ -803,6 +821,8 @@ const doctor = createDoctorWiring({
   updateState: () => updater.handlers.updateGetState() as never,
   updateCheck: () => Promise.resolve(updater.handlers.updateCheck()),
   startRojo: () => supervisor.start('rojo'),
+  rojoPlaces: () => supervisor.rojoPlaces(),
+  servesPort: (port) => supervisor.servesPort(port),
   screenRecording: () => (process.platform === 'darwin' ? (systemPreferences.getMediaAccessStatus('screen') as 'granted') : null),
   openExternal: (url) => void shell.openExternal(url),
   emit: (report) => emit('doctor:report', report)

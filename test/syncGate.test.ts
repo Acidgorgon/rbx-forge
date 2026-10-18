@@ -99,7 +99,7 @@ test('rojo serve waits while the place is checking or blocked, stops for a new S
 
   supervisor.setGate('default.project.json', 'idle')
   await waitFor(() => serves().length === 2 && rojo()?.state === 'running')
-  assert.ok(logs.some((l) => /stopping rojo serve until Studio and disk agree/.test(l.text)))
+  assert.ok(logs.some((l) => /stopping rojo:default\.project\.json because default\.project\.json is held \(Waiting for Studio sync check\); it starts again when Studio and disk agree/.test(l.text)), JSON.stringify(logs.map((l) => l.text)))
   await supervisor.stopAll()
 })
 

@@ -32,7 +32,7 @@ import * as nodeFs from 'node:fs/promises'
 import { join, resolve as resolvePath } from 'node:path'
 import type { GateState, PlaceSyncStatus, StudioChange, StudioNode, StudioOnlyScript, SyncAction, SyncConflictInfo, SyncEntry, SyncPlace } from '../../../shared/sync/types.ts'
 import { matchPlace, PlaceLinks } from './links.ts'
-import { cleanRel, type DiskProbe, findRoot, fromDisk, insideMappedRoots, isProjectNode, isScriptClass, isSkipped, loadPlaces, PACKAGE_DIRS, parseFileName, type PlaceMap, placeFor, saveTarget, type SaveTarget, sharedWith, type SyncRoot, toDisk, unsafeName } from './mapping.ts'
+import { cleanRel, type DiskProbe, findRoot, fromDisk, insideMappedRoots, isProjectNode, isScriptClass, isSkipped, loadPlaces, PACKAGE_DIRS, parseFileName, type PlaceMap, placeFor, rojoIgnored, saveTarget, type SaveTarget, shadowedBy, sharedWith, type SyncRoot, toDisk, unsafeName } from './mapping.ts'
 import { diff3, normalise, toFileText } from './merge.ts'
 import { canonicalJson, canonicalModel, detectStyle, modelFromStudio, readModel, writeMeta, writeModel } from './modelJson.ts'
 import { atomicWrite, BaseStore, ensureTrashIgnored, hashText, migrateLegacy, type SyncFs, TRASH_DIR } from './store.ts'
@@ -530,6 +530,8 @@ export class SyncEngine {
       for (const file of [...disk.files].sort()) {
         const kind = kindOfFile(file)
         if (!kind || isGitkeep(file) || rootMeta.has(file) || held.has(file)) continue
+        // A folder copy an explicit child shadows is not what this place's Studio syncs.
+        if (shadowedBy(map, file)) continue
         const abs = this.abs(file)
         const info = await this.fs.stat(abs).catch(() => null)
         if (!info) continue
@@ -840,7 +842,8 @@ export class SyncEngine {
       const entries = await this.fs.readdir(this.abs(rel), { withFileTypes: true }).catch(() => [])
       for (const e of entries) {
         const child = `${rel}/${e.name}`
-        if (PACKAGE_DIRS.has(e.name) || isSkipped(map.skipGlobs, child) || e.name.endsWith('.forge-tmp')) continue
+        // globIgnorePaths: Rojo never builds it, so it is not this place's disk side either.
+        if (PACKAGE_DIRS.has(e.name) || isSkipped(map.skipGlobs, child) || e.name.endsWith('.forge-tmp') || rojoIgnored(map, child)) continue
         if (e.isDirectory()) await walk(child)
         else if (e.isFile()) files.add(child)
       }
@@ -855,7 +858,60 @@ export class SyncEngine {
 
   // ---- internals: planning (Studio tree -> files) ----
 
-  private plan(s: Session, probe: DiskProbe): Plan {
+  // Several Studio instances at one explicit project node's path, typically because Rojo built the
+  // explicit child and a same-name copy from its parent's $path folder (mapping.ts shadowedBy): which
+  // one is the explicit child's. A script takes the copy whose source is its file's disk text or last
+  // synced copy, else, with two copies, the one that is not the folder copy's text. Never a guess:
+  // null when that does not single one out (held as a duplicate, as before). Folders carry no text;
+  // they keep the first copy (their children share one path either way).
+  private async rootPicks(s: Session, disk: { files: Set<string>; dirs: Set<string> }): Promise<Map<string, string | null>> {
+    const picks = new Map<string, string | null>()
+    if (!s.tree) return picks
+    const map = s.map
+    const byPath = new Map<string, StudioNode[]>()
+    for (const node of s.tree.values()) {
+      const k = pkey(node.path)
+      ;(byPath.get(k) ?? byPath.set(k, []).get(k)!).push(node)
+    }
+    const probe: DiskProbe = { isFile: (rel) => disk.files.has(rel), isDir: (rel) => disk.dirs.has(rel) }
+    const hashOfFile = async (file: string): Promise<string | null> => {
+      const text = await this.read(file)
+      return text === null ? null : hashText(canon('script', text))
+    }
+    for (const root of map.roots) {
+      const nodes = byPath.get(pkey(root.instance)) ?? []
+      if (nodes.length < 2) continue
+      const scripts = nodes.filter((n) => isScriptClass(n.className) && typeof n.source === 'string')
+      if (scripts.length !== nodes.length) {
+        if (scripts.length === 0 && !nodes.some((n) => isScriptClass(n.className))) picks.set(pkey(root.instance), nodes[0].id)
+        else picks.set(pkey(root.instance), null)
+        continue
+      }
+      const m = root.isFile ? { file: root.path } : toDisk(map, { path: root.instance, className: nodes[0].className, runContext: nodes[0].runContext, hasChildren: true }, probe)
+      if (!m) {
+        picks.set(pkey(root.instance), null)
+        continue
+      }
+      const own = new Set([await hashOfFile(m.file), await this.store.hashOf(s.placeKey, m.file)].filter((h): h is string => !!h))
+      const hashes = scripts.map((n) => hashText(canon('script', n.source!)))
+      const mine = hashes.findIndex((h) => own.has(h))
+      if (mine >= 0) {
+        picks.set(pkey(root.instance), scripts[mine].id)
+        continue
+      }
+      const copies = new Set<string>()
+      for (const f of disk.files) if (kindOfFile(f) === 'script' && pkey(shadowedBy(map, f) ?? []) === pkey(root.instance)) {
+        const h = await hashOfFile(f)
+        if (h) copies.add(h)
+      }
+      const others = hashes.map((h, i) => (copies.has(h) ? -1 : i)).filter((i) => i >= 0)
+      picks.set(pkey(root.instance), scripts.length === 2 && others.length === 1 ? scripts[others[0]].id : null)
+    }
+    return picks
+  }
+
+  // picks: rootPicks (which Studio copy is an explicit child's when several share its path).
+  private plan(s: Session, probe: DiskProbe, picks: Map<string, string | null> = new Map()): Plan {
     const map = s.map
     const kids = new Map<string, StudioNode[]>()
     const byPath = new Map<string, StudioNode[]>()
@@ -1018,7 +1074,13 @@ export class SyncEngine {
       const nodes = byPath.get(pkey(root.instance))
       if (!nodes?.length) continue
       plan.present.push(root)
-      const node = nodes[0]
+      const pick = picks.get(pkey(root.instance))
+      if (nodes.length > 1 && pick === null) {
+        // Forge cannot tell which copy is the explicit child's: held like any same-name group.
+        plan.duplicates.push(duplicateGroup(nodes))
+        continue
+      }
+      const node = (pick && nodes.find((n) => n.id === pick)) || nodes[0]
       if (root.isFile) {
         const info = parseFileName(root.path.split('/').pop()!, map.emitLegacyScripts)
         if (info?.kind === 'script' && isScriptClass(node.className)) scriptUnits(node, root.path, undefined, undefined, false)
@@ -1048,7 +1110,7 @@ export class SyncEngine {
     const map = s.map
     const disk = await this.scan(map)
     const probe: DiskProbe = { isFile: (rel) => disk.files.has(rel), isDir: (rel) => disk.dirs.has(rel) }
-    const plan = this.plan(s, probe)
+    const plan = this.plan(s, probe, await this.rootPicks(s, disk))
     s.leftInStudio = plan.refused.filter((r) => r.note === LEFT_IN_STUDIO).map((r) => r.path)
     const inScope = (path: string[]): boolean => !scope || scope.some((p) => related(p, path))
     const entries: SyncEntry[] = []
@@ -1197,7 +1259,7 @@ export class SyncEngine {
   private async refreshStudioOnly(s: Session): Promise<void> {
     if (!s.tree) return
     const disk = await this.scan(s.map)
-    const plan = this.plan(s, { isFile: (rel) => disk.files.has(rel), isDir: (rel) => disk.dirs.has(rel) })
+    const plan = this.plan(s, { isFile: (rel) => disk.files.has(rel), isDir: (rel) => disk.dirs.has(rel) }, await this.rootPicks(s, disk))
     await this.updateStudioOnly(s, plan, disk, true, [])
   }
 

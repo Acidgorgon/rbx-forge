@@ -86,6 +86,8 @@ export interface PlaceMapLike {
 export interface SyncMapping {
   loadPlaces(root: string): Promise<PlaceMapLike[]>
   placeFor(maps: PlaceMapLike[], placeId: number): PlaceMapLike | null
+  // Project nodes Rojo builds twice (mapping.ts duplicateMappings), one line each, for the log.
+  duplicates?(maps: PlaceMapLike[]): Promise<string[]>
 }
 
 // ---- Bridge side (bridge.setSyncHandler) ----
@@ -181,6 +183,11 @@ export interface SyncServiceDeps {
   studios?: () => StudioWindow[]
   // rojo serve for a place file right now (supervisor). Absent: unknown (treated as serving).
   rojo?: (projectFile: string) => RojoServeState
+  // A serve Forge stopped (gate hold, pause, crash) and started again: Studio's Rojo plugin was cut
+  // off and does not reconnect by itself (supervisor.rojoReconnect). rojoConnected: Studio shows Rojo
+  // is connected again (it carried a disk edit in, or built a mapped root), so the notice can go.
+  rojoReconnect?: (projectFile: string) => { port: number; at: number } | null
+  rojoConnected?: (projectFile: string) => void
   // Tests: how long disk may be ahead of a served, synced place before it counts as drift (Rojo
   // normally carries an edit into Studio within a second or two). Default DRIFT_GRACE_MS.
   driftGraceMs?: number
@@ -253,6 +260,12 @@ interface Session {
   probe?: string
   nextSeq: number
   ready: boolean
+  // A re-check by the same Studio window of a place that was clear and serving (a mapped root Rojo
+  // just built, Forge briefly unreachable, a playtest ending, "Check now"): rojo keeps serving while
+  // it runs. Stopping it would cut off the Rojo plugin connected in that window, which does not
+  // reconnect by itself; the snapshot's outcome still holds rojo when it finds conflicts or
+  // Studio-only scripts.
+  soft?: boolean
   // Root instance paths (joined with \0) seen in the snapshot being received.
   rootsSeen: Set<string>
 }
@@ -264,8 +277,6 @@ interface PlaceState {
   counts: Partial<Record<SyncAction, number>>
   lastSnapshot?: number
   lastSeen: number
-  // "Serve anyway": treat a blocked gate as clear until the next snapshot.
-  override: boolean
   // Instance references the plugin reported (not synced), and those of a snapshot still arriving.
   refs: SyncRef[]
   refsTotal: number
@@ -378,6 +389,10 @@ export class SyncService {
   // Place files the user chose to serve without a Studio check ("Serve without Studio check"). Taken
   // back as soon as a Studio session for that file starts its check.
   private noCheck = new Set<string>()
+  // "Serve anyway": place files rojo serves whatever their gate says (conflicts, a check, no Studio
+  // session), until the user takes it back ("Hold again"). Before, it ended with the next snapshot
+  // or when the Studio session expired, and rojo was stopped under a connected Rojo plugin.
+  private forced = new Set<string>()
   // Plugin v12 resync: when each window last asked for config / was asked to check again, and the
   // place files the user asked to re-check ("Check now").
   private configSeen = new Map<string, number>()
@@ -387,6 +402,8 @@ export class SyncService {
   private windowSeen = new Map<string, number>()
   // Windows already told (in the log) that another window of their place syncs it.
   private refusedNoted = new Set<string>()
+  // Duplicate-mapping lines already logged.
+  private dupNoted = new Set<string>()
 
   constructor(deps: SyncServiceDeps) {
     this.deps = deps
@@ -462,6 +479,11 @@ export class SyncService {
       })
     }
     if (this.deps.engine) await this.serial(async () => this.deps.engine?.reload())
+    for (const text of (await this.deps.mapping?.duplicates?.(this.maps).catch(() => [])) ?? []) {
+      if (this.dupNoted.has(text)) continue
+      this.dupNoted.add(text)
+      this.deps.log?.(`sync: ${text}. Forge Sync syncs the explicit child and leaves the folder copy alone`, 'stderr')
+    }
     // A place no longer listed (servePlaceIds edited) stops syncing right away.
     for (const state of [...this.placeStates.values()]) {
       const linkId = state.placeKey.startsWith('local:') ? state.placeKey.slice('local:'.length) : undefined
@@ -644,21 +666,23 @@ export class SyncService {
       return off(why)
     }
     if (q.probe) this.refusedNoted.delete(q.probe)
+    // The same window checking again while its place is clear (rojo serving): a soft re-check.
+    const prior = q.probe ? [...this.sessions.values()].find((s) => s.placeKey === placeKey && s.probe === q.probe) : undefined
+    const soft = !!prior && (prior.ready ? this.gate(placeKey) === 'clear' : !!prior.soft)
     for (const [token, s] of this.sessions) if (s.placeKey === placeKey) this.sessions.delete(token)
     const token = randomUUID()
     // Unready until its snapshot is reconciled: the place is 'checking' from now on, so a rojo serve
     // still running from an earlier session stops before Studio's Rojo plugin can (re)connect to it.
-    this.sessions.set(token, { token, placeKey, nextSeq: 0, ready: false, rootsSeen: new Set(), ...(q.probe ? { probe: q.probe } : {}) })
+    this.sessions.set(token, { token, placeKey, nextSeq: 0, ready: false, rootsSeen: new Set(), ...(q.probe ? { probe: q.probe } : {}), ...(soft ? { soft } : {}) })
     const state = this.placeState(placeKey, map.projectFile, place)
     state.lastSeen = this.now()
-    state.override = false
     // A Studio check starts: "Serve without Studio check" is over for this place file.
     this.noCheck.delete(map.projectFile)
     this.watchSnapshot(token, placeKey, false)
     const roots = map.roots.filter((r) => !PACKAGES.test(r.path)).map((r) => r.instance)
     // The VFX Lab's live Studio preview folder never syncs.
     const skip = [...map.roots.filter((r) => PACKAGES.test(r.path)).map((r) => r.instance), ['Workspace', LIVE_FOLDER]]
-    this.deps.log?.(`sync: Studio session for ${map.projectFile} (${placeKey}), ${roots.length} roots`)
+    this.deps.log?.(`sync: Studio session for ${map.projectFile} (${placeKey}), ${roots.length} roots${soft ? '; same Studio window checking again, rojo keeps serving unless the check finds conflicts' : ''}`)
     this.refresh()
     return { enabled: true, sessionToken: token, roots, skip, outline: outlineContainers(map), outlineMax: OUTLINE_MAX }
   }
@@ -695,11 +719,12 @@ export class SyncService {
     try {
       return await this.serial(async () => {
         if (body.seq === 0) {
-          // A (re)starting snapshot: gate goes 'checking', so a running rojo serve for this place stops.
+          // A (re)starting snapshot: gate goes 'checking', so a running rojo serve for this place stops,
+          // unless this window's place was clear (a soft re-check: see Session.soft).
+          if (session.ready) session.soft = this.gate(session.placeKey) === 'clear'
           session.nextSeq = 0
           session.ready = false
           session.rootsSeen = new Set()
-          state.override = false
           this.noCheck.delete(state.projectFile)
           state.counts = {}
           state.snapshotRefs = []
@@ -726,12 +751,17 @@ export class SyncService {
           this.checkTree()
           session.ready = true
           state.lastSnapshot = this.now()
+          const missingBefore = state.missingRoots.length
           state.missingRoots = this.rootsOf(state.projectFile).filter((r) => !session.rootsSeen.has(r.join('\u0000')))
+          // Mapped roots appearing in an open window: Rojo (re)connected there and built them.
+          if (session.soft && state.missingRoots.length < missingBefore) this.deps.rojoConnected?.(state.projectFile)
           this.setRefs(state, state.snapshotRefs ?? [], body.refsTotal)
           state.snapshotRefs = undefined
           await this.record(session.placeKey, entries)
           const conflicts = engine.conflicts().filter((c) => c.placeKey === session.placeKey).length
-          this.deps.log?.(`sync: ${state.projectFile} reconciled, ${entries.length} files, ${conflicts} conflict${conflicts === 1 ? '' : 's'}`)
+          const after = this.gate(session.placeKey)
+          const held = after === 'blocked' && session.soft ? '; rojo serve stops: the re-check found something to hold' : this.forced.has(state.projectFile) && engine.gate(session.placeKey) === 'blocked' ? '; rojo keeps serving (Serve anyway is on: Hold again in Forge Sync to hold it)' : ''
+          this.deps.log?.(`sync: ${state.projectFile} reconciled, ${entries.length} files, ${conflicts} conflict${conflicts === 1 ? '' : 's'}${held}`)
         }
         this.refresh()
         return { ok: true } as SyncAnswer
@@ -780,6 +810,7 @@ export class SyncService {
       if (Array.isArray(body.refs)) this.setRefs(state, body.refs, body.refsTotal)
       const changes = Array.isArray(body.changes) ? body.changes : []
       for (const c of changes) {
+        if (c.kind === 'added' && state.missingRoots.some((r) => r.join('\u0000') === c.node.path.join('\u0000'))) this.deps.rojoConnected?.(state.projectFile)
         if (c.kind === 'added') state.missingRoots = state.missingRoots.filter((r) => r.join('\u0000') !== c.node.path.join('\u0000'))
         else if (c.kind === 'removed' && this.rootsOf(state.projectFile).some((r) => r.join('\u0000') === c.path.join('\u0000')) && !state.missingRoots.some((r) => r.join('\u0000') === c.path.join('\u0000'))) state.missingRoots = [...state.missingRoots, c.path]
       }
@@ -917,8 +948,17 @@ export class SyncService {
   async serveAnyway(placeKey: string): Promise<SyncStatus> {
     const state = this.placeStates.get(placeKey)
     if (!state) throw new Error(`No Studio session for ${placeKey}`)
-    state.override = true
-    this.deps.log?.(`sync: serving ${state.projectFile} with ${this.conflictsFor(placeKey).length} held conflict(s) (serve anyway)`)
+    this.forced.add(state.projectFile)
+    this.deps.log?.(`sync: serving ${state.projectFile} with ${this.conflictsFor(placeKey).length} held conflict(s) (serve anyway); it keeps serving through re-checks and Studio sessions until you choose Hold again`)
+    this.refresh()
+    return this.status()
+  }
+
+  // "Hold again": the place file's gate applies again (rojo stops if it holds now).
+  async stopServingAnyway(projectFile: string): Promise<SyncStatus> {
+    const was = this.forced.delete(projectFile)
+    const unchecked = this.noCheck.delete(projectFile)
+    if (was || unchecked) this.deps.log?.(`sync: ${projectFile}: serve anyway is off; rojo serve follows the Studio sync check again`)
     this.refresh()
     return this.status()
   }
@@ -992,13 +1032,15 @@ export class SyncService {
   gate(placeKey: string): GateState {
     const state = this.placeStates.get(placeKey)
     if (!this.active() || !state) return 'idle'
+    const forced = this.forced.has(state.projectFile)
     // Config answered, snapshot not reconciled yet: checking (rojo stops before Studio's Rojo plugin
-    // can reach it).
-    if ([...this.sessions.values()].some((s) => s.placeKey === placeKey && !s.ready)) return 'checking'
+    // can reach it), unless it is the same window re-checking a clear place (soft) or Serve anyway.
+    const checking = [...this.sessions.values()].filter((s) => s.placeKey === placeKey && !s.ready)
+    if (checking.length) return forced || checking.every((s) => s.soft) ? 'clear' : 'checking'
     const gate = this.deps.engine!.gate(placeKey)
-    if (state.override && gate === 'blocked') return 'clear'
+    if (forced && gate !== 'idle') return 'clear'
     // A check by a plugin older than the gate trusts does not clear it ("Restart Studio").
-    if (gate === 'clear' && !state.override && this.settings().gateRojo && this.pluginBehind(state.place)) return 'waiting'
+    if (gate === 'clear' && this.settings().gateRojo && this.pluginBehind(state.place)) return 'waiting'
     return gate
   }
 
@@ -1019,6 +1061,7 @@ export class SyncService {
   // rojo, a file no Studio check has cleared (no session, session over, or an old plugin's) is
   // 'waiting', unless the user chose "Serve without Studio check" for it.
   gateFor(projectFile: string): { gate: GateState; detail?: string; reason?: WaitReason } {
+    if (this.forced.has(projectFile) && this.active() && this.settings().gateRojo) return { gate: 'clear', detail: 'Serving anyway (your choice)' }
     let gate: GateState = 'idle'
     let conflicts = 0
     let studioOnly = 0
@@ -1106,9 +1149,9 @@ export class SyncService {
     return out.sort((a, b) => a.projectFile.localeCompare(b.projectFile))
   }
 
-  private openAndRojo(projectFile: string): Pick<PlaceSyncStatus, 'studioOpen' | 'rojo'> {
+  private openAndRojo(projectFile: string): Pick<PlaceSyncStatus, 'studioOpen' | 'rojo' | 'forced'> {
     const rojo = this.deps.rojo?.(projectFile)
-    return { ...(this.windowsFor(projectFile).length ? { studioOpen: true } : {}), ...(rojo ? { rojo } : {}) }
+    return { ...(this.windowsFor(projectFile).length ? { studioOpen: true } : {}), ...(rojo ? { rojo } : {}), ...(this.forced.has(projectFile) ? { forced: true } : {}) }
   }
 
   // A live (snapshot reconciled) session for this place key.
@@ -1119,7 +1162,12 @@ export class SyncService {
   // Drift for one place row whose Studio is open: why its Studio is behind disk and the fix.
   private async driftOf(p: PlaceSyncStatus): Promise<PlaceDrift | undefined> {
     const engine = this.deps.engine
-    if (!engine?.drift || !this.active()) return undefined
+    if (!this.active()) return undefined
+    // Forge restarted this place's rojo serve under a connected Rojo plugin: say so first, Studio or
+    // not (the Forge Bridge may be off in that window).
+    const cut = p.rojo === 'serving' ? this.deps.rojoReconnect?.(p.projectFile) : null
+    if (cut) return this.reconnectDrift(p, cut.port)
+    if (!engine?.drift) return undefined
     const windows = this.windowsFor(p.projectFile)
     const live = this.liveSession(p.placeKey)
     if (!live && !windows.length) return undefined
@@ -1156,7 +1204,8 @@ export class SyncService {
       'not-syncing': fix === 'recheck' ? "Studio has it open, but Forge has no sync session with that window: check it now" : `Studio has it open, but Forge has no sync session with that window: restart Studio to load Forge Bridge v${PLUGIN_VERSION}`,
       'rojo-stopped': `rojo serve isn't running for ${p.projectFile}, so disk edits don't reach its Studio`,
       'rojo-held': 'rojo serve is held for it until its sync check clears (see below)',
-      'rojo-not-connected': `rojo serves it, but the edits are not reaching Studio: connect Rojo in that Studio window (port ${map?.servePort ?? 34872})`
+      'rojo-not-connected': `rojo serves it, but the edits are not reaching Studio: connect Rojo in that Studio window (port ${map?.servePort ?? 34872})`,
+      'rojo-disconnected': `Studio's Rojo plugin was disconnected: click Connect in Rojo (port ${map?.servePort ?? 34872})`
     }
     return {
       behind: n,
@@ -1167,6 +1216,28 @@ export class SyncService {
       text: `${head}: ${why[cause]}`,
       ...(fix ? { fix } : {})
     }
+  }
+
+  private async reconnectDrift(p: PlaceSyncStatus, port: number): Promise<PlaceDrift> {
+    const name = this.placeName(p.projectFile)
+    const d = this.liveSession(p.placeKey) ? await this.deps.engine?.drift?.(p.projectFile, p.placeKey).catch(() => null) : null
+    const newest = d?.files.reduce((m, f) => Math.max(m, f.mtime), 0) ?? 0
+    return {
+      behind: d?.behind ?? 0,
+      place: name,
+      files: (d?.files ?? []).slice(0, DRIFT_FILES_MAX).map((f) => f.file),
+      ...(newest ? { newest } : {}),
+      cause: 'rojo-disconnected',
+      text: `Studio's Rojo plugin was disconnected: click Connect in Rojo (port ${port}) in ${name} Studio`,
+      fix: 'reconnected'
+    }
+  }
+
+  // "Connected": the user reconnected Rojo in Studio (the notice goes until Forge restarts it again).
+  async rojoReconnected(projectFile: string): Promise<SyncStatus> {
+    this.deps.rojoConnected?.(projectFile)
+    this.refresh()
+    return this.status()
   }
 
   // An unlinked Studio place that synced with this project before (a base under its PlaceId), behind
@@ -1527,7 +1598,7 @@ export class SyncService {
   private placeState(placeKey: string, projectFile: string, place: SyncPlace): PlaceState {
     let state = this.placeStates.get(placeKey)
     if (!state) {
-      state = { placeKey, projectFile, place, counts: {}, lastSeen: 0, override: false, refs: [], refsTotal: 0, missingRoots: [] }
+      state = { placeKey, projectFile, place, counts: {}, lastSeen: 0, refs: [], refsTotal: 0, missingRoots: [] }
       this.placeStates.set(placeKey, state)
     }
     state.projectFile = projectFile
@@ -1553,6 +1624,8 @@ export class SyncService {
         continue
       }
       if (state) state.counts[entry.action] = (state.counts[entry.action] ?? 0) + 1
+      // A live Studio change that matches disk: Rojo carried a disk edit in, so it is connected.
+      if (entry.action === 'same' && live && state && this.deps.rojoReconnect?.(state.projectFile)) this.deps.rojoConnected?.(state.projectFile)
       if (entry.action === 'same') continue
       // Every file leaving the project, and every delete the guard holds, is in the output panel.
       if (entry.action === 'trashed') this.deps.log?.(`sync: ${entry.file}: deleted in Studio, moved to ${entry.trashPath ?? '.forge/sync/trash'}${entry.note ? ` (${entry.note})` : ''}`)

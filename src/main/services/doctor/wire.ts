@@ -6,7 +6,7 @@ import { createServer } from 'node:net'
 import { access, readdir, readFile, stat, statfs } from 'node:fs/promises'
 import { join } from 'node:path'
 import type { DoctorAction, DoctorInputs, DoctorReport } from '../../../shared/doctor/types.ts'
-import type { ProviderInfo, ServiceStatus, PlaceInfo } from '../../../shared/types.ts'
+import type { ProviderInfo, ServiceStatus, PlaceInfo, RojoPlaceStatus } from '../../../shared/types.ts'
 import type { StudioStatus } from '../../../shared/studio/types.ts'
 import type { SyncStatus } from '../../../shared/sync/types.ts'
 import type { UpdateState } from '../../../shared/updateTypes.ts'
@@ -14,6 +14,8 @@ import type { ToolchainStatus } from '../setup/toolchain.ts'
 import { checkProjectTools, defaultToolchainEnv } from '../setup/toolchain.ts'
 import { findTool, run } from '../tools.ts'
 import { findLegacyPlugins } from '../sync/legacy.ts'
+import { duplicateMappings, duplicateMappingText, loadPlaces } from '../sync/mapping.ts'
+import { isRojoProcess, portOwners, stopProcess } from '../portOwner.ts'
 import { DoctorService, scopeStrings, type DoctorProbes } from './service.ts'
 
 export interface DoctorWiringDeps {
@@ -43,6 +45,9 @@ export interface DoctorWiringDeps {
   updateState(): Promise<UpdateState>
   updateCheck(): Promise<unknown>
   startRojo(): Promise<unknown>
+  // Each place's real rojo serve (supervisor.rojoPlaces), and whether a serve of Forge's is up on a port.
+  rojoPlaces?(): RojoPlaceStatus[]
+  servesPort?(port: number): boolean
   // macOS: systemPreferences.getMediaAccessStatus('screen'); null elsewhere.
   screenRecording(): DoctorInputs['screenRecording']
   openExternal(url: string): void
@@ -136,11 +141,21 @@ export function createDoctorWiring(deps: DoctorWiringDeps): { service: DoctorSer
       return { port: s.server.port, listening: s.server.listening, ...(s.server.error ? { error: s.server.error } : {}), plugin: { installed: s.plugin.installed, ...(s.plugin.version !== undefined ? { version: s.plugin.version } : {}), bundled: s.plugin.bundled, ...(s.plugin.outdated ? { outdated: true } : {}), dir: s.plugin.dir }, studio: s.studio }
     },
     legacyPlugins: () => findLegacyPlugins(deps.pluginsDir()),
+    // Served from the supervisor's real per-place state (a held, crashed or given-up place is not
+    // served), the settings only when that is not available.
     servePorts: () => {
       const places = deps.places()
       const active = deps.activePlace()
+      const live = deps.rojoPlaces?.()
+      if (live?.length) return places.map((p) => ({ port: p.servePort, label: `rojo serve (${p.name})`, served: live.some((x) => x.file === p.file && (x.state === 'serving' || x.state === 'starting')), live: true }))
       return places.map((p) => ({ port: p.servePort, label: `rojo serve (${p.name})`, served: deps.serveAllPlaces() || p.file === active || (places.length === 1 && !active) }))
     },
+    portOwner: async (port) => {
+      if (deps.servesPort?.(port)) return null
+      const owner = (await portOwners(port, deps.platform))[0]
+      return owner ? { pid: owner.pid, name: owner.name, rojo: isRojoProcess(owner.name) } : null
+    },
+    duplicateMappings: async (root) => (await Promise.all((await loadPlaces(root)).map((m) => duplicateMappings(m)))).flat().map(duplicateMappingText),
     rojo: () => rojoState(deps.services()),
     portBusy: (port) => portBusy(port),
     sync: async () => {
@@ -214,6 +229,23 @@ export function createDoctorWiring(deps: DoctorWiringDeps): { service: DoctorSer
     startRojo: async () => {
       await deps.startRojo()
       return 'Rojo started.'
+    },
+    // Only a process named rojo, on a serve port of this project, and only while no serve of Forge's
+    // own is up on that port.
+    stopStrayRojo: async () => {
+      const stopped: string[] = []
+      for (const port of [...new Set(deps.places().map((p) => p.servePort))]) {
+        if (deps.servesPort?.(port)) continue
+        for (const owner of await portOwners(port, deps.platform)) {
+          if (!isRojoProcess(owner.name)) continue
+          deps.log?.(`doctor: stopping stray ${owner.name} (pid ${owner.pid}) on port ${port}`)
+          await stopProcess(owner.pid, deps.platform)
+          stopped.push(`:${port} (pid ${owner.pid})`)
+        }
+      }
+      if (!stopped.length) throw new Error('No stray rojo found on the serve ports.')
+      await deps.startRojo().catch(() => undefined)
+      return `Stopped rojo on ${stopped.join(', ')}; Forge starts its own serve again.`
     },
     checkUpdates: async () => {
       await deps.updateCheck()

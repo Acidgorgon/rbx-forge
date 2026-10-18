@@ -176,6 +176,8 @@ export interface PlaceSyncStatus {
   // rojo serve for this place file: running, held by the gate, or not running (not the active place and
   // "Serve all places" off, or stopped).
   rojo?: RojoServeState
+  // "Serve anyway" is on for this place file: rojo serves whatever the gate says until "Hold again".
+  forced?: boolean
   // Disk has changes this place's Studio has not got (see PlaceDrift); absent when it is up to date or
   // nothing can be said (no Studio open, no shared version yet).
   drift?: PlaceDrift
@@ -196,7 +198,10 @@ export type RojoServeState = 'serving' | 'held' | 'stopped'
 //   rojo-stopped        rojo serve for the place file is not running ('start-rojo')
 //   rojo-held           rojo serve is held by the gate (resolve what it holds)
 //   rojo-not-connected  rojo serves, but disk edits are not reaching Studio (connect Rojo in Studio)
-export type DriftCause = 'not-linked' | 'not-syncing' | 'rojo-stopped' | 'rojo-held' | 'rojo-not-connected'
+//   rojo-disconnected   Forge stopped and restarted rojo serve for the place (a gate hold, a pause, a
+//                       crash) under a connected Rojo plugin, which does not reconnect by itself
+//                       ('reconnected': the user says it is connected again). `behind` may be 0.
+export type DriftCause = 'not-linked' | 'not-syncing' | 'rojo-stopped' | 'rojo-held' | 'rojo-not-connected' | 'rojo-disconnected'
 
 export interface PlaceDrift {
   // Files whose disk copy differs from what this place's Studio last had (its base), new on disk, or
@@ -211,7 +216,7 @@ export interface PlaceDrift {
   cause: DriftCause
   // "Match is 5 files behind disk: Rojo is not serving it" (one line, for the status bar and panel).
   text: string
-  fix?: 'link' | 'recheck' | 'start-rojo' | 'restart-studio'
+  fix?: 'link' | 'recheck' | 'start-rojo' | 'restart-studio' | 'reconnected'
   // fix 'link': the SyncStatus.unlinked id and the place file to link it to.
   unlinkedId?: string
   linkTo?: string

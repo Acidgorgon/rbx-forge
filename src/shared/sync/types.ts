@@ -204,9 +204,13 @@ export type RojoServeState = 'serving' | 'held' | 'stopped'
 export type DriftCause = 'not-linked' | 'not-syncing' | 'rojo-stopped' | 'rojo-held' | 'rojo-not-connected' | 'rojo-disconnected'
 
 export interface PlaceDrift {
-  // Files whose disk copy differs from what this place's Studio last had (its base), new on disk, or
-  // deleted on disk while Studio still has them.
+  // Files whose disk copy differs from what this place's Studio last had (its base), or new on disk. A
+  // file gone from disk is never behind (see deleted); a stale base (gone from both sides, or a path
+  // the place file no longer maps) is not counted at all.
   behind: number
+  // Files deleted on disk that this place's live Studio still has (Rojo removes them when it
+  // connects): counted apart, not in behind or files.
+  deleted?: number
   // The place's display name ("Match").
   place: string
   // A few of them (repo-relative), newest first; at most DRIFT_FILES_MAX.

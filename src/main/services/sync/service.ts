@@ -68,7 +68,7 @@ export interface SyncEngineLike {
   studioOnly?(placeKey: string): { items: StudioOnlyScript[]; holds: boolean }
   pullStudioOnly?(placeKey: string): Promise<SyncEntry[]>
   // How many files the place's Studio is behind the disk (engine.ts drift), null without a base.
-  drift?(projectFile: string, placeKey: string): Promise<{ behind: number; files: { file: string; mtime: number }[] } | null>
+  drift?(projectFile: string, placeKey: string): Promise<{ behind: number; files: { file: string; mtime: number }[]; deleted?: string[] } | null>
 }
 
 export interface PlaceMapLike {
@@ -1212,6 +1212,7 @@ export class SyncService {
       place: name,
       files: d.files.slice(0, DRIFT_FILES_MAX).map((f) => f.file),
       ...(newest ? { newest } : {}),
+      ...(d.deleted?.length ? { deleted: d.deleted.length } : {}),
       cause,
       text: `${head}: ${why[cause]}`,
       ...(fix ? { fix } : {})
@@ -1227,6 +1228,7 @@ export class SyncService {
       place: name,
       files: (d?.files ?? []).slice(0, DRIFT_FILES_MAX).map((f) => f.file),
       ...(newest ? { newest } : {}),
+      ...(d?.deleted?.length ? { deleted: d.deleted.length } : {}),
       cause: 'rojo-disconnected',
       text: `Studio's Rojo plugin was disconnected: click Connect in Rojo (port ${port}) in ${name} Studio`,
       fix: 'reconnected'

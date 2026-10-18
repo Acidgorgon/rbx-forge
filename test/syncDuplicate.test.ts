@@ -174,7 +174,7 @@ test('new files written for a Studio add go through guardNewFile; edits to exist
   assert.ok(existsSync(join(ctx.root, 'src/skills/Definitions/Ultimates/Nova.luau')))
 })
 
-test('drift: counts files changed, new and deleted on disk since the place last synced', async () => {
+test('drift: counts files changed and new on disk since the place last synced; one deleted on disk is counted apart', async () => {
   const ctx = await setup()
   assert.equal(await ctx.engine.drift('default.project.json', MK), null, 'never synced: nothing to say')
   await agreed(ctx)
@@ -188,16 +188,17 @@ test('drift: counts files changed, new and deleted on disk since the place last 
   const old = new Date(Date.UTC(2026, 9, 16))
   utimesSync(join(ctx.root, 'src/server/Config/Admins.luau'), old, old)
   const d = (await ctx.engine.drift('default.project.json', MK))!
-  assert.equal(d.behind, 5)
-  assert.deepEqual([...d.files.map((f) => f.file)].sort(), [ES, 'src/server/Config/Admins.luau', 'src/server/Handlers/Combat.luau', 'src/skills/Definitions/Dash.luau', 'src/skills/Definitions/Guard.luau'].sort())
-  assert.equal(d.files[d.files.length - 1].file, 'src/skills/Definitions/Guard.luau', 'deleted files last (no mtime)')
-  assert.ok(d.files.findIndex((f) => f.file === 'src/server/Config/Admins.luau') > 0, 'newest first')
+  assert.equal(d.behind, 4)
+  assert.deepEqual([...d.files.map((f) => f.file)].sort(), [ES, 'src/server/Config/Admins.luau', 'src/server/Handlers/Combat.luau', 'src/skills/Definitions/Dash.luau'].sort())
+  // Guard.luau is gone from disk while the live Studio still has it: deleted on disk, not behind.
+  assert.deepEqual(d.deleted, ['src/skills/Definitions/Guard.luau'])
+  assert.equal(d.files[d.files.length - 1].file, 'src/server/Config/Admins.luau', 'newest first')
   // A whitespace-only line-ending change is not drift.
   put(ctx.root, 'src/shared/Modules/Util.luau', 'return {}\r\n')
-  assert.equal((await ctx.engine.drift('default.project.json', MK))!.behind, 5)
+  assert.equal((await ctx.engine.drift('default.project.json', MK))!.behind, 4)
   // Unmapped files (Packages, skipped) are not counted.
   put(ctx.root, 'Packages/Extra.luau', 'return {}\n')
-  assert.equal((await ctx.engine.drift('default.project.json', MK))!.behind, 5)
+  assert.equal((await ctx.engine.drift('default.project.json', MK))!.behind, 4)
   assert.ok(statSync(join(ctx.root, ES)).isFile())
 })
 

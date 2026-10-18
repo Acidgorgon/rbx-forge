@@ -69,6 +69,9 @@ export type * from './addToGame/types.ts'
 // Roblox Studio's MCP server (live Studio tools for the Assistant).
 import type { StudioMcpApi, StudioMcpEvents } from './studioMcp.ts'
 export type * from './studioMcp.ts'
+// Source control panel (stage, commit, push).
+import type { ScmApi } from './scmTypes.ts'
+export type * from './scmTypes.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -169,6 +172,9 @@ export interface GitStatus {
   // Set when the last sync stopped on a merge conflict; files that need a decision.
   conflicts: string[]
   error?: string
+  // The last sync held back because of manual work in Source control (staged files or a typed
+  // commit message): what it skipped. Not an error.
+  note?: string
 }
 
 export interface StudioConflict {
@@ -604,7 +610,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi, AccountsApi, EditorAssistApi, ModelApi, StudioMcpApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi, AccountsApi, EditorAssistApi, ModelApi, StudioMcpApi, ScmApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

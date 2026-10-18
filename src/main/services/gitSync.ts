@@ -34,6 +34,13 @@ export class GitSync {
   private lastError?: string
   // Deletes the auto-commit holds back, already reported (logged once each).
   private heldReported = new Set<string>()
+  // Every git step (auto-sync, Sync now, the Source control panel) runs one at a time on this chain.
+  private chain: Promise<unknown> = Promise.resolve()
+  // The Source control commit box has text (scmSetDraft).
+  private draft = false
+  // What the last sync skipped because of manual work (GitStatus.note), and the last one logged.
+  private note?: string
+  private noteLogged?: string
 
   constructor(options: GitSyncOptions) {
     this.options = options
@@ -58,8 +65,35 @@ export class GitSync {
     return run(this.gitPath, ['-c', 'core.quotepath=false', ...args], this.root, this.env)
   }
 
+  // git with the sync's environment, for the Source control panel; loud steps go to the git log.
+  exec(args: string[], loud = true): Promise<RunResult> {
+    return loud ? this.git(args) : this.quiet(args)
+  }
+
+  // Runs fn after every queued git step (and before the next): no two steps overlap.
+  exclusive<T>(fn: () => Promise<T>): Promise<T> {
+    const next = this.chain.then(fn, fn)
+    this.chain = next.catch(() => undefined)
+    return next
+  }
+
+  setDraft(draft: boolean): void {
+    this.draft = draft
+  }
+
+  // Manual work in Source control the auto-sync must leave alone: staged files, a typed message.
+  async manualWork(): Promise<{ staged: boolean; draft: boolean }> {
+    // Exit 1: the index differs from HEAD (also before the first commit, against the empty tree).
+    const staged = (await this.quiet(['--no-optional-locks', 'diff', '--cached', '--quiet'])).code === 1
+    return { staged, draft: this.draft }
+  }
+
+  clearNote(): void {
+    this.note = undefined
+  }
+
   private async conflictedFiles(): Promise<string[]> {
-    const result = await this.quiet(['diff', '--name-only', '--diff-filter=U'])
+    const result = await this.quiet(['--no-optional-locks', 'diff', '--name-only', '--diff-filter=U'])
     return result.code === 0 ? outputLines(result.stdout).map(toRepoPath) : []
   }
 
@@ -102,7 +136,8 @@ export class GitSync {
       ahead = left || 0
       behind = right || 0
     }
-    const porcelain = await this.quiet(['status', '--porcelain'])
+    // No optional locks: a refresh never holds index.lock while a commit or stage runs.
+    const porcelain = await this.quiet(['--no-optional-locks', 'status', '--porcelain'])
     const dirty = outputLines(porcelain.stdout).length
     const status: GitStatus = {
       isRepo: true,
@@ -115,6 +150,7 @@ export class GitSync {
     }
     if (this.lastSync) status.lastSync = this.lastSync
     if (this.lastError) status.error = this.lastError
+    if (this.note) status.note = this.note
     return status
   }
 
@@ -127,15 +163,20 @@ export class GitSync {
   // Commit (optional), fetch, pull --rebase; on conflict fall back to a merge that leaves the conflicts in place.
   syncNow(): Promise<GitStatus> {
     if (!this.busy) {
-      this.busy = this.doSync().finally(() => {
+      this.busy = this.exclusive(() => this.doSync()).finally(() => {
         this.busy = null
       })
     }
     return this.busy
   }
 
+  // Manual work in Source control wins over the auto-sync: while files are staged or a commit message
+  // is typed, the "harness: sync" commit is skipped (it would sweep the staged selection into it); while
+  // files are staged the pull is skipped too (--autostash puts them back unstaged) and the push only
+  // runs when nothing is waiting to come in.
   private async doSync(): Promise<GitStatus> {
     this.lastError = undefined
+    this.note = undefined
     const before = await this.status()
     if (!before.isRepo) return this.finish('Not a git repository. Set up sync first.')
     if (before.conflicts.length > 0) {
@@ -143,22 +184,28 @@ export class GitSync {
     }
     if (await this.rebaseInProgress()) return this.finish('A rebase is in progress. Finish or abort it first.')
 
+    const manual = await this.manualWork()
+    const skipped: string[] = []
     if (this.options.settings().autoCommit && before.dirty > 0) {
-      const held = await this.heldDeletions()
-      await this.git(['add', '-A'])
-      if (held.length) await this.quiet(['reset', '-q', '--', ...held.map((h) => h.path)])
-      this.reportHeld(held)
-      // Only held deletes changed: nothing to commit.
-      const staged = await this.quiet(['diff', '--cached', '--quiet'])
-      if (staged.code !== 0) {
-        const commit = await this.git(['commit', '-m', 'harness: sync'])
-        if (commit.code !== 0) return this.finish(firstLine(commit) || 'git commit failed')
+      if (manual.staged || manual.draft) {
+        skipped.push(`did not commit your changes (${manual.staged ? 'files are staged' : 'a commit message is typed'} in Source control)`)
+      } else {
+        const held = await this.heldDeletions()
+        await this.git(['add', '-A'])
+        if (held.length) await this.quiet(['reset', '-q', '--', ...held.map((h) => h.path)])
+        this.reportHeld(held)
+        // Only held deletes changed: nothing to commit.
+        const staged = await this.quiet(['diff', '--cached', '--quiet'])
+        if (staged.code !== 0) {
+          const commit = await this.git(['commit', '-m', 'harness: sync'])
+          if (commit.code !== 0) return this.finish(firstLine(commit) || 'git commit failed')
+        }
       }
     }
-    if (!before.hasRemote) return this.finish(undefined, true)
+    if (!before.hasRemote) return this.finish(undefined, true, skipped)
 
     const fetched = await this.git(['fetch'])
-    if (fetched.code !== 0) return this.finish(firstLine(fetched) || 'git fetch failed')
+    if (fetched.code !== 0) return this.finish(firstLine(fetched) || 'git fetch failed', false, skipped)
 
     if (!(await this.upstream())) {
       const branch = await this.branch()
@@ -168,29 +215,102 @@ export class GitSync {
         await this.git(['branch', `--set-upstream-to=origin/${branch}`])
       } else {
         const pushed = await this.git(['push', '-u', 'origin', 'HEAD'])
-        return this.finish(pushed.code === 0 ? undefined : firstLine(pushed) || 'git push failed', true)
+        return this.finish(pushed.code === 0 ? undefined : firstLine(pushed) || 'git push failed', true, skipped)
       }
     }
 
-    const rebased = await this.git(['pull', '--rebase', '--autostash'])
-    if (rebased.code !== 0) {
-      if (await this.rebaseInProgress()) await this.git(['rebase', '--abort'])
-      const merged = await this.git(['pull', '--no-rebase', '--no-edit', '--autostash'])
-      if (merged.code !== 0) {
-        const conflicts = await this.conflictedFiles()
-        if (conflicts.length > 0) {
-          return this.finish(`Merge conflicts in ${conflicts.length} file(s). Resolve them and commit, then sync.`)
-        }
-        return this.finish(firstLine(merged) || 'git pull failed')
+    if (manual.staged) {
+      const now = await this.status()
+      if (now.behind > 0) {
+        skipped.push(`did not pull ${now.behind} incoming commit${now.behind === 1 ? '' : 's'} (pulling now would unstage your staged files; commit or unstage them, then sync)`)
+        return this.finish(undefined, false, skipped)
       }
+    } else {
+      const pullError = await this.pullStep()
+      if (pullError) return this.finish(pullError, false, skipped)
     }
 
     const after = await this.status()
     if (after.ahead > 0) {
       const pushed = await this.git(['push'])
-      if (pushed.code !== 0) return this.finish(firstLine(pushed) || 'git push failed')
+      if (pushed.code !== 0) return this.finish(pushError(pushed), false, skipped)
     }
-    return this.finish(undefined, true)
+    return this.finish(undefined, true, skipped)
+  }
+
+  // pull --rebase --autostash; when that stops, abort the rebase and merge instead, leaving any
+  // conflicts in place. The error to show, or undefined.
+  private async pullStep(): Promise<string | undefined> {
+    const rebased = await this.git(['pull', '--rebase', '--autostash'])
+    if (rebased.code === 0) return undefined
+    if (await this.rebaseInProgress()) await this.git(['rebase', '--abort'])
+    const merged = await this.git(['pull', '--no-rebase', '--no-edit', '--autostash'])
+    if (merged.code === 0) return undefined
+    const conflicts = await this.conflictedFiles()
+    if (conflicts.length > 0) return `Merge conflicts in ${conflicts.length} file(s). Resolve them and commit, then sync.`
+    return firstLine(merged) || 'git pull failed'
+  }
+
+  // Source control's Pull: never commits. With staged files only a fast-forward (no --autostash,
+  // which would unstage them); otherwise the same pull as the sync.
+  pull(): Promise<GitStatus> {
+    return this.exclusive(async () => {
+      this.lastError = undefined
+      const before = await this.status()
+      if (!before.isRepo) return this.finish('Not a git repository.')
+      if (before.conflicts.length > 0) return this.finish(`Resolve the conflicts in ${before.conflicts.length} file(s) and commit first.`)
+      if (await this.rebaseInProgress()) return this.finish('A rebase is in progress. Finish or abort it first.')
+      if (!before.hasRemote) return this.finish('No remote to pull from.')
+      if (!(await this.upstream())) {
+        const branch = await this.branch()
+        if (!branch) return this.finish('Detached HEAD; check out a branch to pull.')
+        const fetched = await this.git(['fetch'])
+        if (fetched.code !== 0) return this.finish(firstLine(fetched) || 'git fetch failed')
+        const remoteBranch = await this.quiet(['rev-parse', '--verify', `refs/remotes/origin/${branch}`])
+        if (remoteBranch.code !== 0) return this.finish(`origin has no ${branch} branch yet. Push to publish it.`)
+        await this.git(['branch', `--set-upstream-to=origin/${branch}`])
+      }
+      if ((await this.manualWork()).staged) {
+        const pulled = await this.git(['pull', '--ff-only'])
+        if (pulled.code === 0) return this.finish()
+        return this.finish(`${firstLine(pulled) || 'git pull failed'} (with files staged Forge only fast-forwards: commit or unstage them, then pull)`)
+      }
+      return this.finish(await this.pullStep())
+    })
+  }
+
+  // Source control's Push (no force): publishes the branch (push -u) when it has no upstream yet.
+  push(): Promise<GitStatus> {
+    return this.exclusive(async () => {
+      this.lastError = undefined
+      const before = await this.status()
+      if (!before.isRepo) return this.finish('Not a git repository.')
+      if (!before.hasRemote) return this.finish('No remote to push to.')
+      if (!(await this.upstream())) {
+        const branch = await this.branch()
+        if (!branch) return this.finish('Detached HEAD; check out a branch to push.')
+        const remoteBranch = await this.quiet(['rev-parse', '--verify', `refs/remotes/origin/${branch}`])
+        if (remoteBranch.code === 0) {
+          await this.git(['branch', `--set-upstream-to=origin/${branch}`])
+        } else {
+          const pushed = await this.git(['push', '-u', 'origin', 'HEAD'])
+          return this.finish(pushed.code === 0 ? undefined : pushError(pushed))
+        }
+      }
+      const pushed = await this.git(['push'])
+      return this.finish(pushed.code === 0 ? undefined : pushError(pushed))
+    })
+  }
+
+  fetch(): Promise<GitStatus> {
+    return this.exclusive(async () => {
+      this.lastError = undefined
+      const before = await this.status()
+      if (!before.isRepo) return this.finish('Not a git repository.')
+      if (!before.hasRemote) return this.finish('No remote to fetch from.')
+      const fetched = await this.git(['fetch'])
+      return this.finish(fetched.code === 0 ? undefined : firstLine(fetched) || 'git fetch failed')
+    })
   }
 
   // See findHeldDeletions.
@@ -204,14 +324,20 @@ export class GitSync {
     for (const h of held) {
       if (this.heldReported.has(h.path)) continue
       this.heldReported.add(h.path)
-      this.options.log?.(`git: not committing the delete of ${h.path} (${h.why}): it left the disk outside Forge (no copy in .forge/sync/trash). Restore it with "git checkout -- ${h.path}", or confirm with "git rm ${h.path}".`, 'stderr')
+      this.options.log?.(`git: not committing the delete of ${heldWarning(h)}`, 'stderr')
     }
   }
 
-  private async finish(error?: string, synced = false): Promise<GitStatus> {
+  // skipped: what the sync left out for manual work (GitStatus.note; logged once per change).
+  private async finish(error?: string, synced = false, skipped?: string[]): Promise<GitStatus> {
     this.lastError = error
     if (synced) this.lastSync = Date.now()
     if (error) this.options.log?.(error, 'stderr')
+    if (skipped) {
+      this.note = skipped.length ? `Auto-sync ${skipped.join(' and ')}.` : undefined
+      if (this.note && this.note !== this.noteLogged) this.options.log?.(`git: ${this.note}`, 'info')
+      this.noteLogged = this.note
+    }
     return this.refresh()
   }
 
@@ -294,7 +420,18 @@ export async function findHeldDeletions(root: string, git: (args: string[]) => P
   return out
 }
 
-function firstLine(result: RunResult): string {
+// The held-delete warning (the auto-commit's log line, and Source control's stage warning).
+export function heldWarning(h: { path: string; why: string }): string {
+  return `${h.path} (${h.why}): it left the disk outside Forge (no copy in .forge/sync/trash). Restore it with "git checkout -- ${h.path}", or confirm with "git rm ${h.path}".`
+}
+
+// A rejected push names the reason ("Pull first") before git's own first line.
+function pushError(result: RunResult): string {
+  const line = firstLine(result) || 'git push failed'
+  return /\[rejected\]|non-fast-forward|fetch first/.test(result.stderr + result.stdout) ? `Pull first: the remote has commits you do not have (${line})` : line
+}
+
+export function firstLine(result: RunResult): string {
   const text = (result.stderr || result.stdout).trim()
   const lines = outputLines(text)
   return lines.find((line) => /^(error|fatal|hint: Updates were rejected)/i.test(line)) || lines[0] || ''

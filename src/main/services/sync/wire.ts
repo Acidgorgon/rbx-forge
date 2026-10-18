@@ -59,8 +59,9 @@ export interface SyncWiring {
   // is not 'forge' (the project's studio-sync.py conflicts apply then).
   studioConflicts(): StudioConflict[] | null
   resolveStudioConflict(path: string, take: 'studio' | 'repo', placeKey?: string): Promise<void>
-  // Wraps GitSync so every Forge-initiated pull / branch switch checks for uncommitted Studio edits.
-  guardGit<G extends GitLike>(git: G, autoCommit: () => boolean): G
+  // Wraps GitSync so every Forge-initiated pull / branch switch (syncNow, and pull: Source control's
+  // Pull button) checks for uncommitted Studio edits. autoCommit false: warn instead of committing.
+  guardGit<G extends GitLike>(git: G, autoCommit: () => boolean | Promise<boolean>): G
   // Game tab: the live Studio tree of a place file, or null (no Studio session / Forge Sync off).
   liveTree(projectFile: string): { nodes: LiveStudioNode[]; truncated: boolean } | null
 }
@@ -246,13 +247,15 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     guardGit(g, autoCommit) {
       return new Proxy(g, {
         get(target, prop, receiver) {
-          if (prop !== 'syncNow') return Reflect.get(target, prop, receiver)
+          if (prop !== 'syncNow' && prop !== 'pull') return Reflect.get(target, prop, receiver)
+          const op: unknown = Reflect.get(target, prop, receiver)
+          if (typeof op !== 'function') return op
           return async () => {
             if (current && settings().engine === 'forge') {
-              const guard = await current.guardGitOp('pull', { autoCommit: autoCommit() }).catch(() => null)
+              const guard = await Promise.resolve(autoCommit()).then((on) => current!.guardGitOp('pull', { autoCommit: on })).catch(() => null)
               if (guard?.committed?.length) deps.log?.(`sync: committed ${guard.committed.length} Studio edit(s) before pulling`)
             }
-            return target.syncNow()
+            return (op as () => Promise<unknown>).call(target)
           }
         }
       })

@@ -6,6 +6,8 @@ const methods = [
   'getServices', 'startService', 'stopService', 'restartService', 'getLogs',
   'getGitStatus', 'syncNow', 'initGit', 'getSyncSettings', 'setSyncSettings',
   'getStudioConflicts', 'resolveStudioConflict',
+  // Source control panel (stage, commit, pull / push)
+  'scmStatus', 'scmStage', 'scmUnstage', 'scmDiscard', 'scmCommit', 'scmPull', 'scmPush', 'scmFetch', 'scmDiff', 'scmSetDraft',
   'listChats', 'newChat', 'getChat', 'sendChat', 'stopChat', 'deleteChats', 'hasApiKey', 'setApiKey',
   'addGuest', 'removeGuest', 'setGuestTools', 'startRoundtable', 'planToChecklist',
   'getGroupSettings', 'setGroupSettings', 'applyPatchProposal', 'mergePatchProposal', 'dismissPatchProposal', 'saveBoard',

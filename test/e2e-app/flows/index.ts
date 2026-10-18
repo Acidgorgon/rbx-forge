@@ -9,6 +9,7 @@ import { studioMcpFlows } from './studioMcp.ts'
 import { artFlows } from './art.ts'
 import { labFlows } from './labs.ts'
 import { studioFlows, syncFlows } from './sync.ts'
+import { scmFlows } from './scm.ts'
 import { aiFlows } from './ai.ts'
 import { modelAiFlows, modelFlows } from './model.ts'
 import { providerQolFlows, qolFlows, webglOffFlows } from './qol.ts'
@@ -17,4 +18,4 @@ import type { Flow } from './types.ts'
 
 export type { Flow, FlowCtx } from './types.ts'
 
-export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...editorGroupFlows, ...syncFlows, ...labFlows, ...modelFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...studioMcpFlows, ...artFlows, ...aiFlows, ...modelAiFlows, ...providerQolFlows, ...queueFlows, ...webglOffFlows]
+export const FLOWS: Flow[] = [...coreFlows, ...editorAssistFlows, ...editorGroupFlows, ...syncFlows, ...scmFlows, ...labFlows, ...modelFlows, ...studioFlows, ...qolFlows, ...pageFlows, ...studioMcpFlows, ...artFlows, ...aiFlows, ...modelAiFlows, ...providerQolFlows, ...queueFlows, ...webglOffFlows]

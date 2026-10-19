@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 13
+-- forge-bridge-template: 14
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -56,10 +56,18 @@
 -- when the test started: synced, its stale scripts were read as Studio edits and written over newer
 -- files on disk. It also prints why Forge does not sync this window when that reason changes (e.g.
 -- another window with the same place already syncs it).
+-- Version 14: insert jobs. When the user turns on "Insert models dropped in the inbox" in Forge, an
+-- agent's <id>.insert.json puts a Roblox model file (.rbxm / .rbxmx) from Forge's model inbox into this
+-- place: Forge serves the file's bytes on this same 127.0.0.1 channel (a plugin cannot read files),
+-- SerializationService:DeserializeInstancesAsync turns them into instances (for an .rbxmx Studio will
+-- not read, Forge's own reading of the XML is built with Instance.new), and they are parented under
+-- the job's parent inside one ChangeHistoryService recording, so Ctrl+Z removes them (and brings back
+-- what "replace" removed).
 --
 -- Roblox APIs used (Creator Hub): HttpService:RequestAsync, KeyframeSequenceProvider:
 -- RegisterKeyframeSequence, Animator:LoadAnimation / StepAnimations (edit-mode preview),
--- Players:CreateHumanoidModelFromDescription, Camera.CFrame / FieldOfView.
+-- Players:CreateHumanoidModelFromDescription, Camera.CFrame / FieldOfView, ChangeHistoryService:
+-- TryBeginRecording / FinishRecording, SerializationService:DeserializeInstancesAsync (v14).
 
 local HttpService = game:GetService("HttpService")
 local RunService = game:GetService("RunService")
@@ -1923,6 +1931,358 @@ local function runModelJob(job: any)
 	end
 end
 
+-- ------------------------------------------------------------ Insert from the model inbox (v14)
+--
+-- An agent's <id>.insert.json in Forge's model inbox (the user opted in, in Forge's settings). Forge
+-- has checked the file (inside its inbox, .rbxm / .rbxmx, size) and sends: job.insert = { parent =
+-- {service, names...}, replace, format, file, size, blobs = { bytes = n, tree = n? } }. The plugin
+-- fetches blob "bytes" (base64 chunks of the file) from /blob/<job>/bytes/<i> and reads them with
+-- SerializationService:DeserializeInstancesAsync (Roblox's binary model format). For an .rbxmx that
+-- Studio will not read that way it fetches blob "tree" (JSON text chunks: Forge's reading of the XML)
+-- and builds it with Instance.new. Properties Studio will not take there are reported as skipped.
+-- The instances go under the parent (a service, then names; missing ones are created as Folders,
+-- RBX_ANIMSAVES in ServerStorage as a Model like the Animation Editor's) inside one
+-- ChangeHistoryService recording: Ctrl+Z removes them, and brings back what replace removed.
+
+local INSERT_SERVICES = {
+	Workspace = true,
+	ServerStorage = true,
+	ReplicatedStorage = true,
+	ReplicatedFirst = true,
+	ServerScriptService = true,
+	StarterGui = true,
+	StarterPack = true,
+	StarterPlayer = true,
+	Lighting = true,
+	SoundService = true,
+	Teams = true,
+	TextChatService = true,
+	MaterialService = true,
+}
+
+local B64: { [number]: number } = {}
+do
+	local alphabet = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/"
+	for i = 1, 64 do
+		B64[string.byte(alphabet, i)] = i - 1
+	end
+end
+
+-- Decodes one base64 chunk (no whitespace; "=" padding only at its end) into buf at offset; returns
+-- the offset after the last byte written.
+local function base64Into(text: string, buf: buffer, offset: number): number
+	local size = buffer.len(buf)
+	for i = 1, #text, 4 do
+		local a, b, c, d = string.byte(text, i, i + 3)
+		local va, vb = B64[a or 0], B64[b or 0]
+		if va == nil or vb == nil then
+			error("RBX Forge sent a damaged model (bad base64)", 0)
+		end
+		local vc, vd = B64[c or 61], B64[d or 61]
+		if offset + 1 + (if vc then 1 else 0) + (if vc and vd then 1 else 0) > size then
+			error("RBX Forge sent more bytes than the model's size", 0)
+		end
+		buffer.writeu8(buf, offset, bit32.band(bit32.bor(bit32.lshift(va, 2), bit32.rshift(vb, 4)), 255))
+		offset += 1
+		if vc then
+			buffer.writeu8(buf, offset, bit32.band(bit32.bor(bit32.lshift(vb, 4), bit32.rshift(vc, 2)), 255))
+			offset += 1
+			if vd then
+				buffer.writeu8(buf, offset, bit32.band(bit32.bor(bit32.lshift(vc, 6), vd), 255))
+				offset += 1
+			end
+		end
+	end
+	return offset
+end
+
+local function fetchChunk(job: any, name: string, i: number, count: number): string
+	local ok, answer = request("GET", "/blob/" .. job.id .. "/" .. name .. "/" .. i)
+	if not ok or type(answer) ~= "table" or type(answer.data) ~= "string" then
+		error("could not fetch the model from RBX Forge (" .. name .. " " .. (i + 1) .. "/" .. count .. ": " .. tostring(answer) .. ")", 0)
+	end
+	return answer.data
+end
+
+local function deserializeModel(buf: buffer): ({ Instance }?, string?)
+	local okService, service = pcall(function()
+		return game:GetService("SerializationService")
+	end)
+	if not okService or not service then
+		return nil, "this Studio has no SerializationService (update Roblox Studio)"
+	end
+	local ok, result = pcall(function()
+		return (service :: any):DeserializeInstancesAsync(buf)
+	end)
+	if not ok then
+		return nil, tostring(result)
+	end
+	if type(result) ~= "table" or #result == 0 then
+		return nil, "it holds no instances"
+	end
+	return result, nil
+end
+
+local function insertValue(p: any): any
+	local v = p.v
+	if p.t == "vector2" then
+		return Vector2.new(v[1], v[2])
+	elseif p.t == "udim" then
+		return UDim.new(v[1], v[2])
+	elseif p.t == "udim2" then
+		return UDim2.new(v[1], v[2], v[3], v[4])
+	elseif p.t == "range" then
+		return NumberRange.new(math.min(v[1], v[2]), math.max(v[1], v[2]))
+	elseif p.t == "nseq" then
+		local keys = {}
+		for _, k in v do
+			table.insert(keys, NumberSequenceKeypoint.new(k[1], k[2], k[3]))
+		end
+		return NumberSequence.new(keys)
+	elseif p.t == "cseq" then
+		local keys = {}
+		for _, k in v do
+			table.insert(keys, ColorSequenceKeypoint.new(k[1], Color3.new(k[2], k[3], k[4])))
+		end
+		return ColorSequence.new(keys)
+	end
+	return propValue(p)
+end
+
+-- An enum property's item with value v (the property's current value says which enum), else v.
+local function enumValue(inst: Instance, key: string, v: any): any
+	local ok, item = pcall(function()
+		local current = (inst :: any)[key]
+		if typeof(current) ~= "EnumItem" then
+			return nil
+		end
+		for _, it in current.EnumType:GetEnumItems() do
+			if it.Value == v then
+				return it
+			end
+		end
+		return nil
+	end)
+	return if ok and item ~= nil then item else v
+end
+
+-- Builds Forge's reading of an .rbxmx (InstanceJson nodes); refs between them are set at the end.
+local function buildTree(roots: any, skipped: { [string]: boolean }): { Instance }
+	local refs: { [string]: Instance } = {}
+	local pending = {}
+	local function build(data: any, parent: Instance?): Instance
+		local okNew, inst = pcall(Instance.new, data.className)
+		if not okNew then
+			error("Studio cannot create a " .. tostring(data.className) .. " (" .. tostring(inst) .. ")", 0)
+		end
+		inst.Name = tostring(data.name)
+		if type(data.ref) == "string" then
+			refs[data.ref] = inst
+		end
+		for key, p in data.props or {} do
+			if p.t == "ref" then
+				table.insert(pending, { inst = inst, key = key, ref = p.v })
+			else
+				local ok = pcall(function()
+					(inst :: any)[key] = if p.t == "token" then enumValue(inst, key, p.v) else insertValue(p)
+				end)
+				if not ok then
+					skipped[data.className .. "." .. key] = true
+				end
+			end
+		end
+		for key, value in data.attributes or {} do
+			pcall(function()
+				inst:SetAttribute(key, value)
+			end)
+		end
+		for _, tag in data.tags or {} do
+			pcall(function()
+				CollectionService:AddTag(inst, tag)
+			end)
+		end
+		for _, child in data.children or {} do
+			build(child, inst)
+		end
+		if parent then
+			inst.Parent = parent
+		end
+		return inst
+	end
+	local out = {}
+	for _, data in roots do
+		table.insert(out, build(data, nil))
+	end
+	for _, p in pending do
+		local target = refs[p.ref]
+		local ok = target ~= nil and pcall(function()
+			(p.inst :: any)[p.key] = target
+		end)
+		if not ok then
+			skipped[p.inst.ClassName .. "." .. p.key] = true
+		end
+	end
+	return out
+end
+
+-- The parent to insert into; names missing after the service are created (listed in created).
+local function insertParent(path: { string }, created: { string }): Instance
+	local service = path[1]
+	if not INSERT_SERVICES[service] then
+		error(tostring(service) .. " is not a service models are inserted into", 0)
+	end
+	local okService, node = pcall(function()
+		return game:GetService(service)
+	end)
+	if not okService or not node then
+		error(service .. " is not a service in this place", 0)
+	end
+	for i = 2, #path do
+		local name = path[i]
+		local found, count = nil, 0
+		for _, c in node:GetChildren() do
+			if c.Name == name then
+				found = found or c
+				count += 1
+			end
+		end
+		if count > 1 then
+			error("Studio has " .. count .. " instances named " .. table.concat(path, ".", 1, i) .. "; rename one or pick another parent", 0)
+		end
+		if not found then
+			found = Instance.new(if i == 2 and service == "ServerStorage" and name == "RBX_ANIMSAVES" then "Model" else "Folder")
+			found.Name = name
+			found.Parent = node
+			table.insert(created, found:GetFullName())
+		end
+		node = found
+	end
+	return node
+end
+
+local function runInsertJob(job: any)
+	local made: { Instance }? = nil
+	local ok, err = pcall(function()
+		post(job, { type = "accepted" })
+		local spec = if type(job.insert) == "table" then job.insert else {}
+		if type(spec.parent) ~= "table" or #spec.parent < 1 then
+			error("the insert job has no parent", 0)
+		end
+		local blobs = if type(spec.blobs) == "table" then spec.blobs else {}
+		local size = tonumber(spec.size) or 0
+		local chunks = tonumber(blobs.bytes) or 0
+		if size <= 0 or chunks <= 0 then
+			error("the insert job has no file", 0)
+		end
+		local buf = buffer.create(size)
+		local offset = 0
+		for i = 0, chunks - 1 do
+			offset = base64Into(fetchChunk(job, "bytes", i, chunks), buf, offset)
+			task.wait()
+		end
+		if offset ~= size then
+			error("RBX Forge sent " .. offset .. " of the model's " .. size .. " bytes", 0)
+		end
+
+		local via = "serialization"
+		local skipped: { [string]: boolean } = {}
+		local roots, why = deserializeModel(buf)
+		buf = nil :: any
+		if not roots then
+			local treeChunks = tonumber(blobs.tree) or 0
+			if spec.format ~= "rbxmx" or treeChunks <= 0 then
+				error("Studio could not read " .. tostring(spec.file) .. ": " .. tostring(why), 0)
+			end
+			local parts = {}
+			for i = 0, treeChunks - 1 do
+				parts[i + 1] = fetchChunk(job, "tree", i, treeChunks)
+			end
+			local okTree, tree = pcall(function()
+				return HttpService:JSONDecode(table.concat(parts))
+			end)
+			if not okTree or type(tree) ~= "table" or #tree == 0 then
+				error("Studio could not read " .. tostring(spec.file) .. " (" .. tostring(why) .. "), and Forge's reading of it is damaged", 0)
+			end
+			made = buildTree(tree, skipped)
+			via = "tree"
+		else
+			made = roots
+		end
+		local list = made :: { Instance }
+
+		local recording = nil
+		if ChangeHistoryService then
+			local okRec, id = pcall(function()
+				return ChangeHistoryService:TryBeginRecording("Forge: insert " .. tostring(spec.file), "Insert " .. tostring(spec.file) .. " (from RBX Forge's model inbox)")
+			end)
+			recording = if okRec then id else nil
+		end
+		if not recording then
+			-- Without a recording Ctrl+Z could not take it out again: refuse rather than insert.
+			error("Studio is recording another change (or refused to record this one); try again in a moment", 0)
+		end
+		local created: { string } = {}
+		local replaced = 0
+		local okInsert, insertErr = pcall(function()
+			local parent = insertParent(spec.parent, created)
+			if spec.replace == true then
+				local names = {}
+				for _, r in list do
+					names[r.Name] = true
+				end
+				for _, c in parent:GetChildren() do
+					if names[c.Name] then
+						c.Parent = nil
+						replaced += 1
+					end
+				end
+			end
+			for _, r in list do
+				r.Parent = parent
+			end
+		end)
+		pcall(function()
+			ChangeHistoryService:FinishRecording(recording, if okInsert then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel)
+		end)
+		if not okInsert then
+			error("Studio refused the insert: " .. tostring(insertErr), 0)
+		end
+		made = nil
+
+		pcall(function()
+			game:GetService("Selection"):Set(list)
+		end)
+		local paths = {}
+		for i, r in list do
+			if i > 200 then
+				break
+			end
+			table.insert(paths, r:GetFullName())
+		end
+		local skippedList = {}
+		for name in skipped do
+			if #skippedList < 50 then
+				table.insert(skippedList, name)
+			end
+		end
+		table.sort(skippedList)
+		print("[Forge Bridge] inserted " .. tostring(spec.file) .. " as " .. table.concat(paths, ", ") .. (if replaced > 0 then " (replaced " .. replaced .. ")" else "") .. "; Ctrl+Z in Studio undoes it")
+		post(job, { type = "log", message = HttpService:JSONEncode({ inserted = paths, replaced = replaced, via = via, created = created, skipped = skippedList }) })
+		post(job, { type = "done", marks = {} })
+	end)
+	if made then
+		for _, inst in made do
+			pcall(function()
+				inst:Destroy()
+			end)
+		end
+	end
+	if not ok then
+		warn("[Forge Bridge] " .. tostring(err))
+		pcall(post, job, { type = "error", message = tostring(err) })
+	end
+end
+
 -- ------------------------------------------------------------ poll loop
 
 plugin.Unloading:Connect(function()
@@ -1982,6 +2342,8 @@ task.spawn(function()
 				runDeleteJob(answer.job)
 			elseif answer.job.kind == "model" then
 				runModelJob(answer.job)
+			elseif answer.job.kind == "insert" then
+				runInsertJob(answer.job)
 			else
 				runJob(answer.job)
 			end

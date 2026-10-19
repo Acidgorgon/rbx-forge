@@ -1,5 +1,6 @@
-// FBX upload inbox settings (main/services/art/modelInbox.ts): the opt-in toggle, the folder with a
-// Browse button, and the last few uploads. Shown in Art > Roblox import under the Open Cloud key and
+// FBX upload inbox settings (main/services/art/modelInbox.ts): the opt-in toggle, the sibling opt-in
+// for Studio inserts from the same folder (modelInsert.ts), the folder with a Browse button, and the
+// last few uploads and inserts. Shown in Art > Roblox import under the Open Cloud key and
 // in Settings > Integrations. The key itself never reaches this page; it only learns whether one is set.
 import { useEffect, useState } from 'react'
 import type { ModelInboxStatus } from '@shared/types'
@@ -56,13 +57,34 @@ export function ModelInboxSettings({ refresh }: { refresh?: unknown }) {
           />
         </div>
       </div>
+      <div className="set-row" id="set-model-insert">
+        <div className="set-text">
+          <div className="set-title">Insert models dropped in the inbox into Studio</div>
+          <div className="note">
+            A <span className="mono">&lt;id&gt;.insert.json</span> naming an <span className="mono">.rbxm</span> or <span className="mono">.rbxmx</span> (and a parent such as{' '}
+            <span className="mono">ServerStorage.RBX_ANIMSAVES</span>) is inserted into the linked Studio place by the Forge Bridge plugin; Ctrl+Z in Studio undoes it. Forge writes{' '}
+            <span className="mono">&lt;id&gt;.insert.result.json</span> with the inserted paths. No Open Cloud key needed. Agents that can write to this folder can change your place, so
+            leave this off unless you want that.
+          </div>
+        </div>
+        <div className="set-ctl">
+          <input
+            type="checkbox"
+            className="switch"
+            checked={status.insertEnabled}
+            disabled={busy}
+            onChange={(e) => void act(() => h.fbxInboxSetSettings({ insert: e.target.checked }))}
+            aria-label="Insert models dropped in the inbox into Studio"
+          />
+        </div>
+      </div>
       <div className="set-row">
         <div className="set-text">
           <div className="set-title">Inbox folder</div>
           <div className="note mono" title={status.dir} style={{ overflowWrap: 'anywhere' }}>
             {status.dir}
           </div>
-          <div className="note">FBX files must be in this folder or in {status.modelsDir}. Up to 20 MB each, one upload at a time.</div>
+          <div className="note">FBX and model files must be in this folder or in {status.modelsDir}. Up to 20 MB each, one at a time.</div>
         </div>
         <div className="set-ctl row">
           <button className="btn small" disabled={busy} onClick={() => void act(() => h.fbxInboxChooseFolder())}>
@@ -78,10 +100,11 @@ export function ModelInboxSettings({ refresh }: { refresh?: unknown }) {
       {status.recent.length > 0 && (
         <div className="set-row">
           <div className="set-text">
-            <div className="set-title">Recent inbox uploads</div>
+            <div className="set-title">Recent inbox requests</div>
             {status.recent.slice(0, 5).map((e) => (
-              <div key={`${e.id}-${e.at}`} className={`note${e.status === 'error' ? ' err' : ''}`}>
-                <span className="mono">{e.name ?? e.id}</span> {e.status === 'done' ? `→ ${e.assetId}` : `failed: ${e.error}`}
+              <div key={`${e.kind ?? 'upload'}-${e.id}-${e.at}`} className={`note${e.status === 'error' ? ' err' : ''}`}>
+                <span className="mono">{e.name ?? e.id}</span>{' '}
+                {e.status === 'error' ? `failed: ${e.error}` : e.kind === 'insert' ? `→ Studio ${(e.paths ?? []).join(', ')}` : `→ ${e.assetId}`}
               </div>
             ))}
           </div>

@@ -20,7 +20,7 @@ const PER_IMAGE: Record<string, number> = { low: 0.0059, medium: 0.0132, high: 0
 let settings: ArtSettings = { model: 'gpt-image-2.5-flare', quality: 'high', gitPolicy: 'track-small', dailyCapUsd: 5, assetType: 'Image', creatorUserId: 1234567 }
 let robloxKey = false
 const INBOX_DEFAULT = '/Users/you/Documents/ForgeModels/_upload_inbox'
-let inbox = { enabled: false, dir: null as string | null }
+let inbox = { enabled: false, insert: false, dir: null as string | null }
 const inboxStatus = (): ModelInboxStatus => ({
   enabled: inbox.enabled,
   dir: inbox.dir ?? INBOX_DEFAULT,
@@ -28,7 +28,8 @@ const inboxStatus = (): ModelInboxStatus => ({
   modelsDir: '/Users/you/Documents/ForgeModels',
   robloxKey,
   creator: !!(settings.creatorUserId || settings.creatorGroupId),
-  watching: inbox.enabled,
+  watching: inbox.enabled || inbox.insert,
+  insertEnabled: inbox.insert,
   recent: inbox.enabled ? [{ id: 'emberstag-head', name: 'EmberstagHead', status: 'done', assetId: 18_200_000_123, at: new Date().toISOString() }] : []
 })
 
@@ -337,7 +338,7 @@ export function artMock(emit: Emit): ArtApi {
     },
     async fbxInboxSetSettings(patch) {
       if (patch.enabled && !robloxKey) throw new Error('Add an Open Cloud API key (Art page > Roblox import) before turning on the inbox.')
-      inbox = { enabled: patch.enabled ?? inbox.enabled, dir: 'dir' in patch ? (patch.dir ?? null) : inbox.dir }
+      inbox = { enabled: patch.enabled ?? inbox.enabled, insert: patch.insert ?? inbox.insert, dir: 'dir' in patch ? (patch.dir ?? null) : inbox.dir }
       return inboxStatus()
     },
     async fbxInboxChooseFolder() {

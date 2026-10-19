@@ -254,12 +254,16 @@ export interface ArtEvents {
 }
 
 // FBX upload inbox (main/services/art/modelInbox.ts): <id>.request.json files dropped in a folder
-// become Model assets; Forge writes <id>.result.json back.
+// become Model assets; Forge writes <id>.result.json back. The same folder takes Studio inserts
+// (modelInsert.ts): <id>.insert.json puts an .rbxm / .rbxmx into the linked Studio place.
 export interface ModelInboxEntry {
   id: string
   name?: string
+  // 'insert': a Studio insert (paths); absent: an upload (assetId).
+  kind?: 'upload' | 'insert'
   status: 'done' | 'error'
   assetId?: number | string
+  paths?: string[]
   error?: string
   at: string
 }
@@ -273,6 +277,8 @@ export interface ModelInboxStatus {
   robloxKey: boolean
   creator: boolean
   watching: boolean
+  // Studio inserts (<id>.insert.json): their own opt-in, no Open Cloud key needed.
+  insertEnabled: boolean
   recent: ModelInboxEntry[]
 }
 
@@ -295,7 +301,8 @@ export interface ArtApi {
   artChooseReferences(): Promise<string[]>
   // Opens a concept in the OS image viewer ('open') or shows it in its folder ('folder').
   artReveal(path: string, how: 'open' | 'folder'): Promise<void>
-  // FBX upload inbox. Enabling needs an Open Cloud key; dir null goes back to the default folder.
+  // FBX upload inbox. Enabling uploads needs an Open Cloud key; insert turns Studio inserts on or off;
+  // dir null goes back to the default folder.
   // Split into layers: propose (vision model), estimate, generate, read, import.
   artLayersPropose(concept: string): Promise<ArtLayerProposal>
   artLayersEstimate(input: ArtLayersInput): Promise<ArtLayersEstimate>
@@ -304,7 +311,7 @@ export interface ArtApi {
   artLayersGet(conceptOrName: string): Promise<ArtLayerManifest | null>
   artLayersImport(name: string, opts?: { force?: boolean }): Promise<ArtLayersImportResult>
   fbxInboxStatus(): Promise<ModelInboxStatus>
-  fbxInboxSetSettings(patch: { enabled?: boolean; dir?: string | null }): Promise<ModelInboxStatus>
+  fbxInboxSetSettings(patch: { enabled?: boolean; insert?: boolean; dir?: string | null }): Promise<ModelInboxStatus>
   // Folder picker; saves the choice. Unchanged status when cancelled.
   fbxInboxChooseFolder(): Promise<ModelInboxStatus>
 }

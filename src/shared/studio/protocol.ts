@@ -4,6 +4,9 @@
 //   GET  /forge-bridge/poll?v=<plugin version>&place=<name>&placeId=<id>
 //        -> {"job": BridgeJob} or {"idle": true}; held up to POLL_HOLD_MS while there is no job.
 //   GET  /forge-bridge/ping -> {"now": <ms>} (the plugin measures the round trip before "start").
+//   GET  /forge-bridge/blob/<jobId>/<name>/<i> -> {"data": "<chunk i of the job's blob <name>>", "n": <chunks>}
+//        Only for the running job, once delivered (plugin v14 insert jobs fetch the model file this way:
+//        a 20 MB model does not fit one poll answer).
 //   POST /forge-bridge/event/<jobId>  body: BridgeEvent -> {"ok": true, ...}
 //        Forge holds the answer to "calibrate", "ready" and "beat" until it has grabbed the frame, so
 //        the plugin only moves on once the capture is done.
@@ -37,12 +40,40 @@ export type PropJson =
   | { t: 'cframe'; v: number[] }
   | { t: 'vector3'; v: Vec3 }
   | { t: 'color3'; v: Vec3 }
+  // Plugin v14 (insert jobs built from an .rbxmx): more value types, and references between the
+  // job's own instances (`ref` names another node's `ref`).
+  | { t: 'vector2'; v: [number, number] }
+  | { t: 'udim'; v: [number, number] }
+  | { t: 'udim2'; v: [number, number, number, number] }
+  | { t: 'range'; v: [number, number] }
+  | { t: 'nseq'; v: [number, number, number][] }
+  | { t: 'cseq'; v: [number, number, number, number][] }
+  | { t: 'ref'; v: string }
 
 export interface InstanceJson {
   className: string
   name: string
   props: Record<string, PropJson>
   children: InstanceJson[]
+  // Plugin v14 (insert jobs): this node's referent (for `ref` props), attributes and CollectionService tags.
+  ref?: string
+  attributes?: Record<string, string | number | boolean>
+  tags?: string[]
+}
+
+// Plugin v14 insert job: put a Roblox model file (.rbxm / .rbxmx) from the inbox into the place.
+export interface BridgeInsert {
+  // Where it goes: a service, then child names (missing ones after the service are created as Folders).
+  parent: string[]
+  // Remove the parent's existing children named like an inserted root first.
+  replace: boolean
+  // The file's own format; the plugin reads blob "bytes" (base64 chunks of the file) with
+  // SerializationService:DeserializeInstancesAsync, and for .rbxmx falls back to blob "tree"
+  // (JSON text chunks of InstanceJson[] Forge read from the XML) when Studio will not read XML.
+  format: 'rbxm' | 'rbxmx'
+  file: string
+  size: number
+  blobs: { bytes: number; tree?: number }
 }
 
 export interface BridgeCamera {
@@ -64,7 +95,8 @@ export interface BridgeJob {
   // delete (plugin v7): the Game tab's user-confirmed "Delete in Studio" of `target`; no stage.
   // model (plugin v10): the Model Lab's "Build in Studio": requires `entry` (the build script, next
   // to its BlockyKit module) and builds a Model in Workspace in front of the camera; no stage.
-  kind: 'vfx' | 'anim' | 'ability' | 'snapshot' | 'delete' | 'model'
+  // insert (plugin v14): the inbox's <id>.insert.json: `insert` says what goes where; no stage.
+  kind: 'vfx' | 'anim' | 'ability' | 'snapshot' | 'delete' | 'model' | 'insert'
   // realtime: play once at full speed, Forge records the window and picks the frames nearest each
   // beat. stepped: the plugin poses the rig at each beat (Animator:StepAnimations) and waits.
   mode: 'realtime' | 'stepped'
@@ -92,6 +124,8 @@ export interface BridgeJob {
   target?: { path: string[]; className?: string }
   // model jobs: an existing guard Model (path from game) whose gameplay pieces the build copies.
   model?: { guard?: string[]; areaId?: string }
+  // insert jobs (plugin v14).
+  insert?: BridgeInsert
 }
 
 export type BridgeEvent =

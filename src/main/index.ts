@@ -523,6 +523,8 @@ const integrations = createIntegrations({
       return picked.canceled ? null : (picked.filePaths[0] ?? null)
     }
   },
+  // Studio inserts from the inbox go through the Forge Bridge (created below; read lazily).
+  studioBridge: () => studio.bridge,
   // UI Preview: preview_ui screenshots through an offscreen renderer window.
   uiPreview: { capture: uiPreviewCapture(preloadPath()) },
   choosePlaceFile: async () => {

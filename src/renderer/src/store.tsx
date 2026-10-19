@@ -1304,7 +1304,15 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       h.on('features:renamed', (r) => actions.toast({ text: `Feature renamed: ${r.from} → ${r.to}`, detail: `${r.moved.length} moves · ${r.updated.length} files updated`, kind: 'hot' })),
       h.on('release:webhookGone', () => actions.toast({ text: 'Discord webhook was deleted', detail: 'Add a new one in Release settings', kind: 'err' })),
       h.on('fbxInbox:upload', (e) =>
-        actions.toast(e.status === 'done' ? { text: `Model uploaded: ${e.name ?? e.id} → ${e.assetId}`, detail: `rbxassetid://${e.assetId}`, kind: 'ok' } : { text: `Model upload failed: ${e.name ?? e.id}`, detail: e.error, kind: 'err' })
+        actions.toast(
+          e.kind === 'insert'
+            ? e.status === 'done'
+              ? { text: `Inserted in Studio: ${e.name ?? e.id}`, detail: `${(e.paths ?? []).join(', ')} (Ctrl+Z in Studio undoes it)`, kind: 'ok' }
+              : { text: `Studio insert failed: ${e.name ?? e.id}`, detail: e.error, kind: 'err' }
+            : e.status === 'done'
+              ? { text: `Model uploaded: ${e.name ?? e.id} → ${e.assetId}`, detail: `rbxassetid://${e.assetId}`, kind: 'ok' }
+              : { text: `Model upload failed: ${e.name ?? e.id}`, detail: e.error, kind: 'err' }
+        )
       )
     ]
 

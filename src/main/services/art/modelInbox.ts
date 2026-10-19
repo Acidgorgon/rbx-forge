@@ -80,15 +80,18 @@ function inside(child: string, root: string): boolean {
 }
 
 // Resolves a request's file (relative to baseDir) and refuses anything outside the allowed roots,
-// any ".." segment, symlinks that lead out, non-FBX names, missing, empty and oversized files.
-export async function resolveModelFile(file: string, opts: { baseDir: string; roots: string[]; maxBytes?: number }): Promise<Check<{ abs: string; size: number; mtimeMs: number }>> {
+// any ".." segment, symlinks that lead out, other file types (kind 'fbx': .fbx for uploads; 'model':
+// .rbxm / .rbxmx for Studio inserts), missing, empty and oversized files.
+export async function resolveModelFile(file: string, opts: { baseDir: string; roots: string[]; maxBytes?: number; kind?: 'fbx' | 'model' }): Promise<Check<{ abs: string; size: number; mtimeMs: number }>> {
   const raw = file.trim()
+  const model = opts.kind === 'model'
+  const label = model ? 'model file' : 'FBX'
   if (!raw) return { ok: false, error: 'No file given' }
   if (raw.split(/[\\/]+/).includes('..')) return { ok: false, error: `Refused ${raw}: ".." is not allowed in the path` }
-  if (!/\.fbx$/i.test(raw)) return { ok: false, error: `Refused ${raw}: only .fbx files are uploaded` }
+  if (model ? !/\.rbxmx?$/i.test(raw) : !/\.fbx$/i.test(raw)) return { ok: false, error: `Refused ${raw}: only ${model ? '.rbxm and .rbxmx files are inserted' : '.fbx files are uploaded'}` }
   const abs = isAbsolute(raw) ? resolve(raw) : resolve(opts.baseDir, raw)
   const roots = opts.roots.map((r) => resolve(r))
-  if (!roots.some((r) => inside(abs, r))) return { ok: false, error: `Refused ${raw}: the FBX must be inside ${roots.join(' or ')}` }
+  if (!roots.some((r) => inside(abs, r))) return { ok: false, error: `Refused ${raw}: the ${label} must be inside ${roots.join(' or ')}` }
   const s = await stat(abs).catch(() => null)
   if (!s) return { ok: false, error: `File not found: ${raw}` }
   if (!s.isFile()) return { ok: false, error: `Not a file: ${raw}` }
@@ -97,8 +100,8 @@ export async function resolveModelFile(file: string, opts: { baseDir: string; ro
   const realRoots = await Promise.all(roots.map((r) => realpath(r).catch(() => r)))
   if (!realRoots.some((r) => inside(real, r))) return { ok: false, error: `Refused ${raw}: it links outside ${roots.join(' or ')}` }
   const max = opts.maxBytes ?? MAX_UPLOAD_BYTES
-  if (s.size === 0) return { ok: false, error: `The FBX is empty: ${raw}` }
-  if (s.size > max) return { ok: false, error: `The FBX is ${(s.size / 1024 / 1024).toFixed(1)} MB; Roblox accepts model files up to ${Math.round(max / 1024 / 1024)} MB` }
+  if (s.size === 0) return { ok: false, error: `The ${label} is empty: ${raw}` }
+  if (s.size > max) return { ok: false, error: `The ${label} is ${(s.size / 1024 / 1024).toFixed(1)} MB; ${model ? 'Forge sends' : 'Roblox accepts'} model files up to ${Math.round(max / 1024 / 1024)} MB` }
   return { ok: true, value: { abs, size: s.size, mtimeMs: s.mtimeMs } }
 }
 
@@ -167,14 +170,14 @@ export interface ModelInboxDeps {
   maxPerHour?: number
 }
 
-const defaultWatch = (dir: string, onChange: () => void): (() => void) => {
+export const defaultWatch = (dir: string, onChange: () => void): (() => void) => {
   const w = fsWatch(dir, { persistent: false }, () => onChange())
   w.on('error', () => undefined)
   return () => w.close()
 }
 
 // Writes via a temp file and rename so a reader never sees half a JSON file.
-async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
+export async function writeJsonAtomic(path: string, value: unknown): Promise<void> {
   const text = JSON.stringify(value, null, 2) + '\n'
   const tmp = `${path}.${process.pid}.tmp`
   try {

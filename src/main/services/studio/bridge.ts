@@ -48,6 +48,9 @@ export interface RunOptions {
   // bridge's default target (the Studio target picked in Forge); null: any window. A target that is
   // not connected falls back to any window.
   target?: StudioTarget | null
+  // Chunked text the plugin fetches with GET /forge-bridge/blob/<jobId>/<name>/<i> while the job runs
+  // (insert jobs: the model file as base64, too big for one poll answer).
+  blobs?: Record<string, string[]>
 }
 
 export const PREEMPTED = 'paused for another Studio job'
@@ -61,6 +64,7 @@ interface Active {
   deliveredTo: string | null
   preemptible: boolean
   handler: EventHandler
+  blobs: Record<string, string[]>
   delivered: boolean
   accepted: boolean
   aborted: string | null
@@ -221,7 +225,7 @@ export class StudioBridge {
     if (this.active) return Promise.reject(new BridgeError('busy', 'a Studio check is already running'))
     const target = this.targetFor(opts.target)
     return new Promise<void>((resolve, reject) => {
-      const a: Active = { job, target, deliveredTo: null, handler, preemptible: !!opts.preemptible, delivered: false, accepted: false, aborted: null, resolve, reject, timers: [] }
+      const a: Active = { job, target, deliveredTo: null, handler, blobs: opts.blobs ?? {}, preemptible: !!opts.preemptible, delivered: false, accepted: false, aborted: null, resolve, reject, timers: [] }
       this.active = a
       const finish = (err?: Error) => {
         if (this.active !== a) return
@@ -334,6 +338,16 @@ export class StudioBridge {
         return send(200, { idle: true })
       }
       if (path.startsWith('/forge-bridge/sync/')) return await this.handleSync(req, url, send)
+      const blob = /^\/forge-bridge\/blob\/([\w-]{1,80})\/(\w{1,40})\/(\d{1,6})$/.exec(path)
+      if (req.method === 'GET' && blob) {
+        const a = this.active
+        if (!a || a.job.id !== blob[1] || !a.delivered || a.aborted) return send(404, { error: 'no such job' })
+        const chunks = Object.hasOwn(a.blobs, blob[2]) ? a.blobs[blob[2]] : undefined
+        const i = Number(blob[3])
+        if (!chunks || i >= chunks.length) return send(404, { error: 'no such chunk' })
+        if (this.info) this.info.lastSeen = this.now()
+        return send(200, { data: chunks[i], n: chunks.length })
+      }
       const m = /^\/forge-bridge\/event\/([\w-]{1,80})$/.exec(path)
       if (req.method === 'POST' && m) {
         const raw = await readBody(req)

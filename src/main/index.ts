@@ -525,6 +525,27 @@ const integrations = createIntegrations({
   },
   // Studio inserts from the inbox go through the Forge Bridge (created below; read lazily).
   studioBridge: () => studio.bridge,
+  // ...and only into a place of the open project: each place file's servePlaceIds plus the places
+  // linked to it in Source Control (published by PlaceId, unpublished by the plugin's link id).
+  insertPlaces: () => {
+    if (!project) return null
+    let links: Record<string, { projectFile: string }> = {}
+    try {
+      links = forgeSync.service()?.links.all() ?? {}
+    } catch {
+      // Forge Sync is not set up yet.
+    }
+    return project.listPlaces().map((place) => {
+      const placeIds = new Set(place.servePlaceIds)
+      const linkIds: string[] = []
+      for (const [key, link] of Object.entries(links)) {
+        if (link.projectFile !== place.file) continue
+        if (key.startsWith('place:')) placeIds.add(Number(key.slice(6)))
+        else if (key.startsWith('local:')) linkIds.push(key.slice(6))
+      }
+      return { name: place.name, file: place.file, placeIds: [...placeIds], linkIds }
+    })
+  },
   // UI Preview: preview_ui screenshots through an offscreen renderer window.
   uiPreview: { capture: uiPreviewCapture(preloadPath()) },
   choosePlaceFile: async () => {

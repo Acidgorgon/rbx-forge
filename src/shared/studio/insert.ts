@@ -82,24 +82,77 @@ export interface StudioWindow {
   place?: string
   placeId?: number
   pluginVersion?: number
+  // Plugin v12+: an unpublished place's ForgeSyncLink id (how Source Control links it).
+  link?: string
 }
 
-// Which connected Studio window gets the insert. A named place must be connected (never "any window":
-// a model must not land in the wrong place); a name shared by several windows is ambiguous. Without
-// one: Forge's Studio target (the picker, else the place linked to the project), else the only window.
-export function pickWindow<W extends StudioWindow>(windows: W[], want: StudioTarget | null, fallback: W | null): { window: W } | { error: string } {
-  if (!windows.length) return { error: 'Studio is not connected: open the place in Roblox Studio with the Forge Bridge plugin on' }
-  const label = (w: StudioWindow) => `${w.place ?? 'a place'}${w.placeId ? ` (${w.placeId})` : ''}`
-  if (want) {
-    const hits = windows.filter((w) => (want.placeId ? w.placeId === want.placeId : w.place === want.place))
-    if (hits.length === 1) return { window: hits[0] }
-    const what = want.placeId ? `PlaceId ${want.placeId}` : `"${want.place}"`
-    if (!hits.length) return { error: `No Studio window with ${what} is connected (connected: ${windows.map(label).join(', ')})` }
-    return { error: `${hits.length} Studio windows have ${what} open; give its PlaceId as "place" instead` }
+// A place of the open Forge project, and how its Studio windows are recognised: by PlaceId
+// (servePlaceIds, or published places linked in Source Control) or, for an unpublished place linked in
+// Source Control, by the link id the plugin reports. Never by Studio's place name: "Place1" and every
+// downloaded .rbxlx share PlaceId 0.
+export interface InsertProjectPlace {
+  // The project file's "name" (display, and what a request's "place" may say).
+  name: string
+  // "menu.project.json".
+  file: string
+  placeIds: number[]
+  linkIds?: string[]
+}
+
+// The project place a Studio window has open, or null when it is not one of the project's places.
+export function projectPlaceOf(w: StudioWindow, places: InsertProjectPlace[]): InsertProjectPlace | null {
+  const id = w.placeId && w.placeId > 0 ? w.placeId : 0
+  if (id) return places.find((p) => p.placeIds.includes(id)) ?? null
+  if (w.link) return places.find((p) => p.linkIds?.includes(w.link!)) ?? null
+  return null
+}
+
+const windowText = (w: StudioWindow) => `${w.place ?? 'a place'}${w.placeId ? ` (${w.placeId})` : ''}`
+const placeText = (p: InsertProjectPlace) =>
+  `"${p.name}" (${p.placeIds.length ? `PlaceId ${p.placeIds.join(', ')}` : p.linkIds?.length ? 'linked unpublished place' : 'no PlaceId in servePlaceIds and not linked yet'})`
+const sameName = (a: string, b: string) => a.trim().toLowerCase() === b.trim().toLowerCase()
+
+export type PickResult<W> = { window: W; projectPlace: InsertProjectPlace } | { error: string; wait?: true }
+
+// Which connected Studio window gets the insert. Only windows that have one of the open project's
+// places open are ever eligible (a model must never land in a place that is not the project's: a game
+// file opened just to look at it, another project's place). With "place" (a PlaceId, a project place
+// name or file, or the Studio window's place name) it must name a project place, and exactly one
+// window of it must be connected. Without it, exactly one project window must be connected. `wait`:
+// Studio may still connect / open the place, so the request can wait; otherwise it fails now.
+export function pickWindow<W extends StudioWindow>(windows: W[], want: StudioTarget | null, places: InsertProjectPlace[] | null): PickResult<W> {
+  if (!places) return { error: 'No Forge project is open: models are only inserted into a Studio place of the open project', wait: true }
+  if (!places.length) return { error: 'The open project has no *.project.json place, so no Studio place is linked to it' }
+  const list = places.map(placeText).join(', ')
+  if (!windows.length) return { error: `Studio is not connected: open a place of this project (${list}) in Roblox Studio with the Forge Bridge plugin on`, wait: true }
+  const linked = windows.flatMap((w) => {
+    const p = projectPlaceOf(w, places)
+    return p ? [{ window: w, projectPlace: p }] : []
+  })
+  const connected = `connected: ${windows.map((w) => `${windowText(w)}${projectPlaceOf(w, places) ? '' : ' [not in this project]'}`).join(', ')}`
+  const one = (hits: { window: W; projectPlace: InsertProjectPlace }[], what: string): PickResult<W> => {
+    if (hits.length === 1) return hits[0]
+    if (!hits.length) return { error: `No Studio window with ${what} is connected (${connected})`, wait: true }
+    return { error: `${hits.length} Studio windows have ${what} open (${hits.map((h) => windowText(h.window)).join(', ')}); close one, or give its PlaceId as "place"` }
   }
-  if (fallback) return { window: fallback }
-  if (windows.length === 1) return { window: windows[0] }
-  return { error: `${windows.length} Studio windows are connected (${windows.map(label).join(', ')}); say which one with "place" (its name or PlaceId), or pick the Studio target in Forge` }
+  if (want?.placeId) {
+    const p = places.find((x) => x.placeIds.includes(want.placeId!))
+    if (!p) return { error: `PlaceId ${want.placeId} is not a place of this project; models are only inserted into the project's places: ${list}` }
+    return one(linked.filter((h) => h.window.placeId === want.placeId), `PlaceId ${want.placeId}`)
+  }
+  if (want?.place) {
+    const name = want.place
+    // The project's own name for the place ("menu", "menu.project.json") first, then Studio's.
+    const p = places.find((x) => sameName(x.name, name) || sameName(x.file, name) || sameName(x.file.replace(/\.project\.json$/i, ''), name))
+    if (p) return one(linked.filter((h) => h.projectPlace === p), `project place ${placeText(p)}`)
+    const hits = linked.filter((h) => h.window.place === name)
+    if (hits.length) return one(hits, `"${name}"`)
+    if (windows.some((w) => w.place === name)) return { error: `"${name}" is open in Studio but is not a place of this project; models are only inserted into the project's places: ${list}` }
+    return { error: `No Studio window with "${name}" is connected (${connected}); this project's places: ${list}`, wait: true }
+  }
+  if (linked.length === 1) return linked[0]
+  if (!linked.length) return { error: `No Studio window of this project is connected (${connected}). Open one of this project's places in Studio, or say which with "place": ${list}`, wait: true }
+  return { error: `${linked.length} Studio windows of this project are connected (${linked.map((h) => `${windowText(h.window)} = ${h.projectPlace.name}`).join(', ')}); say which one with "place" (a project place name or PlaceId): ${list}` }
 }
 
 // ---------------------------------------------------------------- .rbxmx -> InstanceJson

@@ -44,6 +44,7 @@ import { codexImages } from './agent/codex/images.ts'
 import type { ImageBackend, ModelInboxStatus } from '../shared/artTypes.ts'
 import { createModelUploader, inboxDirs, ModelInbox, modelUploadTools, NO_CREATOR_ERROR, NO_KEY_ERROR } from './services/art/modelInbox.ts'
 import { InsertInbox, type InsertBridge } from './services/art/modelInsert.ts'
+import type { InsertProjectPlace } from '../shared/studio/insert.ts'
 import { Credentials } from './agent/credentials.ts'
 import { TestService, testTools } from './services/tests/index.ts'
 import { createUiPreviewWiring, type UiPreviewWireDeps } from './services/uiPreview/wire.ts'
@@ -85,6 +86,9 @@ export interface IntegrationDeps {
   modelInbox?: { documentsDir: string; chooseFolder?: (title: string, defaultPath?: string) => Promise<string | null> }
   // The Forge Bridge (studio wiring, created after this), for the inbox's Studio inserts.
   studioBridge?: () => InsertBridge | null
+  // The open project's places and how Forge links them to Studio (servePlaceIds, Source Control
+  // links): inserts only go to a Studio window of one of these. Absent / null: no project open.
+  insertPlaces?: () => InsertProjectPlace[] | null
 }
 
 export interface Integrations {
@@ -182,6 +186,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     modelsDir: () => inboxPaths.modelsDir,
     enabled: insertEnabled,
     bridge: () => deps.studioBridge?.() ?? null,
+    projectPlaces: () => deps.insertPlaces?.() ?? null,
     log: (text, stream = 'info') => log({ service: 'harness', stream, text }),
     onResult: (entry) => emit('fbxInbox:upload', entry)
   })

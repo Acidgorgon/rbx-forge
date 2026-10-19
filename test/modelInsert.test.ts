@@ -22,6 +22,7 @@ import {
   parseParentPath,
   parsePlace,
   pickWindow,
+  type InsertProjectPlace,
   readRbxmxTree
 } from '../src/shared/studio/insert.ts'
 import { PLUGIN_VERSION } from '../src/shared/studio/plugin.ts'
@@ -171,19 +172,74 @@ test('insert request: defaults, parent dot path, place, replace; bad requests ex
   assert.deepEqual(parsePlace(''), { ok: true, value: null })
 })
 
-test('insert window: a named place must be connected and unique; otherwise the Studio target or the only window', () => {
+const PROJECT: InsertProjectPlace[] = [
+  { name: 'MyGame', file: 'default.project.json', placeIds: [42] },
+  { name: 'menu', file: 'menu.project.json', placeIds: [77], linkIds: [] },
+  { name: 'Sandbox', file: 'sandbox.project.json', placeIds: [], linkIds: ['link-abc12345'] }
+]
+
+test('insert window: only windows of the open project\'s places; a named place must be one and connected once', () => {
   const a: InsertBridgeWindow = { place: 'MyGame', placeId: 42, pluginVersion: PLUGIN_VERSION }
   const b: InsertBridgeWindow = { place: 'Place1', pluginVersion: PLUGIN_VERSION }
   const c: InsertBridgeWindow = { place: 'Place1', pluginVersion: PLUGIN_VERSION }
-  assert.match((pickWindow([], null, null) as { error: string }).error, /not connected/)
-  assert.deepEqual(pickWindow([a], null, null), { window: a })
-  assert.deepEqual(pickWindow([a, b], { placeId: 42 }, null), { window: a })
-  // A name matches published places too (the agent knows the place by name).
-  assert.deepEqual(pickWindow([a, b], { place: 'MyGame' }, b), { window: a })
-  assert.match((pickWindow([a], { place: 'Other' }, null) as { error: string }).error, /No Studio window with "Other".*MyGame \(42\)/)
-  assert.match((pickWindow([a, b, c], { place: 'Place1' }, null) as { error: string }).error, /2 Studio windows have "Place1"/)
-  assert.deepEqual(pickWindow([a, b], null, b), { window: b })
-  assert.match((pickWindow([a, b], null, null) as { error: string }).error, /2 Studio windows are connected/)
+  const menu: InsertBridgeWindow = { place: 'Main Menu', placeId: 77, pluginVersion: PLUGIN_VERSION }
+  const sandbox: InsertBridgeWindow = { place: 'Place2', link: 'link-abc12345', pluginVersion: PLUGIN_VERSION }
+  // The bug: a downloaded game file open just to study it.
+  const study: InsertBridgeWindow = { place: 'Place_131716211654599.rbxlx', placeId: 131716211654599, pluginVersion: 13 }
+  const err = (r: unknown) => (r as { error: string; wait?: true })
+  const win = (r: unknown) => (r as { window: InsertBridgeWindow }).window
+
+  assert.match(err(pickWindow([], null, PROJECT)).error, /not connected/)
+  assert.equal(err(pickWindow([], null, PROJECT)).wait, true)
+  assert.equal(win(pickWindow([a], null, PROJECT)), a)
+  assert.equal((pickWindow([a], null, PROJECT) as { projectPlace: InsertProjectPlace }).projectPlace.name, 'MyGame')
+
+  // Only window connected, but not a project place: never used. Waits (the place may still open), names the project places.
+  for (const only of [study, b]) {
+    const r = err(pickWindow([only], null, PROJECT))
+    assert.equal(r.wait, true)
+    assert.match(r.error, /No Studio window of this project is connected/)
+    assert.match(r.error, /\[not in this project\]/)
+    assert.match(r.error, /"MyGame" \(PlaceId 42\), "menu" \(PlaceId 77\), "Sandbox" \(linked unpublished place\)/)
+    assert.match(r.error, /"place"/)
+  }
+  // A project window next to other windows: the project one, whatever connected last.
+  assert.equal(win(pickWindow([study, a, b], null, PROJECT)), a)
+  // An unpublished place counts only through its Source Control link (never by name).
+  assert.equal(win(pickWindow([b, sandbox], null, PROJECT)), sandbox)
+  // Several project windows: say which.
+  const several = err(pickWindow([a, menu, study], null, PROJECT))
+  assert.equal(several.wait, undefined)
+  assert.match(several.error, /2 Studio windows of this project are connected \(MyGame \(42\) = MyGame, Main Menu \(77\) = menu\); say which one with "place"/)
+
+  // Explicit place: PlaceId, project place name / file, or the window's Studio name.
+  assert.equal(win(pickWindow([a, menu], { placeId: 77 }, PROJECT)), menu)
+  assert.equal(win(pickWindow([a, menu], { place: 'menu' }, PROJECT)), menu)
+  assert.equal(win(pickWindow([a, menu], { place: 'menu.project.json' }, PROJECT)), menu)
+  assert.equal(win(pickWindow([a, menu], { place: 'Main Menu' }, PROJECT)), menu)
+  assert.equal(win(pickWindow([a, menu], { place: 'MyGame' }, PROJECT)), a)
+  assert.equal(win(pickWindow([b, sandbox], { place: 'Sandbox' }, PROJECT)), sandbox)
+  // ...but never a window outside the project, even named exactly.
+  const byId = err(pickWindow([a, study], { placeId: 131716211654599 }, PROJECT))
+  assert.equal(byId.wait, undefined)
+  assert.match(byId.error, /PlaceId 131716211654599 is not a place of this project.*"MyGame" \(PlaceId 42\)/)
+  const byName = err(pickWindow([a, study], { place: 'Place_131716211654599.rbxlx' }, PROJECT))
+  assert.equal(byName.wait, undefined)
+  assert.match(byName.error, /"Place_131716211654599\.rbxlx" is open in Studio but is not a place of this project/)
+  assert.match(err(pickWindow([a, b, c], { place: 'Place1' }, PROJECT)).error, /is not a place of this project/)
+  // A project place that is not open, or a name nothing has: wait.
+  const closed = err(pickWindow([a], { place: 'menu' }, PROJECT))
+  assert.equal(closed.wait, true)
+  assert.match(closed.error, /No Studio window with project place "menu" \(PlaceId 77\) is connected/)
+  const unknown = err(pickWindow([a], { place: 'Other' }, PROJECT))
+  assert.equal(unknown.wait, true)
+  assert.match(unknown.error, /No Studio window with "Other" is connected \(connected: MyGame \(42\)\); this project's places: "MyGame"/)
+  assert.equal(err(pickWindow([a], { placeId: 77 }, PROJECT)).wait, true)
+  // Two windows of the same place: ambiguous.
+  assert.match(err(pickWindow([a, { ...a }], { placeId: 42 }, PROJECT)).error, /2 Studio windows have PlaceId 42 open/)
+  // No project open / a project without places: nothing is eligible.
+  assert.match(err(pickWindow([a], null, null)).error, /No Forge project is open/)
+  assert.match(err(pickWindow([a], { placeId: 42 }, [])).error, /no \*\.project\.json place/)
 })
 
 test('insert file rules: .rbxm/.rbxmx inside the inbox or ForgeModels; traversal, symlinks, type and size refused', async () => {
@@ -350,7 +406,6 @@ function fakeBridge(over: Partial<InsertBridge> & { windows?: InsertBridgeWindow
   const bridge: InsertBridge = {
     listening: over.listening ?? true,
     studios: over.studios ?? (() => windows),
-    targetStudio: over.targetStudio ?? (() => null),
     busy: over.busy ?? (() => null),
     run:
       over.run ??
@@ -375,6 +430,7 @@ function inbox(t: { inboxDir: string; modelsDir: string }, bridge: InsertBridge 
     modelsDir: () => t.modelsDir,
     enabled: () => enabled,
     bridge: () => bridge,
+    projectPlaces: () => PROJECT,
     log: (text) => void logs.push(text),
     onResult: (e) => void results.push(e),
     newId: () => `job-${++n}`,
@@ -518,16 +574,19 @@ test('insert inbox: waits for Studio (not connected, place not open, busy), then
     assert.equal(await box.process(t.inboxDir, 'w2'), 'error')
     assert.match((await readJson(join(t.inboxDir, 'w2' + INSERT_RESULT_SUFFIX))).error, /No Studio window with "Lobby" is connected/)
 
-    // Two windows and no Studio target: refused at once (waiting would not help).
-    windows = [{ place: 'MyGame', placeId: 42, pluginVersion: PLUGIN_VERSION }, { place: 'Place1', pluginVersion: PLUGIN_VERSION }]
+    // Two project places open and no "place": refused at once (waiting would not help).
+    windows = [{ place: 'MyGame', placeId: 42, pluginVersion: PLUGIN_VERSION }, { place: 'Main Menu', placeId: 77, pluginVersion: PLUGIN_VERSION }, { place: 'Place1', pluginVersion: PLUGIN_VERSION }]
     now = Date.now()
     await req('w3', { file: 'Run.rbxmx' })
     assert.equal(await box.process(t.inboxDir, 'w3'), 'error')
-    assert.match((await readJson(join(t.inboxDir, 'w3' + INSERT_RESULT_SUFFIX))).error, /2 Studio windows are connected/)
-    // Naming the unpublished one sends it there by name.
-    await req('w4', { file: 'Run.rbxmx', place: 'Place1' })
+    assert.match((await readJson(join(t.inboxDir, 'w3' + INSERT_RESULT_SUFFIX))).error, /2 Studio windows of this project are connected/)
+    // Naming the project place sends it there; an unlinked unpublished place is refused at once.
+    await req('w4', { file: 'Run.rbxmx', place: 'menu' })
     assert.equal(await box.process(t.inboxDir, 'w4'), 'done')
-    assert.deepEqual(runs.at(-1)!.opts.target, { place: 'Place1' })
+    assert.deepEqual(runs.at(-1)!.opts.target, { placeId: 77 })
+    await req('w4b', { file: 'Run.rbxmx', place: 'Place1' })
+    assert.equal(await box.process(t.inboxDir, 'w4b'), 'error')
+    assert.match((await readJson(join(t.inboxDir, 'w4b' + INSERT_RESULT_SUFFIX))).error, /"Place1" is open in Studio but is not a place of this project/)
 
     // A plugin older than v14: restart Studio.
     windows = [{ place: 'MyGame', placeId: 42, pluginVersion: INSERT_PLUGIN_VERSION - 1 }]
@@ -535,6 +594,58 @@ test('insert inbox: waits for Studio (not connected, place not open, busy), then
     assert.equal(await box.process(t.inboxDir, 'w5'), 'error')
     assert.match((await readJson(join(t.inboxDir, 'w5' + INSERT_RESULT_SUFFIX))).error, new RegExp(`runs Forge Bridge v${INSERT_PLUGIN_VERSION - 1}; restart Studio to load v${INSERT_PLUGIN_VERSION}`))
     assert.equal(runs.length, 2)
+  } finally {
+    await t.cleanup()
+  }
+})
+
+test('insert inbox: never into a Studio window outside the project, even the only one connected', async () => {
+  const t = await tempDocs()
+  try {
+    await writeFile(join(t.inboxDir, 'Run.rbxmx'), ANIM_XML)
+    const req = (id: string, body: object) => writeFile(join(t.inboxDir, `${id}.insert.json`), JSON.stringify(body))
+    const result = async (id: string) => readJson(join(t.inboxDir, id + INSERT_RESULT_SUFFIX))
+    let now = Date.now()
+    // A downloaded game file, open in Studio only to study it (the reported case: plugin v13 there).
+    const study: InsertBridgeWindow = { place: 'Place_131716211654599.rbxlx', placeId: 131716211654599, pluginVersion: 13 }
+    let windows: InsertBridgeWindow[] = [study]
+    let places: InsertProjectPlace[] | null = PROJECT
+    const { bridge, runs } = fakeBridge({ studios: () => windows })
+    const { box } = inbox(t, bridge, { now: () => now, waitMs: 60_000, projectPlaces: () => places })
+
+    // No "place": waits for a project window, then fails naming the project's places. Never sent.
+    await req('s1', { file: 'Run.rbxmx' })
+    assert.equal(await box.process(t.inboxDir, 's1'), 'deferred')
+    now += 61_000
+    assert.equal(await box.process(t.inboxDir, 's1'), 'error')
+    const r1 = await result('s1')
+    assert.match(r1.error, /No Studio window of this project is connected \(connected: Place_131716211654599\.rbxlx \(131716211654599\) \[not in this project\]\)/)
+    assert.match(r1.error, /say which with "place": "MyGame" \(PlaceId 42\)/)
+    assert.doesNotMatch(r1.error, /runs Forge Bridge v13/)
+
+    // Naming it explicitly: refused at once.
+    now = Date.now()
+    await req('s2', { file: 'Run.rbxmx', place: 131716211654599 })
+    assert.equal(await box.process(t.inboxDir, 's2'), 'error')
+    assert.match((await result('s2')).error, /PlaceId 131716211654599 is not a place of this project/)
+    await req('s3', { file: 'Run.rbxmx', place: 'Place_131716211654599.rbxlx' })
+    assert.equal(await box.process(t.inboxDir, 's3'), 'error')
+    assert.match((await result('s3')).error, /is open in Studio but is not a place of this project/)
+
+    // The project place opens next to it: that one gets the insert.
+    windows = [study, { place: 'MyGame', placeId: 42, pluginVersion: PLUGIN_VERSION }]
+    await req('s4', { file: 'Run.rbxmx' })
+    assert.equal(await box.process(t.inboxDir, 's4'), 'done')
+    assert.deepEqual(runs.map((r) => r.opts.target), [{ placeId: 42 }])
+
+    // No project open in Forge: nothing is eligible.
+    places = null
+    await req('s5', { file: 'Run.rbxmx', place: 42 })
+    assert.equal(await box.process(t.inboxDir, 's5'), 'deferred')
+    now += 61_000
+    assert.equal(await box.process(t.inboxDir, 's5'), 'error')
+    assert.match((await result('s5')).error, /No Forge project is open/)
+    assert.equal(runs.length, 1)
   } finally {
     await t.cleanup()
   }

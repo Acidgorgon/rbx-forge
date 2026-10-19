@@ -10,8 +10,9 @@
 //   <id>.insert.json         { "file": "relative/or/absolute.rbxmx", "parent": "ServerStorage.RBX_ANIMSAVES",
 //                              "place": "MyGame" | 1234567, "replace": true }
 //                            parent: a dot path starting at a service (default ServerStorage); missing
-//                            folders after the service are created. place: optional place name or
-//                            PlaceId, for when several Studio windows are open. replace: remove the
+//                            folders after the service are created. place: optional project place
+//                            name, Studio place name or PlaceId; it must be one of the open project's
+//                            places (needed when several of them are open in Studio). replace: remove the
 //                            parent's children named like an inserted instance first (default false).
 //   <id>.insert.result.json  { "status": "inserting" }
 //                            { "status": "done", "paths": ["ServerStorage.RBX_ANIMSAVES.Run"], "place": "MyGame",
@@ -23,6 +24,11 @@
 // inbox or <Documents>/ForgeModels (after resolving symlinks), up to 20 MB. A request waits (up to
 // waitMs from when it was written) while Studio is not connected or busy with another Studio job,
 // then fails. A result that already exists means the id is handled: no second insert.
+//
+// Which Studio window: only one that has a place of the open Forge project open (its PlaceId in a
+// servePlaceIds or linked in Source Control; an unpublished place only through its Source Control
+// link). Never any other window, not even when it is the only one connected (a game file opened to
+// study it is not the project). See pickWindow in shared/studio/insert.ts.
 
 import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
@@ -42,6 +48,7 @@ import {
   parsePlace,
   pickWindow,
   readRbxmxTree,
+  type InsertProjectPlace,
   type InsertReport,
   type StudioWindow
 } from '../../../shared/studio/insert.ts'
@@ -102,8 +109,6 @@ export interface InsertBridgeWindow extends StudioWindow {
 export interface InsertBridge {
   readonly listening: boolean
   studios(): InsertBridgeWindow[]
-  // Forge's Studio target (picker / linked place), when it is connected.
-  targetStudio(): InsertBridgeWindow | null
   // A Studio job that is not a background one.
   busy(): BridgeJob | null
   run(job: BridgeJob, handler: EventHandler, opts?: RunOptions): Promise<void>
@@ -114,6 +119,8 @@ export interface InsertInboxDeps {
   modelsDir: () => string
   enabled: () => boolean
   bridge: () => InsertBridge | null
+  // The open project's places (null: no project open). Inserts only go to Studio windows of these.
+  projectPlaces: () => InsertProjectPlace[] | null
   log: (text: string, stream?: 'info' | 'stderr') => void
   onResult?: (entry: ModelInboxEntry) => void
   now?: () => number
@@ -283,10 +290,10 @@ export class InsertInbox {
     }
     const bridge = this.deps.bridge()
     if (!bridge?.listening) return waitFor('the Forge Bridge is not running in Forge')
-    const picked = pickWindow(bridge.studios(), request.place, request.place ? null : bridge.targetStudio())
+    const picked = pickWindow(bridge.studios(), request.place, this.deps.projectPlaces())
     if ('error' in picked) {
-      // Several windows and no target, or a name two windows share: waiting does not fix that.
-      if (/windows are connected|windows have/.test(picked.error)) return this.fail(dir, id, name, picked.error, finish)
+      // Not a project place, or several project windows: waiting does not fix that.
+      if (!picked.wait) return this.fail(dir, id, name, picked.error, finish)
       return waitFor(picked.error)
     }
     const win = picked.window

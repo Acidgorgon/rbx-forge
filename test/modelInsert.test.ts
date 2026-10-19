@@ -178,7 +178,7 @@ const PROJECT: InsertProjectPlace[] = [
   { name: 'Sandbox', file: 'sandbox.project.json', placeIds: [], linkIds: ['link-abc12345'] }
 ]
 
-test('insert window: only windows of the open project\'s places; a named place must be one and connected once', () => {
+test('insert window: without "place" only windows of the open project\'s places; a named place (project or exact window match) connected once', () => {
   const a: InsertBridgeWindow = { place: 'MyGame', placeId: 42, pluginVersion: PLUGIN_VERSION }
   const b: InsertBridgeWindow = { place: 'Place1', pluginVersion: PLUGIN_VERSION }
   const c: InsertBridgeWindow = { place: 'Place1', pluginVersion: PLUGIN_VERSION }
@@ -219,14 +219,18 @@ test('insert window: only windows of the open project\'s places; a named place m
   assert.equal(win(pickWindow([a, menu], { place: 'Main Menu' }, PROJECT)), menu)
   assert.equal(win(pickWindow([a, menu], { place: 'MyGame' }, PROJECT)), a)
   assert.equal(win(pickWindow([b, sandbox], { place: 'Sandbox' }, PROJECT)), sandbox)
-  // ...but never a window outside the project, even named exactly.
-  const byId = err(pickWindow([a, study], { placeId: 131716211654599 }, PROJECT))
-  assert.equal(byId.wait, undefined)
-  assert.match(byId.error, /PlaceId 131716211654599 is not a place of this project.*"MyGame" \(PlaceId 42\)/)
-  const byName = err(pickWindow([a, study], { place: 'Place_131716211654599.rbxlx' }, PROJECT))
-  assert.equal(byName.wait, undefined)
-  assert.match(byName.error, /"Place_131716211654599\.rbxlx" is open in Studio but is not a place of this project/)
-  assert.match(err(pickWindow([a, b, c], { place: 'Place1' }, PROJECT)).error, /is not a place of this project/)
+  // A window outside the project only when named exactly (PlaceId or Studio name): clear intent.
+  const scratch: InsertBridgeWindow = { place: 'RBX FORGE', pluginVersion: PLUGIN_VERSION }
+  assert.deepEqual(pickWindow([a, study], { placeId: 131716211654599 }, PROJECT), { window: study, projectPlace: null })
+  assert.deepEqual(pickWindow([a, study], { place: 'Place_131716211654599.rbxlx' }, PROJECT), { window: study, projectPlace: null })
+  assert.deepEqual(pickWindow([a, scratch], { place: 'RBX FORGE' }, PROJECT), { window: scratch, projectPlace: null })
+  assert.equal(win(pickWindow([scratch], { place: 'RBX FORGE' }, null)), scratch, 'no project open')
+  assert.equal(win(pickWindow([scratch], { place: 'RBX FORGE' }, [])), scratch, 'project without places')
+  assert.match(err(pickWindow([a, b, c], { place: 'Place1' }, PROJECT)).error, /2 Studio windows have "Place1" open/)
+  // A project place name wins over a window's Studio name; a Studio name equal to a closed project place's name still matches.
+  assert.equal(win(pickWindow([a, { place: 'menu', pluginVersion: PLUGIN_VERSION }, menu], { place: 'menu' }, PROJECT)), menu)
+  const namedMenu: InsertBridgeWindow = { place: 'menu', pluginVersion: PLUGIN_VERSION }
+  assert.equal(win(pickWindow([a, namedMenu], { place: 'menu' }, PROJECT)), namedMenu)
   // A project place that is not open, or a name nothing has: wait.
   const closed = err(pickWindow([a], { place: 'menu' }, PROJECT))
   assert.equal(closed.wait, true)
@@ -237,9 +241,12 @@ test('insert window: only windows of the open project\'s places; a named place m
   assert.equal(err(pickWindow([a], { placeId: 77 }, PROJECT)).wait, true)
   // Two windows of the same place: ambiguous.
   assert.match(err(pickWindow([a, { ...a }], { placeId: 42 }, PROJECT)).error, /2 Studio windows have PlaceId 42 open/)
-  // No project open / a project without places: nothing is eligible.
+  // Without "place", no project open / a project without places: nothing is eligible.
   assert.match(err(pickWindow([a], null, null)).error, /No Forge project is open/)
-  assert.match(err(pickWindow([a], { placeId: 42 }, [])).error, /no \*\.project\.json place/)
+  assert.equal(err(pickWindow([a], null, null)).wait, true)
+  assert.match(err(pickWindow([a], null, [])).error, /no \*\.project\.json place/)
+  // An explicit name nothing has, with no project open: waits.
+  assert.equal(err(pickWindow([a], { place: 'Other' }, null)).wait, true)
 })
 
 test('insert file rules: .rbxm/.rbxmx inside the inbox or ForgeModels; traversal, symlinks, type and size refused', async () => {
@@ -584,22 +591,23 @@ test('insert inbox: waits for Studio (not connected, place not open, busy), then
     await req('w4', { file: 'Run.rbxmx', place: 'menu' })
     assert.equal(await box.process(t.inboxDir, 'w4'), 'done')
     assert.deepEqual(runs.at(-1)!.opts.target, { placeId: 77 })
+    // An unlinked unpublished place is used only when named exactly.
     await req('w4b', { file: 'Run.rbxmx', place: 'Place1' })
-    assert.equal(await box.process(t.inboxDir, 'w4b'), 'error')
-    assert.match((await readJson(join(t.inboxDir, 'w4b' + INSERT_RESULT_SUFFIX))).error, /"Place1" is open in Studio but is not a place of this project/)
+    assert.equal(await box.process(t.inboxDir, 'w4b'), 'done')
+    assert.deepEqual(runs.at(-1)!.opts.target, { place: 'Place1' })
 
     // A plugin older than v14: restart Studio.
     windows = [{ place: 'MyGame', placeId: 42, pluginVersion: INSERT_PLUGIN_VERSION - 1 }]
     await req('w5', { file: 'Run.rbxmx' })
     assert.equal(await box.process(t.inboxDir, 'w5'), 'error')
     assert.match((await readJson(join(t.inboxDir, 'w5' + INSERT_RESULT_SUFFIX))).error, new RegExp(`runs Forge Bridge v${INSERT_PLUGIN_VERSION - 1}; restart Studio to load v${INSERT_PLUGIN_VERSION}`))
-    assert.equal(runs.length, 2)
+    assert.equal(runs.length, 3)
   } finally {
     await t.cleanup()
   }
 })
 
-test('insert inbox: never into a Studio window outside the project, even the only one connected', async () => {
+test('insert inbox: without "place", never into a Studio window outside the project, even the only one connected; named exactly, yes', async () => {
   const t = await tempDocs()
   try {
     await writeFile(join(t.inboxDir, 'Run.rbxmx'), ANIM_XML)
@@ -608,7 +616,9 @@ test('insert inbox: never into a Studio window outside the project, even the onl
     let now = Date.now()
     // A downloaded game file, open in Studio only to study it (the reported case: plugin v13 there).
     const study: InsertBridgeWindow = { place: 'Place_131716211654599.rbxlx', placeId: 131716211654599, pluginVersion: 13 }
-    let windows: InsertBridgeWindow[] = [study]
+    // A scratch test place outside the project, picked only by name.
+    const scratch: InsertBridgeWindow = { place: 'RBX FORGE', pluginVersion: PLUGIN_VERSION }
+    let windows: InsertBridgeWindow[] = [study, scratch]
     let places: InsertProjectPlace[] | null = PROJECT
     const { bridge, runs } = fakeBridge({ studios: () => windows })
     const { box } = inbox(t, bridge, { now: () => now, waitMs: 60_000, projectPlaces: () => places })
@@ -619,33 +629,39 @@ test('insert inbox: never into a Studio window outside the project, even the onl
     now += 61_000
     assert.equal(await box.process(t.inboxDir, 's1'), 'error')
     const r1 = await result('s1')
-    assert.match(r1.error, /No Studio window of this project is connected \(connected: Place_131716211654599\.rbxlx \(131716211654599\) \[not in this project\]\)/)
+    assert.match(r1.error, /No Studio window of this project is connected \(connected: Place_131716211654599\.rbxlx \(131716211654599\) \[not in this project\], RBX FORGE \[not in this project\]\)/)
     assert.match(r1.error, /say which with "place": "MyGame" \(PlaceId 42\)/)
     assert.doesNotMatch(r1.error, /runs Forge Bridge v13/)
 
-    // Naming it explicitly: refused at once.
-    now = Date.now()
-    await req('s2', { file: 'Run.rbxmx', place: 131716211654599 })
-    assert.equal(await box.process(t.inboxDir, 's2'), 'error')
-    assert.match((await result('s2')).error, /PlaceId 131716211654599 is not a place of this project/)
-    await req('s3', { file: 'Run.rbxmx', place: 'Place_131716211654599.rbxlx' })
-    assert.equal(await box.process(t.inboxDir, 's3'), 'error')
-    assert.match((await result('s3')).error, /is open in Studio but is not a place of this project/)
+    assert.equal(runs.length, 0)
 
-    // The project place opens next to it: that one gets the insert.
-    windows = [study, { place: 'MyGame', placeId: 42, pluginVersion: PLUGIN_VERSION }]
+    // Naming a window outside the project exactly: honoured (clear intent).
+    now = Date.now()
+    await req('s2', { file: 'Run.rbxmx', place: 'RBX FORGE' })
+    assert.equal(await box.process(t.inboxDir, 's2'), 'done')
+    assert.deepEqual(runs.at(-1)!.opts.target, { place: 'RBX FORGE' })
+    assert.equal((await result('s2')).place, 'RBX FORGE')
+    // ...by PlaceId too (that window then fails on its own old plugin, not on the project rule).
+    await req('s3', { file: 'Run.rbxmx', place: 131716211654599 })
+    assert.equal(await box.process(t.inboxDir, 's3'), 'error')
+    assert.match((await result('s3')).error, /Place_131716211654599\.rbxlx \(131716211654599\) runs Forge Bridge v13/)
+
+    // The project place opens next to them: a request without "place" goes there.
+    windows = [study, scratch, { place: 'MyGame', placeId: 42, pluginVersion: PLUGIN_VERSION }]
     await req('s4', { file: 'Run.rbxmx' })
     assert.equal(await box.process(t.inboxDir, 's4'), 'done')
-    assert.deepEqual(runs.map((r) => r.opts.target), [{ placeId: 42 }])
+    assert.deepEqual(runs.map((r) => r.opts.target), [{ place: 'RBX FORGE' }, { placeId: 42 }])
 
-    // No project open in Forge: nothing is eligible.
+    // No project open in Forge: without "place" nothing is eligible; an explicit one still works.
     places = null
-    await req('s5', { file: 'Run.rbxmx', place: 42 })
+    await req('s5', { file: 'Run.rbxmx' })
     assert.equal(await box.process(t.inboxDir, 's5'), 'deferred')
     now += 61_000
     assert.equal(await box.process(t.inboxDir, 's5'), 'error')
     assert.match((await result('s5')).error, /No Forge project is open/)
-    assert.equal(runs.length, 1)
+    await req('s6', { file: 'Run.rbxmx', place: 'RBX FORGE' })
+    assert.equal(await box.process(t.inboxDir, 's6'), 'done')
+    assert.equal(runs.length, 3)
   } finally {
     await t.cleanup()
   }

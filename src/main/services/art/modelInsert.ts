@@ -11,8 +11,8 @@
 //                              "place": "MyGame" | 1234567, "replace": true }
 //                            parent: a dot path starting at a service (default ServerStorage); missing
 //                            folders after the service are created. place: optional project place
-//                            name, Studio place name or PlaceId; it must be one of the open project's
-//                            places (needed when several of them are open in Studio). replace: remove the
+//                            name, Studio place name or PlaceId (needed when several project places are
+//                            open, or to pick a window outside the project). replace: remove the
 //                            parent's children named like an inserted instance first (default false).
 //   <id>.insert.result.json  { "status": "inserting" }
 //                            { "status": "done", "paths": ["ServerStorage.RBX_ANIMSAVES.Run"], "place": "MyGame",
@@ -25,10 +25,11 @@
 // waitMs from when it was written) while Studio is not connected or busy with another Studio job,
 // then fails. A result that already exists means the id is handled: no second insert.
 //
-// Which Studio window: only one that has a place of the open Forge project open (its PlaceId in a
-// servePlaceIds or linked in Source Control; an unpublished place only through its Source Control
-// link). Never any other window, not even when it is the only one connected (a game file opened to
-// study it is not the project). See pickWindow in shared/studio/insert.ts.
+// Which Studio window, without "place": only one that has a place of the open Forge project open (its
+// PlaceId in a servePlaceIds or linked in Source Control; an unpublished place only through its
+// Source Control link). Never any other window, not even when it is the only one connected (a game
+// file opened to study it is not the project). With "place": the window it names exactly (PlaceId or
+// Studio name), project place or not. See pickWindow in shared/studio/insert.ts.
 
 import { mkdir, readdir, readFile, rename, rm, stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'

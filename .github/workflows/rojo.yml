@@ -112,7 +112,9 @@ jobs:
         shell: bash
         run: |
           bin=$(ls dist/rojo-* | grep -v sha256 | head -1)
+          echo "::notice::files: $(ls -la dist | tr '\n' ' ')"
           chmod +x "$bin" || true
+          echo "::notice::$("$bin" --version 2>&1 | tr '\n' ' ')"
           node tools/rojo/burst-test.mjs "$bin"
 
   # Only a manual run publishes, and never over an existing build: rebuilds are not byte-identical and

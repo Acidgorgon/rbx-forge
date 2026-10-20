@@ -16,6 +16,14 @@ import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
+// CI: a crash of this script itself as an annotation (job logs are not always readable).
+if (process.env.GITHUB_ACTIONS) {
+  process.on('uncaughtException', (error) => {
+    console.log(`::error::burst-test crashed: ${String(error?.stack ?? error).replace(/\r?\n/g, ' | ')}`)
+    process.exit(1)
+  })
+}
+
 const bin = process.argv[2]
 const expectCrash = process.argv.includes('--expect-crash')
 if (!bin) {
@@ -26,25 +34,38 @@ if (!bin) {
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms))
 const ROUNDS = 20
 
+// Windows: rojo briefly holds files it is reading, so a rename / delete can fail with EPERM / EBUSY.
+// That is the writer's problem, not rojo's: retry like editors and agents do.
+function retry(fn) {
+  for (let i = 0; ; i++) {
+    try {
+      return fn()
+    } catch (error) {
+      if (i >= 50 || !['EPERM', 'EBUSY', 'EACCES', 'ENOTEMPTY'].includes(error.code)) throw error
+      Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20)
+    }
+  }
+}
+
 const CASES = {
   'rename-after-write': (src, round) => {
     const dir = join(src, `H${round}`)
     mkdirSync(join(dir, 'Sub'), { recursive: true })
     for (let i = 0; i < 3; i++) writeFileSync(join(dir, 'Sub', `M${i}.luau`), `return ${i}\n`)
-    renameSync(dir, join(src, `H${round}x`))
+    retry(() => renameSync(dir, join(src, `H${round}x`)))
   },
   'delete-after-write': (src, round) => {
     const dir = join(src, `T${round}`)
     mkdirSync(join(dir, 'Sub'), { recursive: true })
     for (let i = 0; i < 3; i++) writeFileSync(join(dir, 'Sub', `M${i}.luau`), `return ${i}\n`)
-    rmSync(dir, { recursive: true, force: true })
+    retry(() => rmSync(dir, { recursive: true, force: true }))
   },
   'temp-rename': (src, round) => {
     mkdirSync(join(src, 'Modules'), { recursive: true })
     for (let i = 0; i < 10; i++) {
       const temp = join(src, 'Modules', `.P${i}.luau.${process.pid}-${round}.tmp`)
       writeFileSync(temp, `return "${round}-${i}"\n`)
-      renameSync(temp, join(src, 'Modules', `P${i}.luau`))
+      retry(() => renameSync(temp, join(src, 'Modules', `P${i}.luau`)))
     }
   }
 }
@@ -64,6 +85,10 @@ async function runCase(name, write, port) {
   child.stdout.on('data', (d) => (output += d))
   child.stderr.on('data', (d) => (output += d))
   child.on('exit', (code, signal) => (exited = signal ?? code))
+  child.on('error', (error) => {
+    output += `spawn failed: ${error.message}`
+    exited = 'spawn-error'
+  })
   try {
     let ws = null
     for (let i = 0; i < 50 && !ws; i++) {
@@ -79,7 +104,11 @@ async function runCase(name, write, port) {
     let closed = false
     ws.onclose = () => (closed = true)
     for (let round = 0; round < ROUNDS; round++) {
-      write(src, round)
+      try {
+        write(src, round)
+      } catch (error) {
+        return { name, ok: false, why: `the test's own write failed (${error.code ?? error.message})`, output }
+      }
       await sleep(25)
     }
     await sleep(2500)

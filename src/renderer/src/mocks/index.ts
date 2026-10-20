@@ -991,7 +991,7 @@ const api: HarnessApi = {
   }
 }
 
-let appSettings: AppSettings = { serveAllPlaces: false, autoRoute: true, confirmFileDelete: true, confirmStudioDelete: true, lunePath: '', autoCompact: true, autoCompactPct: 80, lspStudioPlugin: true, lspStudioPluginPort: 3667 }
+let appSettings: AppSettings = { serveAllPlaces: false, autoRoute: true, confirmFileDelete: true, confirmStudioDelete: true, lunePath: '', autoCompact: true, autoCompactPct: 80, lspStudioPlugin: true, lspStudioPluginPort: 3667, crashSafeRojo: true }
 
 // A new file from the create flow shows up in the tree and the scripts list, like the dev watcher's
 // sourcemap refresh would do.

@@ -27,6 +27,9 @@ export interface SupervisorOptions {
   rojoRestart?: RestartPolicyOptions
   // A place's serve state or its "reconnect Rojo in Studio" notice changed (Forge Sync re-reads them).
   onRojoChange?: () => void
+  // The rojo binary to run for the project's rojo (rojoBinary.ts: Forge's crash-safe build of the
+  // same version, or the project's own). Absent: the project's rojo.
+  chooseRojo?: (projectRojo: string, root: string) => Promise<{ file: string; why: string }>
 }
 
 interface Proc {
@@ -546,7 +549,8 @@ export class Supervisor {
         this.update('rojo', { state: 'missing', detail: 'rojo not found. Run rokit install.' })
         return null
       }
-      return { file: rojo, args: this.rojoPlan().jobs[0].args }
+      const chosen = this.options.chooseRojo ? await this.options.chooseRojo(rojo, root).catch(() => null) : null
+      return { file: chosen?.file ?? rojo, args: this.rojoPlan().jobs[0].args }
     }
     const blocked = await this.templateGuard(root)
     if (blocked) {

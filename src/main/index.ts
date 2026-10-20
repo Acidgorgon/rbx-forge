@@ -29,6 +29,7 @@ import { renameEntry, trashEntries, trashEntry } from './services/fileOps.ts'
 import { Settings } from './services/settings.ts'
 import { StudioConflicts } from './services/studioConflicts.ts'
 import { Supervisor } from './services/supervisor.ts'
+import { CRASH_SAFE_ROJO_SETTING, ForgeRojo } from './services/rojoBinary.ts'
 import { RojoPause } from './services/rojoRestart.ts'
 import { entryTarget } from '../shared/fileOps.ts'
 import { Packages } from './services/packages.ts'
@@ -46,7 +47,7 @@ import { memoryHandlers } from './agent/memory/ipc.ts'
 import { memoryTools, withMemoryTools } from './agent/serviceTools.ts'
 import { wireBrainSync } from './agent/memory/sync/electron.ts'
 import { wireUpdater } from './services/updater/electron.ts'
-import { watchBoot } from './services/quick/electron.ts'
+import { netGet, watchBoot } from './services/quick/electron.ts'
 import { registerPackSection } from './agent/memory/sync/sections.ts'
 import { createVfxWiring } from './services/vfx/wire.ts'
 import { vfxElectronDeps } from './services/vfx/electron.ts'
@@ -135,8 +136,23 @@ function emit<K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]
 
 const settings = new Settings(app.getPath('userData'))
 const logs = new LogBuffer((line) => emit('log:line', line))
+// Forge's crash-safe build of rojo (rojoBinary.ts): rojo 7.7.0 exits when a folder is renamed or
+// deleted right after files were written into it, which cut Studio's Rojo plugin off mid-sync.
+const forgeRojo = new ForgeRojo({
+  dir: join(app.getPath('userData'), 'tools', 'rojo'),
+  platform: process.platform,
+  arch: process.arch,
+  get: (url, maxBytes) => netGet(url, maxBytes, false),
+  version: async (rojo, root) => {
+    const r = await run(rojo, ['--version'], root)
+    return r.code === 0 ? (r.stdout || r.stderr).trim() : null
+  },
+  enabled: () => settings.get<boolean>(CRASH_SAFE_ROJO_SETTING, true) !== false,
+  log: (text, stream = 'info') => logs.push({ service: 'rojo', stream, text })
+})
 const supervisor = new Supervisor({
   log: (line) => logs.push(line),
+  chooseRojo: (rojo, root) => forgeRojo.choose(rojo, root),
   onStatus: (statuses) => emit('services:status', statuses),
   getSetting: (key, fallback) => settings.get(key, fallback),
   // Forge Sync shows each place's serve and the "reconnect Rojo in Studio" notice.
@@ -280,7 +296,8 @@ function appSettings(): AppSettings {
     autoCompact: settings.get<boolean>('autoCompact', true) !== false,
     autoCompactPct: clampCompactPct(settings.get<number>('autoCompactPct', AUTO_COMPACT_DEFAULT.pct)),
     lspStudioPlugin: settings.get<boolean>('lsp.studioPlugin.enabled', true) !== false,
-    lspStudioPluginPort: validPort(pluginPort) ? pluginPort : DEFAULT_COMPANION_PORT
+    lspStudioPluginPort: validPort(pluginPort) ? pluginPort : DEFAULT_COMPANION_PORT,
+    crashSafeRojo: settings.get<boolean>(CRASH_SAFE_ROJO_SETTING, true) !== false
   }
 }
 
@@ -982,7 +999,9 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
     if (typeof patch.autoCompactPct === 'number' && Number.isFinite(patch.autoCompactPct)) settings.set('autoCompactPct', clampCompactPct(patch.autoCompactPct))
     if (typeof patch.lspStudioPlugin === 'boolean') settings.set('lsp.studioPlugin.enabled', patch.lspStudioPlugin)
     if (validPort(patch.lspStudioPluginPort)) settings.set('lsp.studioPlugin.port', patch.lspStudioPluginPort)
+    if (typeof patch.crashSafeRojo === 'boolean') settings.set(CRASH_SAFE_ROJO_SETTING, patch.crashSafeRojo)
     const after = appSettings()
+    if (!before.crashSafeRojo && after.crashSafeRojo) void forgeRojo.ensure()
     if (before.lspStudioPlugin !== after.lspStudioPlugin || before.lspStudioPluginPort !== after.lspStudioPluginPort) {
       await lspCompanion.configure(after.lspStudioPlugin, after.lspStudioPluginPort).catch((error) => harnessLog(`Studio plugin server: ${error}`, 'stderr'))
     }
@@ -1130,6 +1149,8 @@ app.whenReady().then(async () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()
   })
   updater.start()
+  // Fetched before the last project reopens, so its rojo serve can start with it.
+  if (settings.get<boolean>(CRASH_SAFE_ROJO_SETTING, true) !== false) void forgeRojo.ensure()
   brainSync.start()
   void integrations.modelInbox.start()
   configureLspCompanion()

@@ -14,7 +14,7 @@
 import { spawn } from 'node:child_process'
 import { mkdirSync, mkdtempSync, renameSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 // CI: a crash of this script itself as an annotation (job logs are not always readable).
 if (process.env.GITHUB_ACTIONS) {
@@ -24,7 +24,7 @@ if (process.env.GITHUB_ACTIONS) {
   })
 }
 
-const bin = process.argv[2]
+const bin = process.argv[2] && resolve(process.argv[2])
 const expectCrash = process.argv.includes('--expect-crash')
 if (!bin) {
   console.error('usage: node tools/rojo/burst-test.mjs <rojo binary> [--expect-crash]')

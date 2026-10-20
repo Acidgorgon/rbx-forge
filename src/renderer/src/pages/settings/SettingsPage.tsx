@@ -501,6 +501,9 @@ export function SettingsPage() {
                   </Row>
                 </>
               )}
+              <Row title="Crash-safe rojo" desc="Serve with Forge's build of the project's rojo 7.7.0 that keeps running when a folder is renamed or deleted mid-sync (upstream rojo exits and Studio's Rojo plugin disconnects). Other rojo versions always use the project's rojo. Takes effect the next time rojo starts.">
+                <input type="checkbox" className="switch" checked={state.appSettings?.crashSafeRojo !== false} disabled={!state.appSettings} onChange={(e) => void actions.setAppSettings({ crashSafeRojo: e.target.checked })} aria-label="Crash-safe rojo" />
+              </Row>
             </section>
             <section className="set-sec" id="set-sync">
               <h2>Sync</h2>

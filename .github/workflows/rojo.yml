@@ -1,0 +1,169 @@
+# Crash-safe rojo: builds upstream rojo at ROJO_VERSION with tools/rojo/forge-rojo.patch applied and
+# publishes the binaries on the release tagged rojo-<ROJO_VERSION>-forge.<FORGE_PATCH>. Forge downloads
+# the one for its platform (SHA-256 pinned in src/main/services/rojoBinary.ts) and serves with it
+# instead of the project's rokit rojo when both are the same rojo version.
+#
+# Why: rojo 7.7.0's change processor unwraps canonicalize() for every file event, so an event for a
+# path that is already gone (a folder renamed or deleted right after files were written into it, a
+# temp file renamed away while rojo is busy) panics the whole server. Studio's Rojo plugin then shows
+# "WebSocket error ... An existing connection was forcibly closed by the remote host" and has to be
+# reconnected by hand. The patch resolves the nearest existing ancestor instead (what rojo already
+# does for Remove events) and logs a warning.
+#
+# Run it with:  gh workflow run rojo.yml -R Acidgorgon/rbx-forge --ref <branch>
+# After a new build, copy the printed sha256 values into src/main/services/rojoBinary.ts.
+#
+# Like the "quick" release, the tag points at the repository's first commit so the release sorts at
+# the bottom and electron-updater never takes it for the newest app release.
+name: Crash-safe rojo
+
+on:
+  workflow_dispatch:
+  push:
+    paths:
+      - tools/rojo/**
+      - .github/workflows/rojo.yml
+
+permissions:
+  contents: read
+
+concurrency:
+  group: forge-rojo
+  cancel-in-progress: false
+
+env:
+  ROJO_VERSION: 7.7.0
+  FORGE_PATCH: 1
+
+jobs:
+  build:
+    name: rojo ${{ matrix.asset }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: x86_64-pc-windows-msvc, asset: windows-x86_64, exe: rojo.exe }
+          - { os: macos-14, target: aarch64-apple-darwin, asset: macos-aarch64, exe: rojo }
+          - { os: macos-14, target: x86_64-apple-darwin, asset: macos-x86_64, exe: rojo }
+          - { os: ubuntu-22.04, target: x86_64-unknown-linux-gnu, asset: linux-x86_64, exe: rojo }
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          path: forge
+      - uses: actions/checkout@v5
+        with:
+          repository: rojo-rbx/rojo
+          ref: v${{ env.ROJO_VERSION }}
+          path: rojo
+          submodules: recursive
+      - name: Apply the Forge patch
+        shell: bash
+        run: git -C rojo apply --verbose ../forge/tools/rojo/forge-rojo.patch
+      - name: Rust toolchain
+        shell: bash
+        run: |
+          rustup toolchain install stable --profile minimal
+          rustup target add ${{ matrix.target }}
+      - name: Build
+        shell: bash
+        working-directory: rojo
+        run: cargo build --release --locked --target ${{ matrix.target }}
+      - name: Rename
+        shell: bash
+        run: |
+          name="rojo-${ROJO_VERSION}-forge.${FORGE_PATCH}-${{ matrix.asset }}"
+          [ "${{ matrix.exe }}" = "rojo.exe" ] && name="$name.exe"
+          mkdir -p dist
+          cp "rojo/target/${{ matrix.target }}/release/${{ matrix.exe }}" "dist/$name"
+          if [ "${{ matrix.target }}" = "x86_64-unknown-linux-gnu" ]; then "dist/$name" --version; fi
+          if [ "${{ matrix.target }}" = "aarch64-apple-darwin" ]; then "dist/$name" --version; fi
+          if [ "${{ matrix.target }}" = "x86_64-pc-windows-msvc" ]; then "dist/$name" --version; fi
+          (cd dist && (sha256sum "$name" 2>/dev/null || shasum -a 256 "$name")) | tee "dist/$name.sha256"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist/*
+
+  # The patched server must survive what crashes upstream rojo: a folder renamed right after files are
+  # written into it, and a folder deleted while its files' events are still queued.
+  survive:
+    name: Survives vanished paths (${{ matrix.os }})
+    needs: build
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, asset: windows-x86_64 }
+          - { os: ubuntu-22.04, asset: linux-x86_64 }
+    steps:
+      - uses: actions/checkout@v5
+      - uses: actions/setup-node@v5
+        with:
+          node-version: 22
+      - uses: actions/download-artifact@v4
+        with:
+          name: ${{ matrix.asset }}
+          path: dist
+      - name: Burst test
+        shell: bash
+        run: |
+          bin=$(ls dist/rojo-* | grep -v sha256 | head -1)
+          echo "::notice::files: $(ls -la dist | tr '\n' ' ')"
+          chmod +x "$bin" || true
+          echo "::notice::$("$bin" --version 2>&1 | tr '\n' ' ')"
+          node tools/rojo/burst-test.mjs "$bin"
+      # The same test against upstream rojo shows it still reproduces the crash (a race, so a miss is
+      # only a warning).
+      - name: Upstream rojo crashes on the same test
+        continue-on-error: true
+        shell: bash
+        run: |
+          case "${{ matrix.asset }}" in
+            windows-x86_64) zip=rojo-${ROJO_VERSION}-windows-x86_64.zip; exe=rojo.exe ;;
+            linux-x86_64) zip=rojo-${ROJO_VERSION}-linux-x86_64.zip; exe=rojo ;;
+          esac
+          curl -sSfL -o upstream.zip "https://github.com/rojo-rbx/rojo/releases/download/v${ROJO_VERSION}/$zip"
+          mkdir upstream && (cd upstream && unzip -q ../upstream.zip) && chmod +x "upstream/$exe" || true
+          if node tools/rojo/burst-test.mjs "upstream/$exe" --expect-crash; then
+            echo "::notice::upstream rojo ${ROJO_VERSION} crashed on the burst test (bug reproduced)"
+          else
+            echo "::warning::upstream rojo ${ROJO_VERSION} did not crash this time"
+            exit 1
+          fi
+
+  # Only a manual run publishes, and never over an existing build: rebuilds are not byte-identical and
+  # released apps pin the sha256 of every asset. Bump FORGE_PATCH for a new build.
+  publish:
+    name: Publish release
+    needs: [build, survive]
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v5
+        with:
+          fetch-depth: 0
+          filter: blob:none
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: bash
+        run: |
+          tag="rojo-${ROJO_VERSION}-forge.${FORGE_PATCH}"
+          first=$(git rev-list --max-parents=0 HEAD | tail -1)
+          cat dist/*.sha256
+          if gh release view "$tag" >/dev/null 2>&1; then
+            echo "::error::$tag is already published; bump FORGE_PATCH for a new build"
+            exit 1
+          fi
+          gh release create "$tag" dist/* --target "$first" --prerelease --title "Crash-safe rojo ${ROJO_VERSION} (forge.${FORGE_PATCH})" \
+            --notes "rojo ${ROJO_VERSION} with tools/rojo/forge-rojo.patch (no panic when a watched path vanishes). Downloaded by Forge; not an app release."

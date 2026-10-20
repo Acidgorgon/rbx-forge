@@ -260,6 +260,9 @@ export interface AppSettings {
   // the VS Code extension's luau-lsp.studioPlugin.enabled / .port. On by default, port 3667.
   lspStudioPlugin: boolean
   lspStudioPluginPort: number
+  // rojo serve with Forge's crash-safe build of the project's rojo version (main/services/rojoBinary.ts,
+  // settings key rojo.crashSafe). Takes effect the next time rojo serve starts.
+  crashSafeRojo: boolean
 }
 
 // The Studio Companion plugin server (lspCompanion.ts), for the luau-lsp status bar tooltip.

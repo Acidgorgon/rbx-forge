@@ -25,10 +25,10 @@ const MAX_BYTES = 80 * 1024 * 1024
 
 // <node platform>-<node arch> -> release asset and its sha256 (printed by the workflow's build jobs).
 export const ASSETS: Record<string, { asset: string; sha256: string }> = {
-  'win32-x64': { asset: `rojo-${FORGE_BUILD}-windows-x86_64.exe`, sha256: '' },
-  'darwin-arm64': { asset: `rojo-${FORGE_BUILD}-macos-aarch64`, sha256: '' },
-  'darwin-x64': { asset: `rojo-${FORGE_BUILD}-macos-x86_64`, sha256: '' },
-  'linux-x64': { asset: `rojo-${FORGE_BUILD}-linux-x86_64`, sha256: '' }
+  'win32-x64': { asset: `rojo-${FORGE_BUILD}-windows-x86_64.exe`, sha256: 'b0c640a11227855c2215dd77fad9458483f4f17155a7dea6340ec1f3c7ee1228' },
+  'darwin-arm64': { asset: `rojo-${FORGE_BUILD}-macos-aarch64`, sha256: '4e7cc235070c5d868432199f28c82619552e7e31a995b6797ba4bd1aaa5ec354' },
+  'darwin-x64': { asset: `rojo-${FORGE_BUILD}-macos-x86_64`, sha256: 'c5d8dcf9d77efca3a8440a235f957eaaf830a51ed29a98869037e54b85d66cd6' },
+  'linux-x64': { asset: `rojo-${FORGE_BUILD}-linux-x86_64`, sha256: 'a9b940af1d38395ea2bda5d9dae22e5b4bb082c5e015bbe650bb914a6cb48291' }
 }
 
 // "Rojo 7.7.0" / "rojo 7.7.0" -> "7.7.0"

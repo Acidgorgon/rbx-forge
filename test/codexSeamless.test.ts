@@ -6,7 +6,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
-import { existsSync } from 'node:fs'
+import { existsSync, realpathSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import path, { join } from 'node:path'
 import { DeviceAuthParser, deviceAuthUnsupported, findCodex, parseModelCatalog } from '../src/main/agent/codex/binary.ts'
@@ -381,7 +381,8 @@ test('fake npm + codex: one click installs privately, then device sign-in shows 
     const args = (await readFile(join(f.state, 'npm-args'), 'utf8')).trim().split('\n')
     assert.deepEqual(args.slice(0, 3), ['install', '--prefix', f.prefix])
     assert.equal(args.at(-1), `@openai/codex@${CODEX_NPM_VERSION}`)
-    assert.equal((await readFile(join(f.state, 'npm-cwd'), 'utf8')).trim(), f.prefix)
+    // realpath: macOS's tmpdir is a symlink (/var -> /private/var), and the shell's pwd resolves it.
+    assert.equal(realpathSync((await readFile(join(f.state, 'npm-cwd'), 'utf8')).trim()), realpathSync(f.prefix))
     assert.equal(await readFile(join(f.state, 'npm-global'), 'utf8'), '', 'npm_config_global is not passed on')
     assert.ok(updates.some((u) => u.stage === 'installing' && /Downloading/.test(u.message ?? '')))
     const device = updates.find((u) => u.userCode)

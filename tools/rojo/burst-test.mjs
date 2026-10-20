@@ -131,7 +131,7 @@ for (const r of results) {
   const details = r.output.split(/\r?\n/).find((l) => /Details:/.test(l))
   if (!r.ok && details) console.log(`      ${details.trim()}`)
   // CI: failures as annotations (readable without the job log).
-  if (!r.ok && process.env.GITHUB_ACTIONS) console.log(`::error::${r.name}: ${r.why} | ${(details ?? r.output.slice(-400)).replace(/\r?\n/g, ' ').trim()}`)
+  if (!r.ok && process.env.GITHUB_ACTIONS && !expectCrash) console.log(`::error::${r.name}: ${r.why} | ${(details ?? r.output.slice(-400)).replace(/\r?\n/g, ' ').trim()}`)
 }
 const crashed = results.some((r) => !r.ok)
 if (expectCrash) {

@@ -116,6 +116,24 @@ jobs:
           chmod +x "$bin" || true
           echo "::notice::$("$bin" --version 2>&1 | tr '\n' ' ')"
           node tools/rojo/burst-test.mjs "$bin"
+      # The same test against upstream rojo shows it still reproduces the crash (a race, so a miss is
+      # only a warning).
+      - name: Upstream rojo crashes on the same test
+        continue-on-error: true
+        shell: bash
+        run: |
+          case "${{ matrix.asset }}" in
+            windows-x86_64) zip=rojo-${ROJO_VERSION}-windows-x86_64.zip; exe=rojo.exe ;;
+            linux-x86_64) zip=rojo-${ROJO_VERSION}-linux-x86_64.zip; exe=rojo ;;
+          esac
+          curl -sSfL -o upstream.zip "https://github.com/rojo-rbx/rojo/releases/download/v${ROJO_VERSION}/$zip"
+          mkdir upstream && (cd upstream && unzip -q ../upstream.zip) && chmod +x "upstream/$exe" || true
+          if node tools/rojo/burst-test.mjs "upstream/$exe" --expect-crash; then
+            echo "::notice::upstream rojo ${ROJO_VERSION} crashed on the burst test (bug reproduced)"
+          else
+            echo "::warning::upstream rojo ${ROJO_VERSION} did not crash this time"
+            exit 1
+          fi
 
   # Only a manual run publishes, and never over an existing build: rebuilds are not byte-identical and
   # released apps pin the sha256 of every asset. Bump FORGE_PATCH for a new build.

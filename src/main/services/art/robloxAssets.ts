@@ -55,7 +55,7 @@ export interface UploadInput {
   fileName: string
   displayName: string
   description?: string
-  assetType: 'Image' | 'Decal' | 'Animation' | 'Model'
+  assetType: 'Image' | 'Decal' | 'Animation' | 'Model' | 'Audio'
   // Defaults to the image type sniffed from the bytes (contentTypeFor).
   contentType?: string
   creator: Creator
@@ -270,6 +270,77 @@ export async function uploadModelAsset(input: Omit<UploadInput, 'assetType' | 'c
   }
   if (result.moderation && /rejected/i.test(result.moderation)) {
     throw new AssetUploadError(`Roblox moderation rejected the model (asset ${result.assetId}). Rename it or change the mesh, then upload again.`)
+  }
+  return result
+}
+
+// ---------------------------------------------------------------- audio and image files (upload inbox)
+
+// Audio assets: .mp3 / .ogg / .wav / .flac (usage-assets "Supported asset types and limits"), up to
+// 20 MB and 7 minutes. Roblox caps audio uploads per month by account verification; that limit and a
+// missing audio permission come back as operation errors and are explained by audioUploadErrorText.
+export const AUDIO_CONTENT_TYPES: Record<string, string> = { mp3: 'audio/mpeg', ogg: 'audio/ogg', wav: 'audio/wav', flac: 'audio/flac' }
+export const IMAGE_CONTENT_TYPES: Record<string, string> = { png: 'image/png', jpg: 'image/jpeg', jpeg: 'image/jpeg', bmp: 'image/bmp', tga: 'image/tga' }
+
+const extOf = (fileName: string) => /\.([a-z0-9]+)$/i.exec(fileName)?.[1]?.toLowerCase() ?? ''
+
+// The audio format from the first bytes, so a renamed file is caught before it reaches Roblox.
+export function sniffAudio(bytes: Uint8Array): 'mp3' | 'ogg' | 'wav' | 'flac' | null {
+  const head = Buffer.from(bytes.subarray(0, 12)).toString('latin1')
+  if (head.startsWith('ID3') || (bytes.length >= 2 && bytes[0] === 0xff && (bytes[1] & 0xe0) === 0xe0)) return 'mp3'
+  if (head.startsWith('OggS')) return 'ogg'
+  if (head.startsWith('RIFF') && head.slice(8, 12) === 'WAVE') return 'wav'
+  if (head.startsWith('fLaC')) return 'flac'
+  return null
+}
+
+// Operation errors (no HTTP status) and 403s for audio/images, phrased as what to change.
+export function mediaUploadErrorText(kind: 'Audio' | 'Image' | 'Decal', message: string, status?: number): string {
+  const what = kind === 'Audio' ? 'audio' : 'images'
+  if (status === 403 || (status === undefined && /permission|forbidden|unauthori[sz]ed|scope/i.test(message))) {
+    return `The Open Cloud key cannot upload ${what} for this creator. On create.roblox.com > Open Cloud > API Keys, give the key the Assets API with ${ASSET_SCOPES.join(' + ')} (asset:write covers audio, decals and images), allow this IP, and use a key owned by the group when the creator is a group. (${message})`
+  }
+  if (status !== undefined) return message
+  if (/moderat|rejected|inappropriate|copyright/i.test(message)) return `Roblox moderation rejected the ${kind === 'Audio' ? 'sound' : 'image'}. (${message})`
+  if (kind === 'Audio' && /quota|limit|verif|exceed/i.test(message)) {
+    return `Roblox refused the audio upload: the account's monthly audio upload limit is reached, or the file is too long (7 minutes) or too large (20 MB). ID-verified accounts get a higher monthly limit (Creator Hub shows the remaining quota). (${message})`
+  }
+  if (/too large|file size|size limit|exceed|dimension/i.test(message)) return `Roblox refused the file: ${kind === 'Audio' ? 'audio is limited to 20 MB and 7 minutes' : 'images are limited to 20 MB and 8000x8000 pixels'}. (${message})`
+  return message
+}
+
+// An audio file as an Audio asset. "Reviewing" still returns the id; "Rejected" is an error.
+export async function uploadAudioAsset(input: Omit<UploadInput, 'assetType' | 'contentType'>): Promise<UploadResult> {
+  const ext = extOf(input.fileName)
+  if (!AUDIO_CONTENT_TYPES[ext]) throw new AssetUploadError('Audio uploads must be .mp3, .ogg, .wav or .flac files')
+  if (!input.bytes.byteLength) throw new AssetUploadError('The audio file is empty')
+  if (input.bytes.byteLength > MAX_UPLOAD_BYTES) throw new AssetUploadError(`Roblox accepts audio files up to 20 MB; this one is ${(input.bytes.byteLength / 1024 / 1024).toFixed(1)} MB`)
+  const sniffed = sniffAudio(input.bytes)
+  if (!sniffed) throw new AssetUploadError(`That file is not ${ext.toUpperCase()} audio (unknown header)`)
+  return finishMedia('Audio', () => uploadImageAsset({ timeoutMs: 300_000, ...input, assetType: 'Audio', contentType: AUDIO_CONTENT_TYPES[sniffed] }))
+}
+
+// A .png / .jpg / .bmp / .tga file as an Image (rbxassetid for ImageLabel/SurfaceAppearance) or a Decal.
+export async function uploadMediaImageAsset(input: Omit<UploadInput, 'contentType' | 'assetType'> & { assetType: 'Image' | 'Decal' }): Promise<UploadResult> {
+  const ext = extOf(input.fileName)
+  if (!IMAGE_CONTENT_TYPES[ext]) throw new AssetUploadError('Image uploads must be .png, .jpg, .jpeg, .bmp or .tga files')
+  if (!input.bytes.byteLength) throw new AssetUploadError('The image is empty')
+  if (input.bytes.byteLength > MAX_UPLOAD_BYTES) throw new AssetUploadError(`Roblox accepts images up to 20 MB; this one is ${(input.bytes.byteLength / 1024 / 1024).toFixed(1)} MB`)
+  // TGA has no magic bytes; every other format must match its header.
+  const contentType = ext === 'tga' ? IMAGE_CONTENT_TYPES.tga : contentTypeFor(input.bytes)
+  return finishMedia(input.assetType, () => uploadImageAsset({ ...input, contentType }))
+}
+
+async function finishMedia(kind: 'Audio' | 'Image' | 'Decal', run: () => Promise<UploadResult>): Promise<UploadResult> {
+  let result: UploadResult
+  try {
+    result = await run()
+  } catch (error) {
+    if (error instanceof AssetUploadError) throw new AssetUploadError(mediaUploadErrorText(kind, error.message, error.status), error.status)
+    throw error
+  }
+  if (result.moderation && /rejected/i.test(result.moderation)) {
+    throw new AssetUploadError(`Roblox moderation rejected the ${kind === 'Audio' ? 'sound' : 'image'} (asset ${result.assetId}).`)
   }
   return result
 }

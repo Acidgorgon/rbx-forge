@@ -37,10 +37,11 @@ export function ModelInboxSettings({ refresh }: { refresh?: unknown }) {
     <>
       <div className="set-row" id="set-model-inbox">
         <div className="set-text">
-          <div className="set-title">Upload FBX dropped in the inbox</div>
+          <div className="set-title">Upload files dropped in the inbox</div>
           <div className="note">
-            A <span className="mono">&lt;id&gt;.request.json</span> dropped in the inbox with its <span className="mono">.fbx</span> is uploaded as a Model asset owned by the creator set
-            in Art › Roblox import, and Forge writes <span className="mono">&lt;id&gt;.result.json</span> with the asset id. Uploads go through Roblox moderation. Claude or other agents that can
+            A <span className="mono">&lt;id&gt;.request.json</span> dropped in the inbox with its file is uploaded owned by the creator set
+            in Art › Roblox import: <span className="mono">.fbx</span> as a Model, <span className="mono">.mp3 .ogg .wav .flac</span> as Audio, <span className="mono">.png .jpg .bmp .tga</span> as an Image (or a Decal with <span className="mono">"assetType": "Decal"</span>).
+            Forge writes <span className="mono">&lt;id&gt;.result.json</span> with the asset id. Uploads go through Roblox moderation. Claude or other agents that can
             write to this folder can drop files there, so leave this off unless you want that.
           </div>
           {!status.robloxKey && <div className="note warn">Needs an Open Cloud API key (Art › Roblox import).</div>}
@@ -53,7 +54,7 @@ export function ModelInboxSettings({ refresh }: { refresh?: unknown }) {
             checked={status.enabled}
             disabled={busy || (!status.enabled && !status.robloxKey)}
             onChange={(e) => void act(() => h.fbxInboxSetSettings({ enabled: e.target.checked }))}
-            aria-label="Upload FBX dropped in the inbox"
+            aria-label="Upload files dropped in the inbox"
           />
         </div>
       </div>
@@ -84,7 +85,7 @@ export function ModelInboxSettings({ refresh }: { refresh?: unknown }) {
           <div className="note mono" title={status.dir} style={{ overflowWrap: 'anywhere' }}>
             {status.dir}
           </div>
-          <div className="note">FBX and model files must be in this folder or in {status.modelsDir}. Up to 20 MB each, one at a time.</div>
+          <div className="note">Uploaded and inserted files must be in this folder or in {status.modelsDir}. Up to 20 MB each, one at a time.</div>
         </div>
         <div className="set-ctl row">
           <button className="btn small" disabled={busy} onClick={() => void act(() => h.fbxInboxChooseFolder())}>

@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { z } from 'zod'
 import type { ArtFetch } from '../src/main/services/art/openaiImages.ts'
-import { AssetUploadError, looksLikeFbx, MODEL_CONTENT_TYPE, uploadModelAsset } from '../src/main/services/art/robloxAssets.ts'
+import { AssetUploadError, looksLikeFbx, MODEL_CONTENT_TYPE, uploadAudioAsset, uploadMediaImageAsset, uploadModelAsset } from '../src/main/services/art/robloxAssets.ts'
 import { createModelUploader, inboxDirs, ModelInbox, modelUploadTools, NO_KEY_ERROR, parseRequest, resolveModelFile, type ModelInboxDeps, type UploadModel } from '../src/main/services/art/modelInbox.ts'
 import { SERVICE_WRITE_TOOLS } from '../src/main/agent/serviceTools.ts'
 import { createIntegrations } from '../src/main/integrations.ts'
@@ -53,7 +53,8 @@ test('parseRequest: fields, assetType, name limits, bad JSON', () => {
   assert.deepEqual(ok, { ok: true, value: { file: 'EmberstagHead.fbx', name: 'EmberstagHead', description: 'head', assetType: 'Model' } })
   assert.equal(parseRequest(JSON.stringify({ file: 'a.fbx', name: 'A' })).ok, true)
   assert.match((parseRequest('{"file": "a.fbx", "name": ') as { error: string }).error, /not valid JSON/)
-  assert.match((parseRequest(JSON.stringify({ file: 'a.fbx', name: 'A', assetType: 'Decal' })) as { error: string }).error, /Only assetType "Model"/)
+  assert.match((parseRequest(JSON.stringify({ file: 'a.fbx', name: 'A', assetType: 'Decal' })) as { error: string }).error, /"Decal" does not match the file a\.fbx/)
+  assert.match((parseRequest(JSON.stringify({ file: 'a.fbx', name: 'A', assetType: 'Video' })) as { error: string }).error, /"Video" is not supported here/)
   assert.match((parseRequest(JSON.stringify({ file: 'a.fbx', name: '   ' })) as { error: string }).error, /name is empty/)
   assert.match((parseRequest(JSON.stringify({ file: 'a.fbx', name: 'x'.repeat(51) })) as { error: string }).error, /50 characters/)
   assert.match((parseRequest(JSON.stringify({ name: 'A' })) as { error: string }).error, /file/)
@@ -195,10 +196,11 @@ test('inbox: request -> uploading -> done -> request renamed; idempotent on resc
     })
     await box.scan()
     assert.deepEqual(seen, [{ status: 'uploading' }])
-    assert.deepEqual(uploads, [{ path: join(t.inboxDir, 'EmberstagHead.fbx'), name: 'EmberstagHead', description: 'Emberstag head' }])
+    assert.deepEqual(uploads, [{ path: join(t.inboxDir, 'EmberstagHead.fbx'), name: 'EmberstagHead', assetType: 'Model', description: 'Emberstag head' }])
     const done = await readJson(join(t.inboxDir, 'job-1.result.json'))
     assert.equal(done.status, 'done')
     assert.equal(done.assetId, 123)
+    assert.equal(done.assetType, 'Model')
     assert.equal(done.name, 'EmberstagHead')
     assert.ok(!Number.isNaN(Date.parse(done.uploadedAt)))
     const files = (await readdir(t.inboxDir)).sort()
@@ -409,5 +411,85 @@ test('wiring: inbox is off by default, needs a key to turn on, keeps the key out
     integrations.dispose()
     await t.cleanup()
     await rm(user, { recursive: true, force: true })
+  }
+})
+
+// ---------------------------------------------------------------- Audio and Image/Decal uploads
+
+const MP3 = Buffer.concat([Buffer.from('ID3\x04\0\0\0\0\0\0', 'latin1'), Buffer.alloc(64, 2)])
+const OGG = Buffer.concat([Buffer.from('OggS\0\x02', 'latin1'), Buffer.alloc(64, 2)])
+const WAV = Buffer.concat([Buffer.from('RIFF\0\0\0\0WAVEfmt ', 'latin1'), Buffer.alloc(64, 2)])
+const PNG = Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), Buffer.alloc(64, 3)])
+
+test('parseRequest: Audio / Image / Decal by name or by extension; mismatches refused', () => {
+  const v = (o: object) => (parseRequest(JSON.stringify({ name: 'A', ...o })) as { value?: { assetType: string }; error?: string })
+  assert.equal(v({ file: 'Kick.mp3' }).value?.assetType, 'Audio')
+  assert.equal(v({ file: 'Kick.OGG', assetType: 'audio' }).value?.assetType, 'Audio')
+  assert.equal(v({ file: 'Whistle.wav' }).value?.assetType, 'Audio')
+  assert.equal(v({ file: 'Crowd.flac' }).value?.assetType, 'Audio')
+  assert.equal(v({ file: 'Bar.png' }).value?.assetType, 'Image')
+  assert.equal(v({ file: 'Bar.jpg', assetType: 'Decal' }).value?.assetType, 'Decal')
+  assert.equal(v({ file: 'Bar.tga', assetType: 'Image' }).value?.assetType, 'Image')
+  assert.match(v({ file: 'Kick.mp3', assetType: 'Image' }).error ?? '', /does not match/)
+  assert.match(v({ file: 'Bar.png', assetType: 'Audio' }).error ?? '', /does not match/)
+  assert.match(v({ file: 'notes.txt' }).error ?? '', /cannot tell the asset type/)
+})
+
+test('media upload: Audio and Image requests carry the right assetType and content type', async () => {
+  const done = op({ done: true, response: { assetId: '777', moderationResult: { moderationState: 'Reviewing' } } })
+  for (const [bytes, fileName, ct] of [[MP3, 'Kick.mp3', 'audio/mpeg'], [OGG, 'Kick.ogg', 'audio/ogg'], [WAV, 'Kick.wav', 'audio/wav']] as const) {
+    const { fetch, calls } = fakeFetch([done])
+    const r = await uploadAudioAsset({ apiKey: KEY, bytes, fileName, displayName: 'Kick', creator: { userId: 1 }, fetch, sleep: async () => {} })
+    assert.equal(r.assetId, '777')
+    assert.equal(r.moderation, 'Reviewing')
+    const text = Buffer.from(calls[0].body as Uint8Array).toString('latin1')
+    assert.match(text, /"assetType":"Audio"/)
+    assert.match(text, new RegExp(`filename="${fileName}"\\r\\nContent-Type: ${ct.replace('/', '\\/')}`))
+  }
+  for (const type of ['Image', 'Decal'] as const) {
+    const { fetch, calls } = fakeFetch([done])
+    await uploadMediaImageAsset({ apiKey: KEY, bytes: PNG, fileName: 'Bar.png', displayName: 'Bar', creator: { userId: 1 }, assetType: type, fetch, sleep: async () => {} })
+    const text = Buffer.from(calls[0].body as Uint8Array).toString('latin1')
+    assert.match(text, new RegExp(`"assetType":"${type}"`))
+    assert.match(text, /Content-Type: image\/png/)
+  }
+  // A renamed file never reaches Roblox.
+  const none = fakeFetch([done])
+  await assert.rejects(uploadAudioAsset({ apiKey: KEY, bytes: PNG, fileName: 'Kick.mp3', displayName: 'Kick', creator: { userId: 1 }, fetch: none.fetch }), /not MP3 audio/)
+  await assert.rejects(uploadMediaImageAsset({ apiKey: KEY, bytes: MP3, fileName: 'Bar.png', displayName: 'Bar', creator: { userId: 1 }, assetType: 'Image', fetch: none.fetch }), /PNG, JPEG, BMP or TGA/)
+  assert.equal(none.calls.length, 0)
+})
+
+test('media upload: missing scopes, audio quota and moderation read clearly', async () => {
+  const up = (reply: Reply) => uploadAudioAsset({ apiKey: KEY, bytes: MP3, fileName: 'Kick.mp3', displayName: 'Kick', creator: { userId: 1 }, fetch: fakeFetch([reply]).fetch, sleep: async () => {} })
+  await assert.rejects(up({ status: 403, body: JSON.stringify({ message: 'Insufficient scope' }) }), /cannot upload audio.*asset:read \+ asset:write/)
+  await assert.rejects(up(op({ done: true, error: { code: 7, message: 'User does not have permission to upload audio' } })), /cannot upload audio/)
+  await assert.rejects(up(op({ done: true, error: { code: 8, message: 'Monthly audio upload quota exceeded' } })), /monthly audio upload limit/)
+  await assert.rejects(up(op({ done: true, response: { assetId: '9', moderationResult: { moderationState: 'Rejected' } } })), /moderation rejected the sound \(asset 9\)/)
+  const img = uploadMediaImageAsset({ apiKey: KEY, bytes: PNG, fileName: 'Bar.png', displayName: 'Bar', creator: { userId: 1 }, assetType: 'Decal', fetch: fakeFetch([{ status: 403, body: '{}' }]).fetch, sleep: async () => {} })
+  await assert.rejects(img, /cannot upload images/)
+})
+
+test('inbox: an .mp3 and a .png upload as Audio and Image; the result names the asset type', async () => {
+  const t = await tempDocs()
+  try {
+    await writeFile(join(t.modelsDir, 'Kick.mp3'), MP3)
+    await writeFile(join(t.inboxDir, 'Bar.png'), PNG)
+    await writeFile(join(t.inboxDir, 'sfx-kick.request.json'), JSON.stringify({ file: join(t.modelsDir, 'Kick.mp3'), name: 'Kick' }))
+    await writeFile(join(t.inboxDir, 'ui-bar.request.json'), JSON.stringify({ file: 'Bar.png', name: 'Bar', assetType: 'Decal' }))
+    const uploads: { path: string; name: string; assetType?: string }[] = []
+    const { box } = inbox(t, async (path, o) => {
+      uploads.push({ path, ...o })
+      return { assetId: String(100 + uploads.length), moderation: 'Reviewing' }
+    })
+    await box.scan()
+    assert.deepEqual(uploads.map((u) => u.assetType).sort(), ['Audio', 'Decal'])
+    const kick = await readJson(join(t.inboxDir, 'sfx-kick.result.json'))
+    assert.equal(kick.status, 'done')
+    assert.equal(kick.assetType, 'Audio')
+    assert.equal(kick.moderation, 'Reviewing')
+    assert.equal((await readJson(join(t.inboxDir, 'ui-bar.result.json'))).assetType, 'Decal')
+  } finally {
+    await t.cleanup()
   }
 })

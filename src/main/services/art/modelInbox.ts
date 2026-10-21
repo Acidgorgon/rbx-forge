@@ -1,16 +1,18 @@
-// FBX upload inbox: an agent (Claude building meshes in Blender, or anything else that can write onto
-// this computer) drops an .fbx plus <id>.request.json into a folder; Forge uploads the FBX to Roblox
-// as a Model asset with the user's Open Cloud key and writes <id>.result.json back, then renames the
-// request to <id>.request.done.json so it is never uploaded twice. No electron imports: the folder,
-// key, creator, watcher and clock come in as deps (main/integrations.ts).
+// Upload inbox: an agent (Claude building meshes in Blender, or anything else that can write onto
+// this computer) drops a file plus <id>.request.json into a folder; Forge uploads it to Roblox with
+// the user's Open Cloud key and writes <id>.result.json back, then renames the request to
+// <id>.request.done.json so it is never uploaded twice. No electron imports: the folder, key,
+// creator, watcher and clock come in as deps (main/integrations.ts).
 //
 //   <id>.request.json  { "file": "relative/or/absolute.fbx", "name": "EmberstagHead", "description": "...", "assetType": "Model" }
 //   <id>.result.json   { "status": "uploading" }
-//                      { "status": "done", "assetId": 123, "name": "EmberstagHead", "uploadedAt": "<ISO time>" }
+//                      { "status": "done", "assetId": 123, "assetType": "Model", "name": "EmberstagHead", "uploadedAt": "<ISO time>", "moderation": "Reviewing" }
 //                      { "status": "error", "error": "..." }
 //
-// Relative files resolve against the inbox. The FBX must be inside the inbox or <Documents>/ForgeModels
-// (after resolving symlinks), at most 20 MB. Requests run one at a time, spaced by minIntervalMs and
+// assetType: "Model" (.fbx), "Audio" (.mp3 .ogg .wav .flac), "Image" or "Decal" (.png .jpg .jpeg .bmp
+// .tga). Left out, it follows the file extension (images become "Image"). Relative files resolve
+// against the inbox. The file must be inside the inbox or <Documents>/ForgeModels (after resolving
+// symlinks), at most 20 MB. Requests run one at a time, spaced by minIntervalMs and
 // capped per hour. A result that already exists means the id is handled: no second upload. The key
 // is only passed to the uploader; it never reaches a log line, result file or event.
 
@@ -19,7 +21,7 @@ import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'nod
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { z } from 'zod'
 import type { ModelInboxEntry } from '../../../shared/artTypes.ts'
-import { AssetUploadError, MAX_UPLOAD_BYTES, uploadModelAsset, type Creator } from './robloxAssets.ts'
+import { AssetUploadError, AUDIO_CONTENT_TYPES, IMAGE_CONTENT_TYPES, MAX_UPLOAD_BYTES, uploadAudioAsset, uploadMediaImageAsset, uploadModelAsset, type Creator } from './robloxAssets.ts'
 import { defaultSleep, type ArtFetch, type Sleep } from './openaiImages.ts'
 
 export const REQUEST_SUFFIX = '.request.json'
@@ -29,8 +31,8 @@ export const MODELS_DIR_NAME = 'ForgeModels'
 export const INBOX_DIR_NAME = '_upload_inbox'
 const MAX_REQUEST_BYTES = 64 * 1024
 
-export const NO_KEY_ERROR = 'No Open Cloud API key is set in Forge (Art page > Roblox import, Assets API with asset:read + asset:write), so Forge cannot upload models.'
-export const NO_CREATOR_ERROR = 'No Roblox creator is set in Forge (Art page > Roblox import: your user ID or a group ID), so Forge does not know who should own the model.'
+export const NO_KEY_ERROR = 'No Open Cloud API key is set in Forge (Art page > Roblox import, Assets API with asset:read + asset:write), so Forge cannot upload assets.'
+export const NO_CREATOR_ERROR = 'No Roblox creator is set in Forge (Art page > Roblox import: your user ID or a group ID), so Forge does not know who should own the asset.'
 
 export function inboxDirs(documentsDir: string): { modelsDir: string; inboxDir: string } {
   const modelsDir = join(documentsDir, MODELS_DIR_NAME)
@@ -39,11 +41,27 @@ export function inboxDirs(documentsDir: string): { modelsDir: string; inboxDir: 
 
 // ---------------------------------------------------------------- request validation
 
+export type InboxAssetType = 'Model' | 'Audio' | 'Image' | 'Decal'
+export const INBOX_ASSET_TYPES: readonly InboxAssetType[] = ['Model', 'Audio', 'Image', 'Decal']
+
 export interface InboxRequest {
   file: string
   name: string
   description?: string
-  assetType: 'Model'
+  assetType: InboxAssetType
+}
+
+// The file kind each asset type takes (resolveModelFile's kind).
+export const KIND_OF: Record<InboxAssetType, 'fbx' | 'audio' | 'image'> = { Model: 'fbx', Audio: 'audio', Image: 'image', Decal: 'image' }
+
+const extOf = (file: string) => /\.([a-z0-9]+)$/i.exec(file.trim())?.[1]?.toLowerCase() ?? ''
+
+export function assetTypeForFile(file: string): InboxAssetType | null {
+  const ext = extOf(file)
+  if (ext === 'fbx') return 'Model'
+  if (AUDIO_CONTENT_TYPES[ext]) return 'Audio'
+  if (IMAGE_CONTENT_TYPES[ext]) return 'Image'
+  return null
 }
 
 type Check<T> = { ok: true; value: T } | { ok: false; error: string }
@@ -65,13 +83,19 @@ export function parseRequest(text: string): Check<InboxRequest> {
   const parsed = RequestSchema.safeParse(json)
   if (!parsed.success) return { ok: false, error: `Bad request: ${parsed.error.issues.map((i) => `${i.path.join('.') || 'request'}: ${i.message}`).join('; ')}` }
   const r = parsed.data
-  if (r.assetType !== undefined && r.assetType !== 'Model') return { ok: false, error: `Only assetType "Model" is supported here, not "${r.assetType}"` }
+  // Case-insensitive ("audio", "decal"), canonicalised to Roblox's spelling.
+  const named = r.assetType === undefined ? undefined : INBOX_ASSET_TYPES.find((t) => t.toLowerCase() === r.assetType!.trim().toLowerCase())
+  if (r.assetType !== undefined && !named) return { ok: false, error: `assetType "${r.assetType}" is not supported here; use ${INBOX_ASSET_TYPES.map((t) => `"${t}"`).join(', ')}` }
+  const byFile = assetTypeForFile(r.file)
+  const assetType = named ?? byFile
+  if (!assetType) return { ok: false, error: `Bad request: cannot tell the asset type of ${r.file}; upload .fbx (Model), .mp3/.ogg/.wav/.flac (Audio) or .png/.jpg/.bmp/.tga (Image or Decal)` }
+  if (byFile && KIND_OF[byFile] !== KIND_OF[assetType]) return { ok: false, error: `Bad request: assetType "${assetType}" does not match the file ${r.file}` }
   const name = r.name.trim()
   if (!name) return { ok: false, error: 'Bad request: name is empty' }
   // Roblox display names are capped at 50 characters.
   if (name.length > 50) return { ok: false, error: 'Bad request: name is longer than 50 characters' }
   if (/[\u0000-\u001f]/.test(name) || r.file.includes('\0')) return { ok: false, error: 'Bad request: control characters in name or file' }
-  return { ok: true, value: { file: r.file, name, ...(r.description?.trim() ? { description: r.description.trim() } : {}), assetType: 'Model' } }
+  return { ok: true, value: { file: r.file, name, ...(r.description?.trim() ? { description: r.description.trim() } : {}), assetType } }
 }
 
 function inside(child: string, root: string): boolean {
@@ -80,15 +104,24 @@ function inside(child: string, root: string): boolean {
 }
 
 // Resolves a request's file (relative to baseDir) and refuses anything outside the allowed roots,
-// any ".." segment, symlinks that lead out, other file types (kind 'fbx': .fbx for uploads; 'model':
-// .rbxm / .rbxmx for Studio inserts), missing, empty and oversized files.
-export async function resolveModelFile(file: string, opts: { baseDir: string; roots: string[]; maxBytes?: number; kind?: 'fbx' | 'model' }): Promise<Check<{ abs: string; size: number; mtimeMs: number }>> {
+// any ".." segment, symlinks that lead out, other file types (kind 'fbx': .fbx for Model uploads;
+// 'audio' / 'image': Audio and Image/Decal uploads; 'model': .rbxm / .rbxmx for Studio inserts),
+// missing, empty and oversized files.
+const FILE_KINDS = {
+  fbx: { label: 'FBX', test: (raw: string) => /\.fbx$/i.test(raw), only: 'only .fbx files are uploaded as models' },
+  model: { label: 'model file', test: (raw: string) => /\.rbxmx?$/i.test(raw), only: 'only .rbxm and .rbxmx files are inserted' },
+  audio: { label: 'audio file', test: (raw: string) => !!AUDIO_CONTENT_TYPES[extOf(raw)], only: 'only .mp3, .ogg, .wav and .flac files are uploaded as audio' },
+  image: { label: 'image', test: (raw: string) => !!IMAGE_CONTENT_TYPES[extOf(raw)], only: 'only .png, .jpg, .jpeg, .bmp and .tga files are uploaded as images' }
+} as const
+
+export async function resolveModelFile(file: string, opts: { baseDir: string; roots: string[]; maxBytes?: number; kind?: keyof typeof FILE_KINDS }): Promise<Check<{ abs: string; size: number; mtimeMs: number }>> {
   const raw = file.trim()
   const model = opts.kind === 'model'
-  const label = model ? 'model file' : 'FBX'
+  const kind = FILE_KINDS[opts.kind ?? 'fbx']
+  const label = kind.label
   if (!raw) return { ok: false, error: 'No file given' }
   if (raw.split(/[\\/]+/).includes('..')) return { ok: false, error: `Refused ${raw}: ".." is not allowed in the path` }
-  if (model ? !/\.rbxmx?$/i.test(raw) : !/\.fbx$/i.test(raw)) return { ok: false, error: `Refused ${raw}: only ${model ? '.rbxm and .rbxmx files are inserted' : '.fbx files are uploaded'}` }
+  if (!kind.test(raw)) return { ok: false, error: `Refused ${raw}: ${kind.only}` }
   const abs = isAbsolute(raw) ? resolve(raw) : resolve(opts.baseDir, raw)
   const roots = opts.roots.map((r) => resolve(r))
   if (!roots.some((r) => inside(abs, r))) return { ok: false, error: `Refused ${raw}: the ${label} must be inside ${roots.join(' or ')}` }
@@ -101,7 +134,7 @@ export async function resolveModelFile(file: string, opts: { baseDir: string; ro
   if (!realRoots.some((r) => inside(real, r))) return { ok: false, error: `Refused ${raw}: it links outside ${roots.join(' or ')}` }
   const max = opts.maxBytes ?? MAX_UPLOAD_BYTES
   if (s.size === 0) return { ok: false, error: `The ${label} is empty: ${raw}` }
-  if (s.size > max) return { ok: false, error: `The ${label} is ${(s.size / 1024 / 1024).toFixed(1)} MB; ${model ? 'Forge sends' : 'Roblox accepts'} model files up to ${Math.round(max / 1024 / 1024)} MB` }
+  if (s.size > max) return { ok: false, error: `The ${label} is ${(s.size / 1024 / 1024).toFixed(1)} MB; ${model ? 'Forge sends' : 'Roblox accepts'} ${model || opts.kind === undefined || opts.kind === 'fbx' ? 'model files' : 'uploads'} up to ${Math.round(max / 1024 / 1024)} MB` }
   return { ok: true, value: { abs, size: s.size, mtimeMs: s.mtimeMs } }
 }
 
@@ -115,7 +148,8 @@ export interface ModelUploaderDeps {
   now?: () => number
 }
 
-export type UploadModel = (path: string, options: { name: string; description?: string }) => Promise<{ assetId: string; moderation?: string }>
+// assetType defaults to "Model" (roblox_upload_model and older callers).
+export type UploadModel = (path: string, options: { name: string; description?: string; assetType?: InboxAssetType }) => Promise<{ assetId: string; moderation?: string }>
 
 export function createModelUploader(deps: ModelUploaderDeps): UploadModel {
   return async (path, options) => {
@@ -125,8 +159,8 @@ export function createModelUploader(deps: ModelUploaderDeps): UploadModel {
     if (!creator.userId && !creator.groupId) throw new AssetUploadError(NO_CREATOR_ERROR)
     const s = await stat(path).catch(() => null)
     if (!s?.isFile()) throw new AssetUploadError(`File not found: ${path}`)
-    if (s.size > MAX_UPLOAD_BYTES) throw new AssetUploadError(`Roblox accepts model files up to 20 MB; this one is ${(s.size / 1024 / 1024).toFixed(1)} MB`)
-    const r = await uploadModelAsset({
+    if (s.size > MAX_UPLOAD_BYTES) throw new AssetUploadError(`Roblox accepts uploads up to 20 MB; this one is ${(s.size / 1024 / 1024).toFixed(1)} MB`)
+    const input = {
       apiKey,
       bytes: await readFile(path),
       fileName: basename(path),
@@ -136,7 +170,9 @@ export function createModelUploader(deps: ModelUploaderDeps): UploadModel {
       fetch: deps.fetch,
       sleep: deps.sleep,
       now: deps.now
-    })
+    }
+    const type = options.assetType ?? 'Model'
+    const r = type === 'Audio' ? await uploadAudioAsset(input) : type === 'Image' || type === 'Decal' ? await uploadMediaImageAsset({ ...input, assetType: type }) : await uploadModelAsset(input)
     return { assetId: r.assetId, ...(r.moderation ? { moderation: r.moderation } : {}) }
   }
 }
@@ -145,7 +181,7 @@ export function createModelUploader(deps: ModelUploaderDeps): UploadModel {
 
 export type InboxResult =
   | { status: 'uploading' }
-  | { status: 'done'; assetId: number | string; name: string; uploadedAt: string; moderation?: string }
+  | { status: 'done'; assetId: number | string; assetType: InboxAssetType; name: string; uploadedAt: string; moderation?: string }
   | { status: 'error'; error: string }
 
 export interface ModelInboxDeps {
@@ -333,7 +369,7 @@ export class ModelInbox {
     const parsed = parseRequest(await readFile(requestPath, 'utf8').catch(() => ''))
     if (!parsed.ok) return this.fail(dir, id, undefined, parsed.error, finish)
     const request = parsed.value
-    const file = await resolveModelFile(request.file, { baseDir: dir, roots: [dir, this.deps.modelsDir()] })
+    const file = await resolveModelFile(request.file, { baseDir: dir, roots: [dir, this.deps.modelsDir()], kind: KIND_OF[request.assetType] })
     if (!file.ok) return this.fail(dir, id, request.name, file.error, finish)
     if (fresh(file.value.mtimeMs)) return 'deferred'
     const blocked = await this.deps.blocked?.().catch((error) => (error as Error).message)
@@ -342,7 +378,7 @@ export class ModelInbox {
     // Rate limit: one upload at a time (scan is serial), spaced, and capped per rolling hour.
     const hourAgo = this.now() - 3_600_000
     this.uploads = this.uploads.filter((t) => t > hourAgo)
-    const cap = this.deps.maxPerHour ?? 30
+    const cap = this.deps.maxPerHour ?? 60
     if (this.uploads.length >= cap) {
       if (this.now() - this.capLogged > 600_000) {
         this.capLogged = this.now()
@@ -358,16 +394,16 @@ export class ModelInbox {
       await writeJsonAtomic(resultPath, { status: 'uploading' } satisfies InboxResult)
       this.lastUpload = this.now()
       this.uploads.push(this.lastUpload)
-      this.deps.log(`[model inbox] uploading ${request.name} (${basename(file.value.abs)}, ${(file.value.size / 1024 / 1024).toFixed(1)} MB)`)
+      this.deps.log(`[model inbox] uploading ${request.name} as ${request.assetType} (${basename(file.value.abs)}, ${(file.value.size / 1024 / 1024).toFixed(1)} MB)`)
       let uploaded: { assetId: string; moderation?: string }
       try {
-        uploaded = await this.deps.upload(file.value.abs, { name: request.name, ...(request.description ? { description: request.description } : {}) })
+        uploaded = await this.deps.upload(file.value.abs, { name: request.name, assetType: request.assetType, ...(request.description ? { description: request.description } : {}) })
       } catch (error) {
         return await this.fail(dir, id, request.name, (error as Error).message, finish)
       }
       const assetId = Number.isSafeInteger(Number(uploaded.assetId)) ? Number(uploaded.assetId) : uploaded.assetId
       const uploadedAt = new Date(this.now()).toISOString()
-      await writeJsonAtomic(resultPath, { status: 'done', assetId, name: request.name, uploadedAt, ...(uploaded.moderation ? { moderation: uploaded.moderation } : {}) } satisfies InboxResult)
+      await writeJsonAtomic(resultPath, { status: 'done', assetId, assetType: request.assetType, name: request.name, uploadedAt, ...(uploaded.moderation ? { moderation: uploaded.moderation } : {}) } satisfies InboxResult)
       await finish()
       this.deps.log(`[model inbox] ${request.name} -> rbxassetid://${assetId}${uploaded.moderation ? ` (moderation: ${uploaded.moderation})` : ''}`)
       this.record({ id, name: request.name, status: 'done', assetId, at: uploadedAt })

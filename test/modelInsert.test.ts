@@ -165,6 +165,21 @@ test('insert request: defaults, parent dot path, place, replace; bad requests ex
   assert.match((parseInsertRequest(JSON.stringify({ file: 'a.rbxm', place: -3 })) as { error: string }).error, /positive whole number/)
   assert.match((parseInsertRequest(JSON.stringify({ file: 'a.rbxm', replace: 'yes' })) as { error: string }).error, /replace/)
   assert.match((parseInsertRequest(JSON.stringify({ file: 'a\n.rbxm' })) as { error: string }).error, /control characters/)
+  // "placeId" / "placeName" spell "place" out; both may be given; disagreeing or unknown keys are refused.
+  const placeOf = (body: object) => (parseInsertRequest(JSON.stringify({ file: 'a.rbxm', ...body })) as { value: { place: unknown } }).value.place
+  const errorOf = (body: object) => (parseInsertRequest(JSON.stringify({ file: 'a.rbxm', ...body })) as { error: string }).error
+  assert.deepEqual(placeOf({ placeId: 104821733581049 }), { placeId: 104821733581049 })
+  assert.deepEqual(placeOf({ placeId: '104821733581049' }), { placeId: 104821733581049 })
+  assert.deepEqual(placeOf({ placeName: 'RBX FORGE' }), { place: 'RBX FORGE' })
+  assert.deepEqual(placeOf({ placeName: '1234' }), { place: '1234' })
+  assert.deepEqual(placeOf({ placeId: 7, placeName: 'RBX FORGE' }), { placeId: 7, place: 'RBX FORGE' })
+  assert.deepEqual(placeOf({ place: 7, placeId: 7 }), { placeId: 7 })
+  assert.deepEqual(placeOf({ place: 'RBX FORGE', placeId: 7 }), { placeId: 7, place: 'RBX FORGE' })
+  assert.match(errorOf({ place: 7, placeId: 8 }), /two different PlaceIds \(7, 8\)/)
+  assert.match(errorOf({ place: 'A', placeName: 'B' }), /two different place names/)
+  assert.match(errorOf({ placeId: 'RBX FORGE' }), /Bad placeId "RBX FORGE": a PlaceId is a positive whole number/)
+  assert.match(errorOf({ placeId: -1 }), /Bad placeId -1/)
+  assert.match(errorOf({ plcae: 'RBX FORGE' }), /Unrecognized key.*plcae/i)
   // Luau spellings of the service.
   assert.deepEqual(parseParentPath('game.Workspace.Props'), { ok: true, value: ['Workspace', 'Props'] })
   assert.deepEqual(parseParentPath('workspace'), { ok: true, value: ['Workspace'] })
@@ -602,6 +617,54 @@ test('insert inbox: waits for Studio (not connected, place not open, busy), then
     assert.equal(await box.process(t.inboxDir, 'w5'), 'error')
     assert.match((await readJson(join(t.inboxDir, 'w5' + INSERT_RESULT_SUFFIX))).error, new RegExp(`runs Forge Bridge v${INSERT_PLUGIN_VERSION - 1}; restart Studio to load v${INSERT_PLUGIN_VERSION}`))
     assert.equal(runs.length, 3)
+  } finally {
+    await t.cleanup()
+  }
+})
+
+test('insert inbox: "placeId" targets that window, never the project window (the Tree Rex insert that landed in Football Manager)', async () => {
+  const t = await tempDocs()
+  try {
+    await writeFile(join(t.inboxDir, 'Run.rbxmx'), ANIM_XML)
+    const req = (id: string, body: object) => writeFile(join(t.inboxDir, `${id}.insert.json`), JSON.stringify(body))
+    const result = async (id: string) => readJson(join(t.inboxDir, id + INSERT_RESULT_SUFFIX))
+    let now = Date.now()
+    const project: InsertBridgeWindow = { place: 'MyGame', placeId: 42, pluginVersion: PLUGIN_VERSION }
+    const forge: InsertBridgeWindow = { place: 'RBX FORGE', placeId: 104821733581049, pluginVersion: PLUGIN_VERSION }
+    let windows: InsertBridgeWindow[] = [project, forge]
+    const { bridge, runs } = fakeBridge({ studios: () => windows })
+    const { box } = inbox(t, bridge, { now: () => now, waitMs: 60_000 })
+
+    await req('t1', { file: 'Run.rbxmx', parent: 'ServerStorage', placeId: 104821733581049, replace: true })
+    assert.equal(await box.process(t.inboxDir, 't1'), 'done')
+    assert.deepEqual(runs.at(-1)!.opts.target, { placeId: 104821733581049 })
+    const done = await result('t1')
+    assert.equal(done.place, 'RBX FORGE (104821733581049)')
+    assert.equal(done.placeId, 104821733581049)
+    assert.equal(done.projectPlace, undefined)
+    // A project window reports its project place.
+    await req('t2', { file: 'Run.rbxmx', placeName: 'MyGame' })
+    assert.equal(await box.process(t.inboxDir, 't2'), 'done')
+    assert.equal((await result('t2')).projectPlace, 'MyGame')
+    // Id and name together must both match.
+    await req('t3', { file: 'Run.rbxmx', placeId: 104821733581049, placeName: 'MyGame' })
+    assert.equal(await box.process(t.inboxDir, 't3'), 'error')
+    assert.match((await result('t3')).error, /PlaceId 104821733581049 is RBX FORGE \(104821733581049\), not "MyGame"/)
+    // A misspelt key is refused, not dropped (dropping it would send the model to MyGame).
+    await req('t4', { file: 'Run.rbxmx', place_id: 104821733581049 })
+    assert.equal(await box.process(t.inboxDir, 't4'), 'error')
+    assert.match((await result('t4')).error, /place_id/)
+    // The named place is not connected (only the project window is): waits, then fails; never MyGame.
+    windows = [project, { place: 'RBX FORGE', pluginVersion: PLUGIN_VERSION }]
+    const before = runs.length
+    await req('t5', { file: 'Run.rbxmx', placeId: 104821733581049, placeName: 'RBX FORGE' })
+    assert.equal(await box.process(t.inboxDir, 't5'), 'deferred')
+    now += 61_000
+    assert.equal(await box.process(t.inboxDir, 't5'), 'error')
+    const r5 = await result('t5')
+    assert.match(r5.error, /No Studio window with PlaceId 104821733581049 is connected/)
+    assert.match(r5.error, /RBX FORGE has the name "RBX FORGE" but not PlaceId 104821733581049/)
+    assert.equal(runs.length, before)
   } finally {
     await t.cleanup()
   }

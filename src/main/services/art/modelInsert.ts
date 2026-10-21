@@ -8,15 +8,19 @@
 // electron imports: the folder, bridge, watcher and clock come in as deps (main/integrations.ts).
 //
 //   <id>.insert.json         { "file": "relative/or/absolute.rbxmx", "parent": "ServerStorage.RBX_ANIMSAVES",
-//                              "place": "MyGame" | 1234567, "replace": true }
+//                              "place": "MyGame" | 1234567, "placeId": 1234567, "placeName": "MyGame",
+//                              "replace": true }
 //                            parent: a dot path starting at a service (default ServerStorage); missing
 //                            folders after the service are created. place: optional project place
 //                            name, Studio place name or PlaceId (needed when several project places are
-//                            open, or to pick a window outside the project). replace: remove the
-//                            parent's children named like an inserted instance first (default false).
+//                            open, or to pick a window outside the project). placeId / placeName: the
+//                            same, spelled out; with both, the window must match both. A named place
+//                            that is not connected waits, then fails: never another window. Unknown keys
+//                            are refused. replace: remove the parent's children named like an inserted
+//                            instance first (default false).
 //   <id>.insert.result.json  { "status": "inserting" }
-//                            { "status": "done", "paths": ["ServerStorage.RBX_ANIMSAVES.Run"], "place": "MyGame",
-//                              "replaced": 0, "via": "serialization" | "tree", "insertedAt": "<ISO time>",
+//                            { "status": "done", "paths": ["ServerStorage.RBX_ANIMSAVES.Run"], "place": "MyGame (42)",
+//                              "placeId"?: 42, "projectPlace"?: "MyGame", "replaced": 0, "via": "serialization" | "tree", "insertedAt": "<ISO time>",
 //                              "created"?: [...], "skipped"?: [...] }
 //                            { "status": "error", "error": "..." }
 //
@@ -72,12 +76,19 @@ export interface InsertRequest {
   replace: boolean
 }
 
-const RequestSchema = z.object({
-  file: z.string().min(1).max(1024),
-  parent: z.string().max(2000).optional(),
-  place: z.union([z.string(), z.number()]).optional().nullable(),
-  replace: z.boolean().optional()
-})
+// Strict: an unknown key (a misspelt "plcae", a "target") is refused, never ignored, because a request
+// whose place is silently dropped would land in whichever project window is connected.
+const RequestSchema = z
+  .object({
+    file: z.string().min(1).max(1024),
+    parent: z.string().max(2000).optional(),
+    place: z.union([z.string(), z.number()]).optional().nullable(),
+    // Same meaning as "place", spelled out: a PlaceId, or a place name.
+    placeId: z.union([z.string(), z.number()]).optional().nullable(),
+    placeName: z.string().optional().nullable(),
+    replace: z.boolean().optional()
+  })
+  .strict()
 
 export function parseInsertRequest(text: string): Check<InsertRequest> {
   let json: unknown
@@ -92,14 +103,31 @@ export function parseInsertRequest(text: string): Check<InsertRequest> {
   if (r.file.includes('\0') || /[\u0000-\u001f]/.test(r.file)) return { ok: false, error: 'Bad request: control characters in file' }
   const parent = parseParentPath(r.parent)
   if (!parent.ok) return parent
-  const place = parsePlace(r.place)
-  if (!place.ok) return place
-  return { ok: true, value: { file: r.file, parent: parent.value, place: place.value, replace: r.replace === true } }
+  // "place", "placeId" and "placeName" may be combined: at most one PlaceId and one name. Both given:
+  // the window must have that PlaceId and that name (pickWindow), so a stale id or name is refused.
+  let placeId: number | undefined
+  let placeName: string | undefined
+  for (const [key, raw] of [['place', r.place], ['placeId', r.placeId], ['placeName', r.placeName]] as const) {
+    const t = parsePlace(raw)
+    if (!t.ok) return { ok: false, error: t.error.replace(/^Bad place/, `Bad ${key}`) }
+    if (!t.value) continue
+    if (key === 'placeId' && !t.value.placeId) return { ok: false, error: `Bad placeId "${raw}": a PlaceId is a positive whole number (a name goes in "placeName")` }
+    if (key === 'placeName' || t.value.place) {
+      const name = key === 'placeName' ? String(raw).trim() : t.value.place!
+      if (placeName !== undefined && placeName.toLowerCase() !== name.toLowerCase()) return { ok: false, error: `Bad request: two different place names ("${placeName}", "${name}"); give one` }
+      placeName = name
+    } else {
+      if (placeId !== undefined && placeId !== t.value.placeId) return { ok: false, error: `Bad request: two different PlaceIds (${placeId}, ${t.value.placeId}); give one` }
+      placeId = t.value.placeId
+    }
+  }
+  const place: StudioTarget | null = placeId || placeName ? { ...(placeId ? { placeId } : {}), ...(placeName ? { place: placeName } : {}) } : null
+  return { ok: true, value: { file: r.file, parent: parent.value, place, replace: r.replace === true } }
 }
 
 export type InsertResult =
   | { status: 'inserting' }
-  | { status: 'done'; paths: string[]; place: string; replaced: number; via: InsertReport['via']; insertedAt: string; created?: string[]; skipped?: string[] }
+  | { status: 'done'; paths: string[]; place: string; placeId?: number; projectPlace?: string; replaced: number; via: InsertReport['via']; insertedAt: string; created?: string[]; skipped?: string[] }
   | { status: 'error'; error: string }
 
 export interface InsertBridgeWindow extends StudioWindow {
@@ -362,6 +390,8 @@ export class InsertInbox {
         status: 'done',
         paths: r.paths,
         place: windowLabel(win),
+        ...(win.placeId && win.placeId > 0 ? { placeId: win.placeId } : {}),
+        ...(picked.projectPlace ? { projectPlace: picked.projectPlace.name } : {}),
         replaced: r.replaced,
         via: r.via,
         insertedAt,

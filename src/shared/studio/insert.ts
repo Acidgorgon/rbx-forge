@@ -122,7 +122,9 @@ export type PickResult<W> = { window: W; projectPlace: InsertProjectPlace | null
 //     file opened just to look at it, another project's place). Exactly one must be connected.
 //   - With "place" (a PlaceId, a project place name or file, or the Studio window's place name): a
 //     project place first; else exactly one connected window with that PlaceId or Studio name, project
-//     place or not (an explicit name is clear intent, e.g. a scratch test place). Nothing matching waits.
+//     place or not (an explicit name is clear intent, e.g. a scratch test place). Nothing matching waits,
+//     then fails: a named place is never swapped for another window.
+//   - With a PlaceId and a name: the window with that PlaceId, and it must also carry that name.
 // `wait`: Studio may still connect / open the place, so the request can wait; otherwise it fails now.
 export function pickWindow<W extends StudioWindow>(windows: W[], want: StudioTarget | null, places: InsertProjectPlace[] | null): PickResult<W> {
   const list = places?.length ? places.map(placeText).join(', ') : ''
@@ -133,7 +135,22 @@ export function pickWindow<W extends StudioWindow>(windows: W[], want: StudioTar
     if (!hits.length) return { error: `No Studio window with ${what} is connected (${connected})${list ? `; this project's places: ${list}` : ''}`, wait: true }
     return { error: `${hits.length} Studio windows have ${what} open (${hits.map(windowText).join(', ')}); close one, or give its PlaceId as "place"` }
   }
-  if (want?.placeId) return one(windows.filter((w) => w.placeId === want.placeId), `PlaceId ${want.placeId}`)
+  if (want?.placeId) {
+    const r = one(windows.filter((w) => w.placeId === want.placeId), `PlaceId ${want.placeId}`)
+    if ('error' in r) {
+      // A window that has the place's name but not its PlaceId is usually a local copy (a .rbxl opened
+      // from disk reports PlaceId 0): say so instead of only "not connected".
+      const named = want.place ? windows.filter((w) => w.place && sameName(w.place, want.place!)) : []
+      return named.length ? { ...r, error: `${r.error}. ${named.map(windowText).join(', ')} has the name "${want.place}" but not PlaceId ${want.placeId}: open the published place (File > Open from Roblox), or drop "placeId"` } : r
+    }
+    // A name given too must be that window's (its Studio name, or its project place's name or file).
+    if (want.place) {
+      const p = placeOf(r.window)
+      const names = [r.window.place, p?.name, p?.file, p?.file.replace(/\.project\.json$/i, '')].filter((x): x is string => !!x)
+      if (!names.some((n) => sameName(n, want.place!))) return { error: `The Studio window with PlaceId ${want.placeId} is ${windowText(r.window)}, not "${want.place}"; check which place you meant` }
+    }
+    return r
+  }
   if (want?.place) {
     const name = want.place
     // The project's own name for the place ("menu", "menu.project.json") first, then Studio's.

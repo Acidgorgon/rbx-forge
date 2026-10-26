@@ -8,6 +8,8 @@ const methods = [
   'getStudioConflicts', 'resolveStudioConflict',
   // Source control panel (stage, commit, pull / push)
   'scmStatus', 'scmStage', 'scmUnstage', 'scmDiscard', 'scmCommit', 'scmPull', 'scmPush', 'scmFetch', 'scmDiff', 'scmSetDraft',
+  // Search view (find / replace in files)
+  'searchFiles', 'searchCancel', 'replaceInFiles',
   'listChats', 'newChat', 'getChat', 'sendChat', 'stopChat', 'deleteChats', 'hasApiKey', 'setApiKey',
   'addGuest', 'removeGuest', 'setGuestTools', 'startRoundtable', 'planToChecklist',
   'getGroupSettings', 'setGroupSettings', 'applyPatchProposal', 'mergePatchProposal', 'dismissPatchProposal', 'saveBoard',

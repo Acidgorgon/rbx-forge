@@ -13,6 +13,7 @@ import { QolcOverlays } from './pages/qolc/QolcOverlays'
 import { buildCommands, keySpec, normalizeSpec } from './shell/commands'
 import { ExplorerView } from './views/ExplorerView'
 import { ScriptsView } from './views/ScriptsView'
+import { SearchView } from './views/SearchView'
 import { EventsView } from './views/EventsView'
 import { SyncView } from './views/SyncView'
 import { TestsView } from './views/TestsView'
@@ -66,6 +67,7 @@ function Resizer({ axis, value, min, max, reset, invert, onChange, onCollapse }:
 
 const VIEWS: Record<SideView, () => React.ReactElement> = {
   explorer: ExplorerView,
+  search: SearchView,
   scripts: ScriptsView,
   events: EventsView,
   sync: SyncView,

@@ -59,7 +59,8 @@ export function ActivityBar() {
 
   const top: Item[] = [
     { icon: 'tree', label: 'Explorer', keys: 'mod+shift+e', view: 'explorer' },
-    { icon: 'script', label: 'Scripts', keys: 'mod+shift+f', view: 'scripts' },
+    { icon: 'search', label: 'Search', keys: 'mod+shift+f', view: 'search' },
+    { icon: 'script', label: 'Scripts', keys: 'mod+shift+j', view: 'scripts' },
     { icon: 'bolt', label: 'Events (Blink)', keys: 'mod+shift+v', view: 'events', badge: blinkErrors ? { n: blinkErrors, err: true } : null },
     { icon: 'branch', label: 'Source control & Sync', keys: 'mod+shift+g', view: 'sync', badge: behind ? { n: behind } : null },
     { icon: 'flask', label: 'Tests & agents', keys: 'mod+shift+a', view: 'tests', dot: agentsRunning, badge: !agentsRunning && testFails ? { n: testFails, err: true } : null },

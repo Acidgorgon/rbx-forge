@@ -14,9 +14,10 @@ import { join, resolve } from 'node:path'
 import { appEnv, IGNORED_ERRORS, loadPlaywright, REPO } from './lib/app.ts'
 import { mockArtFlows } from './flows/mockArt.ts'
 import { mockScmFlows } from './flows/mockScm.ts'
+import { mockSearchFlows } from './flows/mockSearch.ts'
 
 const OUT = resolve(import.meta.dirname, 'out')
-const FLOWS = [...mockArtFlows, ...mockScmFlows]
+const FLOWS = [...mockArtFlows, ...mockScmFlows, ...mockSearchFlows]
 
 async function main(): Promise<void> {
   const only = process.argv.find((a) => a.startsWith('--only='))?.slice(7).split(',').filter(Boolean)

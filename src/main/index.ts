@@ -5,7 +5,9 @@ import {
   INVOKE_PREFIX,
   type BlinkModel,
   type GitStatus,
+  type ReplaceRequest,
   type ScmCommitOptions,
+  type SearchOptions,
   type ScmStatus,
   type HarnessEvents,
   type LogLine,
@@ -21,6 +23,7 @@ import type { HarnessContext } from './context.ts'
 import { registerAgentIpc } from './agent/index.ts'
 import { DEFAULT_SYNC, emptyStatus, GitSync } from './services/gitSync.ts'
 import { SourceControl } from './services/sourceControl.ts'
+import { SearchService } from './services/search.ts'
 import { LogBuffer } from './services/logs.ts'
 import { LspBridge, SKIP_DIRS } from './services/lspBridge.ts'
 import { DEFAULT_COMPANION_PORT, StudioCompanionServer, luauFilePaths, validPort } from './services/lspCompanion.ts'
@@ -473,6 +476,15 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   void memory.onProjectOpen()
   return opened.info
 }
+
+// Search view (services/search.ts): results stream to the renderer as search:files; a replace writes
+// through the project's own writeFile, like a save from the editor.
+const search = new SearchService({
+  root: () => project?.info.root ?? null,
+  writeFile: (path, contents) => requireProject().writeFile(path, contents),
+  emit: (id, files) => emit('search:files', { id, files }),
+  log: (text) => harnessLog(`search: ${text}`)
+})
 
 const ctx: HarnessContext = {
   project: () => project?.info ?? null,
@@ -979,6 +991,11 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   scmSetDraft: async (draft: unknown) => {
     git?.setDraft(draft === true)
   },
+
+  // Search view: find / replace in files (services/search.ts).
+  searchFiles: (id: unknown, options: SearchOptions) => search.search(id, options),
+  searchCancel: async (id: unknown) => search.cancel(id),
+  replaceInFiles: (request: ReplaceRequest) => search.replace(request),
 
   getBlink: () => blink?.model ?? EMPTY_BLINK,
   lspStart: () => lsp.start(),

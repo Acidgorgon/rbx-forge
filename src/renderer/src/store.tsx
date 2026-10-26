@@ -46,7 +46,7 @@ import { afterTurn, editQueued as editIn, enqueue, moveToFront, outgoingText, re
 
 // ---------------------------------------------------------------- types
 
-export type SideView = 'explorer' | 'scripts' | 'events' | 'sync' | 'tests' | 'team'
+export type SideView = 'explorer' | 'search' | 'scripts' | 'events' | 'sync' | 'tests' | 'team'
 export type BottomTab = 'output' | 'problems' | 'terminal' | 'shell'
 export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics' | 'memory' | 'groups' | 'art' | 'uipreview' | 'vfx' | 'anim' | 'ability' | 'thumbs' | 'uimotion' | 'model'
 export type TabKind = PageKind | 'file' | 'conflict' | 'transcript' | 'gitdiff'
@@ -162,7 +162,8 @@ export interface State {
   // Path of the active file tab (null for pages).
   activeFile: string | null
   recent: string[]
-  reveal: { path: string; line: number; column: number; nonce: number } | null
+  // end: select from (line, column) to it (a Search result), else only the cursor moves.
+  reveal: { path: string; line: number; column: number; end?: { line: number; column: number }; nonce: number } | null
   editorProblems: ProblemItem[]
   lint: ProblemItem[]
   lintAt: number | null
@@ -549,7 +550,7 @@ export interface Actions {
   openProject(): Promise<void>
   // Tabs and files
   openFile(path: string, options?: { preview?: boolean }): Promise<void>
-  openFileAt(path: string, line: number, column?: number): Promise<void>
+  openFileAt(path: string, line: number, column?: number, end?: { line: number; column: number }): Promise<void>
   openPage(kind: PageKind): void
   openConflict(path: string): void
   // Source control: a read-only diff tab of one changed file.
@@ -809,8 +810,8 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         dispatch({ type: 'openTab', tab: { id: `file:${path}`, kind: 'file', title: tabTitle(path), path }, preview: options?.preview })
         if (!had) await loadFile(path)
       },
-      async openFileAt(path, line, column = 1) {
-        dispatch({ type: 'set', patch: { reveal: { path, line, column, nonce: Date.now() } } })
+      async openFileAt(path, line, column = 1, end) {
+        dispatch({ type: 'set', patch: { reveal: { path, line, column, ...(end ? { end } : {}), nonce: Date.now() } } })
         await self.openFile(path)
       },
       openPage(kind) {

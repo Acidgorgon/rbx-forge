@@ -61,13 +61,93 @@ export async function portOwners(port: number, platform: NodeJS.Platform = proce
   return parseLsof(await exec('lsof', ['-nP', `-iTCP:${port}`, '-sTCP:LISTEN', '-Fpc']))
 }
 
-// Stops one process (not its tree: a stray rojo has no children worth keeping).
-export function stopProcess(pid: number, platform: NodeJS.Platform = process.platform): Promise<void> {
-  if (platform === 'win32') return exec(system32('taskkill.exe'), ['/pid', String(pid), '/F']).then(() => undefined)
+export function isAlive(pid: number): boolean {
+  try {
+    process.kill(pid, 0)
+    return true
+  } catch (error) {
+    // EPERM: it exists, we just may not signal it.
+    return (error as NodeJS.ErrnoException).code === 'EPERM'
+  }
+}
+
+const sleep = (ms: number) => new Promise<void>((resolve) => setTimeout(resolve, ms))
+
+async function exited(pid: number, ms: number): Promise<boolean> {
+  const end = Date.now() + ms
+  while (isAlive(pid)) {
+    if (Date.now() > end) return false
+    await sleep(50)
+  }
+  return true
+}
+
+// The image / command name of a live process ("rojo.exe", "rojo"), '' when it is gone or unknown.
+// mac / Linux: `ps -p <pid> -o comm=` (mac prints the full path, Linux the 15-char command name).
+export async function processName(pid: number, platform: NodeJS.Platform = process.platform): Promise<string> {
+  if (!(pid > 0)) return ''
+  if (platform === 'win32') return parseTasklist(await exec(system32('tasklist.exe'), ['/FI', `PID eq ${pid}`, '/FO', 'CSV', '/NH']))
+  const out = (await exec('ps', ['-p', String(pid), '-o', 'comm='])).trim().split(/\r?\n/)[0] ?? ''
+  return out.replace(/^.*[\\/]/, '')
+}
+
+// Stops one process (not its tree: a stray rojo has no children worth keeping). Resolves once it
+// is gone (SIGKILL after a grace period), so a serve started right after finds the port free.
+export async function stopProcess(pid: number, platform: NodeJS.Platform = process.platform, graceMs = 3000): Promise<void> {
+  if (platform === 'win32') {
+    await exec(system32('taskkill.exe'), ['/pid', String(pid), '/F'])
+    return
+  }
   try {
     process.kill(pid, 'SIGTERM')
   } catch {
+    return // already gone
+  }
+  if (await exited(pid, graceMs)) return
+  try {
+    process.kill(pid, 'SIGKILL')
+  } catch {
     // already gone
   }
-  return Promise.resolve()
+  await exited(pid, 1000)
+}
+
+// Stops a process and everything it started, for a rojo a previous Forge run left behind: taskkill /T
+// on Windows, the process group on mac / Linux (Forge starts its serves as group leaders; the pid
+// alone when it is not one). Resolves once the process is gone.
+export async function killProcessTree(pid: number, platform: NodeJS.Platform = process.platform, graceMs = 3000): Promise<void> {
+  if (platform === 'win32') {
+    await exec(system32('taskkill.exe'), ['/pid', String(pid), '/T', '/F'])
+    return
+  }
+  const signal = (sig: NodeJS.Signals) => {
+    try {
+      process.kill(-pid, sig)
+    } catch {
+      try {
+        process.kill(pid, sig)
+      } catch {
+        // already gone
+      }
+    }
+  }
+  signal('SIGTERM')
+  if (await exited(pid, graceMs)) return
+  signal('SIGKILL')
+  await exited(pid, 1000)
+}
+
+// The process lookups the supervisor needs, replaceable in tests.
+export interface ProcessTools {
+  portOwners(port: number): Promise<PortOwner[]>
+  processName(pid: number): Promise<string>
+  isAlive(pid: number): boolean
+  killTree(pid: number): Promise<void>
+}
+
+export const systemProcessTools: ProcessTools = {
+  portOwners: (port) => portOwners(port),
+  processName: (pid) => processName(pid),
+  isAlive,
+  killTree: (pid) => killProcessTree(pid)
 }

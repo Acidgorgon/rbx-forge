@@ -152,6 +152,8 @@ const forgeRojo = new ForgeRojo({
 })
 const supervisor = new Supervisor({
   log: (line) => logs.push(line),
+  // Every rojo Forge starts, so a later run can stop the ones this run could not (force close, crash).
+  serveRecordFile: join(app.getPath('userData'), 'serve-pids.json'),
   chooseRojo: (rojo, root) => forgeRojo.choose(rojo, root),
   onStatus: (statuses) => emit('services:status', statuses),
   getSetting: (key, fallback) => settings.get(key, fallback),
@@ -863,6 +865,7 @@ const doctor = createDoctorWiring({
   startRojo: () => supervisor.start('rojo'),
   rojoPlaces: () => supervisor.rojoPlaces(),
   servesPort: (port) => supervisor.servesPort(port),
+  strayStopped: (port) => supervisor.noteStrayStopped(port),
   screenRecording: () => (process.platform === 'darwin' ? (systemPreferences.getMediaAccessStatus('screen') as 'granted') : null),
   openExternal: (url) => void shell.openExternal(url),
   emit: (report) => emit('doctor:report', report)
@@ -1175,6 +1178,14 @@ app.on('before-quit', (event) => {
   if (quitting) return
   quitting = true
   event.preventDefault()
+  // The rojo processes stop first and on their own: closeProject below stops them last, and if one of
+  // its earlier steps throws or hangs they would outlive Forge (on Windows nothing else ends them).
+  // If the shutdown stalls, kill them and leave anyway.
+  const rojoStopped = supervisor.stopAll().catch(() => undefined)
+  const watchdog = setTimeout(() => {
+    supervisor.killAllSync()
+    app.exit(0)
+  }, 10_000)
   agentIpc.dispose()
   integrations.dispose()
   terminal.dispose()
@@ -1189,13 +1200,23 @@ app.on('before-quit', (event) => {
   void studio.dispose()
   lsp.dispose()
   void lspCompanion.dispose()
-  closeProject()
-    .catch(() => undefined)
-    .finally(() => app.quit())
+  void Promise.all([rojoStopped, closeProject().catch(() => undefined)]).finally(() => {
+    clearTimeout(watchdog)
+    app.quit()
+  })
 })
 
+// Windows does not end a parent's children with it: whatever path leaves the app (will-quit, exit,
+// a signal), the rojo processes are killed, trees included, and their records cleared.
+app.on('will-quit', () => supervisor.killAllSync())
 process.on('exit', () => {
   terminal.dispose()
   lsp.dispose()
   supervisor.killAllSync()
 })
+for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
+  process.on(signal, () => {
+    supervisor.killAllSync()
+    process.exit(0)
+  })
+}

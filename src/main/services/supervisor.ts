@@ -1,10 +1,13 @@
 import { execFile, execFileSync, type ChildProcess } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { LogLine, PlaceInfo, RojoPlaceStatus, ServiceId, ServiceState, ServiceStatus } from '@shared/types'
 import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState, type RojoServeState, type WaitReason } from '../../shared/sync/types.ts'
 import { findBash, findPowerShell, findTool, run, spawnTool, toolEnv } from './tools.ts'
 import { gateAction, isRojoPanic, RestartPolicy, ROJO_STABLE_MS, secondsText, type RestartPolicyOptions } from './rojoRestart.ts'
+import { isRojoProcess, systemProcessTools, type ProcessTools } from './portOwner.ts'
+import { ServeRecords, servePortOf, type ServeEntry } from './serveRecord.ts'
 
 const isWindows = process.platform === 'win32'
 const TEMPLATE_ORIGIN = /github\.com[:/]Acidgorgon\/MyTemplate-Legacy(\.git)?\/?$/i
@@ -30,6 +33,12 @@ export interface SupervisorOptions {
   // The rojo binary to run for the project's rojo (rojoBinary.ts: Forge's crash-safe build of the
   // same version, or the project's own). Absent: the project's rojo.
   chooseRojo?: (projectRojo: string, root: string) => Promise<{ file: string; why: string }>
+  // Where the rojo processes Forge starts are recorded (userData/serve-pids.json). A later run kills the
+  // ones still alive and still named rojo (leftovers of a force close or crash) before it serves.
+  // Absent: nothing is recorded, and every rojo on a wanted port counts as one Forge did not start.
+  serveRecordFile?: string
+  // Port / process lookups (portOwner.ts); tests replace them.
+  processTools?: ProcessTools
 }
 
 interface Proc {
@@ -51,6 +60,8 @@ interface Proc {
   gaveUp?: boolean
   // Stopped by pausePlace (a file Forge writes for that place); resumePlace starts it again.
   paused?: boolean
+  // rojo serve: checking the port for a leftover / foreign rojo before it spawns.
+  preflight?: boolean
 }
 
 // rojo's "address in use" bind error (Linux os error 98, macOS 48, Windows 10048).
@@ -150,9 +161,24 @@ export class Supervisor {
   private cut = new Set<string>()
   private reconnect = new Map<string, { port: number; at: number }>()
   private closing = false
+  // The rojo processes of this run on disk, to clean up after a run that did not get to stop them.
+  private records: ServeRecords | null
+  private session = randomUUID()
+  private tools: ProcessTools
+  // Pids of this run's rojo processes (children and the listeners behind a launcher) that may still be
+  // alive: a port they hold is Forge's own, not a stray.
+  private mine = new Set<number>()
+  // Children being killed after being detached (a gate hold): killAllSync still has to reach them.
+  private dying = new Set<ChildProcess>()
+  private sweeping: Promise<void> | null = null
+  // Ports whose serve from a previous Forge run was killed at startup (Studio's Rojo plugin was on it).
+  private stalePorts = new Set<number>()
+  private stopping: Promise<void> | null = null
 
   constructor(options: SupervisorOptions) {
     this.options = options
+    this.records = options.serveRecordFile ? new ServeRecords(options.serveRecordFile) : null
+    this.tools = options.processTools ?? systemProcessTools
     const make = (id: ServiceId): ServiceStatus => ({ id, label: LABELS[id], state: 'stopped', restarts: 0 })
     this.status = { dev: make('dev'), rojo: make('rojo'), lsp: make('lsp'), studioSync: make('studioSync') }
   }
@@ -187,6 +213,32 @@ export class Supervisor {
     for (const id of Object.keys(this.status) as ServiceId[]) {
       this.update(id, { state: 'stopped', restarts: 0, pid: undefined, detail: undefined })
     }
+    // A rojo a previous Forge run left behind (force close, crash) is still serving: stop it first.
+    if (root) await this.sweepLeftovers()
+  }
+
+  // Once per run: kills every rojo process the record lists for an earlier Forge run that is still
+  // alive and still named rojo (a recycled pid now belongs to something else: left alone), and drops
+  // those records. Studio's Rojo plugin was connected to a killed serve: its port is remembered so the
+  // new serve on it raises the "click Connect in Rojo" notice.
+  private sweepLeftovers(): Promise<void> {
+    return (this.sweeping ??= this.sweep())
+  }
+
+  private async sweep(): Promise<void> {
+    const records = this.records
+    if (!records) return
+    const old = records.read().filter((e) => e.session !== this.session)
+    if (!old.length) return
+    for (const entry of old.sort((a, b) => Number(a.via ?? 0) - Number(b.via ?? 0))) {
+      if (!this.tools.isAlive(entry.pid)) continue
+      const name = await this.tools.processName(entry.pid)
+      if (!isRojoProcess(name)) continue
+      this.info('rojo', entry.kind === 'serve' ? `stopped a leftover rojo (pid ${entry.pid}) from a previous Forge run on port ${entry.port ?? '?'}` : `stopped a leftover rojo sourcemap watcher (pid ${entry.pid}) from a previous Forge run`)
+      await this.tools.killTree(entry.pid)
+      if (entry.kind === 'serve' && entry.port) this.stalePorts.add(entry.port)
+    }
+    records.update((entries) => entries.filter((e) => e.session === this.session))
   }
 
   // Places of the open project and the active one. rojo serves the active place (and, with the
@@ -269,7 +321,7 @@ export class Supervisor {
       const command = { file: rojo, args: job.args }
       const old = this.procs[job.key]
       const same = JSON.stringify(this.extraCommands.get(job.key)) === JSON.stringify(command)
-      if (old?.wanted && same && !old.gaveUp && (old.child || old.held || old.retry)) continue
+      if (old?.wanted && same && !old.gaveUp && (old.child || old.held || old.retry || old.preflight)) continue
       if (old) await this.stopProc(job.key, old.gaveUp ? 'it gave up after crashing; starting it again' : 'it is started again')
       if (job.kind === 'sourcemap' && this.root) {
         try {
@@ -301,8 +353,17 @@ export class Supervisor {
     proc.healthy = null
     proc.held = false
     const child = proc.child
-    if (child) await killTree(child)
+    if (child) {
+      this.dying.add(child)
+      await killTree(child)
+    }
     proc.child = null
+  }
+
+  // Kills a child that is already detached from its proc, without waiting.
+  private kill(child: ChildProcess): void {
+    this.dying.add(child)
+    void killTree(child)
   }
 
   async stop(id: ServiceId, why = 'you stopped it'): Promise<void> {
@@ -338,7 +399,14 @@ export class Supervisor {
     await this.start(id)
   }
 
-  async stopAll(): Promise<void> {
+  // Shared by concurrent callers (quit stops the services next to closeProject, which stops them too).
+  stopAll(): Promise<void> {
+    return (this.stopping ??= this.stopEverything().finally(() => {
+      this.stopping = null
+    }))
+  }
+
+  private async stopEverything(): Promise<void> {
     if (this.probeTimer) clearInterval(this.probeTimer)
     this.probeTimer = null
     // The project closes: no "reconnect Rojo" notice for serves that end with it.
@@ -351,20 +419,42 @@ export class Supervisor {
     this.cut.clear()
     this.reconnect.clear()
     this.update('studioSync', { state: 'stopped', detail: undefined })
+    this.pruneRecords()
   }
 
-  // Last-resort cleanup when the process is exiting and async work cannot run.
+  // Last-resort cleanup when the process is exiting and async work cannot run (will-quit, exit, a
+  // signal): every child, the process trees on Windows, those already detached and being killed, and
+  // their records. A listener that escaped its launcher's tree keeps its record for the next run.
   killAllSync(): void {
-    for (const proc of Object.values(this.procs)) {
-      const pid = proc?.child?.pid
+    const children = new Set<ChildProcess>(this.dying)
+    for (const proc of Object.values(this.procs)) if (proc?.child) children.add(proc.child)
+    const killed: number[] = []
+    for (const child of children) {
+      const pid = child.pid
       if (!pid) continue
       try {
         if (isWindows) execFileSync(taskkill(), ['/pid', String(pid), '/T', '/F'], { stdio: 'ignore', windowsHide: true })
         else process.kill(-pid, 'SIGKILL')
       } catch {
-        // already gone
+        try {
+          if (!isWindows) child.kill('SIGKILL')
+        } catch {
+          // already gone
+        }
       }
+      killed.push(pid)
     }
+    if (!killed.length) return
+    const gone = new Set(killed)
+    this.records?.update((entries) => entries.filter((e) => !gone.has(e.pid) && !(e.session === this.session && e.via !== undefined && gone.has(e.via))))
+  }
+
+  // Drops this run's records of processes that are gone (after a stop; the exit handlers also do it).
+  private pruneRecords(): void {
+    const records = this.records
+    if (!records) return
+    for (const pid of this.mine) if (!this.tools.isAlive(pid)) this.mine.delete(pid)
+    records.update((entries) => entries.filter((e) => e.session !== this.session || this.tools.isAlive(e.pid)))
   }
 
   private syncEngine(): 'forge' | 'project' | 'off' {
@@ -404,7 +494,7 @@ export class Supervisor {
     for (const [key, proc] of Object.entries(this.procs)) {
       if (!proc?.wanted || this.servedPlace(key) !== file) continue
       if (proc.held) held = true
-      else if (proc.child || proc.retry) return 'serving'
+      else if (proc.child || proc.retry || proc.preflight) return 'serving'
     }
     return held ? 'held' : 'stopped'
   }
@@ -426,7 +516,7 @@ export class Supervisor {
             ? 'gave-up'
             : proc.child
               ? proc.listening ? 'serving' : 'starting'
-              : proc.retry ? 'crashed' : 'stopped'
+              : proc.preflight ? 'starting' : proc.retry ? 'crashed' : 'stopped'
       const name = this.places.find((p) => p.file === file)?.name ?? file.replace(/\.project\.json$/, '')
       out.push({
         file,
@@ -493,7 +583,7 @@ export class Supervisor {
         if (proc.listening) this.markCut(key)
         proc.child = null
         proc.listening = false
-        void killTree(child)
+        this.kill(child)
         if (key === 'rojo') this.update('rojo', { state: 'starting', pid: undefined, detail: `${hold.detail} (${hold.file})`, hold: this.holdView(hold.file) })
       } else if (hold && action === 'wait') {
         if (key === 'rojo') this.update('rojo', { detail: `${hold.detail} (${hold.file})`, hold: this.holdView(hold.file) })
@@ -586,12 +676,13 @@ export class Supervisor {
 
   // key is the proc ("dev", "rojo", or an extra rojo job); id is the service it reports under.
   // Only the "dev" and "rojo" procs drive the service status; extra jobs just log and restart.
-  private spawnService(key: string, id: 'dev' | 'rojo', command: Command): void {
+  private spawnService(key: string, id: 'dev' | 'rojo', command: Command, checked = false): void {
     const proc = this.procs[key] as Proc
     const primary = key === id
     const update = (patch: Partial<ServiceStatus>) => {
       if (primary) this.update(id, patch)
     }
+    if (proc.preflight) return
     const hold = id === 'rojo' ? this.holdFor(key) : null
     if (hold) {
       proc.held = true
@@ -600,6 +691,18 @@ export class Supervisor {
       return
     }
     update({ state: 'starting', detail: undefined, pid: undefined, hold: undefined, gaveUp: undefined })
+    // A rojo serve first looks at its port: a leftover of a previous Forge run is stopped, another
+    // rojo is reported (see preflight), and only then does the serve spawn.
+    if (!checked && id === 'rojo' && servePortOf(command.args)) {
+      proc.preflight = true
+      this.placesChanged()
+      void this.preflight(key, proc, command).catch(() => true).then((go) => {
+        proc.preflight = false
+        if (!go || this.procs[key] !== proc || !proc.wanted || proc.child || proc.held || !this.root) return this.placesChanged()
+        this.spawnService(key, id, command, true)
+      })
+      return
+    }
     this.info(id, `$ ${[command.file, ...command.args].join(' ')}`)
     if (id === 'rojo') proc.policy ??= new RestartPolicy(this.options.rojoRestart)
     let child: ChildProcess
@@ -619,6 +722,7 @@ export class Supervisor {
     }
     proc.child = child
     proc.startedAt = Date.now()
+    this.record(key, id, command, child)
     proc.panicked = false
     proc.listening = false
     proc.policy?.started(proc.startedAt)
@@ -642,6 +746,7 @@ export class Supervisor {
             listened = true
             proc.listening = true
             this.onListening(key)
+            void this.recordListener(key, command, child)
           }
           if (primary && id === 'rojo') this.parseRojo(text)
           if (id === 'rojo' && ADDRESS_IN_USE.test(text)) {
@@ -666,6 +771,8 @@ export class Supervisor {
     const onExit = (code: number | null, signal: NodeJS.Signals | null, error?: Error) => {
       if (done) return
       done = true
+      this.dying.delete(child)
+      this.forget(child)
       if (proc.healthy) clearTimeout(proc.healthy)
       proc.healthy = null
       // Already detached on purpose (a gate hold stopped it, maybe started a new one): not a crash.
@@ -704,6 +811,92 @@ export class Supervisor {
     }
     child.on('error', (error) => onExit(null, null, error))
     child.on('exit', (code, signal) => onExit(code, signal))
+  }
+
+  // ---- rojo processes on disk, and the port check before a serve ----
+
+  private record(key: string, id: 'dev' | 'rojo', command: Command, child: ChildProcess): void {
+    if (id !== 'rojo' || !child.pid) return
+    this.mine.add(child.pid)
+    const serve = servePortOf(command.args)
+    this.records?.add({
+      pid: child.pid,
+      kind: serve ? 'serve' : 'sourcemap',
+      key,
+      place: this.servedPlace(key) ?? key.replace(/^[a-z]+:/, ''),
+      root: this.root as string,
+      ...(serve ? { port: serve } : {}),
+      session: this.session,
+      startedAt: Date.now()
+    })
+  }
+
+  // The process listening on a serve's port, when it is not the child Forge started (a launcher such
+  // as a rokit shim runs the real rojo as its child): recorded too, so it is found if Forge dies.
+  private async recordListener(key: string, command: Command, child: ChildProcess): Promise<void> {
+    const port = servePortOf(command.args)
+    if (!this.records || !port || !child.pid) return
+    for (const owner of await this.tools.portOwners(port)) {
+      if (owner.pid === child.pid || this.mine.has(owner.pid) || !isRojoProcess(owner.name) || child.exitCode !== null || child.signalCode !== null) continue
+      this.mine.add(owner.pid)
+      this.records.add({ pid: owner.pid, kind: 'serve', key, place: this.servedPlace(key) ?? '', root: this.root as string, port, session: this.session, startedAt: Date.now(), via: child.pid })
+    }
+  }
+
+  // A child exited: its record goes, and so do its listeners' unless one of them survived it.
+  private forget(child: ChildProcess): void {
+    const pid = child.pid
+    if (!pid) return
+    this.mine.delete(pid)
+    const records = this.records
+    if (!records) return
+    records.update((entries) => entries.filter((e) => e.pid !== pid && !(e.session === this.session && e.via === pid && !this.tools.isAlive(e.pid))))
+    for (const entry of records.read()) if (entry.session === this.session && entry.via === pid) this.mine.add(entry.pid)
+  }
+
+  // Before a rojo serve spawns on its port. A leftover from a previous Forge run was stopped at
+  // startup (sweepLeftovers): Studio's Rojo plugin was connected to it, so the place gets the "click
+  // Connect in Rojo" notice once the new serve listens. A rojo that is none of Forge's (started by
+  // hand, or by the project's serve .bat) is never stopped here: it is reported, the serve does not
+  // spawn, and Forge Doctor's "Stop stray rojo" (or closing it) frees the port. false: not spawning.
+  private async preflight(key: string, proc: Proc, command: Command): Promise<boolean> {
+    await this.sweepLeftovers()
+    const port = servePortOf(command.args)
+    if (!port) return true
+    const file = this.servedPlace(key)
+    if (this.stalePorts.delete(port) && file) {
+      this.cut.add(file)
+      this.reconnect.delete(file)
+    }
+    // Our own previous serve may still be shutting down on the port (a gate hold kills without waiting).
+    let owners = await this.tools.portOwners(port)
+    for (let i = 0; i < 40 && owners.some((o) => o.pid !== process.pid && this.mine.has(o.pid)); i++) {
+      await new Promise((resolve) => setTimeout(resolve, 100))
+      owners = await this.tools.portOwners(port)
+    }
+    const stray = owners.find((o) => o.pid !== process.pid && !this.mine.has(o.pid) && isRojoProcess(o.name))
+    if (!stray || !proc.wanted) return true
+    const text = `port ${port} is served by another rojo (pid ${stray.pid})`
+    proc.lastError = text
+    proc.gaveUp = true
+    this.options.log({
+      service: 'rojo',
+      stream: 'stderr',
+      text: `${this.procName(key)}: ${text} that Forge did not start, so Forge leaves it running. Stop it (Forge Doctor can stop a stray rojo), or change "servePort" in ${file ?? 'the place file'}, then Restart`
+    })
+    if (key === 'rojo') this.update('rojo', { state: 'crashed', pid: undefined, detail: `Rojo cannot serve: ${text}. Stop it (Forge Doctor can stop a stray rojo), then Restart`, gaveUp: true })
+    return false
+  }
+
+  // Forge Doctor stopped a stray rojo on a port: Studio's Rojo plugin was connected to it, so the
+  // place served on that port raises the "click Connect in Rojo" notice once its serve listens.
+  noteStrayStopped(port: number): void {
+    for (const [key, proc] of Object.entries(this.procs)) {
+      const file = proc?.wanted ? this.servedPlace(key) : null
+      if (!file || this.rojoPlan().jobs.find((j) => j.key === key)?.port !== port) continue
+      this.cut.add(file)
+      this.reconnect.delete(file)
+    }
   }
 
   // rojo printed a panic. It may stay up with a dead change processor (Studio then gets WebSocket

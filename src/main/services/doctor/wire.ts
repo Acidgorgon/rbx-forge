@@ -48,6 +48,8 @@ export interface DoctorWiringDeps {
   // Each place's real rojo serve (supervisor.rojoPlaces), and whether a serve of Forge's is up on a port.
   rojoPlaces?(): RojoPlaceStatus[]
   servesPort?(port: number): boolean
+  // A stray rojo on a port was stopped (supervisor.noteStrayStopped): Studio's Rojo plugin was on it.
+  strayStopped?(port: number): void
   // macOS: systemPreferences.getMediaAccessStatus('screen'); null elsewhere.
   screenRecording(): DoctorInputs['screenRecording']
   openExternal(url: string): void
@@ -240,6 +242,7 @@ export function createDoctorWiring(deps: DoctorWiringDeps): { service: DoctorSer
           if (!isRojoProcess(owner.name)) continue
           deps.log?.(`doctor: stopping stray ${owner.name} (pid ${owner.pid}) on port ${port}`)
           await stopProcess(owner.pid, deps.platform)
+          deps.strayStopped?.(port)
           stopped.push(`:${port} (pid ${owner.pid})`)
         }
       }

@@ -4,6 +4,8 @@ import { useEffect, useState, type ReactNode } from 'react'
 import type { AutoSaveMode } from '@shared/types'
 import { useStore } from '../store'
 import { openDoctor } from '../pages/qolc/events'
+import { keyHint } from '../lib/format'
+import { focusSearch } from '../views/searchState'
 import { setEditorAssist, useEditorAssist } from './state'
 
 function Row({ title, desc, children }: { title: ReactNode; desc?: ReactNode; children?: ReactNode }) {
@@ -122,6 +124,20 @@ export function EditorSettingsSection() {
       </Row>
       <Row title="luau-lsp Studio plugin port" desc="Must match the port in the plugin's settings (default 3667, like luau-lsp.studioPlugin.port).">
         <PortInput value={app?.lspStudioPluginPort ?? 3667} disabled={!app || app.lspStudioPlugin === false} onSave={(port) => void actions.setAppSettings({ lspStudioPluginPort: port })} />
+      </Row>
+      <Row
+        title="Search in files"
+        desc={`Find and replace across the project's text files (${keyHint('mod+shift+f')}, or Search: Find in Files in the command palette). It skips .git, node_modules, Packages, build output, files over 1 MB and what .gitignore lists. Replace keeps a copy of every changed file in .forge/sync/trash and never writes a file with unsaved edits.`}
+      >
+        <button
+          className="btn small"
+          onClick={() => {
+            actions.setLayout({ sideOpen: true, sideView: 'search' })
+            focusSearch()
+          }}
+        >
+          Open Search
+        </button>
       </Row>
       <Row title="Confirm file deletes" desc={`Ask before Delete moves a file, folder or feature to the ${bin} (you can restore it from there). Deletes that would lose unsaved changes always ask.`}>
         <input type="checkbox" className="switch" checked={app?.confirmFileDelete !== false} disabled={!app} onChange={(e) => void actions.setAppSettings({ confirmFileDelete: e.target.checked })} aria-label="Confirm file deletes" />

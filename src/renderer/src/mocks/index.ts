@@ -44,6 +44,7 @@ import { addToGameMock, doctorMock, spendMock } from './mockQolc'
 import { editorAssistMock } from './mockEditorAssist'
 import { studioMcpMock } from './mockStudioMcp'
 import { scmMock } from './mockScm'
+import { searchMock } from './mockSearch'
 import { providersMock } from './mockProviders'
 import { groupMock, seedGroupChat } from './mockGroup'
 import { chatExtrasMock } from './mockChatExtras'
@@ -980,6 +981,15 @@ const api: HarnessApi = {
       emit('git:status', git)
     },
     log: (text) => log('git', text, 'info')
+  }),
+  // Search view (mockSearch.ts): find / replace over the mock files.
+  ...searchMock(emit, {
+    files,
+    writeFile: async (path, contents) => {
+      files[path] = contents
+      log('harness', `saved ${path}`, 'info')
+    },
+    changed: (paths) => emit('files:changed', paths)
   }),
   ...addToGameMock(),
 

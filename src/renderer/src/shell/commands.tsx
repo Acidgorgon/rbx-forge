@@ -16,6 +16,7 @@ import { formatDocumentIn } from '../editorAssist/format'
 import { editorAssistStatus, setEditorAssist } from '../editorAssist/state'
 import { groupOrder, joinAll } from '@shared/editorGroups'
 import { focusGroupAt, moveToOtherGroup, splitTab } from './groupActions'
+import { focusSearch } from '../views/searchState'
 import { commit as scmCommit, fetchRemote, focusMessage, pull as scmPull, push as scmPush, scmStore, stage as scmStage, startScm, unstage as scmUnstage } from '../views/scmState'
 
 export interface Command {
@@ -27,6 +28,16 @@ export interface Command {
   icon?: ReactNode
   detail?: string
   run: () => void
+}
+
+// The editor's selection (first line), to seed Search: the focused editor's, else the active file's.
+function editorSelection(active: string | null): string {
+  const editors = monaco.editor.getEditors()
+  const editor = editors.find((e) => e.hasTextFocus()) ?? editors.find((e) => !!active && e.getModel()?.uri.path.replace(/^\/+/, '') === active && !!e.getDomNode()?.offsetParent)
+  const model = editor?.getModel()
+  const sel = editor?.getSelection()
+  if (!model || !sel || sel.isEmpty()) return ''
+  return model.getValueInRange(sel).split(/\r?\n/)[0].slice(0, 300)
 }
 
 export function buildCommands(state: State, actions: Actions): Command[] {
@@ -110,6 +121,14 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Sync', 'project.new', 'New project…', () => actions.openDialog({ kind: 'newProject' }), { icon: <Icon name="folderPlus" />, detail: 'GenTree or empty Rojo · git · rokit' })
   add('Sync', 'project.open', 'Open folder…', () => void actions.openProject(), { keys: 'mod+o', icon: <Icon name="folder" /> })
 
+  // Search (views/SearchView.tsx): the editor's selection becomes the query.
+  const showSearch = (replace: boolean) => () => {
+    actions.setLayout({ sideOpen: true, sideView: 'search' })
+    focusSearch({ seed: editorSelection(active), replace })
+  }
+  add('Search', 'search.find', 'Search: Find in Files', showSearch(false), { keys: 'mod+shift+f', icon: <Icon name="search" />, detail: 'text in the project\'s files · Alt+C case · Alt+W word · Alt+R regex' })
+  add('Search', 'search.replace', 'Search: Replace in Files', showSearch(true), { icon: <Icon name="replace" />, detail: 'asks first · keeps a copy of each file in .forge/sync/trash' })
+
   // Navigate
   add('Navigate', 'go.file', 'Go to file…', () => actions.openPalette(''), { keys: 'mod+p', icon: <Icon name="files" /> })
   add('Navigate', 'go.instance', 'Go to instance…', () => actions.openPalette('#'), { icon: <Icon name="tree" /> })
@@ -176,7 +195,7 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('View', 'view.side', 'Toggle side panel', () => actions.toggleSide(), { keys: 'mod+b', icon: <Icon name="panelL" /> })
   add('View', 'view.bottom', 'Toggle bottom panel', () => actions.toggleBottom(), { keys: 'mod+j', icon: <Icon name="panelB" /> })
   add('View', 'view.explorer', 'Focus Explorer', () => actions.setLayout({ sideOpen: true, sideView: 'explorer' }), { keys: 'mod+shift+e', icon: <Icon name="tree" /> })
-  add('View', 'view.scripts', 'Focus Scripts', () => actions.setLayout({ sideOpen: true, sideView: 'scripts' }), { keys: 'mod+shift+f', icon: <Icon name="script" /> })
+  add('View', 'view.scripts', 'Focus Scripts', () => actions.setLayout({ sideOpen: true, sideView: 'scripts' }), { keys: 'mod+shift+j', icon: <Icon name="script" /> })
   add('View', 'view.events', 'Focus Events (Blink)', () => actions.setLayout({ sideOpen: true, sideView: 'events' }), { keys: 'mod+shift+v', icon: <Icon name="bolt" /> })
   add('View', 'view.sync', 'Focus Source control & Sync', () => actions.setLayout({ sideOpen: true, sideView: 'sync' }), { keys: 'mod+shift+g', icon: <Icon name="branch" /> })
   add('View', 'view.tests', 'Focus Tests', () => actions.setLayout({ sideOpen: true, sideView: 'tests' }), { icon: <Icon name="flask" /> })

@@ -145,7 +145,7 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
   actionsRef.current = actions
   const activeRef = useRef(active)
   activeRef.current = active
-  const pendingReveal = useRef<{ path: string; position: { lineNumber: number; column: number } } | null>(null)
+  const pendingReveal = useRef<{ path: string; position: { lineNumber: number; column: number }; end?: { lineNumber: number; column: number } } | null>(null)
   const stateReveal = useRef(state.reveal)
   stateReveal.current = state.reveal
   // This editor's own view state per path (the same file in another group scrolls on its own).
@@ -160,7 +160,8 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
     const model = editor?.getModel()
     if (!pending || !editor || !model || pathOf(model) !== pending.path) return
     pendingReveal.current = null
-    editor.setPosition(pending.position)
+    if (pending.end) editor.setSelection({ startLineNumber: pending.position.lineNumber, startColumn: pending.position.column, endLineNumber: pending.end.lineNumber, endColumn: pending.end.column })
+    else editor.setPosition(pending.position)
     editor.revealPositionInCenter(pending.position)
     editor.focus()
   }
@@ -260,7 +261,7 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
   useEffect(() => {
     const reveal = state.reveal
     if (!active || !reveal || reveal.path !== path || file?.loading) return
-    pendingReveal.current = { path: reveal.path, position: { lineNumber: reveal.line, column: reveal.column } }
+    pendingReveal.current = { path: reveal.path, position: { lineNumber: reveal.line, column: reveal.column }, ...(reveal.end ? { end: { lineNumber: reveal.end.line, column: reveal.end.column } } : {}) }
     actions.set({ reveal: null })
     const t = setTimeout(revealPending)
     return () => clearTimeout(t)

@@ -335,7 +335,8 @@ The window min-size is 1024×640. Below 1180px wide, opening the Assistant auto-
 | Icon | View | Shortcut | Badge |
 |---|---|---|---|
 | tree | **Explorer** (Roblox game tree / files / features) | ⌘⇧E | – |
-| script | **Scripts** (flat role-grouped list: Services, Controllers, Shared modules, Entry points, Blink outputs; this is the current Scripts tab, restyled) | ⌘⇧F (also hosts search-in-files) | – |
+| script | **Scripts** (flat role-grouped list: Services, Controllers, Shared modules, Entry points, Blink outputs; this is the current Scripts tab, restyled) | ⌘⇧J | – |
+| search | **Search** (find / replace in files: Match Case, Whole Word, regex, files to include / exclude, results by file; views/SearchView.tsx) | ⌘⇧F | – |
 | bolt | **Events (Blink)**: parsed `events.blink`, one row per event with `From` arrow (S→C / C→S), Type, Call, Data. Click opens `events.blink` at that line. "+ New event" form. Generated outputs listed read-only | ⌘⇧V | count of Blink errors |
 | package | **Packages (Wally)**: `wally.toml` deps, version, "update available" chip, Install / Update buttons, link to `Packages/` | – | outdated count |
 | branch | **Source control & Sync**: branch, behind/ahead, changed files (click opens a diff tab), Studio conflicts (click opens a 3-way diff tab with *Keep repo* / *Use Studio*). The SyncDrawer content moves here and conflict diffs open as editor tabs instead of a drawer | ⌘⇧G | behind + conflicts (ember) |
@@ -490,7 +491,7 @@ One component with modes chosen by prefix: none = quick open, `>` = commands, `@
 | | Explain this problem | ⌘. → "Ask Assistant" |
 | | Run test agents… | ⌘⇧A |
 | View | Toggle side panel / bottom panel / Assistant | ⌘B / ⌘J / ⌘L |
-| | Focus Explorer / Scripts / Events / Packages / Sync / Agents | ⌘⇧E / ⌘⇧F / ⌘⇧V / – / ⌘⇧G / ⌘⇧A |
+| | Focus Explorer / Search / Scripts / Events / Packages / Sync / Agents | ⌘⇧E / ⌘⇧F / ⌘⇧J / ⌘⇧V / – / ⌘⇧G / ⌘⇧A |
 | | Toggle theme (Dark / Light / System) | – |
 | | Motion: Full / Reduced / Off | – |
 | | Zoom in / out / reset | ⌘= / ⌘- / ⌘0 |
@@ -617,7 +618,7 @@ The form fields are Name (PascalCase), From (Server | Client segmented), Type (R
 | Next / previous problem | F8 / ⇧F8 |
 | Sync / Restart Rojo | ⌘⇧S / ⌘⇧R |
 | Run test agents | ⌘⇧A |
-| Focus views | ⌘⇧E Explorer, ⌘⇧F Scripts/search, ⌘⇧V Events, ⌘⇧G Sync, ⌘⇧A Agents |
+| Focus views | ⌘⇧E Explorer, ⌘⇧F Search, ⌘⇧J Scripts, ⌘⇧V Events, ⌘⇧G Sync, ⌘⇧A Agents |
 | Settings | ⌘, |
 | Forge tab | ⌘⇧H |
 | Filter tree | ⌥F (in the side panel) |

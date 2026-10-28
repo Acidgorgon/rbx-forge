@@ -114,7 +114,7 @@ export function defaultSettings(): Record<string, unknown> {
       includeNonScripts: true
     },
     types: { roblox: true },
-    diagnostics: { includeDependents: true, workspace: false, strictDatamodelTypes: false },
+    diagnostics: { includeDependents: false, workspace: false, strictDatamodelTypes: false },
     // Same as the VS Code extension's defaults (editors/code/package.json), which is what it
     // sends: auto-imports of services and requires, call arguments filled in as snippets.
     completion: {
@@ -148,20 +148,22 @@ export function defaultSettings(): Record<string, unknown> {
     },
     hover: { enabled: true, showTableKinds: false, multilineFunctionDefinitions: false, strictDatamodelTypes: true, includeStringLength: true },
     signatureHelp: { enabled: true },
-    // The extension ships these off; Forge shows them (Monaco inlay hints, insertable on double-click).
+    // Off, like the extension: each hint is a full type walk of the visible range on every edit and
+    // scroll. Still insertable when switched on through the settings merged over these.
     inlayHints: {
-      parameterNames: 'literals',
-      variableTypes: true,
-      parameterTypes: true,
-      functionReturnTypes: true,
+      parameterNames: 'none',
+      variableTypes: false,
+      parameterTypes: false,
+      functionReturnTypes: false,
       hideHintsForErrorTypes: true,
       hideHintsForMatchingParameterNames: true,
       typeHintMaxLength: 50,
       makeInsertable: true
     },
-    index: { enabled: true, maxFiles: 10000 },
+    index: { enabled: true, maxFiles: 3000 },
     format: { convertQuotes: false },
-    ignoreGlobs: ['**/_Index/**']
+    // Wally / pesde packages: third-party code that is not analysed or indexed.
+    ignoreGlobs: ['**/_Index/**', '**/Packages/**', '**/ServerPackages/**']
   }
 }
 

@@ -2,7 +2,7 @@
 // tabs, Roblox-path breadcrumbs, notices, then its active view. Drag a tab onto a group's edge to
 // split, into a tab strip to move / reorder it (Alt or Ctrl: keep a copy of a file). Layout logic is
 // pure in @shared/editorGroups; copy-vs-move rules in ./groupActions.
-import { useEffect, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
+import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import { useStore, type Actions, type State, type Tab } from '../store'
 import * as EG from '@shared/editorGroups'
@@ -15,6 +15,7 @@ import { CodeEditor, useEditorServices } from './CodeEditor'
 import './editorGroups.css'
 import { useProblems } from './problems'
 import { instancePathOfFile, kindOfFile, realmOfFile, requireExpression, findNode } from '../lib/roblox'
+import type { TreeNode } from '@shared/types'
 import { keyHint } from '../lib/format'
 import { ForgePage } from '../pages/ForgePage'
 import { SettingsPage } from '../pages/settings/SettingsPage'
@@ -367,12 +368,16 @@ function Crumbs({ path, groupId }: { path: string; groupId: string }) {
   const problems = useProblems()
   const menu = useMenu()
   const file = state.files.find((f) => f.path === path)
-  const ip = instancePathOfFile(state.tree, path)
+  // Walks the whole tree; only the tree or the file changing needs it, not every keystroke.
+  const { ip, segs } = useMemo(() => {
+    const ip = instancePathOfFile(state.tree, path)
+    const segs: { label: string; node?: TreeNode | null; ip?: string[] }[] = ip
+      ? [{ label: 'game' }, ...ip.map((name, i) => ({ label: name, ip: ip.slice(0, i + 1), node: findNode(state.tree, ip.slice(0, i + 1)) }))]
+      : path.split('/').map((p) => ({ label: p }))
+    return { ip, segs }
+  }, [state.tree, path])
   const realm = path.endsWith('.blink') ? 'blink' : realmOfFile(path)
   const dirty = !!file && file.current !== file.saved
-  const segs: { label: string; node?: ReactNode; ip?: string[] }[] = ip
-    ? [{ label: 'game' }, ...ip.map((name, i) => ({ label: name, ip: ip.slice(0, i + 1) }))]
-    : path.split('/').map((p) => ({ label: p }))
 
   const siblings = (el: HTMLElement, segIp: string[]) => {
     const parent = segIp.length > 1 ? findNode(state.tree, segIp.slice(0, -1)) : null
@@ -401,7 +406,7 @@ function Crumbs({ path, groupId }: { path: string; groupId: string }) {
         <div className="trail" title={path}>
           {segs.map((s, i) => {
             const last = i === segs.length - 1
-            const node = s.ip ? findNode(state.tree, s.ip) : null
+            const node = s.node ?? null
             return (
               <span key={i} style={{ display: 'contents' }}>
                 {i > 0 && <span className="sep">{ip ? '/' : '/'}</span>}

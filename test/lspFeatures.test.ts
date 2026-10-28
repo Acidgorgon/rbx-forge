@@ -196,19 +196,22 @@ test('settings: completion imports, fillCallArguments and inlay hints', async ()
   assert.equal(settings.completion.imports.requireStyle, 'auto')
   assert.equal(settings.completion.imports.stringRequires.enabled, false)
   assert.equal(settings.completion.autocompleteEnd, false)
-  assert.equal(settings.inlayHints.parameterNames, 'literals')
-  assert.equal(settings.inlayHints.functionReturnTypes, true)
+  assert.equal(settings.inlayHints.parameterNames, 'none', 'inlay hints are opt-in (they cost a type walk per edit)')
+  assert.equal(settings.inlayHints.functionReturnTypes, false)
+  assert.equal(settings.diagnostics.includeDependents, false)
+  assert.equal(settings.index.maxFiles, 3000)
+  assert.deepEqual(settings.ignoreGlobs, ['**/_Index/**', '**/Packages/**', '**/ServerPackages/**'])
   assert.equal(settings.sourcemap.autogenerate, false, 'never writes sourcemap.json, also with Studio DataModel updates')
 
-  const s = await boot({ settings: { completion: { imports: { requireStyle: 'alwaysAbsolute' } }, inlayHints: { variableTypes: false } } })
+  const s = await boot({ settings: { completion: { imports: { requireStyle: 'alwaysAbsolute' } }, inlayHints: { variableTypes: true } } })
   try {
     s.deliver({ jsonrpc: '2.0', id: 900, method: 'workspace/configuration', params: { items: [{ section: 'luau-lsp' }, { scopeUri: 'file:///work/game', section: 'luau-lsp' }] } })
     await tick()
     const result = s.sent.find((m) => m.id === 900).result
     assert.equal(result[1].completion.imports.requireStyle, 'alwaysAbsolute')
     assert.equal(result[1].completion.imports.suggestRequires, true, 'overrides merge into defaults')
-    assert.equal(result[1].inlayHints.variableTypes, false)
-    assert.equal(result[1].inlayHints.parameterTypes, true)
+    assert.equal(result[1].inlayHints.variableTypes, true, 'a user setting turns hints back on')
+    assert.equal(result[1].inlayHints.parameterTypes, false)
   } finally {
     stopLuauLsp()
   }

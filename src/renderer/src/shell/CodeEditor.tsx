@@ -2,7 +2,7 @@
 // it has a file open (hidden behind page tabs). Models are shared by path, so the same file in two
 // groups is one buffer (edits show in both) with its own scroll / cursor per group. App-wide pieces
 // (markers -> Problems, model disposal, save hooks) live in useEditorServices, mounted once.
-import { useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import { useStore, type ProblemItem } from '../store'
 import { languageForPath, monaco } from '../monaco'
@@ -16,6 +16,7 @@ import { setBeforeSave } from '../editorAssist/saveHooks'
 import { setAssistToast } from '../editorAssist/state'
 import { useAutoSave } from '../editorAssist/autosave'
 import { focusGroup } from '@shared/editorGroups'
+import { sameProblems } from '../lib/sameProblems'
 
 const pathOf = (model: monaco.editor.ITextModel) => model.uri.path.replace(/^\/+/, '')
 
@@ -35,6 +36,8 @@ export function useEditorServices(): void {
   const appearance = useAppearance()
   const actionsRef = useRef(actions)
   actionsRef.current = actions
+  const problemsRef = useRef(state.editorProblems)
+  problemsRef.current = state.editorProblems
 
   // StyLua (Format Document, format on save) and AI ghost text; toasts go to the app.
   useEffect(() => {
@@ -93,7 +96,8 @@ export function useEditorServices(): void {
           source: m.source || m.owner,
           code: typeof m.code === 'string' ? m.code : m.code?.value
         }))
-      actionsRef.current.set({ editorProblems: items })
+      // Marker events fire for every re-analysis; an unchanged list must not re-render the app.
+      if (!sameProblems(items, problemsRef.current)) actionsRef.current.set({ editorProblems: items })
     }
     const sub = monaco.editor.onDidChangeMarkers(() => {
       if (!timer) timer = setTimeout(collect, 150)
@@ -139,6 +143,13 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
   const { state, actions } = useStore()
   const appearance = useAppearance()
   const file = state.files.find((f) => f.path === path)
+  const ready = !!file && !file.loading
+  // The path the Monaco model shows. A file that is still loading (or gone) keeps the previous one
+  // under a spinner, so the editor is built once per group and not again on every first open.
+  const modelPath = useRef<string | null>(null)
+  if (ready) modelPath.current = path
+  const editorPath = modelPath.current
+  const shownFile = editorPath === path ? file : editorPath ? state.files.find((f) => f.path === editorPath) : undefined
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
   const actionsRef = useRef(actions)
@@ -152,7 +163,7 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
   const viewStates = useRef(new Map<string, monaco.editor.ICodeEditorViewState>())
   // The path the view state events belong to (Monaco fires scroll events mid model swap).
   const shownPath = useRef<string | null>(null)
-  const smooth = appearance.motion === 'full' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
+  const smoothBlink = appearance.motion === 'full' && !window.matchMedia('(prefers-reduced-motion: reduce)').matches
 
   const revealPending = () => {
     const pending = pendingReveal.current
@@ -173,12 +184,47 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
     const model = editor?.getModel()
     const pos = editor?.getPosition()
     if (!editor || !model || !pos) return setCursor(null)
-    rememberCursor(pathOf(model), { line: pos.lineNumber, column: pos.column })
     const opts = model.getOptions()
     const sel = editor.getSelection()
     setCursor({ line: pos.lineNumber, column: pos.column, tabSize: opts.tabSize, insertSpaces: opts.insertSpaces, selected: sel && !sel.isEmpty() ? model.getValueLengthInRange(sel) : 0 })
   }
 
+  // The cursor is also kept for the next session (qol/sessionStore).
+  const rememberNow = () => {
+    if (!activeRef.current) return
+    const model = editorRef.current?.getModel()
+    const pos = editorRef.current?.getPosition()
+    if (model && pos) rememberCursor(pathOf(model), { line: pos.lineNumber, column: pos.column })
+  }
+
+  // Selection events fire per keystroke and per drag step: the status bar trails them by 100 ms and
+  // the session store by 1 s (flushed when the editor blurs or switches file).
+  const statusTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const rememberTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const cursorMoved = () => {
+    if (!statusTimer.current) {
+      statusTimer.current = setTimeout(() => {
+        statusTimer.current = null
+        publishCursor()
+      }, 100)
+    }
+    if (!rememberTimer.current) {
+      rememberTimer.current = setTimeout(() => {
+        rememberTimer.current = null
+        rememberNow()
+      }, 1000)
+    }
+  }
+  const flushCursor = () => {
+    if (rememberTimer.current) {
+      clearTimeout(rememberTimer.current)
+      rememberTimer.current = null
+      rememberNow()
+    }
+  }
+
+  // Scroll / cursor / folds are saved when the editor blurs and just before it swaps files (not per
+  // scroll or selection event; saveViewState walks the view model).
   const saveView = () => {
     const editor = editorRef.current
     const model = editor?.getModel()
@@ -188,6 +234,20 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
     viewStates.current.set(shownPath.current, v)
     lastViewState.set(shownPath.current, v)
   }
+  // Layout cleanups run before the commit's passive effects, where @monaco-editor/react swaps the model.
+  useLayoutEffect(
+    () => () => {
+      saveView()
+      flushCursor()
+    },
+    [editorPath]
+  )
+  useEffect(
+    () => () => {
+      if (statusTimer.current) clearTimeout(statusTimer.current)
+    },
+    []
+  )
 
   // Autosave (Settings > Editor; default: on focus change).
   useAutoSave(editorInstance, path)
@@ -197,11 +257,11 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
     setEditorInstance(editor)
     registerStyluaFormatter(monaco)
     registerInlineCompletions(monaco)
-    editor.onDidChangeCursorSelection(() => {
+    editor.onDidChangeCursorSelection(cursorMoved)
+    editor.onDidBlurEditorText(() => {
       saveView()
-      publishCursor()
+      flushCursor()
     })
-    editor.onDidScrollChange(saveView)
     // Typing or clicking into an editor makes its group the active one.
     editor.onDidFocusEditorText(() => actionsRef.current.editorGroups((gs) => focusGroup(gs, groupId)))
     // Showing a file: this editor's last view of it, else another group's, else (first showing this
@@ -242,6 +302,87 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
     revealPending()
   }
 
+  // Text sync is one way per direction, so typing does no whole-file compare: the editor is
+  // uncontrolled (defaultValue seeds a new model, onChange feeds the store) and a text that did not
+  // come from this editor (reload from disk, format on save) is pushed into the model below.
+  const lastEdit = useRef<{ path: string; text: string; echoed: boolean } | null>(null)
+  const applying = useRef(false)
+  const onChange = useCallback((v: string | undefined) => {
+    const model = editorRef.current?.getModel()
+    if (!model || applying.current) return
+    const text = v ?? ''
+    const p = pathOf(model)
+    lastEdit.current = { path: p, text, echoed: false }
+    actionsRef.current.editFile(p, text)
+  }, [])
+
+  const storedText = shownFile?.current
+  useEffect(() => {
+    const editor = editorInstance
+    const model = editor?.getModel()
+    if (!editor || !model || storedText === undefined || !editorPath || pathOf(model) !== editorPath) return
+    const last = lastEdit.current
+    if (last && last.path === editorPath) {
+      // The store handing back what this editor sent; or still behind a newer keystroke.
+      if (last.text === storedText) {
+        last.echoed = true
+        return
+      }
+      if (!last.echoed) return
+    }
+    if (model.getValue() === storedText) return
+    applying.current = true
+    try {
+      // An undoable edit, like typing; a read-only editor ignores edits, so it takes the whole text.
+      if (editor.getOption(monaco.editor.EditorOption.readOnly)) editor.setValue(storedText)
+      else {
+        editor.executeEdits('', [{ range: model.getFullModelRange(), text: storedText, forceMoveMarkers: true }])
+        editor.pushUndoStop()
+      }
+    } finally {
+      applying.current = false
+    }
+    lastEdit.current = { path: editorPath, text: storedText, echoed: true }
+  }, [storedText, editorInstance, editorPath])
+
+  // Built once per setting; a fresh object per render makes @monaco-editor/react call updateOptions
+  // (and Monaco re-validate every option) on each store change.
+  const frozen = !ready
+  const options = useMemo<monaco.editor.IStandaloneEditorConstructionOptions>(
+    () => ({
+      fontFamily: '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace',
+      fontSize: 13,
+      lineHeight: 20,
+      fontLigatures: false,
+      minimap: { enabled: true, renderCharacters: false, maxColumn: 80, showSlider: 'mouseover' },
+      scrollBeyondLastLine: false,
+      // Animated scrolling and caret movement cost frames on every scroll and keystroke.
+      smoothScrolling: false,
+      cursorSmoothCaretAnimation: 'off',
+      cursorBlinking: smoothBlink ? 'smooth' : 'blink',
+      renderLineHighlight: 'line',
+      stickyScroll: { enabled: true },
+      bracketPairColorization: { enabled: false },
+      padding: { top: 10, bottom: 10 },
+      tabSize: 4,
+      insertSpaces: false,
+      automaticLayout: true,
+      guides: { indentation: true },
+      scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10, useShadows: false },
+      overviewRulerBorder: false,
+      hideCursorInOverviewRuler: true,
+      fixedOverflowWidgets: true,
+      // Quick fixes (luau-lsp code actions): the light bulb shows on lines that have one; Ctrl+. / ⌘.
+      lightbulb: { enabled: monaco.editor.ShowLightbulbIconMode.OnCode },
+      // AI ghost text (editorAssist/inline.ts): Tab accepts, Esc dismisses.
+      inlineSuggest: { enabled: true, showToolbar: 'onHover', suppressSuggestions: false },
+      // No typing into the previous file while the next one loads under the spinner.
+      readOnly: frozen || !!readOnlyReason,
+      readOnlyMessage: readOnlyReason ? { value: readOnlyReason } : undefined
+    }),
+    [smoothBlink, readOnlyReason, frozen]
+  )
+
   useEffect(() => {
     const t = setTimeout(revealPending)
     return () => clearTimeout(t)
@@ -249,6 +390,7 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
 
   useEffect(() => {
     if (visible) setTimeout(() => editorRef.current?.layout())
+    else saveView()
   }, [visible])
 
   useEffect(() => {
@@ -267,48 +409,24 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
     return () => clearTimeout(t)
   }, [state.reveal, path, file?.loading, active])
 
-  if (!file || file.loading) return <div className="editor-loading"><span className="spinner" /></div>
+  const spinner = <div className="editor-loading"><span className="spinner" /></div>
+  if (!editorPath) return spinner
 
   return (
-    <Editor
-      path={file.path}
-      keepCurrentModel
-      saveViewState={false}
-      language={languageForPath(file.path)}
-      theme={appearance.resolved === 'dark' ? 'forge-dark' : 'forge-light'}
-      value={file.current}
-      onChange={(v) => actions.editFile(file.path, v ?? '')}
-      onMount={onMount}
-      loading={<div className="editor-loading"><span className="spinner" /></div>}
-      options={{
-        fontFamily: '"JetBrains Mono", ui-monospace, "SF Mono", Menlo, Consolas, monospace',
-        fontSize: 13,
-        lineHeight: 20,
-        fontLigatures: false,
-        minimap: { enabled: true, renderCharacters: false, maxColumn: 80, showSlider: 'mouseover' },
-        scrollBeyondLastLine: false,
-        smoothScrolling: smooth,
-        cursorSmoothCaretAnimation: smooth ? 'on' : 'off',
-        cursorBlinking: smooth ? 'smooth' : 'blink',
-        renderLineHighlight: 'all',
-        stickyScroll: { enabled: true },
-        bracketPairColorization: { enabled: false },
-        padding: { top: 10, bottom: 10 },
-        tabSize: 4,
-        insertSpaces: false,
-        automaticLayout: true,
-        guides: { indentation: true },
-        scrollbar: { verticalScrollbarSize: 10, horizontalScrollbarSize: 10, useShadows: false },
-        overviewRulerBorder: false,
-        hideCursorInOverviewRuler: true,
-        fixedOverflowWidgets: true,
-        // Quick fixes (luau-lsp code actions): the light bulb shows on lines that have one; Ctrl+. / ⌘.
-        lightbulb: { enabled: monaco.editor.ShowLightbulbIconMode.OnCode },
-        // AI ghost text (editorAssist/inline.ts): Tab accepts, Esc dismisses.
-        inlineSuggest: { enabled: true, showToolbar: 'onHover', suppressSuggestions: false },
-        readOnly: !!readOnlyReason,
-        readOnlyMessage: readOnlyReason ? { value: readOnlyReason } : undefined
-      }}
-    />
+    <>
+      <Editor
+        path={editorPath}
+        keepCurrentModel
+        saveViewState={false}
+        language={languageForPath(editorPath)}
+        theme={appearance.resolved === 'dark' ? 'forge-dark' : 'forge-light'}
+        defaultValue={shownFile?.current}
+        onChange={onChange}
+        onMount={onMount}
+        loading={spinner}
+        options={options}
+      />
+      {!ready && <div className="editor-loading" style={{ position: 'absolute', inset: 0, zIndex: 2, background: 'var(--bg-editor)' }}><span className="spinner" /></div>}
+    </>
   )
 }

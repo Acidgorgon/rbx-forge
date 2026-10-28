@@ -51,13 +51,17 @@ export function useAutoSave(editor: Monaco.editor.IStandaloneCodeEditor | null, 
     return () => window.removeEventListener('blur', onBlur)
   }, [])
 
-  // After delay: once edits pause (every edit replaces state.files), every file with changes.
-  const anyDirty = state.files.some((f) => f.current !== f.saved)
+  // After delay: once edits pause (every edit replaces state.files), every file with changes. In the
+  // other modes the effect has nothing to restart, so it does not depend on the files at all
+  // (otherwise it re-ran, and walked every open file, on each keystroke).
+  const timed = mode === 'afterDelay'
+  const anyDirty = timed && state.files.some((f) => f.current !== f.saved)
+  const files = timed ? state.files : null
   useEffect(() => {
-    if (mode !== 'afterDelay' || !anyDirty) return
+    if (!timed || !anyDirty) return
     const t = setTimeout(() => {
       for (const f of live.current.state.files) trySave(f.path, 'delay')
     }, delay)
     return () => clearTimeout(t)
-  }, [state.files, mode, delay])
+  }, [files, timed, anyDirty, delay])
 }

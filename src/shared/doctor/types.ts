@@ -124,6 +124,8 @@ export interface DoctorInputs {
     duplicateMappings?: string[]
   } | null
   updater: { state: string; version?: string; error?: string } | null
+  // The Intel (x64) build is running under Rosetta on an Apple Silicon Mac.
+  rosetta?: boolean
   // macOS only; null elsewhere.
   screenRecording: 'granted' | 'denied' | 'not-determined' | 'restricted' | 'unknown' | null
 }

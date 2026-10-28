@@ -443,7 +443,7 @@ Not sure which Mac you have? Open Apple menu > About This Mac. "Chip: Apple M…
 
 The builds are not signed with a paid certificate, so your OS warns you the first time:
 
-- **macOS (Gatekeeper).** Open the `.dmg` and drag **RBX Forge** into **Applications**. The first time, **right-click (or Control-click) RBX Forge > Open**, then click **Open** in the dialog. If macOS says the app "is damaged and can't be opened" or shows no Open button, go to **System Settings > Privacy & Security**, scroll down and click **Open Anyway**. You can also run this once in Terminal:
+- **macOS (Gatekeeper).** Open the `.dmg` and drag **RBX Forge** into **Applications**. The builds are ad-hoc signed and not notarized, so macOS 15 and newer says Apple "cannot check it for malicious software" and ignores right-click > Open. Open the app once and let it fail, then go to **System Settings > Privacy & Security**, scroll down, click **Open Anyway** next to RBX Forge and confirm. On macOS 14 and older, right-click (or Control-click) RBX Forge > Open also works. You can also run this once in Terminal:
   ```bash
   xattr -dr com.apple.quarantine "/Applications/RBX Forge.app"
   ```

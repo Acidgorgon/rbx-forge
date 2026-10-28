@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import type { ChatSession, EffortChoice, ModelChoice } from '@shared/types'
 import { EFFORT_LABEL, EFFORT_SHORT, effortSupport, routeSummary, supportsVision } from '@shared/modelCaps'
-import { useStore } from '../store'
+import { useActions, useStore } from '../store'
 import { useMenu } from '../components/Menu'
 import { errorText } from '../lib/format'
 
@@ -101,7 +101,7 @@ export function RouteSummary({ chat }: { chat?: ChatSession }) {
 
 // Settings row: the effort new chats start with.
 export function DefaultEffortSetting() {
-  const { actions } = useStore()
+  const actions = useActions()
   const [value, setValue] = useState<EffortChoice | null>(null)
   useEffect(() => {
     void window.harness

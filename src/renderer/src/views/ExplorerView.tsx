@@ -2,7 +2,7 @@
 // with the context menu, inline create flow from GenTree templates, reveal and keyboard navigation.
 // The Game and Files views multi-select (Ctrl/Cmd-click, Shift-click, Ctrl/Cmd+A, Shift+Arrow; the
 // model is shared/explorerSelection.ts): delete, open and copy act on the whole selection.
-import { useEffect, useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent, type MouseEvent } from 'react'
+import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import type { ScriptEntry, TreeNode } from '@shared/types'
 import { robloxPaths } from '@shared/robloxPath'
 import { useStore } from '../store'
@@ -124,6 +124,91 @@ interface Creating {
   depth: number
   name: string
 }
+
+interface RowHandlers {
+  click(e: MouseEvent, r: Row): void
+  dblClick(r: Row): void
+  menu(e: MouseEvent, r: Row): void
+  toggle(r: Row): void
+  copyPath(r: Row): void
+  flashEnd(): void
+}
+
+const TreeRow = memo(function TreeRow({ r, id, isOpen, selected, focus, active, ctx, flash, q, treeMode, h, extra }: {
+  r: Row
+  id: string | undefined
+  isOpen: boolean
+  selected: boolean
+  focus: boolean
+  active: boolean
+  ctx: boolean
+  flash: boolean
+  q: string
+  treeMode: boolean
+  h: RowHandlers
+  extra: ReactNode
+}) {
+  const realm = r.filePath ? realmOfFile(r.filePath) : r.instancePath ? realmOfInstance(r.instancePath) : undefined
+  return (
+    <div>
+      <div
+        data-key={r.key}
+        id={id}
+        role="treeitem"
+        aria-selected={selected}
+        aria-expanded={r.hasChildren ? isOpen : undefined}
+        className={`trow${selected ? ' sel' : ''}${focus ? ' focus' : ''}${active ? ' active' : ''}${r.studio || r.wally ? ' dim' : ''}${ctx ? ' ctx' : ''}${flash ? ' flash' : ''}`}
+        style={{ paddingLeft: 8 + r.depth * 12 }}
+        onClick={(e) => h.click(e, r)}
+        onDoubleClick={() => h.dblClick(r)}
+        onContextMenu={(e) => h.menu(e, r)}
+        title={r.instancePath ? undefined : r.filePath ?? r.dir}
+        // The Roblox-path tooltip is built on hover, not for every row on every render.
+        onMouseEnter={
+          r.instancePath
+            ? (e) => {
+                const el = e.currentTarget
+                if (!el.title) el.title = `${robloxPaths(r.instancePath!).dot}\n${r.className}${r.filePath ? `\n${r.filePath}` : ''}${r.studio ? '\nStudio only (not in the repo)' : ''}`
+              }
+            : undefined
+        }
+        onAnimationEnd={() => flash && h.flashEnd()}
+      >
+        <span
+          className={`chev${r.hasChildren ? '' : ' none'}${isOpen ? ' open' : ''}`}
+          onClick={(e) => {
+            e.stopPropagation()
+            if (r.hasChildren) h.toggle(r)
+          }}
+        >
+          {r.hasChildren && <Icon name="chev" size={12} />}
+        </span>
+        {r.className === 'File' && r.filePath ? <FileGlyph path={r.filePath} size={15} /> : <ClassIcon className={r.className} realm={realm} size={15} />}
+        <span className="tname">
+          <Name text={r.name} q={q} />
+          {r.suffix && <span className="faint"> {r.suffix}</span>}
+        </span>
+        {r.studioTop && <span className="tag studio">studio</span>}
+        {r.wally && <span className="tag wally">wally</span>}
+        {r.blinkOut && <span className="tag blink">blink</span>}
+        {r.blinkOut && <Icon name="lock" size={11} className="row-lock" />}
+        {treeMode && r.instancePath && (
+          <button
+            className="row-act"
+            title="Copy Roblox path"
+            onClick={(e) => {
+              e.stopPropagation()
+              h.copyPath(r)
+            }}
+          >
+            <Icon name="copy" size={12} />
+          </button>
+        )}
+      </div>
+      {extra}
+    </div>
+  )
+})
 
 export function ExplorerView() {
   const { state, actions } = useStore()
@@ -810,60 +895,46 @@ export function ExplorerView() {
     )
   }
 
+  // Rows are memoized: handlers go through a ref so their identity never changes, and a row only
+  // re-renders when its own flags do (not on every log line, keystroke or git update).
+  const handlers = useRef<RowHandlers>(null!)
+  handlers.current = {
+    click: onRowClick,
+    dblClick: (r) => r.filePath && void actions.openFile(r.filePath),
+    menu: rowMenu,
+    toggle: (r) => toggle(mode === 'files' ? r.dir! : r.key),
+    copyPath: (r) => void actions.copy(robloxPaths(r.instancePath!).dot),
+    flashEnd: () => setFlashKey(null)
+  }
+  const rowHandlers = useMemo<RowHandlers>(
+    () => ({
+      click: (e, r) => handlers.current.click(e, r),
+      dblClick: (r) => handlers.current.dblClick(r),
+      menu: (e, r) => handlers.current.menu(e, r),
+      toggle: (r) => handlers.current.toggle(r),
+      copyPath: (r) => handlers.current.copyPath(r),
+      flashEnd: () => handlers.current.flashEnd()
+    }),
+    []
+  )
   const renderRow = (r: Row) => {
-    const isOpen = q ? true : open.has(mode === 'files' ? r.dir ?? '' : r.key)
-    const active = !!r.filePath && r.filePath === state.activeFile
-    const realm = r.filePath ? realmOfFile(r.filePath) : r.instancePath ? realmOfInstance(r.instancePath) : undefined
     const showCreate = creating && creating.parentKey === r.key
     return (
-      <div key={r.key}>
-        <div
-          data-key={r.key}
-          id={ids.get(r.key)}
-          role="treeitem"
-          aria-selected={selSet.has(r.key)}
-          aria-expanded={r.hasChildren ? isOpen : undefined}
-          className={`trow${selSet.has(r.key) ? ' sel' : ''}${r.key === selected && !(sel.keys.length === 1 && sel.keys[0] === r.key) ? ' focus' : ''}${active ? ' active' : ''}${r.studio || r.wally ? ' dim' : ''}${menuTarget === r.key ? ' ctx' : ''}${flashKey === r.key ? ' flash' : ''}`}
-          style={{ paddingLeft: 8 + r.depth * 12 }}
-          onClick={(e) => onRowClick(e, r)}
-          onDoubleClick={() => r.filePath && void actions.openFile(r.filePath)}
-          onContextMenu={(e) => rowMenu(e, r)}
-          title={r.instancePath ? `${robloxPaths(r.instancePath).dot}\n${r.className}${r.filePath ? `\n${r.filePath}` : ''}${r.studio ? '\nStudio only (not in the repo)' : ''}` : r.filePath ?? r.dir}
-          onAnimationEnd={() => flashKey === r.key && setFlashKey(null)}
-        >
-          <span
-            className={`chev${r.hasChildren ? '' : ' none'}${isOpen ? ' open' : ''}`}
-            onClick={(e) => {
-              e.stopPropagation()
-              if (r.hasChildren) toggle(mode === 'files' ? r.dir! : r.key)
-            }}
-          >
-            {r.hasChildren && <Icon name="chev" size={12} />}
-          </span>
-          {r.className === 'File' && r.filePath ? <FileGlyph path={r.filePath} size={15} /> : <ClassIcon className={r.className} realm={realm} size={15} />}
-          <span className="tname">
-            <Name text={r.name} q={q} />
-            {r.suffix && <span className="faint"> {r.suffix}</span>}
-          </span>
-          {r.studioTop && <span className="tag studio">studio</span>}
-          {r.wally && <span className="tag wally">wally</span>}
-          {r.blinkOut && <span className="tag blink">blink</span>}
-          {r.blinkOut && <Icon name="lock" size={11} className="row-lock" />}
-          {mode === 'tree' && r.instancePath && (
-            <button
-              className="row-act"
-              title="Copy Roblox path"
-              onClick={(e) => {
-                e.stopPropagation()
-                void actions.copy(robloxPaths(r.instancePath!).dot)
-              }}
-            >
-              <Icon name="copy" size={12} />
-            </button>
-          )}
-        </div>
-        {showCreate && createRow(creating)}
-      </div>
+      <TreeRow
+        key={r.key}
+        r={r}
+        id={ids.get(r.key)}
+        isOpen={q ? true : open.has(mode === 'files' ? r.dir ?? '' : r.key)}
+        selected={selSet.has(r.key)}
+        focus={r.key === selected && !(sel.keys.length === 1 && sel.keys[0] === r.key)}
+        active={!!r.filePath && r.filePath === state.activeFile}
+        ctx={menuTarget === r.key}
+        flash={flashKey === r.key}
+        q={q}
+        treeMode={mode === 'tree'}
+        h={rowHandlers}
+        extra={showCreate ? createRow(creating) : null}
+      />
     )
   }
 

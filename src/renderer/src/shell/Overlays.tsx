@@ -2,7 +2,7 @@
 // new Blink event, join project, feature branch, pull request.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { JoinProgress, JoinStepId } from '@shared/types'
-import { useStore, type ToastSpec } from '../store'
+import { useActions, useStore, type ToastSpec } from '../store'
 import { Icon } from '../components/Icons'
 import { featuresOf, scriptsFlat } from '../lib/roblox'
 import { errorText, keyHint } from '../lib/format'
@@ -13,7 +13,7 @@ import { entryTarget, parentDir, renamedPath, renameProblem, siblingsOf } from '
 // ---------------------------------------------------------------- toasts
 
 function Toast({ t }: { t: ToastSpec }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [out, setOut] = useState(false)
   const ms = t.ms ?? 6000
   const remaining = useRef(ms)
@@ -125,7 +125,7 @@ export function validateName(name: string, taken: string[] = []): string | null 
 // ---------------------------------------------------------------- dialogs
 
 function ConfirmDialog({ title, body, confirm, danger, run, list, dontAsk, onClose }: { title: string; body: string; confirm: string; danger?: boolean; run: () => void; list?: string[]; dontAsk?: 'confirmFileDelete' | 'confirmStudioDelete'; onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [skip, setSkip] = useState(false)
   return (
     <Dialog title={title} onClose={onClose}>
@@ -386,7 +386,7 @@ const JOIN_STEPS: { id: JoinStepId; label: string }[] = [
 ]
 
 function JoinProjectDialog({ onClose }: { onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [repoUrl, setRepoUrl] = useState('')
   const [parentDir, setParentDir] = useState('')
   const [name, setName] = useState('')

@@ -2,13 +2,13 @@
 // one compact row each, labelled Queued, with edit / send now / remove, and a "Resume queue" line
 // when a turn ended with an error, was stopped, or waits for an answer.
 import { useState, type KeyboardEvent } from 'react'
-import { useStore } from '../store'
+import { useActions, useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { PAUSE_TEXT, type QueuedPrompt } from './queue'
 import './queue.css'
 
 function Row({ chatId, item, n, busy }: { chatId: string; item: QueuedPrompt; n: number; busy: boolean }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [draft, setDraft] = useState<string | null>(null)
   const save = () => {
     if (draft !== null && draft.trim() !== item.text.trim()) actions.editQueued(chatId, item.id, draft)

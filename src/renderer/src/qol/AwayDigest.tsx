@@ -2,7 +2,7 @@
 // conflicts / blockers and failing tests. Each line opens its place in Forge. Dismissible.
 import type { Digest, DigestItem } from '@shared/types'
 import { digestSummary } from '@shared/qol/digest'
-import { useStore } from '../store'
+import { useActions } from '../store'
 import { Icon, type IconName } from '../components/Icons'
 import { navigate } from './navigate'
 
@@ -26,7 +26,7 @@ function ago(at: number): string {
 }
 
 export function AwayDigest({ digest, onDismiss }: { digest: Digest; onDismiss: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const since = digest.since > 0 ? ago(digest.since) : null
   return (
     <section className="qol-digest" role="region" aria-label="Since you were away">

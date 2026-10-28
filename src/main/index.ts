@@ -35,6 +35,7 @@ import { Supervisor } from './services/supervisor.ts'
 import { CRASH_SAFE_ROJO_SETTING, ForgeRojo } from './services/rojoBinary.ts'
 import { RojoPause } from './services/rojoRestart.ts'
 import { entryTarget } from '../shared/fileOps.ts'
+import { trailingDebounce } from '../shared/debounce.ts'
 import { Packages } from './services/packages.ts'
 import { BLINK_ENTRY, BlinkWatcher } from './services/blink.ts'
 import { createIntegrations } from './integrations.ts'
@@ -88,6 +89,7 @@ import { createQol } from './services/qol/wire.ts'
 import { createSpendWiring } from './services/spend/wire.ts'
 import { createDoctorWiring } from './services/doctor/wire.ts'
 import { doctorMarkdown } from '../shared/doctor/format.ts'
+import { isRosetta } from '../shared/doctor/checks.ts'
 import { createAddToGameWiring } from './services/addToGame/wire.ts'
 import { createEditorAssistWiring } from './services/editorAssist/wire.ts'
 import { studioMcpHandlers } from './agent/studioMcp.ts'
@@ -130,8 +132,10 @@ function installCsp(): void {
 
 // Quality of life (services/qol): sees every event for done notifications and the away digest.
 let qolObserve: ((event: string, payload: unknown) => void) | null = null
+// High-volume streams qol has no use for (log lines, language server traffic).
+const QOL_UNOBSERVED = new Set<string>(['lsp:message', 'log:line'])
 function emit<K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]): void {
-  qolObserve?.(event, payload)
+  if (!QOL_UNOBSERVED.has(event)) qolObserve?.(event, payload)
   for (const window of BrowserWindow.getAllWindows()) {
     if (!window.isDestroyed()) window.webContents.send(event, payload)
   }
@@ -279,6 +283,8 @@ const packages = new Packages({
   emit: (payload) => emit('packages:changed', payload)
 })
 let git: GitSync | null = null
+const GIT_REFRESH_DEBOUNCE_MS = 2500
+const gitRefreshDebounce = trailingDebounce(() => void git?.refresh(), GIT_REFRESH_DEBOUNCE_MS)
 // Source control panel (stage, commit with your message, pull / push) over the same GitSync queue.
 let scm: SourceControl | null = null
 let conflicts: StudioConflicts | null = null
@@ -334,6 +340,7 @@ async function closeProject(): Promise<void> {
   forgeSync.onProjectClose()
   blink?.close()
   blink = null
+  gitRefreshDebounce.cancel()
   git?.dispose()
   if (remoteTimer) clearInterval(remoteTimer)
   remoteTimer = null
@@ -397,7 +404,8 @@ function projectChanged(opened: Project, change: ProjectChange): void {
     applyPlace(opened)
     forgeSync.onPlacesChanged()
   }
-  void git?.refresh()
+  // git status spawns several git processes: coalesce a burst of tree changes into one run.
+  gitRefreshDebounce.call()
 }
 
 async function openProject(root?: string): Promise<ProjectInfo | null> {
@@ -879,6 +887,7 @@ const doctor = createDoctorWiring({
   servesPort: (port) => supervisor.servesPort(port),
   strayStopped: (port) => supervisor.noteStrayStopped(port),
   screenRecording: () => (process.platform === 'darwin' ? (systemPreferences.getMediaAccessStatus('screen') as 'granted') : null),
+  rosetta: () => isRosetta(process.platform, process.arch, app.runningUnderARM64Translation),
   openExternal: (url) => void shell.openExternal(url),
   emit: (report) => emit('doctor:report', report)
 })

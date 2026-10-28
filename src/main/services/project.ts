@@ -1,6 +1,7 @@
 import { watch, type Dirent, type FSWatcher } from 'node:fs'
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { MtimeJsonCache } from './jsonCache.ts'
 import { rojoGlob } from './sync/mapping.ts'
 import type {
   PlaceInfo,
@@ -288,17 +289,46 @@ export function treeFromSourcemap(root: string, sourcemap: SourcemapNode): TreeN
   return top.className === 'DataModel' ? top.children : [top]
 }
 
-// Drops sourcemap nodes whose script file is gone (a stale sourcemap.json while ./dev is off, e.g.
-// right after an Explorer delete or rename), and folders that only held such nodes.
-export async function pruneMissing(root: string, nodes: TreeNode[]): Promise<TreeNode[]> {
-  const out: TreeNode[] = []
-  for (const node of nodes) {
-    if (node.filePath && !(await stat(join(root, node.filePath)).catch(() => null))) continue
-    const children = await pruneMissing(root, node.children)
-    if (!node.filePath && node.children.length > 0 && children.length === 0 && node.className === 'Folder') continue
-    out.push(children.length === node.children.length ? node : { ...node, children })
+// Vendored folders (wally installs) are not edited by hand; a stale entry there is not worth a stat per file.
+const VENDORED_DIRS = new Set(['Packages', 'ServerPackages'])
+export function isVendoredPath(filePath: string): boolean {
+  return VENDORED_DIRS.has(filePath.split('/')[0])
+}
+
+// At most this many stat calls in flight across one prune (the tree can hold thousands of scripts).
+const STAT_LIMIT = 32
+function statGate(): <T>(fn: () => Promise<T>) => Promise<T> {
+  let active = 0
+  const waiting: (() => void)[] = []
+  return async (fn) => {
+    if (active >= STAT_LIMIT) await new Promise<void>((resolve) => waiting.push(resolve))
+    active++
+    try {
+      return await fn()
+    } finally {
+      active--
+      waiting.shift()?.()
+    }
   }
-  return out
+}
+
+// Drops sourcemap nodes whose script file is gone (a stale sourcemap.json while ./dev is off, e.g.
+// right after an Explorer delete or rename), and folders that only held such nodes. Files under
+// Packages/ServerPackages are kept without a check; the rest are checked concurrently, bounded.
+export async function pruneMissing(root: string, nodes: TreeNode[], gate = statGate()): Promise<TreeNode[]> {
+  const kept = await Promise.all(
+    nodes.map(async (node): Promise<TreeNode | null> => {
+      const check = node.filePath && !isVendoredPath(node.filePath) ? node.filePath : null
+      const [exists, children] = await Promise.all([
+        check ? gate(() => stat(join(root, check)).then(() => true, () => false)) : true,
+        pruneMissing(root, node.children, gate)
+      ])
+      if (!exists) return null
+      if (!node.filePath && node.children.length > 0 && children.length === 0 && node.className === 'Folder') return null
+      return children.length === node.children.length ? node : { ...node, children }
+    })
+  )
+  return kept.filter((node): node is TreeNode => node !== null)
 }
 
 function cleanProps(props: unknown): Record<string, string | number> | undefined {
@@ -565,10 +595,16 @@ export class Project {
   // Repo-relative files the watchers reported since the last debounce (open editors reload them).
   private onFiles: ((files: string[]) => void) | null = null
   private changedFiles = new Set<string>()
+  // Parsed sourcemap.json files, reused while their mtime and size hold.
+  private sourcemaps = new MtimeJsonCache()
+  // What the last refresh reported, serialised once so the next refresh compares strings
+  // instead of stringifying both sides.
+  private signatures: { info: string; tree: string; scripts: string; places: string }
 
   private constructor(root: string, info: ProjectInfo) {
     this.root = root
     this.info = info
+    this.signatures = { info: JSON.stringify(info), tree: JSON.stringify(this.tree), scripts: JSON.stringify(this.scripts), places: JSON.stringify(this.places) }
   }
 
   static async open(root: string, options: ProjectOpenOptions = {}): Promise<Project> {
@@ -622,7 +658,7 @@ export class Project {
       activePlace: activeFile,
       mounts: [...new Set([...placeTrees.values()].flatMap((tree) => mappedPaths(tree)))]
     }
-    const sourcemap = await readJson<SourcemapNode>(join(this.root, sourcemapFor(activeFile)))
+    const sourcemap = await this.sourcemaps.read<SourcemapNode>(join(this.root, sourcemapFor(activeFile)))
     let repoTree: TreeNode[]
     if (sourcemap && typeof sourcemap.name === 'string' && typeof sourcemap.className === 'string') {
       // Rojo's sourcemap leaves out branches with no scripts yet (a new project's empty
@@ -657,12 +693,14 @@ export class Project {
         }
       }
     }
+    const signatures = { info: JSON.stringify(info), tree: JSON.stringify(tree), scripts: JSON.stringify(scripts), places: JSON.stringify(places) }
     const change: ProjectChange = {
-      info: JSON.stringify(info) !== JSON.stringify(this.info),
-      tree: JSON.stringify(tree) !== JSON.stringify(this.tree),
-      scripts: JSON.stringify(scripts) !== JSON.stringify(this.scripts),
-      places: JSON.stringify(places) !== JSON.stringify(this.places) || activeFile !== this.activePlace
+      info: signatures.info !== this.signatures.info,
+      tree: signatures.tree !== this.signatures.tree,
+      scripts: signatures.scripts !== this.signatures.scripts,
+      places: signatures.places !== this.signatures.places || activeFile !== this.activePlace
     }
+    this.signatures = signatures
     this.places = places
     this.activePlace = activeFile
     this.info = info

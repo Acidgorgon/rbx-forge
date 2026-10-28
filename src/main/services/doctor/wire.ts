@@ -52,6 +52,8 @@ export interface DoctorWiringDeps {
   strayStopped?(port: number): void
   // macOS: systemPreferences.getMediaAccessStatus('screen'); null elsewhere.
   screenRecording(): DoctorInputs['screenRecording']
+  // The Intel build is running under Rosetta (isRosetta in shared/doctor/checks.ts).
+  rosetta?(): boolean
   openExternal(url: string): void
   emit(report: DoctorReport): void
   fetch?: typeof fetch
@@ -192,7 +194,8 @@ export function createDoctorWiring(deps: DoctorWiringDeps): { service: DoctorSer
       const u = await deps.updateState()
       return { state: u.phase, ...(u.offer?.version ? { version: u.offer.version } : {}), ...(u.error ? { error: u.error.message } : u.phase === 'disabled' && u.note ? { error: u.note } : {}) }
     },
-    screenRecording: deps.screenRecording
+    screenRecording: deps.screenRecording,
+    rosetta: deps.rosetta
   }
 
   const needRoot = (): string => {

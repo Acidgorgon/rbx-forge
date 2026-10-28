@@ -3,6 +3,9 @@ import { join } from 'node:path'
 import type { StudioConflict } from '@shared/types'
 import { findPythonCommand, run, toRepoPath, type Command } from './tools.ts'
 
+// The folder is almost always empty; a slow poll keeps the idle cost down.
+export const CONFLICTS_POLL_MS = 10_000
+
 // Studio versions held back by tools/studio-sync.py live in .studio-sync/conflicts,
 // named after the repo path with "/" replaced by "__".
 export class StudioConflicts {
@@ -54,7 +57,7 @@ export class StudioConflicts {
   }
 
   // Polls the folder (it may not exist yet) and calls onChange when the held files change.
-  watch(onChange: (conflicts: StudioConflict[]) => void, intervalMs = 2000): void {
+  watch(onChange: (conflicts: StudioConflict[]) => void, intervalMs = CONFLICTS_POLL_MS): void {
     const check = async () => {
       const signature = await this.currentSignature()
       if (signature === this.signature) return

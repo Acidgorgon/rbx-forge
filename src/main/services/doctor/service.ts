@@ -41,6 +41,7 @@ export interface DoctorProbes {
   projectToolsMissing(root: string): string[]
   updater(): Promise<DoctorInputs['updater']>
   screenRecording(): DoctorInputs['screenRecording']
+  rosetta?(): boolean
   now?(): number
 }
 
@@ -162,7 +163,8 @@ export async function gatherInputs(probes: DoctorProbes): Promise<DoctorInputs> 
     disk: disk.map((d, i) => ({ ...d, freeBytes: freeList[i] })),
     project,
     updater: await timed(probes.updater(), null),
-    screenRecording: probes.screenRecording()
+    screenRecording: probes.screenRecording(),
+    ...(probes.rosetta?.() ? { rosetta: true } : {})
   }
 }
 

@@ -36,6 +36,7 @@ import { existsSync, mkdirSync, renameSync, statSync, watch, writeFileSync, type
 import { basename, join } from 'node:path'
 import { pathToFileURL } from 'node:url'
 import type { LogLine, TreeNode } from '@shared/types'
+import { trailingDebounce, type TrailingDebounce } from '../../shared/debounce.ts'
 import { DataModelSync } from './lspDataModel.ts'
 
 const HEALTHY_MS = 60_000
@@ -43,6 +44,8 @@ const MAX_BACKOFF_MS = 30_000
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 const FIRST_DOWNLOAD_WAIT_MS = 20_000
 const WATCH_DEBOUNCE_MS = 250
+// sourcemap.json is rewritten in bursts by the dev loop; the server re-reads the whole DataModel on each notice.
+const SOURCEMAP_DEBOUNCE_MS = 1500
 
 const SECURITY_LEVEL = 'PluginSecurity'
 const DEFINITIONS_FILE = `globalTypes.${SECURITY_LEVEL}.d.luau`
@@ -262,6 +265,9 @@ export class LspBridge {
   private watcher: FSWatcher | null = null
   private pendingChanges = new Map<string, number>()
   private flushTimer: ReturnType<typeof setTimeout> | null = null
+  // sourcemap.json notices wait for a longer trailing debounce than source files.
+  private pendingSourcemap = new Map<string, number>()
+  private sourcemapDebounce: TrailingDebounce = trailingDebounce(() => this.flushSourcemap(), SOURCEMAP_DEBOUNCE_MS)
   private versionText: string | null | undefined
   // The last spawn found no luau-lsp binary.
   private missing = false
@@ -532,14 +538,17 @@ export class LspBridge {
       this.watcher = watch(root, { recursive: true }, (event, filename) => {
         if (!filename) return
         const rel = filename.toString()
-        if (!isWatched(rel) && rel.split(/[\\/]/).join('/') !== this.place?.sourcemap) return
+        const isSourcemap = rel.split(/[\\/]/).join('/') === this.place?.sourcemap
+        if (!isWatched(rel) && !isSourcemap) return
         const full = join(root, rel)
         // 1 created, 2 changed, 3 deleted
         const type = event === 'change' ? 2 : existsSync(full) ? 1 : 3
         const uri = pathToFileURL(full).href
-        const previous = this.pendingChanges.get(uri)
-        this.pendingChanges.set(uri, previous === 1 && type === 2 ? 1 : type)
-        if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flushChanges(), WATCH_DEBOUNCE_MS)
+        const pending = isSourcemap || basename(rel) === 'sourcemap.json' ? this.pendingSourcemap : this.pendingChanges
+        const previous = pending.get(uri)
+        pending.set(uri, previous === 1 && type === 2 ? 1 : type)
+        if (pending === this.pendingSourcemap) this.sourcemapDebounce.call()
+        else if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flushChanges(), WATCH_DEBOUNCE_MS)
       })
       this.watcher.on('error', (error) => {
         this.logLine('stderr', `file watcher: ${error.message}`)
@@ -558,21 +567,34 @@ export class LspBridge {
     this.send({ jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles', params: { changes } })
   }
 
+  private flushSourcemap(): void {
+    if (!this.pendingSourcemap.size) return
+    const changes = [...this.pendingSourcemap].map(([uri, type]) => ({ uri, type }))
+    this.pendingSourcemap.clear()
+    this.send({ jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles', params: { changes } })
+  }
+
   private stopWatching(): void {
     this.watcher?.close()
     this.watcher = null
     if (this.flushTimer) clearTimeout(this.flushTimer)
     this.flushTimer = null
     this.pendingChanges.clear()
+    this.sourcemapDebounce.cancel()
+    this.pendingSourcemap.clear()
   }
 }
 
 export const SKIP_DIRS = new Set(['node_modules', '.git', 'out', 'dist'])
+// Folders whose changes the file watcher ignores (vendored or generated: a wally install or a Studio
+// sync writes thousands of files there). SKIP_DIRS also feeds the companion's file listing, so these
+// stay separate. The active place's sourcemap under .studio-sync is let through by the caller.
+export const WATCH_SKIP_DIRS = new Set([...SKIP_DIRS, 'Packages', 'ServerPackages', '.studio-sync', '.forge'])
 
 // Files the server cares about: sources, sourcemap.json and Luau config files.
 export function isWatched(relPath: string): boolean {
   const parts = relPath.split(/[\\/]/)
-  if (parts.some((part) => SKIP_DIRS.has(part))) return false
+  if (parts.some((part) => WATCH_SKIP_DIRS.has(part))) return false
   const name = basename(relPath)
   return (
     name.endsWith('.luau') ||

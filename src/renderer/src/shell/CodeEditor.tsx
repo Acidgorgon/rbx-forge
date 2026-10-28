@@ -42,7 +42,12 @@ export function useEditorServices(): void {
   // StyLua (Format Document, format on save) and AI ghost text; toasts go to the app.
   useEffect(() => {
     setAssistToast((t) => actionsRef.current.toast(t))
-    setBeforeSave((p, contents, reason) => formatBeforeSave(monaco, p, contents, reason))
+    // The store sees an edit one render after Monaco does, and a burst of typing can starve that render
+    // (Ctrl+S right after the last key): the model is the truth, so a save writes its text.
+    setBeforeSave(async (p, contents, reason) => {
+      const live = monaco.editor.getModels().find((m) => m.uri.scheme === 'file' && pathOf(m) === p)?.getValue() ?? contents
+      return (await formatBeforeSave(monaco, p, live, reason)) ?? (live !== contents ? live : null)
+    })
     return () => {
       setBeforeSave(null)
       setAssistToast(null)

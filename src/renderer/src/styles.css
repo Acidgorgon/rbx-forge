@@ -174,7 +174,9 @@ a:hover { text-decoration: underline; }
 .ellipsis { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
 .selectable { user-select: text; }
 .scroll { overflow: auto; scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
-* { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
+/* Themed thin scrollbars only on the containers that scroll: a universal rule also turned off macOS
+   overlay scrollbars everywhere and made every element's style carry the property. */
+.panel-body, .page, .menu, .pal-list, .dialog, .out, .probs, .as-scroll, .tool-body, .cmp-diff, .gp-rail, .gp-side, .gp-room, .mpick-list, .mem-list, .mem-pane, .pk-list, .table-wrap, .md-code pre, textarea { scrollbar-width: thin; scrollbar-color: var(--line-strong) transparent; }
 svg.i { width: 16px; height: 16px; flex: none; fill: none; stroke: currentColor; stroke-width: 1.5; stroke-linecap: round; stroke-linejoin: round; }
 kbd { font: 500 10.5px/1 var(--font-mono); color: var(--fg-muted); background: transparent; border: 0; border-bottom: 1px solid var(--line-strong); border-radius: 0; padding: 2px 3px 1px; min-width: 14px; display: inline-flex; justify-content: center; white-space: nowrap; }
 code { font: 11.5px var(--font-mono); background: var(--bg-active); padding: 1px 4px; border-radius: var(--r-xs); color: var(--fg); }

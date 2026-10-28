@@ -107,6 +107,12 @@ const MODES: { id: OrchestrateMode; label: string; hint: string }[] = [
 
 let handledInsert = 0
 
+// Ticks on its own so the whole Composer does not re-render every second during a turn.
+function TurnTimer({ started }: { started: number }) {
+  const now = useTick(true)
+  return <span className="cmp-elapsed" title="Time this turn has been working">{elapsed(now - started)}</span>
+}
+
 export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m: OrchestrateMode) => void }) {
   const { state, actions } = useStore()
   const id = state.activeChatId
@@ -365,7 +371,6 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
   }
 
   const modeInfo = MODES.find((m) => m.id === mode) ?? MODES[0]
-  const now = useTick(busy)
   const started = busy && id ? turnStart(state.messages[id] ?? []) : null
 
   return (
@@ -479,7 +484,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
             <span className="kc">Shift</span>+<span className="kc">Tab</span>
           </span>
           <span className="grow" />
-          {busy && started && <span className="cmp-elapsed" title="Time this turn has been working">{elapsed(now - started)}</span>}
+          {busy && started && <TurnTimer started={started} />}
           {busy && (text.trim() || images.length > 0) && (
             <button type="button" className="cmp-send cmp-queue-btn" onClick={submit} disabled={adding > 0} title="Queue (Enter): sends when this turn ends" aria-label="Queue message">
               <Icon name="plus" size={14} />

@@ -1,7 +1,7 @@
 // Status bar (SPEC §7.7): home, branch, services, problems, realm, cursor, LSP, assistant meter, bell.
 import { useEffect, useRef, useState } from 'react'
 import type { LspCompanionStatus, ServiceStatus } from '@shared/types'
-import { useStore } from '../store'
+import { useActions, useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { useCursor } from '../lib/cursor'
@@ -33,7 +33,7 @@ export function companionLine(c: LspCompanionStatus | null): string | null {
 const LABEL: Record<string, string> = { rojo: 'Rojo', dev: 'Watcher', studioSync: 'Studio', lsp: 'luau-lsp' }
 
 function ServiceSegment({ s, port }: { s: ServiceStatus; port?: number }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const menu = useMenu()
   const led = ledOf(s)
   const prev = useRef(s.state)
@@ -76,7 +76,7 @@ function ServiceSegment({ s, port }: { s: ServiceStatus; port?: number }) {
 // Forge Sync drift: a place whose Studio is open but behind disk (not linked, not syncing, or its rojo
 // not serving it). Shows "Match 5 behind" in warn color; click opens the sync view with the fix.
 function SyncDriftPill() {
-  const { actions } = useStore()
+  const actions = useActions()
   const [sync] = useForgeSync()
   const drifts = [...(sync?.places ?? []).map((p) => p.drift), ...(sync?.unlinked ?? []).map((u) => u.drift)].filter((d): d is NonNullable<typeof d> => !!d)
   if (!drifts.length) return null

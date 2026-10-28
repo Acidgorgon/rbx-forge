@@ -43,6 +43,7 @@ import { scriptInjectionToasts } from '@shared/studio/errors'
 import type { GroupsState } from '@shared/editorGroups'
 import { isBuiltin, parseSlash } from '@shared/chatCommands'
 import { afterTurn, editQueued as editIn, enqueue, moveToFront, outgoingText, removeQueued as removeFrom, turnOutcome, type QueuedPrompt, type QueuePause } from './assistant/queue'
+import { appendCapped, createBatcher } from './lib/logBatch'
 
 // ---------------------------------------------------------------- types
 
@@ -288,6 +289,7 @@ type Action =
   | { type: 'layout'; patch: Partial<Layout> }
   | { type: 'log'; line: LogLine }
   | { type: 'logs'; lines: LogLine[] }
+  | { type: 'logsAppend'; lines: LogLine[] }
   | { type: 'chatMessages'; sessionId: string; messages: ChatMessage[] }
   | { type: 'agentMessages'; agentId: string; messages: ChatMessage[] }
   | { type: 'chatMessage'; message: ChatMessage }
@@ -377,9 +379,8 @@ function reducer(state: State, a: Action): State {
       return withGroups({ ...state, files: [] }, EG.retainTabs(state.editor, (id) => keep.has(id)))
     }
     case 'layout': {
-      const layout = { ...state.layout, ...a.patch }
-      saveLayout(layout)
-      return { ...state, layout }
+      // Persisted by a debounced effect in StoreProvider (a drag dispatches this per pointermove).
+      return { ...state, layout: { ...state.layout, ...a.patch } }
     }
     case 'log': {
       const logs = state.logs.length >= MAX_LOGS ? state.logs.slice(-MAX_LOGS + 1) : state.logs.slice()
@@ -388,6 +389,8 @@ function reducer(state: State, a: Action): State {
     }
     case 'logs':
       return { ...state, logs: a.lines.slice(-MAX_LOGS) }
+    case 'logsAppend':
+      return { ...state, logs: appendCapped(state.logs, a.lines, MAX_LOGS) }
     case 'chatMessages':
       return { ...state, messages: { ...state.messages, [a.sessionId]: a.messages } }
     case 'agentMessages': {
@@ -636,10 +639,18 @@ export interface Actions {
 }
 
 const Ctx = createContext<{ state: State; actions: Actions } | null>(null)
+// Actions never change identity, so components that only dispatch use this and skip every state update.
+const ActionsCtx = createContext<Actions | null>(null)
 
 export function useStore(): { state: State; actions: Actions } {
   const v = useContext(Ctx)
   if (!v) throw new Error('useStore outside StoreProvider')
+  return v
+}
+
+export function useActions(): Actions {
+  const v = useContext(ActionsCtx)
+  if (!v) throw new Error('useActions outside StoreProvider')
   return v
 }
 
@@ -1236,12 +1247,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (!seen) actions.toast({ text: 'Forge Sync: unlinked place discarded', detail: d.text, kind: 'info', ms: 20_000 })
     }
     void h.syncStatus?.().then(syncDiscarded, () => undefined)
+    // Log lines are applied in one dispatch per 100 ms instead of one per line.
+    const logBatch = createBatcher<LogLine>((lines) => dispatch({ type: 'logsAppend', lines }), 100)
     const offs = [
       h.on('sync:status', (status) => syncDiscarded(status)),
       h.on('files:changed', (files) => void refreshOpen(files)),
       h.on('sync:entry', (entries) => void refreshOpen(entries.flatMap((e) => (e.from ? [e.file, e.from] : [e.file])))),
       h.on('services:status', (services) => set({ services })),
-      h.on('log:line', (line) => dispatch({ type: 'log', line })),
+      h.on('log:line', (line) => logBatch.push(line)),
       // A Labs model call failed: say why (once a minute per lab and error) instead of a silent fallback.
       h.on('labs:modelError', ({ lab, message }) => {
         const key = `${lab ?? ''}|${message}`
@@ -1333,6 +1346,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       set({ project, services, git, studioConflicts, syncSettings, chats, agents, hasApiKey, appSettings })
       // Turns still running in main (the window reloaded mid-turn) show as working, with Stop.
       for (const c of chats) if (c.busy) dispatch({ type: 'busy', sessionId: c.id, busy: true })
+      logBatch.cancel()
       dispatch({ type: 'logs', lines: logs })
       void Promise.all([h.listProviders(), h.getDefaultModel()])
         .then(([providers, defaultModel]) => set({ providers, defaultModel }))
@@ -1346,9 +1360,28 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       if (project) await reloadTree()
     })()
 
-    return () => offs.forEach((off) => off())
+    return () => {
+      logBatch.cancel()
+      offs.forEach((off) => off())
+    }
   }, [h, actions])
 
+  // Layout is saved shortly after it stops changing, and on the way out.
+  useEffect(() => {
+    if (state.layout === initial.layout) return
+    const t = setTimeout(() => saveLayout(state.layout), 300)
+    return () => clearTimeout(t)
+  }, [state.layout])
+  useEffect(() => {
+    const flush = () => saveLayout(stateRef.current.layout)
+    window.addEventListener('pagehide', flush)
+    return () => window.removeEventListener('pagehide', flush)
+  }, [])
+
   const value = useMemo(() => ({ state, actions }), [state, actions])
-  return <Ctx.Provider value={value}>{children}</Ctx.Provider>
+  return (
+    <ActionsCtx.Provider value={actions}>
+      <Ctx.Provider value={value}>{children}</Ctx.Provider>
+    </ActionsCtx.Provider>
+  )
 }

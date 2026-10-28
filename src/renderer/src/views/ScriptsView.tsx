@@ -118,7 +118,10 @@ export function ScriptsView() {
                     onClick={() => void actions.openFile(s.path, { preview: true })}
                     onDoubleClick={() => void actions.openFile(s.path)}
                     onContextMenu={(e) => onMenu(e, s)}
-                    title={`${s.path}\n${robloxPaths(s.instancePath).dot}`}
+                    // The tooltip is built on hover, not for every row on every render.
+                    onMouseEnter={(e) => {
+                      if (!e.currentTarget.title) e.currentTarget.title = `${s.path}\n${robloxPaths(s.instancePath).dot}`
+                    }}
                   >
                     <ClassIcon className={s.kind} realm={s.realm} size={15} />
                     <span className="tname">{s.name}</span>

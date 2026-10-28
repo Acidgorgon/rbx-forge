@@ -284,7 +284,7 @@ export function SettingsPage() {
   }, [])
 
   // Highlights the section at the top of the visible category while scrolling.
-  const onScroll = () => {
+  const measureScroll = () => {
     const page = pageRef.current
     const group = SETTINGS_CATEGORIES.find((c) => c.id === cat)
     if (!page || !group || Date.now() - navAt.current < 500) return
@@ -297,6 +297,18 @@ export function SettingsPage() {
     if (page.scrollTop + page.clientHeight >= page.scrollHeight - 4) at = group.sections[group.sections.length - 1][0]
     if (at !== current) setCurrent(at)
   }
+  // At most one measurement per frame (it reads layout for every section).
+  const measureRef = useRef(measureScroll)
+  measureRef.current = measureScroll
+  const scrollRaf = useRef(0)
+  const onScroll = () => {
+    if (scrollRaf.current) return
+    scrollRaf.current = requestAnimationFrame(() => {
+      scrollRaf.current = 0
+      measureRef.current()
+    })
+  }
+  useEffect(() => () => cancelAnimationFrame(scrollRaf.current), [])
 
   // Narrow layout (one scrolling row): keep the highlighted section in view without moving the page.
   useEffect(() => {

@@ -2,7 +2,7 @@
 // available, download" (macOS manual mode). Quiet while downloading, hidden otherwise. Without a full
 // update to show, a downloaded quick update shows "Quick update 0.2.1-quick.4 ready, restart".
 import { useState } from 'react'
-import { useStore } from '../store'
+import { useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { useRestartForUpdate, useUpdate } from './useUpdate'
@@ -16,7 +16,7 @@ export function openUpdateSettings(openPage: (kind: 'settings') => void): void {
 
 export function UpdatePill() {
   const update = useUpdate()
-  const { actions } = useStore()
+  const actions = useActions()
   const restart = useRestartForUpdate()
   const restartQuick = useRestartForUpdate('quick')
   const menu = useMenu()

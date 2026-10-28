@@ -1,7 +1,7 @@
 // Bottom panel (SPEC §7.6): Output (service logs), Problems, Dev · Rojo raw output.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { LogLine, ServiceId } from '@shared/types'
-import { useStore, type BottomTab, type ProblemItem } from '../store'
+import { useActions, useStore, type BottomTab, type ProblemItem } from '../store'
 import { Icon } from '../components/Icons'
 import { FileGlyph } from '../components/ClassIcon'
 import { useProblems } from './problems'
@@ -53,21 +53,50 @@ function lineClass(l: LogLine): string {
   return ''
 }
 
-function LogView({ lines, follow, setFollow }: { lines: LogLine[]; follow: boolean; setFollow: (v: boolean) => void }) {
-  const { actions } = useStore()
+// Rows older than the newest LOG_WINDOW stay out of the DOM until asked for ("Show earlier").
+const LOG_WINDOW = 500
+// Rows keep their key when the capped log drops lines from the front.
+const rowIds = new WeakMap<LogLine, number>()
+let nextRowId = 0
+const rowId = (l: LogLine) => {
+  let id = rowIds.get(l)
+  if (id === undefined) rowIds.set(l, (id = nextRowId++))
+  return id
+}
+
+const LogRow = memo(function LogRow({ line, onOpen }: { line: LogLine; onOpen: (path: string, line?: number) => void }) {
+  return (
+    <div className={`ol${lineClass(line)}`}>
+      <span className="ot">{fmtTime(line.at)}</span>
+      <span className="os" style={{ color: SOURCE_COLOR[line.service] }}>{SOURCE_LABEL[line.service]}</span>
+      <span className="om">
+        <Message text={line.text} onOpen={onOpen} />
+      </span>
+    </div>
+  )
+})
+
+const LogView = memo(function LogView({ lines, follow, setFollow }: { lines: LogLine[]; follow: boolean; setFollow: (v: boolean) => void }) {
+  const actions = useActions()
   const ref = useRef<HTMLDivElement>(null)
   const seen = useRef(lines.length)
   const [unseen, setUnseen] = useState(0)
+  const [shown, setWindow] = useState(LOG_WINDOW)
+  const start = Math.max(0, lines.length - shown)
   useLayoutEffect(() => {
-    const el = ref.current
-    if (!el) return
-    if (follow) {
-      el.scrollTop = el.scrollHeight
-      seen.current = lines.length
-      setUnseen(0)
-    } else setUnseen(Math.max(0, lines.length - seen.current))
+    if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
+  }, [])
+  // Pinned to the bottom: scroll once per frame, not once per line.
+  useEffect(() => {
+    if (!follow) return setUnseen(Math.max(0, lines.length - seen.current))
+    seen.current = lines.length
+    setUnseen(0)
+    const id = requestAnimationFrame(() => {
+      if (ref.current) ref.current.scrollTop = ref.current.scrollHeight
+    })
+    return () => cancelAnimationFrame(id)
   }, [lines, follow])
-  const open = (path: string, line?: number) => void (line ? actions.openFileAt(path, line) : actions.openFile(path))
+  const open = useCallback((path: string, line?: number) => void (line ? actions.openFileAt(path, line) : actions.openFile(path)), [actions])
   return (
     <div className="out-wrap">
       <div
@@ -79,14 +108,13 @@ function LogView({ lines, follow, setFollow }: { lines: LogLine[]; follow: boole
           if (atBottom !== follow) setFollow(atBottom)
         }}
       >
-        {lines.map((l, i) => (
-          <div key={i} className={`ol${lineClass(l)}`}>
-            <span className="ot">{fmtTime(l.at)}</span>
-            <span className="os" style={{ color: SOURCE_COLOR[l.service] }}>{SOURCE_LABEL[l.service]}</span>
-            <span className="om">
-              <Message text={l.text} onOpen={open} />
-            </span>
-          </div>
+        {start > 0 && (
+          <button className="mini-btn" style={{ margin: '2px 12px 4px' }} onClick={() => setWindow(shown + LOG_WINDOW)}>
+            Show earlier ({start} more line{start === 1 ? '' : 's'})
+          </button>
+        )}
+        {(start ? lines.slice(start) : lines).map((l) => (
+          <LogRow key={rowId(l)} line={l} onOpen={open} />
         ))}
       </div>
       {!follow && unseen > 0 && (
@@ -96,7 +124,7 @@ function LogView({ lines, follow, setFollow }: { lines: LogLine[]; follow: boole
       )}
     </div>
   )
-}
+})
 
 function Output() {
   const { state, actions } = useStore()
@@ -249,6 +277,15 @@ export function BottomPanel() {
   const { state, actions } = useStore()
   const problems = useProblems()
   const tab = state.layout.bottomTab
+  const open = state.layout.bottomOpen
+  // The panel only collapses to height 0 when closed: unmount its body (after the close animation)
+  // so a hidden Output does not keep rendering log rows. The terminal tab stays, it keeps its own session.
+  const [mounted, setMounted] = useState(open)
+  useEffect(() => {
+    if (open) return setMounted(true)
+    const t = setTimeout(() => setMounted(false), 400)
+    return () => clearTimeout(t)
+  }, [open])
   const errors = problems.filter((p) => p.severity === 'error').length
   const tabs: { id: BottomTab; label: string; badge?: React.ReactNode }[] = [
     { id: 'output', label: 'Output' },
@@ -286,7 +323,9 @@ export function BottomPanel() {
             <Icon name="x" size={14} />
           </button>
         </div>
-        <div className="bp-body">{tab === 'output' ? <Output /> : tab === 'problems' ? <Problems /> : tab === 'shell' ? <TerminalPanel /> : <Terminal />}</div>
+        <div className="bp-body">
+          {tab === 'shell' ? <TerminalPanel /> : !mounted ? null : tab === 'output' ? <Output /> : tab === 'problems' ? <Problems /> : <Terminal />}
+        </div>
       </div>
     </section>
   )

@@ -37,11 +37,19 @@ export const MAX_UPLOAD_BYTES = 20 * 1024 * 1024
 
 export class AssetUploadError extends Error {
   readonly status?: number
-  constructor(message: string, status?: number) {
+  // Roblox refused the create request itself (no asset exists), so sending it again later is safe.
+  readonly notCreated?: boolean
+  constructor(message: string, status?: number, opts?: { notCreated?: boolean }) {
     super(message)
     this.name = 'AssetUploadError'
     this.status = status
+    if (opts?.notCreated) this.notCreated = true
   }
+}
+
+// Open Cloud's own rate limit (429) on the create request: nothing was uploaded, try again later.
+export function isRateLimitedBeforeCreate(error: unknown): boolean {
+  return error instanceof AssetUploadError && error.status === 429 && error.notCreated === true
 }
 
 export interface Creator {
@@ -191,7 +199,7 @@ export async function uploadImageAsset(input: UploadInput): Promise<UploadResult
   ])
   input.onProgress?.('uploading')
   const created = await send(fetch, sleep, `${ASSETS_BASE}/assets`, { method: 'POST', headers: { 'x-api-key': apiKey, 'content-type': contentType, accept: 'application/json' }, body })
-  if (created.status < 200 || created.status >= 300) throw new AssetUploadError(statusHelp(created.status, created.body), created.status)
+  if (created.status < 200 || created.status >= 300) throw new AssetUploadError(statusHelp(created.status, created.body), created.status, { notCreated: true })
   let op: Operation
   try {
     op = JSON.parse(created.body) as Operation
@@ -209,6 +217,11 @@ export async function uploadImageAsset(input: UploadInput): Promise<UploadResult
     await sleep(delay)
     delay = Math.min(maxDelay, Math.round(delay * 1.6))
     const polled = await send(fetch, sleep, `${ASSETS_BASE}/operations/${encodeURIComponent(operationId)}`, { method: 'GET', headers: { 'x-api-key': apiKey, accept: 'application/json' } })
+    // The asset is already being created: a rate-limited status check just waits and asks again.
+    if (polled.status === 429) {
+      delay = maxDelay
+      continue
+    }
     if (polled.status < 200 || polled.status >= 300) throw new AssetUploadError(statusHelp(polled.status, polled.body), polled.status)
     try {
       op = JSON.parse(polled.body) as Operation
@@ -265,7 +278,7 @@ export async function uploadModelAsset(input: Omit<UploadInput, 'assetType' | 'c
     // Mesh processing takes longer than images; wait up to 5 minutes by default.
     result = await uploadImageAsset({ timeoutMs: 300_000, ...input, assetType: 'Model', contentType: MODEL_CONTENT_TYPE })
   } catch (error) {
-    if (error instanceof AssetUploadError) throw new AssetUploadError(modelUploadErrorText(error.message, error.status), error.status)
+    if (error instanceof AssetUploadError) throw new AssetUploadError(modelUploadErrorText(error.message, error.status), error.status, { notCreated: error.notCreated })
     throw error
   }
   if (result.moderation && /rejected/i.test(result.moderation)) {
@@ -336,7 +349,7 @@ async function finishMedia(kind: 'Audio' | 'Image' | 'Decal', run: () => Promise
   try {
     result = await run()
   } catch (error) {
-    if (error instanceof AssetUploadError) throw new AssetUploadError(mediaUploadErrorText(kind, error.message, error.status), error.status)
+    if (error instanceof AssetUploadError) throw new AssetUploadError(mediaUploadErrorText(kind, error.message, error.status), error.status, { notCreated: error.notCreated })
     throw error
   }
   if (result.moderation && /rejected/i.test(result.moderation)) {

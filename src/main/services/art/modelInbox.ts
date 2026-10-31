@@ -12,16 +12,18 @@
 // assetType: "Model" (.fbx), "Audio" (.mp3 .ogg .wav .flac), "Image" or "Decal" (.png .jpg .jpeg .bmp
 // .tga). Left out, it follows the file extension (images become "Image"). Relative files resolve
 // against the inbox. The file must be inside the inbox or <Documents>/ForgeModels (after resolving
-// symlinks), at most 20 MB. Requests run one at a time, spaced by minIntervalMs and
-// capped per hour. A result that already exists means the id is handled: no second upload. The key
+// symlinks), at most 20 MB. Requests run one at a time, spaced by minIntervalMs; Forge sets no
+// hourly cap. When Open Cloud itself rate limits the create request (429 after the uploader's own
+// retries), nothing was uploaded: the request stays queued and the inbox pauses with a growing
+// backoff (rateLimitBackoffMs, doubling up to 15 minutes) before trying again. A result that already exists means the id is handled: no second upload. The key
 // is only passed to the uploader; it never reaches a log line, result file or event.
 
 import { watch as fsWatch } from 'node:fs'
-import { mkdir, readdir, readFile, realpath, rename, stat, writeFile } from 'node:fs/promises'
+import { mkdir, readdir, readFile, realpath, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { basename, isAbsolute, join, relative, resolve } from 'node:path'
 import { z } from 'zod'
 import type { ModelInboxEntry } from '../../../shared/artTypes.ts'
-import { AssetUploadError, AUDIO_CONTENT_TYPES, IMAGE_CONTENT_TYPES, MAX_UPLOAD_BYTES, uploadAudioAsset, uploadMediaImageAsset, uploadModelAsset, type Creator } from './robloxAssets.ts'
+import { AssetUploadError, AUDIO_CONTENT_TYPES, isRateLimitedBeforeCreate, IMAGE_CONTENT_TYPES, MAX_UPLOAD_BYTES, uploadAudioAsset, uploadMediaImageAsset, uploadModelAsset, type Creator } from './robloxAssets.ts'
 import { defaultSleep, type ArtFetch, type Sleep } from './openaiImages.ts'
 
 export const REQUEST_SUFFIX = '.request.json'
@@ -201,9 +203,9 @@ export interface ModelInboxDeps {
   pollMs?: number
   // A request or FBX modified more recently than this is treated as still being written.
   settleMs?: number
-  // Rate limit: gap between upload starts and uploads per rolling hour.
+  // Gap between upload starts, and the first pause after Open Cloud answers 429 (doubles each time).
   minIntervalMs?: number
-  maxPerHour?: number
+  rateLimitBackoffMs?: number
 }
 
 export const defaultWatch = (dir: string, onChange: () => void): (() => void) => {
@@ -233,9 +235,9 @@ export class ModelInbox {
   private scanning: Promise<void> | null = null
   private again = false
   private active = new Set<string>()
-  private uploads: number[] = []
   private lastUpload = 0
-  private capLogged = 0
+  private pausedUntil = 0
+  private backoff = 0
   private entries: ModelInboxEntry[] = []
   private watchingDir: string | null = null
 
@@ -375,32 +377,31 @@ export class ModelInbox {
     const blocked = await this.deps.blocked?.().catch((error) => (error as Error).message)
     if (blocked) return this.fail(dir, id, request.name, blocked, finish)
 
-    // Rate limit: one upload at a time (scan is serial), spaced, and capped per rolling hour.
-    const hourAgo = this.now() - 3_600_000
-    this.uploads = this.uploads.filter((t) => t > hourAgo)
-    const cap = this.deps.maxPerHour ?? 60
-    if (this.uploads.length >= cap) {
-      if (this.now() - this.capLogged > 600_000) {
-        this.capLogged = this.now()
-        this.deps.log(`[model inbox] ${cap} uploads in the last hour; waiting before the next one`)
-      }
-      return 'deferred'
-    }
-    const gap = (this.deps.minIntervalMs ?? 10_000) - (this.now() - this.lastUpload)
+    // One upload at a time (scan is serial), spaced; paused while Open Cloud is rate limiting.
+    if (this.now() < this.pausedUntil) return 'deferred'
+    const gap = (this.deps.minIntervalMs ?? 2_000) - (this.now() - this.lastUpload)
     if (this.lastUpload && gap > 0) await (this.deps.sleep ?? defaultSleep)(gap)
 
     this.active.add(id)
     try {
       await writeJsonAtomic(resultPath, { status: 'uploading' } satisfies InboxResult)
       this.lastUpload = this.now()
-      this.uploads.push(this.lastUpload)
       this.deps.log(`[model inbox] uploading ${request.name} as ${request.assetType} (${basename(file.value.abs)}, ${(file.value.size / 1024 / 1024).toFixed(1)} MB)`)
       let uploaded: { assetId: string; moderation?: string }
       try {
         uploaded = await this.deps.upload(file.value.abs, { name: request.name, assetType: request.assetType, ...(request.description ? { description: request.description } : {}) })
       } catch (error) {
+        if (isRateLimitedBeforeCreate(error)) {
+          // Nothing reached Roblox: leave the request queued and pause the inbox.
+          await unlink(resultPath).catch(() => undefined)
+          this.backoff = Math.min(15 * 60_000, this.backoff ? this.backoff * 2 : (this.deps.rateLimitBackoffMs ?? 60_000))
+          this.pausedUntil = this.now() + this.backoff
+          this.deps.log(`[model inbox] Roblox Open Cloud is rate limiting uploads (429); ${request.name} stays queued, retrying in ${Math.round(this.backoff / 1000)} s`)
+          return 'deferred'
+        }
         return await this.fail(dir, id, request.name, (error as Error).message, finish)
       }
+      this.backoff = 0
       const assetId = Number.isSafeInteger(Number(uploaded.assetId)) ? Number(uploaded.assetId) : uploaded.assetId
       const uploadedAt = new Date(this.now()).toISOString()
       await writeJsonAtomic(resultPath, { status: 'done', assetId, assetType: request.assetType, name: request.name, uploadedAt, ...(uploaded.moderation ? { moderation: uploaded.moderation } : {}) } satisfies InboxResult)

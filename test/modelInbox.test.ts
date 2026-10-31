@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { z } from 'zod'
 import type { ArtFetch } from '../src/main/services/art/openaiImages.ts'
-import { AssetUploadError, looksLikeFbx, MODEL_CONTENT_TYPE, uploadAudioAsset, uploadMediaImageAsset, uploadModelAsset } from '../src/main/services/art/robloxAssets.ts'
+import { AssetUploadError, isRateLimitedBeforeCreate, looksLikeFbx, MODEL_CONTENT_TYPE, uploadAudioAsset, uploadMediaImageAsset, uploadModelAsset } from '../src/main/services/art/robloxAssets.ts'
 import { createModelUploader, inboxDirs, ModelInbox, modelUploadTools, NO_KEY_ERROR, parseRequest, resolveModelFile, type ModelInboxDeps, type UploadModel } from '../src/main/services/art/modelInbox.ts'
 import { SERVICE_WRITE_TOOLS } from '../src/main/agent/serviceTools.ts'
 import { createIntegrations } from '../src/main/integrations.ts'
@@ -138,6 +138,16 @@ test('model upload: moderation, permission and size errors read clearly; bad fil
   await assert.rejects(up(none.fetch, { bytes: new Uint8Array() }), /empty/)
   assert.equal(none.calls.length, 0)
   assert.equal(looksLikeFbx(Buffer.from('; FBX 7.4.0 project file\n')), true)
+})
+
+test('model upload: a 429 on create is marked not-created; a 429 while polling keeps polling', async () => {
+  const up = (fetch: ArtFetch) => uploadModelAsset({ apiKey: KEY, bytes: FBX, fileName: 'A.fbx', displayName: 'A', creator: { userId: 1 }, fetch, sleep: async () => {} })
+  const limited = fakeFetch(() => ({ status: 429, body: '' }))
+  const error = await up(limited.fetch).then(() => null, (e: unknown) => e)
+  assert.ok(isRateLimitedBeforeCreate(error))
+  assert.equal(limited.calls.length, 4, 'the uploader retries 3 times before giving up')
+  const polled = fakeFetch((_call, i) => (i === 0 ? op({ done: false }) : i <= 4 ? { status: 429, body: '' } : op({ done: true, response: { assetId: '42' } })))
+  assert.equal((await up(polled.fetch)).assetId, '42')
 })
 
 test('uploadModel(path, { name, description }): reads the file; no key or creator explains, without a request', async () => {
@@ -294,36 +304,85 @@ test('inbox: off does nothing; files still being written wait; a stale "uploadin
   }
 })
 
-test('inbox: one upload at a time, spaced by minIntervalMs, capped per hour', async () => {
+test('inbox: one upload at a time, spaced by minIntervalMs, no hourly cap', async () => {
   const t = await tempDocs()
   try {
     await writeFile(join(t.inboxDir, 'A.fbx'), FBX)
-    for (const id of ['r1', 'r2', 'r3']) await writeFile(join(t.inboxDir, `${id}.request.json`), JSON.stringify({ file: 'A.fbx', name: id }))
+    const ids = Array.from({ length: 75 }, (_, i) => `r${String(i).padStart(2, '0')}`)
+    for (const id of ids) await writeFile(join(t.inboxDir, `${id}.request.json`), JSON.stringify({ file: 'A.fbx', name: id }))
     let running = 0
     let peak = 0
     let n = 0
-    let clock = Date.now() + 60_000
-    const { box, sleeps, logs } = inbox(
+    const clock = Date.now() + 60_000
+    const { box, sleeps } = inbox(
       t,
       async () => {
         peak = Math.max(peak, ++running)
-        await new Promise((r) => setTimeout(r, 5))
+        await new Promise((r) => setTimeout(r, 1))
         running--
         return { assetId: String(++n) }
       },
-      { now: () => clock, minIntervalMs: 10_000, maxPerHour: 2 }
+      { now: () => clock, minIntervalMs: 10_000 }
     )
-    // Overlapping scans fold into one serial pass.
+    // Overlapping scans fold into one serial pass; 75 uploads within the same "hour" all go through.
     await Promise.all([box.scan(), box.scan()])
     assert.equal(peak, 1)
-    assert.equal(n, 2)
-    assert.deepEqual(sleeps, [10_000])
-    assert.ok((await readdir(t.inboxDir)).includes('r3.request.json'), 'third request waits for the hourly cap')
-    assert.ok(logs.some((l) => /2 uploads in the last hour/.test(l)))
-    clock += 3_600_001
+    assert.equal(n, 75)
+    assert.equal(sleeps.length, 74)
+    assert.ok(sleeps.every((ms) => ms === 10_000))
+  } finally {
+    await t.cleanup()
+  }
+})
+
+test('inbox: an Open Cloud 429 on create keeps the request queued and backs off', async () => {
+  const t = await tempDocs()
+  try {
+    await writeFile(join(t.inboxDir, 'A.fbx'), FBX)
+    await writeFile(join(t.inboxDir, 'r1.request.json'), JSON.stringify({ file: 'A.fbx', name: 'r1' }))
+    let clock = Date.now() + 60_000
+    let limited = 2
+    let n = 0
+    const { box, logs } = inbox(
+      t,
+      async () => {
+        if (limited-- > 0) throw new AssetUploadError('Too many requests to Roblox (429)', 429, { notCreated: true })
+        return { assetId: String(++n) }
+      },
+      { now: () => clock, rateLimitBackoffMs: 60_000 }
+    )
     await box.scan()
-    assert.equal(n, 3)
-    assert.equal((await readJson(join(t.inboxDir, 'r3.result.json'))).assetId, 3)
+    let files = await readdir(t.inboxDir)
+    assert.ok(files.includes('r1.request.json'), 'request stays queued')
+    assert.ok(!files.includes('r1.result.json'), 'no uploading/error result left behind')
+    assert.ok(logs.some((l) => /rate limiting uploads \(429\).*retrying in 60 s/.test(l)))
+    // Still paused: nothing is sent.
+    clock += 30_000
+    assert.equal(await box.process(t.inboxDir, 'r1'), 'deferred')
+    // Second 429 doubles the pause.
+    clock += 31_000
+    await box.scan()
+    assert.ok(logs.some((l) => /retrying in 120 s/.test(l)))
+    clock += 121_000
+    await box.scan()
+    files = await readdir(t.inboxDir)
+    assert.ok(files.includes('r1.request.done.json'))
+    assert.equal((await readJson(join(t.inboxDir, 'r1.result.json'))).assetId, 1)
+  } finally {
+    await t.cleanup()
+  }
+})
+
+test('inbox: a 429 after the asset was created is still a normal error', async () => {
+  const t = await tempDocs()
+  try {
+    await writeFile(join(t.inboxDir, 'A.fbx'), FBX)
+    await writeFile(join(t.inboxDir, 'r1.request.json'), JSON.stringify({ file: 'A.fbx', name: 'r1' }))
+    const { box } = inbox(t, async () => {
+      throw new AssetUploadError('Too many requests to Roblox (429)', 429)
+    })
+    assert.equal(await box.process(t.inboxDir, 'r1'), 'error')
+    assert.equal((await readJson(join(t.inboxDir, 'r1.result.json'))).status, 'error')
   } finally {
     await t.cleanup()
   }

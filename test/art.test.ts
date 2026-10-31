@@ -416,3 +416,30 @@ test('wiring: generated images become chat image markers; forge-image refs resol
     await t.cleanup()
   }
 })
+
+test('uploadCreator: the last creator set on any project is the fallback when the open project (or none) has none', async () => {
+  const t = await tempProject()
+  const other = await mkdtemp(join(tmpdir(), 'forge-art-other-'))
+  try {
+    let open: string | null = t.root
+    const settings = new MemSettings()
+    const { svc } = service(t.root, t.user, fakeFetch([]).fetch, { root: () => open, settings })
+    assert.deepEqual(svc.uploadCreator(), {})
+    await svc.setSettings({ creatorGroupId: 777 })
+    assert.deepEqual(svc.uploadCreator(), { groupId: 777 })
+    open = other
+    assert.deepEqual(svc.uploadCreator(), { groupId: 777 }, 'another project without a creator')
+    open = null
+    assert.deepEqual(svc.uploadCreator(), { groupId: 777 }, 'no project open')
+    open = other
+    await svc.setSettings({ creatorUserId: 42 })
+    assert.deepEqual(svc.uploadCreator(), { userId: 42 })
+    open = t.root
+    assert.deepEqual(svc.uploadCreator(), { groupId: 777 }, 'a project keeps its own creator')
+    open = null
+    assert.deepEqual(svc.uploadCreator(), { groupId: 777 }, 'reading a project creator refreshes the fallback')
+  } finally {
+    await rm(other, { recursive: true, force: true })
+    await t.cleanup()
+  }
+})

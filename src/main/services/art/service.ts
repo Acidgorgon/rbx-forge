@@ -34,6 +34,8 @@ const QUALITIES: ArtQuality[] = ['low', 'medium', 'high', 'xhigh', 'max', 'auto'
 const MAX_REFERENCE_BYTES = 20 * 1024 * 1024
 // Agent calls are capped harder than the page.
 export const AGENT_MAX_VARIANTS = 4
+// Last Roblox creator set on any project (fallback for uploads when the open project has none).
+const CREATOR_KEY = 'art.uploadCreator'
 
 export interface ArtServiceDeps {
   root: () => string | null
@@ -113,8 +115,29 @@ export class ArtService {
     if (patch.creatorGroupId) delete next.creatorUserId
     if (patch.creatorUserId) delete next.creatorGroupId
     this.deps.settings.set(key, next)
+    if (patch.creatorGroupId || patch.creatorUserId) this.rememberCreator(next)
     if (patch.gitPolicy && patch.gitPolicy !== cur.gitPolicy) await applyGitPolicy(r, next.gitPolicy)
     return this.status()
+  }
+
+  // Who owns Open Cloud uploads made outside the Art page (upload inbox, Animation Lab, layers).
+  // The creator is saved per project; the inbox runs whatever project is open (or none), so the last
+  // creator set anywhere is kept globally as the fallback.
+  uploadCreator(root = this.deps.root()): { userId?: number; groupId?: number } {
+    const s = this.settings(root)
+    if (s.creatorUserId || s.creatorGroupId) {
+      this.rememberCreator(s)
+      return { ...(s.creatorUserId ? { userId: s.creatorUserId } : {}), ...(s.creatorGroupId ? { groupId: s.creatorGroupId } : {}) }
+    }
+    const g = sanitize({ ...DEFAULT_SETTINGS, ...this.deps.settings.get<Partial<ArtSettings>>(CREATOR_KEY, {}) })
+    return { ...(g.creatorUserId ? { userId: g.creatorUserId } : {}), ...(g.creatorGroupId ? { groupId: g.creatorGroupId } : {}) }
+  }
+
+  private rememberCreator(s: Partial<ArtSettings>): void {
+    const next = s.creatorGroupId ? { creatorGroupId: s.creatorGroupId } : s.creatorUserId ? { creatorUserId: s.creatorUserId } : null
+    if (!next) return
+    const cur = this.deps.settings.get<Partial<ArtSettings>>(CREATOR_KEY, {})
+    if (cur.creatorGroupId !== next.creatorGroupId || cur.creatorUserId !== next.creatorUserId) this.deps.settings.set(CREATOR_KEY, next)
   }
 
   async status(): Promise<ArtStatus> {

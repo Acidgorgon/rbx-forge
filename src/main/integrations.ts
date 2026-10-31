@@ -153,10 +153,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
   // Open Cloud uploads outside the Art page use the key and creator set there.
   const openCloud: Integrations['openCloud'] = {
     key: async () => (await art.robloxKey().catch(() => null))?.key ?? null,
-    creator: () => {
-      const s = art.service.settings()
-      return { ...(s.creatorUserId ? { userId: s.creatorUserId } : {}), ...(s.creatorGroupId ? { groupId: s.creatorGroupId } : {}) }
-    }
+    creator: () => art.service.uploadCreator()
   }
 
   // ---------------------------------------------------------------- FBX upload inbox (Model assets)

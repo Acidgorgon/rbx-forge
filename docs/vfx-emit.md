@@ -94,8 +94,29 @@ Where the runtime goes past this spec or pins down open points (agreed with the 
 
 - Duration: if no layer is timed but an Enabled layer has no attributes, Duration = 1 s; an open
   Beam/Trail/light window keeps the effect going at least 1 s past its start. `options.duration` overrides.
-- Clean-up also waits for particles riding on mesh copies (copy death + their Lifetime.Max), so they
-  are never cut off.
+- Clean-up also waits for particles riding on mesh copies (their last emission up to the copy's death
+  + Lifetime.Max) and trails (window end, at the copy's death at the latest, + Lifetime), so they are
+  never cut off. A copy's cues after its death are dropped even when a long frame passes both; a FadeOut
+  ramp on a riding layer ends at the copy's death at the latest.
+- Layers without attributes at the top level (an Enabled emitter / beam / light the attributes do not
+  drive) are left as authored until clean-up, like the Lab: they are not switched off at Duration and
+  their particles / trail segments do not count in linger (so they are cut at clean-up). `e:Stop()`
+  still switches them off. Riding on a mesh copy they stay on until the copy's death and do count.
+- `EmitCount` 0 (no window) schedules nothing, so it does not stretch Duration to its `EmitDelay`
+  (emitters and mesh effects alike).
+- Attribute values are read like the plan (emitPlan.ts): numbers or numeric strings; `Lifetime` a
+  NumberRange, a number or `"0.4 0.6"`; `SpreadAngle` / `MinInitRot` / `MaxInitRot` / `Spin` a Vector2,
+  Vector3 (or NumberRange / Color3) or `"x y z"` (missing parts 0; a plain number is ignored);
+  `SyncPosition` a boolean, a number (not 0) or `"true"/"yes"/"1"` / `"false"/"no"/"0"`.
+- Ease strings are read like `parseEase`: `"Quad.Out"`, `"Quad"` (Out), `"QuadOut"`, `"Back InOut"`,
+  `"Quad_In"`, `"Sine/In"`, an `Enum.EasingStyle.` prefix; names in any case. An empty or unknown
+  `Ease*` (a new string attribute in Studio is `""`) falls back to the container's `Ease`, and an empty
+  or unknown `Ease` to Quad.Out.
+- A Model template whose PrimaryPart is `Start` or `End` keeps the template's pivot (the clone's
+  PrimaryPart is cleared and its WorldPivot set to the template's), so static parts are not shifted.
+- If the emission's instance is destroyed or loses its parent (e.g. the `options.parent` folder is
+  destroyed), the play cleans up and `Finished` fires on the next step.
+- `Finished:Wait()` threads that were cancelled meanwhile are skipped (the others still resume).
 - `FadeOut` also fades a Highlight (Fill/OutlineTransparency). It is linear.
 - Mesh copies: CFrame overshoot extrapolates position linearly and rotation by axis-angle (the same as
   `Lerp` inside 0..1). Part Color is clamped to 0..1; Decal Color3 and SpecialMesh VertexColor are not.

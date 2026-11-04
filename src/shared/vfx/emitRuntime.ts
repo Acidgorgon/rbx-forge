@@ -64,7 +64,8 @@ ${EMIT_RUNTIME_HEADER} (v${EMIT_RUNTIME_VERSION}).
 -- Mesh effect: a Model / Folder with BaseParts "Start" and "End"; attributes on it: Lifetime
 -- (NumberRange), Ease / EaseCFrame / EaseSize / EaseTransparency / EaseColor ("Quad.Out" or a
 -- NumberSequence curve), SpreadAngle (Vector2), MinInitRot / MaxInitRot / Spin (Vector3, degrees),
--- SyncPosition (boolean). See docs/vfx-emit.md in RBX Forge.
+-- SyncPosition (boolean); the same strings / numbers the VFX Lab accepts work too. See
+-- docs/vfx-emit.md in RBX Forge.
 local RunService = game:GetService("RunService")
 local TweenService = game:GetService("TweenService")
 
@@ -148,33 +149,55 @@ end
 
 -- ------------------------------------------------------------ easing
 
+-- The names emitPlan.ts knows (EASING_STYLES / EASING_DIRECTIONS), by lower-case name.
 local STYLES = {}
-for _, item in Enum.EasingStyle:GetEnumItems() do
-	STYLES[string.lower(item.Name)] = item
+for _, name in { "Linear", "Sine", "Back", "Quad", "Quart", "Quint", "Bounce", "Elastic", "Exponential", "Circular", "Cubic" } do
+	STYLES[string.lower(name)] = Enum.EasingStyle[name]
 end
-local DIRECTIONS = {}
-for _, item in Enum.EasingDirection:GetEnumItems() do
-	DIRECTIONS[string.lower(item.Name)] = item
-end
+local DIRECTIONS = { ["in"] = Enum.EasingDirection.In, out = Enum.EasingDirection.Out, inout = Enum.EasingDirection.InOut }
 
--- "Quad.Out", "Quad" (Out), "Enum.EasingStyle.Back.InOut"; case-insensitive; unknown -> Quad.Out.
-local function easeFromString(text: string): (number) -> number
-	local s = string.lower(text)
-	s = (string.gsub(s, "%s", ""))
-	s = (string.gsub(s, "^enum%.easingstyle%.", ""))
-	local styleName, dirName = string.match(s, "^(%a+)%.?(%a*)$")
-	local style = if styleName then STYLES[styleName] else nil
-	local direction = Enum.EasingDirection.Out
-	if dirName and dirName ~= "" then
-		direction = DIRECTIONS[dirName]
-	end
-	if not style or not direction then
-		style = Enum.EasingStyle.Quad
-		direction = Enum.EasingDirection.Out
-	end
+local function easeFn(style: Enum.EasingStyle, direction: Enum.EasingDirection): (number) -> number
 	return function(a: number): number
 		return TweenService:GetValue(math.clamp(a, 0, 1), style, direction)
 	end
+end
+
+local QUAD_OUT = easeFn(Enum.EasingStyle.Quad, Enum.EasingDirection.Out)
+
+-- An ease string, read like emitPlan.ts parseEase: "Quad.Out", "Quad" (Out), "QuadOut", "Back InOut",
+-- "quad_in", "Sine/In", "Enum.EasingStyle.Back.InOut"; names in any case. Empty or unknown -> fallback.
+local function easeFromString(text: string, fallback: (number) -> number): (number) -> number
+	local s = string.match(text, "^%s*(.-)%s*$") or ""
+	if string.lower(string.sub(s, 1, 17)) == "enum.easingstyle." then
+		s = string.sub(s, 18)
+	end
+	-- A trailing In / Out / InOut right after a lower-case letter starts the direction (QuadOut).
+	local cuts = {}
+	for _, suffix in { "In", "Out", "InOut" } do
+		local at = #s - #suffix + 1
+		if at > 1 and string.sub(s, at) == suffix and string.match(string.sub(s, at - 1, at - 1), "%l") then
+			table.insert(cuts, at)
+		end
+	end
+	-- (cuts are in descending order, so each insert leaves the earlier positions in place)
+	for _, at in cuts do
+		s = string.sub(s, 1, at - 1) .. "." .. string.sub(s, at)
+	end
+	-- Parts split on . space _ / -; the first is the style, the rest joined is the direction.
+	local parts = {}
+	for part in string.gmatch(s, "[^%.%s_/%-]+") do
+		table.insert(parts, part)
+	end
+	local style = STYLES[string.lower(parts[1] or "")]
+	if not style then
+		return fallback
+	end
+	local dir = string.lower(table.concat(parts, "", 2))
+	local direction = if dir == "" then Enum.EasingDirection.Out else DIRECTIONS[dir]
+	if not direction then
+		return fallback
+	end
+	return easeFn(style, direction)
 end
 
 -- A NumberSequence curve: time 0..1 -> progress (piecewise linear, envelope ignored).
@@ -199,10 +222,12 @@ local function easeFromSequence(seq: NumberSequence): (number) -> number
 	end
 end
 
+-- Ease / Ease* attribute: a string (easeFromString) or a NumberSequence curve; anything else, or an
+-- empty / unknown string (a new string attribute in Studio is ""), -> fallback.
 local function easeOf(inst: Instance, name: string, fallback: (number) -> number): (number) -> number
 	local v = inst:GetAttribute(name)
 	if type(v) == "string" then
-		return easeFromString(v)
+		return easeFromString(v, fallback)
 	elseif typeof(v) == "NumberSequence" then
 		return easeFromSequence(v)
 	end
@@ -256,7 +281,10 @@ function Signal:_fire()
 		end
 	end
 	for _, co in waiting do
-		task.spawn(co)
+		-- A waiter cancelled meanwhile (task.cancel) is dead and cannot be resumed: skip it.
+		if coroutine.status(co) == "suspended" then
+			task.spawn(co)
+		end
 	end
 end
 
@@ -396,6 +424,9 @@ local function newScope(run, base: number, copy)
 		dead = false,
 		-- every ParticleEmitter / toggle layer the scope switches off at its end
 		layers = {},
+		-- top level only: layers without attributes, left as authored until clean-up (Stop switches
+		-- them off; the plan neither ends them at Duration nor counts them in linger)
+		free = {},
 		-- latest window start / explicit window end / last emission (relative)
 		endT = 0,
 		-- latest end of particles / trail segments from explicit windows (relative)
@@ -412,10 +443,21 @@ local function newScope(run, base: number, copy)
 	return scope
 end
 
+-- run.cues stays sorted latest first (equal times: newest first), so the next cue is always the
+-- last entry (fireDue pops it).
 local function cue(scope, t: number, fn: () -> ())
-	local run = scope.run
-	run.seq += 1
-	table.insert(run.cues, { t = scope.base + t, fn = fn, scope = scope, seq = run.seq })
+	local list = scope.run.cues
+	local at = scope.base + t
+	local lo, hi = 1, #list + 1
+	while lo < hi do
+		local mid = (lo + hi) // 2
+		if list[mid].t > at then
+			lo = mid + 1
+		else
+			hi = mid
+		end
+	end
+	table.insert(list, lo, { t = at, fn = fn, scope = scope })
 end
 
 local function fadeBase(x: Instance)
@@ -450,26 +492,45 @@ local function emitAt(scope, pe: ParticleEmitter, t: number, n: number)
 	end)
 end
 
+-- Where a scope's events stop (relative): a mesh copy's death (later cues are dropped, like the
+-- plan's c.at <= death); the top level has no such limit (its cues all lie within Duration).
+local function stopOf(scope): number
+	return if scope.copy then scope.copy.life else math.huge
+end
+
+-- A layer without attributes: in a mesh copy it keeps its authored state until the copy's death;
+-- at the top level it is left as authored until clean-up (not ended at Duration, no linger).
+local function untimedLayer(scope, x: Instance)
+	if scope.copy then
+		table.insert(scope.layers, x)
+	else
+		table.insert(scope.free, x)
+	end
+	if (x :: any).Enabled then
+		scope.hasOpen = true
+	end
+end
+
 -- ParticleEmitter: identical to cuesFromAttributes (analyze.ts).
 local function particleLayer(scope, pe: ParticleEmitter, ctx)
-	table.insert(scope.layers, pe)
 	local life = pe.Lifetime.Max
 	if not ctx.timed then
-		if pe.Enabled then
-			scope.hasOpen = true
-			if pe.Rate > 0 then
-				scope.openLinger = math.max(scope.openLinger, life)
-			end
+		untimedLayer(scope, pe)
+		if scope.copy and pe.Enabled and pe.Rate > 0 then
+			scope.openLinger = math.max(scope.openLinger, life)
 		end
 		return
 	end
+	table.insert(scope.layers, pe)
 	pe.Enabled = false
 	local delay = clampDelay(ctx.delay)
 	local rate = pe.Rate
 	local count = if ctx.count ~= nil then math.clamp(jsRound(ctx.count), 0, 10000) else nil
 	local dur = windowOf(ctx)
-	local last = delay
-	local emits = false
+	local stop = stopOf(scope)
+	-- last: the latest scheduled point (Duration); lastEmit: the latest emission up to stop (linger).
+	-- Nothing scheduled (EmitCount 0 without a window) leaves both nil.
+	local last, lastEmit = nil, nil
 	if dur and rate <= 0 and count and count > 0 then
 		-- Spread EmitCount over EmitDuration (at most 60 steps).
 		local steps = math.max(1, math.min(60, count, jsRound(dur * 30)))
@@ -479,15 +540,20 @@ local function particleLayer(scope, pe: ParticleEmitter, ctx)
 			if want > sent then
 				local t = delay + i * dur / steps
 				emitAt(scope, pe, t, want - sent)
-				last = math.max(last, t)
-				emits = true
+				last = t
+				if t <= stop then
+					lastEmit = t
+				end
 			end
 			sent = want
 		end
 	else
 		if count and count > 0 then
 			emitAt(scope, pe, delay, count)
-			emits = true
+			last = delay
+			if delay <= stop then
+				lastEmit = delay
+			end
 		end
 		if dur then
 			cue(scope, delay, function()
@@ -497,39 +563,44 @@ local function particleLayer(scope, pe: ParticleEmitter, ctx)
 				pe.Enabled = false
 			end)
 			last = delay + dur
-			if rate > 0 then
-				emits = true
+			-- Rate > 0 emits all window long; in a mesh copy the window ends at the copy's death.
+			if rate > 0 and delay < stop then
+				lastEmit = math.min(delay + dur, stop)
 			end
 		elseif count == nil then
 			-- Only a delay: a default burst (like Emit() with no count).
 			emitAt(scope, pe, delay, math.max(8, jsRound(rate * 0.25)))
-			emits = true
+			last = delay
+			if delay <= stop then
+				lastEmit = delay
+			end
 		end
 	end
-	scope.endT = math.max(scope.endT, last)
-	if emits then
-		scope.lingerT = math.max(scope.lingerT, last + life)
+	if last ~= nil then
+		scope.endT = math.max(scope.endT, last)
+	end
+	if lastEmit ~= nil then
+		scope.lingerT = math.max(scope.lingerT, lastEmit + life)
 	end
 end
 
 -- Beam / Trail / lights / Highlight: off until the delay, on for the window, FadeOut at its end.
 local function toggleLayer(scope, x: Instance, ctx)
-	table.insert(scope.layers, x)
 	local a = x :: any
 	local fade = if ctx.fade and ctx.fade > 0 then ctx.fade else nil
 	local isTrail = x:IsA("Trail")
 	if not ctx.timed and not fade then
-		if a.Enabled then
-			scope.hasOpen = true
-			if isTrail then
-				scope.openLinger = math.max(scope.openLinger, a.Lifetime)
-			end
+		untimedLayer(scope, x)
+		if scope.copy and isTrail and a.Enabled then
+			scope.openLinger = math.max(scope.openLinger, a.Lifetime)
 		end
 		return
 	end
+	table.insert(scope.layers, x)
 	local base = if fade then fadeBase(x) else nil
 	local delay = clampDelay(ctx.delay)
 	local dur = windowOf(ctx)
+	local stop = stopOf(scope)
 	if a.Enabled and (delay > 0 or dur) then
 		a.Enabled = false
 	end
@@ -541,11 +612,15 @@ local function toggleLayer(scope, x: Instance, ctx)
 			a.Enabled = false
 		end)
 		scope.endT = math.max(scope.endT, delay + dur)
-		if isTrail then
-			scope.lingerT = math.max(scope.lingerT, delay + dur + a.Lifetime)
-		end
-		if fade then
-			scheduleFade(scope, x, base, math.max(delay, delay + dur - fade), delay + dur)
+		-- In a mesh copy the window ends at the copy's death at the latest (trail tail, fade ramp).
+		local wEnd = math.min(delay + dur, stop)
+		if wEnd > delay then
+			if isTrail then
+				scope.lingerT = math.max(scope.lingerT, wEnd + a.Lifetime)
+			end
+			if fade then
+				scheduleFade(scope, x, base, math.max(delay, wEnd - fade), wEnd)
+			end
 		end
 	else
 		-- Open window: on until the scope ends (top level: at least OPEN_MIN past its start).
@@ -553,7 +628,7 @@ local function toggleLayer(scope, x: Instance, ctx)
 		if scope.copy == nil then
 			scope.endT = math.max(scope.endT, delay + OPEN_MIN)
 		end
-		if isTrail then
+		if isTrail and delay < stop then
 			scope.openLinger = math.max(scope.openLinger, a.Lifetime)
 		end
 		if fade then
@@ -581,35 +656,99 @@ end
 
 -- ------------------------------------------------------------ mesh effects
 
-local function vec3Attr(inst: Instance, name: string): Vector3
+-- The numbers in an array-like attribute value, read like emitPlan.ts numbersOf: NumberRange (Min,
+-- Max), Vector2 / Vector3 / Color3 components (non-finite -> 0), a "a b" / "a, b, c" string (all
+-- numbers) or one number; else nil.
+local function numbersOf(v: any): { number }?
+	local kind = typeof(v)
+	local out
+	if kind == "NumberRange" then
+		out = { v.Min, v.Max }
+	elseif kind == "Vector2" then
+		out = { v.X, v.Y }
+	elseif kind == "Vector3" then
+		out = { v.X, v.Y, v.Z }
+	elseif kind == "Color3" then
+		out = { v.R, v.G, v.B }
+	elseif kind == "number" then
+		return if finite(v) then { v } else nil
+	elseif kind == "string" then
+		local list = {}
+		for part in string.gmatch(v, "[^%s,]+") do
+			local n = tonumber(part)
+			if not finite(n) then
+				return nil
+			end
+			table.insert(list, n)
+		end
+		return if #list > 0 then list else nil
+	else
+		return nil
+	end
+	for i, x in out do
+		if not finite(x) then
+			out[i] = 0
+		end
+	end
+	return out
+end
+
+-- Vector attribute (emitPlan.ts attrVec): numbersOf's forms except a lone number; missing
+-- components are 0. Returns { x, y, z } or nil.
+local function vecAttr(inst: Instance, name: string): { number }?
 	local v = inst:GetAttribute(name)
-	if typeof(v) == "Vector3" then
-		return v
+	if type(v) == "number" then
+		return nil
+	end
+	local n = numbersOf(v)
+	if not n then
+		return nil
+	end
+	return { n[1] or 0, n[2] or 0, n[3] or 0 }
+end
+
+local function vec3Attr(inst: Instance, name: string): Vector3
+	local n = vecAttr(inst, name)
+	if n then
+		return Vector3.new(n[1], n[2], n[3])
 	end
 	return Vector3.zero
 end
 
+-- Boolean attribute (emitPlan.ts attrBool): a boolean, a number (not 0 = true), or the string
+-- true / yes / 1 / false / no / 0 (any case); else nil.
+local function boolAttr(inst: Instance, name: string): boolean?
+	local v = inst:GetAttribute(name)
+	if type(v) == "boolean" then
+		return v
+	elseif type(v) == "number" then
+		return v ~= 0
+	elseif type(v) == "string" then
+		local s = string.lower(string.match(v, "^%s*(.-)%s*$") or "")
+		if s == "true" or s == "yes" or s == "1" then
+			return true
+		elseif s == "false" or s == "no" or s == "0" then
+			return false
+		end
+	end
+	return nil
+end
+
+-- Lifetime (emitPlan.ts attrRange): a NumberRange, a number (both ends), "min max", or a vector's
+-- first two numbers; ends sorted and at least 0.
 local function lifetimeRange(inst: Instance): (number, number)
-	local v = inst:GetAttribute("Lifetime")
-	if typeof(v) == "NumberRange" then
-		return v.Min, v.Max
+	local n = numbersOf(inst:GetAttribute("Lifetime"))
+	if not n then
+		return DEFAULT_LIFETIME, DEFAULT_LIFETIME
 	end
-	local n = num(inst, "Lifetime")
-	if n ~= nil then
-		return n, n
-	end
-	return DEFAULT_LIFETIME, DEFAULT_LIFETIME
+	local a = n[1]
+	local b = if #n > 1 then n[2] else n[1]
+	return math.max(0, math.min(a, b)), math.max(0, a, b)
 end
 
 local function meshSpec(container: Instance, s: BasePart, e: BasePart)
-	local default = easeFromString("Quad.Out")
-	local easeAttr = container:GetAttribute("Ease")
-	if type(easeAttr) == "string" then
-		default = easeFromString(easeAttr)
-	elseif typeof(easeAttr) == "NumberSequence" then
-		default = easeFromSequence(easeAttr)
-	end
-	local spread = container:GetAttribute("SpreadAngle")
+	local default = easeOf(container, "Ease", QUAD_OUT)
+	local spread = vecAttr(container, "SpreadAngle")
 	local spin = vec3Attr(container, "Spin")
 	local spec = {
 		start = s,
@@ -626,12 +765,12 @@ local function meshSpec(container: Instance, s: BasePart, e: BasePart)
 		easeSize = easeOf(container, "EaseSize", default),
 		easeT = easeOf(container, "EaseTransparency", default),
 		easeColor = easeOf(container, "EaseColor", default),
-		spreadX = if typeof(spread) == "Vector2" then math.abs(spread.X) else 0,
-		spreadY = if typeof(spread) == "Vector2" then math.abs(spread.Y) else 0,
+		spreadX = if spread then math.abs(spread[1]) else 0,
+		spreadY = if spread then math.abs(spread[2]) else 0,
 		rot0 = vec3Attr(container, "MinInitRot"),
 		rot1 = vec3Attr(container, "MaxInitRot"),
 		spin = if spin.Magnitude > 0 then spin else nil,
-		sync = container:GetAttribute("SyncPosition") == true,
+		sync = boolAttr(container, "SyncPosition") == true,
 		mesh = nil,
 		decals = {},
 	}
@@ -784,7 +923,7 @@ local function meshLayer(scope, container: Instance, s: BasePart, e: BasePart, c
 	local spec = meshSpec(container, s, e)
 	local lo, hi = lifetimeRange(container)
 	local times = spawnTimes(ctx)
-	scope.endT = math.max(scope.endT, clampDelay(ctx.delay))
+	-- Duration counts the copies' deaths only (EmitCount 0: nothing, like the plan).
 	for _, t in times do
 		-- Random values drawn in a fixed order: lifetime, spreadX, spreadY, rotX, rotY, rotZ.
 		local life = math.max(0.01, lo + (hi - lo) * rng:NextNumber())
@@ -849,30 +988,21 @@ local function anchorAll(root: Instance)
 	prepParts(root)
 end
 
+-- Fires the cues due by rt in time order (run.cues is sorted latest first: pop from the end). Cues
+-- a fired cue adds (a copy's riding layers) land in order and fire in the same pass when due. A
+-- mesh copy's cues after its death are dropped even on a long frame (the plan keeps c.at <= death).
 local function fireDue(run, rt: number)
-	while true do
-		local due, keep = {}, {}
-		for _, c in run.cues do
-			if c.t <= rt then
-				table.insert(due, c)
-			else
-				table.insert(keep, c)
-			end
-		end
-		if #due == 0 then
+	while not run.stopped do
+		local list = run.cues
+		local n = #list
+		local c = list[n]
+		if c == nil or c.t > rt then
 			return
 		end
-		run.cues = keep
-		table.sort(due, function(a, b)
-			if a.t ~= b.t then
-				return a.t < b.t
-			end
-			return a.seq < b.seq
-		end)
-		for _, c in due do
-			if not run.stopped and not c.scope.dead then
-				c.fn()
-			end
+		list[n] = nil
+		local copy = c.scope.copy
+		if not c.scope.dead and not (copy and c.t > copy.born + copy.life) then
+			c.fn()
 		end
 	end
 end
@@ -920,6 +1050,11 @@ local function stopRun(run, immediate: boolean?)
 	run.fades = {}
 	local linger = 0
 	for _, scope in run.scopes do
+		-- Stop switches the untimed top-level layers off too.
+		for _, x in scope.free do
+			table.insert(scope.layers, x)
+		end
+		scope.free = {}
 		for _, x in scope.layers do
 			if x:IsA("ParticleEmitter") then
 				linger = math.max(linger, x.Lifetime.Max)
@@ -936,6 +1071,12 @@ end
 
 local function stepRun(run, now: number)
 	if run.finished then
+		return
+	end
+	-- The emission's instance (or something above it) was destroyed or removed: nothing left to play
+	-- (spawning a copy into it would fail: "Parent property is locked").
+	if run.root.Parent == nil then
+		cleanup(run)
 		return
 	end
 	local rt = now - run.t0
@@ -1061,7 +1202,6 @@ function ForgeVFX.emit(template: Instance, at: any?, options: any?)
 		pivotEachFrame = false,
 		unwelded = false,
 		t0 = os.clock(),
-		seq = 0,
 		cues = {},
 		fades = {},
 		copies = {},
@@ -1103,6 +1243,13 @@ function ForgeVFX.emit(template: Instance, at: any?, options: any?)
 		end
 		walk(scope, root, ROOT_CTX)
 		prepParts(root)
+		-- Start / End have left the clone: if one was the PrimaryPart the Model's pivot would move
+		-- (and PivotTo shift the static parts); keep the template's pivot instead.
+		if root:IsA("Model") then
+			local model = root :: Model
+			model.PrimaryPart = nil
+			model.WorldPivot = run.pivot0
+		end
 		local duration = scope.endT
 		if typeof(o.duration) == "number" and o.duration >= 0 then
 			duration = o.duration

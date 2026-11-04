@@ -8,9 +8,17 @@
 // task.wait / task.delay, ParticleEmitter:Emit and Enabled. NumberSequence / ColorSequence are not
 // tweenable (TweenService docs), so the virtual SizeScale / Fade / Color tint are driven by a
 // NumberValue tween whose Changed signal rewrites the sequences from their authored values.
+// Properties those virtuals scale (a part's Size / Transparency, a FileMesh's Scale, a light's
+// Brightness / Range, a beam's widths, a highlight's transparencies) are tweened the same way, as a
+// base value the virtuals multiply (as the Lab's preview does), so a later Size tween is not undone
+// by a running SizeScale. Part CFrame tweens are driven in the effect's space each step, so an
+// effect that follows a moving target (the module re-pivots it) keeps its motion.
 
 export const RUNTIME_MODULE = 'ForgeFX'
-export const RUNTIME_VERSION = 1
+export const RUNTIME_VERSION = 2
+// The attribute on the instances a compiled cue addresses (its row in the module's NODES list):
+// imported packs repeat names ("1SP"), so cues find their instance by it, not by name.
+export const NODE_ID_ATTR = 'ForgeId'
 export const RUNTIME_HEADER = '-- ForgeFX runtime for RBX Forge VFX timelines'
 
 // Whether a ForgeFX.luau on disk is ours (safe to update) rather than someone's replacement.
@@ -69,14 +77,30 @@ function ForgeFX.new(model: Model, options: any?)
 	self.virt = {}
 	self.base = {}
 	self.drivers = {}
+	self.tweens = {}
 	self.alive = true
+	self.stopped = false
 	self.byName = {}
+	self.byId = {}
 	for _, d in model:GetDescendants() do
 		if self.byName[d.Name] == nil then
 			self.byName[d.Name] = d
 		end
+		local id = d:GetAttribute("${NODE_ID_ATTR}")
+		if type(id) == "number" then
+			local list = self.byId[id] or {}
+			self.byId[id] = list
+			table.insert(list, d)
+		end
 	end
 	return self
+end
+
+-- What a compiled cue addresses: its instances by ${NODE_ID_ATTR} (exact, also when names repeat),
+-- else (a template without ids) the first instance with its name.
+function ForgeFX:_targets(c): { any }
+	local list = if c.id ~= nil then self.byId[c.id] else nil
+	return list or { c.name }
 end
 
 function ForgeFX:find(target): Instance?
@@ -161,6 +185,9 @@ function ForgeFX:anchor() end
 -- ------------------------------------------------------------ actions
 
 function ForgeFX:emit(target, count: number?)
+	if self.stopped then
+		return
+	end
 	local inst = self:find(target)
 	if not inst then
 		return
@@ -171,7 +198,7 @@ function ForgeFX:emit(target, count: number?)
 end
 
 function ForgeFX:enable(target)
-	local inst = self:find(target)
+	local inst = if self.stopped then nil else self:find(target)
 	if inst then
 		for _, x in layers(inst, TOGGLES) do
 			(x :: any).Enabled = true
@@ -180,7 +207,7 @@ function ForgeFX:enable(target)
 end
 
 function ForgeFX:disable(target)
-	local inst = self:find(target)
+	local inst = if self.stopped then nil else self:find(target)
 	if inst then
 		for _, x in layers(inst, TOGGLES) do
 			(x :: any).Enabled = false
@@ -188,7 +215,8 @@ function ForgeFX:disable(target)
 	end
 end
 
--- Authored values the virtual properties scale (read once, before anything changes them).
+-- Base values the virtual properties scale: read from the instance once, then changed only by
+-- tweens / sets of those properties (_tweenBase), never by the scaling itself.
 function ForgeFX:_base(x: Instance)
 	local b = self.base[x]
 	if b then
@@ -208,9 +236,32 @@ function ForgeFX:_base(x: Instance)
 		b.Size, b.Transparency = a.Size, a.Transparency
 	elseif x:IsA("Highlight") then
 		b.FillTransparency, b.OutlineTransparency = a.FillTransparency, a.OutlineTransparency
+	elseif x:IsA("SpecialMesh") then
+		b.Scale = a.Scale
 	end
 	self.base[x] = b
 	return b
+end
+
+-- Whether a property of this instance is one the virtuals scale (tweened as a base value).
+local function isBaseProp(x: Instance, prop: string): boolean
+	if x:IsA("BasePart") then
+		return prop == "Size" or prop == "Transparency"
+	elseif x:IsA("Light") then
+		return prop == "Brightness" or prop == "Range"
+	elseif x:IsA("Beam") then
+		return prop == "Width0" or prop == "Width1"
+	elseif x:IsA("Highlight") then
+		return prop == "FillTransparency" or prop == "OutlineTransparency"
+	elseif x:IsA("SpecialMesh") then
+		return prop == "Scale"
+	end
+	return false
+end
+
+-- A FileMesh keeps its own size (its part's Size does not resize it): SizeScale scales its Scale.
+local function isFileMesh(x: Instance): boolean
+	return x:IsA("SpecialMesh") and (x :: any).MeshType == Enum.MeshType.FileMesh
 end
 
 local function scaleSeq(seq: NumberSequence, k: number): NumberSequence
@@ -237,8 +288,9 @@ local function tintSeq(seq: ColorSequence, c: Color3, a: number): ColorSequence
 	return ColorSequence.new(keys)
 end
 
--- Applies SizeScale / Fade (own and every ancestor's) and the tint to one instance.
-function ForgeFX:_apply(x: Instance)
+-- Applies SizeScale / Fade (own and every ancestor's) and the tint to one instance, on top of its
+-- base values. force: a base value changed, so write the scaled properties even without virtuals.
+function ForgeFX:_apply(x: Instance, force: boolean?)
 	local scale, keep, hasScale, hasFade = 1, 1, false, false
 	local cur: Instance? = x
 	while cur and cur ~= self.model.Parent do
@@ -257,16 +309,18 @@ function ForgeFX:_apply(x: Instance)
 	end
 	local fade = 1 - keep
 	local tint = self.virt[x] and self.virt[x].tint
-	if not hasScale and not hasFade and not tint then
+	if not hasScale and not hasFade and not tint and not force then
 		return
 	end
 	local b = self:_base(x)
 	local a = x :: any
+	local sc = hasScale or force
+	local fd = hasFade or force
 	if x:IsA("ParticleEmitter") then
 		if hasScale then a.Size = scaleSeq(b.Size, scale) end
 		if hasFade then a.Transparency = fadeSeq(b.Transparency, fade) end
 	elseif x:IsA("Beam") then
-		if hasScale then
+		if sc then
 			a.Width0 = b.Width0 * scale
 			a.Width1 = b.Width1 * scale
 		end
@@ -275,15 +329,19 @@ function ForgeFX:_apply(x: Instance)
 		if hasScale then a.WidthScale = scaleSeq(b.WidthScale, scale) end
 		if hasFade then a.Transparency = fadeSeq(b.Transparency, fade) end
 	elseif x:IsA("Light") then
-		if hasFade then a.Brightness = b.Brightness * keep end
-		if hasScale then a.Range = b.Range * scale end
+		if fd then a.Brightness = b.Brightness * keep end
+		if sc then a.Range = b.Range * scale end
 	elseif x:IsA("BasePart") then
-		if hasScale then a.Size = b.Size * scale end
-		if hasFade then a.Transparency = 1 - (1 - b.Transparency) * keep end
+		if sc then a.Size = b.Size * scale end
+		if fd then a.Transparency = 1 - (1 - b.Transparency) * keep end
 	elseif x:IsA("Highlight") then
-		if hasFade then
+		if fd then
 			a.FillTransparency = 1 - (1 - b.FillTransparency) * keep
 			a.OutlineTransparency = 1 - (1 - b.OutlineTransparency) * keep
+		end
+	elseif x:IsA("SpecialMesh") then
+		if sc then
+			a.Scale = if isFileMesh(x) then b.Scale * scale else b.Scale
 		end
 	end
 	if tint and SEQ_LAYERS[x.ClassName] then
@@ -322,6 +380,33 @@ function ForgeFX:_drive(inst: Instance, key: string, info: TweenInfo, fn: (numbe
 		value:Destroy()
 	end)
 	tween:Play()
+end
+
+-- Tweens a base value (isBaseProp) from where it is now; the virtuals keep multiplying it.
+function ForgeFX:_tweenBase(inst: Instance, prop: string, goal: any, info: TweenInfo)
+	local b = self:_base(inst)
+	local from = b[prop]
+	if from == nil then
+		from = (inst :: any)[prop]
+	end
+	self:_drive(inst, prop, info, function(alpha)
+		local k = TweenService:GetValue(alpha, info.EasingStyle, info.EasingDirection)
+		if typeof(from) == "Vector3" then
+			b[prop] = from:Lerp(goal, k)
+		else
+			b[prop] = from + (goal - from) * k
+		end
+		self:_apply(inst, true)
+	end)
+end
+
+-- The frame part goals are relative to: the root part, else where the effect was played (the
+-- module moves both while the effect follows its target).
+function ForgeFX:_frame(inst: Instance): CFrame
+	if self.root and self.root ~= inst then
+		return self.root.CFrame
+	end
+	return self.pivot
 end
 
 function ForgeFX:_virtual(inst: Instance, prop: string, goal: number, info: TweenInfo)
@@ -367,7 +452,7 @@ local function easing(enumType, value, fallback)
 end
 
 function ForgeFX:tween(target, seconds: number, goals: { [string]: any }, style: any?, direction: any?)
-	local inst = self:find(target)
+	local inst = if self.stopped then nil else self:find(target)
 	if not inst then
 		return seconds
 	end
@@ -379,11 +464,17 @@ function ForgeFX:tween(target, seconds: number, goals: { [string]: any }, style:
 		elseif prop == "Color" and typeof(goal) == "Color3" and SEQ_LAYERS[inst.ClassName] then
 			self:_tint(inst, goal, info)
 		elseif inst:IsA("BasePart") and (prop == "Position" or prop == "CFrame") then
-			-- Goals are in the effect's space (relative to its root part, else to where it was played).
-			local frame = if self.root then self.root.CFrame else self.pivot
-			local rel = frame:ToObjectSpace((inst :: BasePart).CFrame)
-			local goalCf = if prop == "CFrame" then goal else CFrame.new(goal) * rel.Rotation
-			native.CFrame = frame * goalCf
+			-- Goals are in the effect's space (relative to its root part, else to where it was played),
+			-- re-read every step so the part keeps up while the effect follows a moving target.
+			local part = inst :: BasePart
+			local fromRel = self:_frame(part):ToObjectSpace(part.CFrame)
+			local goalCf = if prop == "CFrame" then goal else CFrame.new(goal) * fromRel.Rotation
+			self:_drive(part, "CFrame", info, function(alpha)
+				local k = TweenService:GetValue(alpha, info.EasingStyle, info.EasingDirection)
+				part.CFrame = self:_frame(part) * fromRel:Lerp(goalCf, k)
+			end)
+		elseif isBaseProp(inst, prop) then
+			self:_tweenBase(inst, prop, goal, info)
 		else
 			native[prop] = goal
 		end
@@ -394,7 +485,12 @@ function ForgeFX:tween(target, seconds: number, goals: { [string]: any }, style:
 				(inst :: any)[k] = v
 			end
 		else
-			TweenService:Create(inst, info, native):Play()
+			local tween = TweenService:Create(inst, info, native)
+			self.tweens[tween] = true
+			tween.Completed:Connect(function()
+				self.tweens[tween] = nil
+			end)
+			tween:Play()
 		end
 	end
 	return seconds
@@ -406,23 +502,27 @@ end
 
 -- One cue of the compiled timeline (CUES / SPAWNS tables in the effect module).
 function ForgeFX:cue(c)
-	if c.action == "emit" then
-		self:emit(c.name, c.count)
-	elseif c.action == "enable" then
-		self:enable(c.name)
-	elseif c.action == "disable" then
-		self:disable(c.name)
-	elseif c.action == "tween" then
-		self:tween(c.name, c.duration or 0, c.goals, c.style, c.direction)
-	elseif c.action == "set" then
-		self:set(c.name, c.goals)
+	for _, target in self:_targets(c) do
+		if c.action == "emit" then
+			self:emit(target, c.count)
+		elseif c.action == "enable" then
+			self:enable(target)
+		elseif c.action == "disable" then
+			self:disable(target)
+		elseif c.action == "tween" then
+			self:tween(target, c.duration or 0, c.goals, c.style, c.direction)
+		elseif c.action == "set" then
+			self:set(target, c.goals)
+		end
 	end
 end
 
 -- State before rigs appear (applied before the model is parented, so nothing pops in).
 function ForgeFX:prelude(list)
 	for _, c in list do
-		self:set(c.name, c.goals)
+		for _, target in self:_targets(c) do
+			self:set(target, c.goals)
+		end
 	end
 end
 
@@ -434,6 +534,9 @@ function ForgeFX:spawn(kind: string, opts: any?)
 		name = string.upper(string.sub(key, 1, 1)) .. string.sub(key, 2) .. self.counts[key]
 	end
 	local start = self:now()
+	if self.stopped then
+		return handle(name)
+	end
 	for _, c in self.spawns[name] or {} do
 		if c.dt <= 0 then
 			self:cue(c)
@@ -471,13 +574,21 @@ function ForgeFX:runCues(cues, stages)
 	end
 end
 
+-- Stops the effect where it is: nothing scheduled runs, later timeline actions do nothing, and
+-- every running tween (TweenService tweens and the virtual drivers) is cancelled.
 function ForgeFX:stop()
 	self.alive = false
+	self.stopped = true
 	for _, drivers in self.drivers do
 		for _, t in drivers do
 			t:Cancel()
 		end
 	end
+	self.drivers = {}
+	for t in self.tweens do
+		t:Cancel()
+	end
+	self.tweens = {}
 end
 
 return ForgeFX

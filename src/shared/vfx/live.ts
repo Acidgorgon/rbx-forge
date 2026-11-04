@@ -18,7 +18,7 @@
 import { assertModuleSizes, CAMERAS } from '../studio/payload.ts'
 import { KEY_COLOR } from '../studio/crop.ts'
 import { BRIDGE_VERSION, type BridgeJob } from '../studio/protocol.ts'
-import { effectModules, timelineModule } from './luau.ts'
+import { effectModules, moduleDuration, timelineModule } from './luau.ts'
 import { FORGEFX_SOURCE, RUNTIME_MODULE } from './runtime.ts'
 import type { VfxEffect } from './types.ts'
 
@@ -78,11 +78,13 @@ export function normalizeLiveSettings(s: Partial<LiveSettings> | null | undefine
   return { gap: Number.isFinite(gap) ? Math.min(10, Math.max(0, gap)) : LIVE_DEFAULT_GAP, mode: s?.mode === 'origin' ? 'origin' : 'dummy' }
 }
 
-function lingerOf(effect: VfxEffect): number {
+// How long the last particles / trail segments outlive the timeline (capped for the loop).
+export function lingerOf(effect: VfxEffect): number {
   let max = 0
   const walk = (n: VfxEffect['roots'][number]) => {
     const life = n.props.Lifetime
-    if (Array.isArray(life)) max = Math.max(max, Number(life[1] ?? life[0]) || 0)
+    if (n.className === 'ParticleEmitter') max = Math.max(max, Array.isArray(life) ? Number(life[1] ?? life[0]) || 0 : 10)
+    else if (n.className === 'Trail') max = Math.max(max, life === undefined ? 2 : Number(life) || 0)
     n.children.forEach(walk)
   }
   effect.roots.forEach(walk)
@@ -99,7 +101,8 @@ export function livePayload(effect: VfxEffect): LiveEffectPayload {
     source: m.source,
     ...(m.data.length ? { data: m.data } : {}),
     ...(timeline ? { timeline } : {}),
-    duration: Math.max(0.1, Number(effect.duration) || 1),
+    // As long as the module plays it (Effect.Duration: at least until the last cue).
+    duration: Math.max(0.1, moduleDuration(effect) || 1),
     linger: lingerOf(effect)
   }
 }

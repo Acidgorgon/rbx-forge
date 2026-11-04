@@ -11,7 +11,7 @@
 // The binary format (.rbxm) is read through Lune (services/vfx/lune.ts); this reader also gives
 // Forge a no-Lune path for .rbxmx and is used to check what we write.
 
-import { ENUMS, SCHEMA, enumName } from './schema.ts'
+import { ENUMS, PART_CLASSES, SCHEMA, enumName } from './schema.ts'
 import type { ColorKey, NumKey, PropValue, VfxNode } from './types.ts'
 
 // ------------------------------------------------------------------ tiny XML DOM
@@ -384,13 +384,14 @@ export function writeRbxmx(roots: VfxNode[]): string {
     for (const [key, value] of Object.entries(nd.props)) {
       const spec = schema[key]
       if (!spec || value === undefined || value === null) continue
-      // Part colour is written as Color3uint8 (what BasePart serialises).
-      if ((nd.className === 'Part' || nd.className === 'MeshPart') && key === 'Color' && Array.isArray(value)) {
+      // BasePart colour is written as Color3uint8 and Size as "size" (what BasePart serialises; every
+      // part class: Part, MeshPart, WedgePart, UnionOperation).
+      if (PART_CLASSES.has(nd.className) && key === 'Color' && Array.isArray(value)) {
         const c = (value as number[]).map((x) => Math.max(0, Math.min(255, Math.round(x * 255))))
         lines.push(`${pad}\t\t<Color3uint8 name="Color3uint8">${(((c[0] << 16) | (c[1] << 8) | c[2]) >>> 0).toString()}</Color3uint8>`)
         continue
       }
-      if ((nd.className === 'Part' || nd.className === 'MeshPart') && key === 'Size') {
+      if (PART_CLASSES.has(nd.className) && key === 'Size') {
         const a = value as number[]
         lines.push(`${pad}\t\t<Vector3 name="size"><X>${n(a[0])}</X><Y>${n(a[1])}</Y><Z>${n(a[2])}</Z></Vector3>`)
         continue

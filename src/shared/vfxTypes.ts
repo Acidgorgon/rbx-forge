@@ -6,9 +6,10 @@ import type { VfxSpec } from './vfx/spec.ts'
 import type { Restatement } from './restate/types.ts'
 import type { VfxMeshApi } from './vfxMeshTypes.ts'
 import type { LiveSettings, LiveStatus } from './vfx/live.ts'
+import type { SelectionPlayStatus } from './vfx/emitStudio.ts'
 
 export type * from './vfx/types.ts'
-export type { PerfWarning, VfxSpec, LiveSettings, LiveStatus }
+export type { PerfWarning, VfxSpec, LiveSettings, LiveStatus, SelectionPlayStatus }
 
 export interface VfxNameFromTagsResult {
   renamed: VfxEntry[]
@@ -57,6 +58,14 @@ export interface VfxApi extends VfxMeshApi {
   vfxLiveSet(current: { key: string; effect: VfxEffect; label?: string }): Promise<LiveStatus>
   vfxLiveSettings(settings: Partial<LiveSettings>): Promise<LiveStatus>
   vfxLiveStatus(): Promise<LiveStatus>
+  // Play Studio selection: Studio plays its selected effects with ForgeVFX (attribute-driven), once or
+  // looped with a gap until vfxStopSelection; vfx:selection reports.
+  vfxPlaySelection(opts?: { loop?: boolean; gap?: number }): Promise<SelectionPlayStatus>
+  vfxStopSelection(): Promise<SelectionPlayStatus>
+  vfxSelectionGap(gap: number): Promise<SelectionPlayStatus>
+  vfxSelectionStatus(): Promise<SelectionPlayStatus>
+  // Writes src/shared/VFX/ForgeVFX.luau into the open project (kept: a file there is not Forge's).
+  vfxInstallEmitRuntime(): Promise<{ path: string; status: 'written' | 'unchanged' | 'kept' }>
   // Native picker (files and folders); [] when cancelled.
   vfxChooseImport(): Promise<string[]>
   // Parameter edits write back to the effect's Luau module and .rbxmx when it was written.
@@ -97,4 +106,5 @@ export interface VfxEvents {
   // Bulk import progress (scan / Studio read / commit / meshes).
   'vfx:import': VfxImportProgress
   'vfx:live': LiveStatus
+  'vfx:selection': SelectionPlayStatus
 }

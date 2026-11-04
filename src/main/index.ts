@@ -1222,6 +1222,7 @@ app.on('before-quit', (event) => {
   void spend.dispose()
   vfx.service.dispose()
   vfx.live.dispose()
+  vfx.selection.dispose()
   anim.service.dispose()
   void studio.dispose()
   lsp.dispose()

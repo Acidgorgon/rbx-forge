@@ -22,6 +22,7 @@ import type { StudioHarvestDeps } from './textures/importer.ts'
 import { MeshService } from './meshes.ts'
 import { VfxImporter } from './importer.ts'
 import { LiveStudio } from './live.ts'
+import { SelectionPlayer } from './selectionPlay.ts'
 import type { LiveSettings } from '../../../shared/vfx/live.ts'
 import type { VfxImportCommit } from '../../../shared/vfx/types.ts'
 import type { StudioPath } from '../../../shared/vfx/studioImport.ts'
@@ -34,7 +35,7 @@ export interface VfxWireDeps {
   userDataDir: string
   root: () => string | null
   settings: { get<T>(key: string, fallback: T): T; set?(key: string, value: unknown): void }
-  emit: (event: 'vfx:changed' | 'vfx:progress' | 'vfx:textures' | 'vfx:meshes' | 'vfx:import' | 'vfx:live', payload: unknown) => void
+  emit: (event: 'vfx:changed' | 'vfx:progress' | 'vfx:textures' | 'vfx:meshes' | 'vfx:import' | 'vfx:live' | 'vfx:selection', payload: unknown) => void
   log?: (text: string, stream?: 'info' | 'stderr') => void
   memory?: MemoryLike
   vision?: (tier?: LabTier) => VisionFn | null
@@ -59,6 +60,7 @@ export interface VfxWiring {
   textures: TextureService
   meshes: MeshService
   live: LiveStudio
+  selection: SelectionPlayer
   handlers: Record<string, (...args: any[]) => unknown>
   tools: () => { read: VfxTool[]; write: VfxTool[] }
 }
@@ -97,6 +99,8 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
   // Live in Studio / Loop: Studio replays the current effect (preemptible bridge job).
   let isRefining: (id: string) => boolean = () => false
   const live = new LiveStudio({ bridge: () => deps.studioTextures?.bridge, emit: deps.emit, log: deps.log, isRefining: (id) => isRefining(id) })
+  // Play Studio selection: Studio plays its selected effects with ForgeVFX (preemptible bridge job).
+  const selection = new SelectionPlayer({ bridge: () => deps.studioTextures?.bridge, emit: deps.emit, log: deps.log })
   const service = new VfxService({
     onDraft: (entryId, iteration, effect, score) => live.draft(entryId, iteration, effect, score),
     principles: deps.principles,
@@ -160,6 +164,11 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     vfxLiveSet: async (current: { key: string; effect: VfxEffect; label?: string }) => (current?.effect ? live.setCurrent({ key: String(current.key), effect: current.effect, label: String(current.label ?? current.effect.name ?? '') }) : live.status()),
     vfxLiveSettings: async (s: Partial<LiveSettings>) => live.setSettings(s ?? {}),
     vfxLiveStatus: async () => live.status(),
+    vfxPlaySelection: async (opts?: { loop?: boolean; gap?: number }) => selection.play({ loop: !!opts?.loop, gap: typeof opts?.gap === 'number' ? opts.gap : undefined }),
+    vfxStopSelection: async () => selection.stop(),
+    vfxSelectionGap: async (gap: unknown) => selection.setGap(Number(gap)),
+    vfxSelectionStatus: async () => selection.status(),
+    vfxInstallEmitRuntime: () => service.installEmitRuntime(),
     vfxChooseImport: async () => (deps.chooseImport ? deps.chooseImport() : []),
     vfxUpdate: (id: string, patch: Parameters<VfxService['update']>[1]) => service.update(String(id ?? ''), patch ?? {}),
     vfxDelete: (id: string) => service.remove(String(id ?? '')),
@@ -214,5 +223,5 @@ export function createVfxWiring(deps: VfxWireDeps): VfxWiring {
     const t = textureTools(textures, { chatImage: deps.chatImage })
     return { read: [...v.read, ...t.read], write: [...v.write, ...t.write] }
   }
-  return { service, textures, meshes, live, handlers, tools: () => (tools ??= withTextures()) }
+  return { service, textures, meshes, live, selection, handlers, tools: () => (tools ??= withTextures()) }
 }

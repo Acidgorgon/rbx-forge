@@ -62,7 +62,7 @@ test('EmitCount / EmitDelay / EmitDuration drive the cues (inherited from the Mo
   const a = emitAttributes(roots)
   assert.deepEqual(a.get('EA'), { delay: 0.3, count: 20 })
   assert.deepEqual(a.get('EB'), { delay: 0.3, count: 12, duration: 0.5 })
-  assert.deepEqual(a.get('EC'), { delay: 0.2, duration: 1 }, 'own EmitDelay wins over the Model')
+  assert.deepEqual(a.get('EC'), { delay: 0.5, duration: 1 }, 'own EmitDelay adds to the Model\'s (docs/vfx-emit.md)')
   const effect = effectFromNodes('Burst', roots)
   const of = (id: string) => effect.cues.filter((c) => c.target === id)
   // Flash: one burst of 20 at the delay; it was disabled already.
@@ -74,18 +74,18 @@ test('EmitCount / EmitDelay / EmitDuration drive the cues (inherited from the Mo
   assert.equal(emits.reduce((s, c) => s + (c.count ?? 0), 0), 12)
   assert.equal(emits[0].at, 0.3)
   assert.ok(emits[emits.length - 1].at < 0.8 && emits[emits.length - 1].at > 0.7)
-  // Smoke: Rate 10, on for [0.2, 1.2].
+  // Smoke: Rate 10, on for [0.5, 1.5] (0.3 from the Model + its own 0.2).
   assert.deepEqual(
     of('EC').map((c) => [c.action, c.at]),
     [
       ['disable', 0],
-      ['enable', 0.2],
-      ['disable', 1.2]
+      ['enable', 0.5],
+      ['disable', 1.5]
     ]
   )
   // The generic emit script did not add its own guesses for these emitters.
   assert.ok(!effect.cues.some((c) => c.action === 'emit' && c.count === 16))
-  assert.ok(effect.duration >= 1.2)
+  assert.ok(effect.duration >= 1.5)
   // Without attributes nothing changes.
   assert.deepEqual(cuesFromAttributes([{ id: 'p', className: 'ParticleEmitter', name: 'P', props: {}, children: [] }]), [])
   // Simulation: Flash shows 20 particles just after 0.3, none before.
@@ -93,7 +93,7 @@ test('EmitCount / EmitDelay / EmitDuration drive the cues (inherited from the Mo
   const flash = p.emitters.find((e) => e.id === 'EA')!
   assert.deepEqual(flash.bursts, [{ at: 0.3, count: 20 }])
   const smoke = p.emitters.find((e) => e.id === 'EC')!
-  assert.deepEqual(smoke.windows, [[0.2, 1.2]])
+  assert.deepEqual(smoke.windows, [[0.5, 1.5]])
 })
 
 test('emitters sit at their real positions: Part x Attachment, nested Bones, re-centred on the emitter parts', () => {

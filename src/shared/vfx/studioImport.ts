@@ -257,7 +257,7 @@ local function serialize(roots)
 			local any = false
 			for k, v in attrs do
 				local t = typeof(v)
-				if t == "number" or t == "boolean" or t == "string" then
+				if t == "number" or t == "boolean" or t == "string" or t == "Vector2" or t == "Vector3" or t == "Color3" or t == "NumberRange" or t == "NumberSequence" then
 					plain[clean(k)] = convert(v, ids)
 					any = true
 				end

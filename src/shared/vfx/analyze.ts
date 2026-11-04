@@ -5,7 +5,8 @@ import { CONTAINER_CLASSES, PART_CLASSES, PART_DECOR_CLASSES, prop, SCRIPT_CLASS
 import { revealedByCues, tweenCuesFromScripts } from './scriptTweens.ts'
 import { curveShape, evalColorSequence, hex, sequenceMax, type CurveShape } from './sequence.ts'
 import { emitterBudget, flipbookFrames, MAX_RATE, prepareEffect, simulate } from './simulate.ts'
-import type { ColorSequence, NumberRange, NumberSequence, Rgb, VfxCue, VfxEffect, VfxNode, VfxStats } from './types.ts'
+import { cuesFromPlan, emitPlan, meshEffectParts, planLength, templateIds, type EmitAttrs, type EmitPlan } from './emitPlan.ts'
+import type { ColorSequence, NumberRange, NumberSequence, Rgb, VfxAttrValue, VfxCue, VfxEffect, VfxNode, VfxStats } from './types.ts'
 
 // Keeps VFX instances, their containers, scripts and visible parts (drawn in the preview); drops
 // everything else (terrain, UI, sounds...). A part counts as visible when it is not fully
@@ -14,10 +15,12 @@ import type { ColorSequence, NumberRange, NumberSequence, Rgb, VfxCue, VfxEffect
 // SpecialMesh / Decal / Texture / SurfaceAppearance children.
 export function pruneToVfx(nodes: VfxNode[], revealed: Set<string> = new Set()): VfxNode[] {
   const keep = (n: VfxNode, parentVisible: boolean): VfxNode | null => {
+    // Mesh effects (ForgeVFX): Start / End are templates, kept whole even when End is invisible.
+    const me = meshEffectParts(n)
     const visiblePart = PART_CLASSES.has(n.className) && (n.props.Transparency === undefined || Number(n.props.Transparency) < 1 || revealed.has(n.id))
-    const kids = n.children.map((c) => keep(c, visiblePart)).filter((x): x is VfxNode => !!x)
+    const kids = n.children.map((c) => (me && (c === me.start || c === me.end) ? c : keep(c, visiblePart))).filter((x): x is VfxNode => !!x)
     const decor = parentVisible && PART_DECOR_CLASSES.has(n.className)
-    const own = VFX_CLASSES.has(n.className) || SCRIPT_CLASSES.has(n.className) || visiblePart || decor
+    const own = VFX_CLASSES.has(n.className) || SCRIPT_CLASSES.has(n.className) || visiblePart || decor || !!me
     if (own || (CONTAINER_CLASSES.has(n.className) && kids.some((k) => !SCRIPT_CLASSES.has(k.className) || k.children.length))) return { ...n, children: kids }
     return null
   }
@@ -86,11 +89,13 @@ function round(x: number): number {
 }
 
 // Burst effects whose scripts we could not read still need something to show: emitters that are
-// disabled and never cued get one Emit at t=0 of Rate x 0.25 (min 8) particles.
+// disabled and never cued get one Emit at t=0 of Rate x 0.25 (min 8) particles. Mesh-effect
+// templates (Start / End subtrees) are left alone: their copies are timed by the plan.
 export function defaultCues(nodes: VfxNode[], cues: VfxCue[]): VfxCue[] {
   const out = [...cues]
+  const tpl = templateIds(nodes)
   for (const n of allNodes(nodes)) {
-    if (n.className !== 'ParticleEmitter' || prop<boolean>(n, 'Enabled') !== false) continue
+    if (n.className !== 'ParticleEmitter' || prop<boolean>(n, 'Enabled') !== false || tpl.has(n.id)) continue
     if (cues.some((c) => c.target === n.id)) continue
     out.push({ at: 0, target: n.id, action: 'emit', count: Math.max(8, Math.round((prop<number>(n, 'Rate') || 0) * 0.25)) })
   }
@@ -114,84 +119,58 @@ export function effectDuration(nodes: VfxNode[], cues: VfxCue[]): number {
 
 // ------------------------------------------------------------------ emit attributes
 //
-// The community convention for emit-on-demand VFX (the user's own effects use exactly these):
-// attributes on a ParticleEmitter, or on its parent Attachment / Part / Model (the nearest ancestor
-// that has one; the emitter's own value wins):
-//   EmitDelay     seconds to wait before emitting (default 0)
-//   EmitCount     ParticleEmitter:Emit(EmitCount) after the delay
-//   EmitDuration  seconds the emitter stays Enabled after the delay; with Rate 0 the EmitCount
-//                 particles are spread evenly over that time instead of one burst
-// When any of them applies, they drive the emitter's timeline (the script / burst guesses do not).
-// Beams and Trails with EmitDelay / EmitDuration are switched on for that window.
+// The attribute convention for emit-on-demand VFX (ForgeVFX, docs/vfx-emit.md): EmitDelay /
+// EmitCount / EmitDuration (and FadeOut, Rate) on a layer or any ancestor; EmitDelay adds up along
+// the ancestors, the rest is the nearest value. The rules and the schedule live in emitPlan.ts;
+// these are the importer's views of it. Mesh effects (Model / Folder with Start and End parts)
+// are drawn by the preview from the same plan (simulate.ts).
 
-export const EMIT_ATTRS = ['EmitCount', 'EmitDelay', 'EmitDuration'] as const
+export { EMIT_ATTRS, type EmitAttrs } from './emitPlan.ts'
 
-export interface EmitAttrs {
-  count?: number
-  delay: number
-  duration?: number
-}
-
-// The emit attributes that apply to each node id (own value, else the nearest ancestor's).
+// The emit attributes that apply to each attribute-driven layer id.
 export function emitAttributes(nodes: VfxNode[]): Map<string, EmitAttrs> {
-  const out = new Map<string, EmitAttrs>()
-  const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : typeof v === 'string' && v.trim() && Number.isFinite(Number(v)) ? Number(v) : undefined)
-  const visit = (n: VfxNode, inherited: Partial<Record<(typeof EMIT_ATTRS)[number], number>>) => {
-    const here = { ...inherited }
-    for (const k of EMIT_ATTRS) {
-      const v = num(n.attrs?.[k])
-      if (v !== undefined) here[k] = v
-    }
-    if ((n.className === 'ParticleEmitter' || n.className === 'Beam' || n.className === 'Trail') && EMIT_ATTRS.some((k) => here[k] !== undefined)) {
-      out.set(n.id, {
-        delay: Math.max(0, Math.min(30, here.EmitDelay ?? 0)),
-        ...(here.EmitCount !== undefined ? { count: Math.max(0, Math.min(10000, Math.round(here.EmitCount))) } : {}),
-        ...(here.EmitDuration !== undefined && here.EmitDuration > 0 ? { duration: Math.min(30, here.EmitDuration) } : {})
-      })
-    }
-    for (const c of n.children) visit(c, here)
-  }
-  for (const r of nodes) visit(r, {})
-  return out
+  return new Map(emitPlan(nodes).layers.map((l) => [l.id, l.attrs]))
 }
 
-// Cues for attribute-driven nodes (see above).
-export function cuesFromAttributes(nodes: VfxNode[], attrs = emitAttributes(nodes)): VfxCue[] {
-  const cues: VfxCue[] = []
-  for (const n of allNodes(nodes)) {
-    const a = attrs.get(n.id)
-    if (!a) continue
-    const startsOn = prop<boolean>(n, 'Enabled') !== false
-    if (n.className !== 'ParticleEmitter') {
-      // Beams / Trails: on for [delay, delay + duration] (or from the delay on).
-      if (startsOn && (a.delay > 0 || a.duration)) cues.push({ at: 0, target: n.id, action: 'disable' })
-      cues.push({ at: round(a.delay), target: n.id, action: 'enable' })
-      if (a.duration) cues.push({ at: round(a.delay + a.duration), target: n.id, action: 'disable' })
-      continue
-    }
-    if (startsOn) cues.push({ at: 0, target: n.id, action: 'disable' })
-    const rate = prop<number>(n, 'Rate') || 0
-    if (a.duration && rate <= 0 && a.count) {
-      // Spread EmitCount over EmitDuration (at most 60 steps).
-      const steps = Math.max(1, Math.min(60, a.count, Math.round(a.duration * 30)))
-      let sent = 0
-      for (let i = 0; i < steps; i++) {
-        const want = Math.round(((i + 1) * a.count) / steps)
-        if (want > sent) cues.push({ at: round(a.delay + (i * a.duration) / steps), target: n.id, action: 'emit', count: want - sent })
-        sent = want
-      }
-      continue
-    }
-    if (a.count) cues.push({ at: round(a.delay), target: n.id, action: 'emit', count: a.count })
-    if (a.duration) {
-      cues.push({ at: round(a.delay), target: n.id, action: 'enable' })
-      cues.push({ at: round(a.delay + a.duration), target: n.id, action: 'disable' })
-    } else if (a.count === undefined) {
-      // Only a delay: a default burst then (like Emit() with no count).
-      cues.push({ at: round(a.delay), target: n.id, action: 'emit', count: Math.max(8, Math.round(rate * 0.25)) })
-    }
+// Cues for attribute-driven layers (from the plan; `_attrs` is kept for older callers).
+export function cuesFromAttributes(nodes: VfxNode[], _attrs?: Map<string, EmitAttrs>): VfxCue[] {
+  return cuesFromPlan(emitPlan(nodes))
+}
+
+// The effect's cues and duration re-derived from its attributes (after an attribute edit, or a
+// mesh effect added): emit / enable / disable cues of the layers the attributes drive (before or
+// after) are replaced by the plan's; other cues stay. Scripted effects are returned unchanged.
+export function retimeFromAttributes(effect: VfxEffect, before?: VfxEffect): VfxEffect {
+  if (effect.script) return effect
+  const plan = emitPlan(effect.roots)
+  const prev = before ? emitPlan(before.roots) : null
+  const tpl = templateIds(effect.roots)
+  const ids = new Set([...plan.layers.map((l) => l.id), ...(prev?.layers.map((l) => l.id) ?? [])])
+  const timing = (c: VfxCue) => c.action === 'emit' || c.action === 'enable' || c.action === 'disable'
+  const kept = effect.cues.filter((c) => !tpl.has(c.target) && !(ids.has(c.target) && timing(c)))
+  const cues = [...kept, ...cuesFromPlan(plan)].sort((a, b) => a.at - b.at)
+  return { ...effect, cues, duration: playDuration(effect.roots, cues, plan) }
+}
+
+// Preview loop length: the plan's Duration + linger when attributes drive the effect (1..30 s).
+function playDuration(roots: VfxNode[], cues: VfxCue[], plan: EmitPlan): number {
+  const base = effectDuration(roots, cues)
+  return plan.driven ? Math.max(1, Math.min(30, round(Math.max(base, planLength(plan))))) : base
+}
+
+// Sets (value) or removes (undefined) one attribute on a node and re-times the effect.
+export function editAttr(effect: VfxEffect, nodeId: string, key: string, value: VfxAttrValue | undefined): VfxEffect {
+  const set = (n: VfxNode): VfxNode => {
+    const next: VfxNode = { ...n, children: n.children.map(set) }
+    if (n.id !== nodeId) return next
+    const attrs = { ...(n.attrs ?? {}) }
+    if (value === undefined || value === '') delete attrs[key]
+    else attrs[key] = value
+    if (Object.keys(attrs).length) next.attrs = attrs
+    else delete next.attrs
+    return next
   }
-  return cues
+  return retimeFromAttributes({ ...effect, roots: effect.roots.map(set) }, effect)
 }
 
 // What an imported model does that the preview does not reproduce, for the import note.
@@ -200,6 +179,8 @@ export function importNotes(raw: VfxNode[], effect: VfxEffect, attrs: Map<string
   const all = allNodes(raw)
   const scripts = all.filter((n) => SCRIPT_CLASSES.has(n.className))
   if (attrs.size) notes.push(`${attrs.size} emitter${attrs.size === 1 ? '' : 's'} timed by EmitCount / EmitDelay / EmitDuration attributes.`)
+  const meshFx = emitPlan(effect.roots).meshEffects
+  if (meshFx.length) notes.push(`${meshFx.length} mesh effect${meshFx.length === 1 ? '' : 's'} (${meshFx.slice(0, 3).map((m) => m.name).join(', ')}): copies of Start animate to End (ForgeVFX attributes); Start and End themselves are not drawn.`)
   const tweens = effect.cues.filter((c) => c.action === 'tween' || c.action === 'set').length
   if (tweens) notes.push(`${tweens} tween${tweens === 1 ? '' : 's'} / set${tweens === 1 ? '' : 's'} read from scripts (TweenService:Create with literal goals, property sets) play in the preview.`)
   const logic = scripts.filter((s) => s.source && /RunService|while\s|repeat\s|require\s*\(|Heartbeat|RenderStepped|math\.random|:Connect\s*\(|GetAttribute/.test(s.source))
@@ -227,13 +208,15 @@ export function effectFromNodes(name: string, nodes: VfxNode[]): VfxEffect {
   const tweens = tweenCuesFromScripts(nodes)
   const roots = pruneToVfx(nodes, revealedByCues(tweens))
   const kept = new Set(allNodes(roots).map((n) => n.id))
-  const attrs = emitAttributes(roots)
   // Attribute-driven nodes: the attributes are the timeline (script reads would be the generic
-  // emit loop guessing 16 for every emitter).
-  const scripted = cuesFromScripts(roots).filter((c) => !attrs.has(c.target))
-  const cues = defaultCues(roots, [...cuesFromAttributes(roots, attrs), ...scripted, ...tweens.filter((c) => kept.has(c.target))])
-  const hasTrail = allNodes(roots).some((n) => n.className === 'Trail')
-  return { name, roots, cues, duration: effectDuration(roots, cues), motion: hasTrail ? 'swing' : 'static' }
+  // emit loop guessing 16 for every emitter). Mesh-effect templates are timed per copy.
+  const plan = emitPlan(roots)
+  const driven = new Set(plan.layers.map((l) => l.id))
+  const tpl = templateIds(roots)
+  const scripted = cuesFromScripts(roots).filter((c) => !driven.has(c.target) && !tpl.has(c.target))
+  const cues = defaultCues(roots, [...cuesFromPlan(plan), ...scripted, ...tweens.filter((c) => kept.has(c.target) && !tpl.has(c.target))])
+  const hasTrail = allNodes(roots).some((n) => n.className === 'Trail' && !tpl.has(n.id))
+  return { name, roots, cues, duration: playDuration(roots, cues, plan), motion: hasTrail ? 'swing' : 'static' }
 }
 
 export function isSequence(effect: VfxEffect): boolean {

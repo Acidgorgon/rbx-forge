@@ -169,24 +169,36 @@ export const SCHEMA: Record<string, Record<string, PropSpec>> = {
     Color: { kind: 'color3', default: [0.639, 0.635, 0.647] },
     Transparency: { kind: 'number', default: 0, min: 0, max: 1, step: 0.05, main: true },
     MeshId: { kind: 'content', default: '' },
+    // The mesh's own size (Size / InitialSize scales it). Written to the .rbxmx so the template's
+    // mesh keeps its scale; scripts cannot set it (the module's rebuild path skips it).
+    InitialSize: { kind: 'vec3', default: [1, 1, 1] },
     TextureID: { kind: 'content', default: '', main: true },
     Material: { kind: 'enum:Material', default: 'Plastic', main: true },
     Anchored: { kind: 'bool', default: false },
-    CanCollide: { kind: 'bool', default: true }
+    CanCollide: { kind: 'bool', default: true },
+    CastShadow: { kind: 'bool', default: true }
   },
   WedgePart: {
     CFrame: { kind: 'cframe', default: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] },
     Size: { kind: 'vec3', default: [4, 1, 2], main: true },
     Color: { kind: 'color3', default: [0.639, 0.635, 0.647] },
     Transparency: { kind: 'number', default: 0, min: 0, max: 1, step: 0.05, main: true },
-    Material: { kind: 'enum:Material', default: 'Plastic', main: true }
+    Material: { kind: 'enum:Material', default: 'Plastic', main: true },
+    // Without these an exported part falls (Instance.new / file default: unanchored).
+    Anchored: { kind: 'bool', default: false },
+    CanCollide: { kind: 'bool', default: true },
+    CastShadow: { kind: 'bool', default: true }
   },
   UnionOperation: {
     CFrame: { kind: 'cframe', default: [0, 0, 0, 1, 0, 0, 0, 1, 0, 0, 0, 1] },
     Size: { kind: 'vec3', default: [1, 1, 1], main: true },
     Color: { kind: 'color3', default: [0.639, 0.635, 0.647] },
     Transparency: { kind: 'number', default: 0, min: 0, max: 1, step: 0.05, main: true },
-    Material: { kind: 'enum:Material', default: 'Plastic', main: true }
+    Material: { kind: 'enum:Material', default: 'Plastic', main: true },
+    // Without these an exported part falls (Instance.new / file default: unanchored).
+    Anchored: { kind: 'bool', default: false },
+    CanCollide: { kind: 'bool', default: true },
+    CastShadow: { kind: 'bool', default: true }
   },
   // Bones are Attachments that nest (each relative to its parent bone).
   Bone: {

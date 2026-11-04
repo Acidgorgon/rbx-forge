@@ -109,8 +109,14 @@ export function effectDuration(nodes: VfxNode[], cues: VfxCue[]): number {
   }
   // Tweens and sets read from scripts (part growth / fades) end where they end.
   for (const c of cues) if (c.action === 'tween' || c.action === 'set') end = Math.max(end, c.at + (c.duration ?? 0) + 0.2)
-  return Math.max(1, Math.min(10, round(end || 2)))
+  // Beam / Trail / light windows (EmitDelay / EmitDuration toggles) last until their last cue.
+  for (const c of cues) end = Math.max(end, c.at)
+  // Capped like the emit attributes (EmitDelay / EmitDuration up to 30 s): a longer cap cut late
+  // cues (modules switch emitters off at Duration and remove the model soon after).
+  return Math.max(1, Math.min(MAX_EFFECT_SECONDS, round(end || 2)))
 }
+
+export const MAX_EFFECT_SECONDS = 30
 
 // ------------------------------------------------------------------ emit attributes
 //

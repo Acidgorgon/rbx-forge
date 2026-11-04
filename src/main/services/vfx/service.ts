@@ -24,7 +24,7 @@ import { RECORDED } from '../../../shared/vfx/examples.recorded.ts'
 import { FORGEFX_SOURCE, isOwnRuntime, RUNTIME_MODULE } from '../../../shared/vfx/runtime.ts'
 import { timelineSummary } from '../../../shared/vfx/timeline.ts'
 import { promptTags } from '../../../shared/vfx/draft.ts'
-import { DATA_HEADER, effectModules, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
+import { DATA_HEADER, effectModules, needsRuntime, templateRoots, timelineModule } from '../../../shared/vfx/luau.ts'
 import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { centreEffect } from '../../../shared/vfx/placement.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeMatches, recipeSkill } from '../../../shared/vfx/recipes.ts'
@@ -1104,10 +1104,11 @@ export class VfxService {
     const out: { path: string; content: string; role: string; owned?: (current: string) => boolean; onlyIfExists?: boolean }[] = [
       { path: `${dir}/init.luau`, content: mod.source, role: 'effect module' },
       ...mod.data.map((d) => ({ path: `${dir}/${d.name}.luau`, content: d.source, role: 'effect data' })),
-      { path: `${dir}/Effect.rbxmx`, content: writeRbxmx(fx.roots), role: 'effect model' }
+      // The template: no scripts (they would play next to the module), cue ids (luau.ts templateRoots).
+      { path: `${dir}/Effect.rbxmx`, content: writeRbxmx(templateRoots(fx)), role: 'effect model' }
     ]
     if (fx.script) out.push({ path: `${dir}/Timeline.luau`, content: timelineModule(fx.script), role: 'timeline script' })
-    else out.push({ path: `${dir}/Timeline.luau`, content: '-- No timeline script (the effect plays its compiled cues).\nreturn nil\n', role: 'timeline script', onlyIfExists: true })
+    else out.push({ path: `${dir}/Timeline.luau`, content: '-- No timeline script (the effect plays its compiled cues).\nreturn false\n', role: 'timeline script', onlyIfExists: true })
     // ForgeFX: rewritten when it is ours (starts with the runtime header), left alone when someone
     // replaced it with their own.
     const parent = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : ''

@@ -17,8 +17,8 @@
 
 import { allNodes } from './analyze.ts'
 import { centreEffect } from './placement.ts'
-import { RUNTIME_MODULE } from './runtime.ts'
-import { SCHEMA } from './schema.ts'
+import { NODE_ID_ATTR, RUNTIME_MODULE } from './runtime.ts'
+import { SCHEMA, SCRIPT_CLASSES } from './schema.ts'
 import { fmt } from './sequence.ts'
 import { tweenKind } from './timeline.ts'
 import type { ColorKey, NumKey, PropValue, VfxCue, VfxEffect, VfxNode } from './types.ts'
@@ -159,7 +159,8 @@ function luauKey(k: string): string {
 
 // One cue as a Luau table for ForgeFX:cue.
 function cueTable(c: VfxCue, node: VfxNode, timeKey: 'at' | 'dt', time: number): string {
-  const bits = [`${timeKey} = ${fmt(time)}`, `name = ${luauString(node.name)}`, `action = "${c.action}"`]
+  const id = Number(node.attrs?.[NODE_ID_ATTR]) || 0
+  const bits = [`${timeKey} = ${fmt(time)}`, ...(id ? [`id = ${id}`] : []), `name = ${luauString(node.name)}`, `action = "${c.action}"`]
   if (c.action === 'emit') bits.push(`count = ${Math.round(c.count ?? 16)}`)
   if (c.action === 'tween') bits.push(`duration = ${fmt(c.duration ?? 0)}`, `style = "${c.style ?? 'Quad'}"`, `direction = "${c.direction ?? 'Out'}"`)
   if (c.props) bits.push(`goals = ${goalsTable(node, c.props)}`)
@@ -176,9 +177,64 @@ function goalsTable(node: VfxNode, props: Record<string, PropValue>): string {
   return `{ ${goals.join(', ')} }`
 }
 
+// ------------------------------------------------------------ the shipped tree
+
+// Instances in post-order (children before their parents): the order of the NODES rows.
+function postOrder(roots: VfxNode[]): VfxNode[] {
+  const order: VfxNode[] = []
+  const walk = (n: VfxNode) => {
+    for (const c of n.children) walk(c)
+    order.push(n)
+  }
+  roots.forEach(walk)
+  return order
+}
+
+// The effect as its module and its Effect.rbxmx template ship it (call on the centred effect):
+//  - without Script / LocalScript / ModuleScript (an imported model's own scripts stay in the
+//    library for reading, but in the template they would run next to the module's cues and play
+//    the effect twice); a script's non-script children move up to the script's parent;
+//  - with a ForgeId attribute (NODE_ID_ATTR: the node's row in NODES) on every node a cue
+//    addresses, so cues find their instance even when names repeat ("1SP" in imported packs).
+// A copy: the effect passed in is not changed.
+export function shippedEffect(effect: VfxEffect): VfxEffect {
+  const strip = (nodes: VfxNode[]): VfxNode[] =>
+    nodes.flatMap((n): VfxNode[] => {
+      const children = strip(n.children)
+      if (SCRIPT_CLASSES.has(n.className)) return children
+      const copy: VfxNode = { ...n, props: { ...n.props }, children }
+      if (n.attrs) copy.attrs = { ...n.attrs }
+      return [copy]
+    })
+  const roots = strip(effect.roots)
+  // Cues name their target by id; with repeated ids the last node in tree order wins (as in byId).
+  const byId = new Map(allNodes(roots).map((n) => [n.id, n]))
+  const targeted = new Set(effect.cues.map((c) => byId.get(c.target)).filter((n): n is VfxNode => !!n))
+  postOrder(roots).forEach((n, i) => {
+    if (targeted.has(n)) n.attrs = { ...(n.attrs ?? {}), [NODE_ID_ATTR]: i + 1 }
+  })
+  return { ...effect, roots }
+}
+
+// The template written next to the module (Effect.rbxmx): the centred effect's shipped tree.
+export function templateRoots(effect: VfxEffect): VfxNode[] {
+  return shippedEffect(centreEffect(effect)).roots
+}
+
+// Seconds the module keeps the effect running: the effect's duration, and at least until its last
+// cue (and tween) ends, so nothing scheduled is cut by the module switching emitters off.
+export function moduleDuration(effect: VfxEffect): number {
+  let end = Number(effect.duration) || 0
+  for (const c of effect.cues) if (!c.prelude) end = Math.max(end, c.at + (c.action === 'tween' ? c.duration ?? 0 : 0))
+  return Math.round(end * 1000) / 1000
+}
+
 // ------------------------------------------------------------ data
 
 type ListKey = 'nodes' | 'init' | 'spawns' | 'cues' | 'base'
+
+// Schema properties a script cannot write (setting them would stop the rebuild): template only.
+const NOT_SCRIPTABLE = new Set(['InitialSize'])
 
 // One row of a data list (a Luau expression); spawns rows are grouped by spawn name.
 interface Row {
@@ -189,7 +245,8 @@ interface Row {
 
 // Instance rows, children before their parents (the order the old builder parented them in, so
 // GetChildren order is the same): { ClassName, Name, parent row (0 = the effect's Model), { prop,
-// value, ... } in authored order, { reference prop, row, ... }? }.
+// value, ... } in authored order, { reference prop, row, ... } (or false)?, { attribute, value,
+// ... }? }.
 function nodeRows(effect: VfxEffect): { rows: Row[]; root: number } {
   const order: VfxNode[] = []
   const parentOf = new Map<VfxNode, VfxNode | null>()
@@ -211,7 +268,7 @@ function nodeRows(effect: VfxEffect): { rows: Row[]; root: number } {
     const refs: string[] = []
     for (const [k, val] of Object.entries(n.props)) {
       const spec = schema[k]
-      if (!spec) continue
+      if (!spec || NOT_SCRIPTABLE.has(k)) continue
       if (spec.kind === 'ref') {
         const at = index.get(String(val))
         if (at) refs.push(luauString(k), String(at))
@@ -220,9 +277,17 @@ function nodeRows(effect: VfxEffect): { rows: Row[]; root: number } {
       const text = value(spec.kind, val)
       if (text !== null) props.push(luauString(k), text)
     }
+    // Attributes (SetAttribute): numbers, booleans and strings (the cue id, EmitCount ...).
+    const attrs: string[] = []
+    for (const [k, val] of Object.entries(n.attrs ?? {})) {
+      if (typeof val === 'number' && Number.isFinite(val)) attrs.push(luauString(k), String(val))
+      else if (typeof val === 'boolean') attrs.push(luauString(k), val ? 'true' : 'false')
+      else if (typeof val === 'string') attrs.push(luauString(k), luauString(val))
+    }
     const parent = parentOf.get(n)
     const bits = [luauString(n.className), luauString(n.name), String(parent ? rowOf.get(parent)! : 0), `{${props.join(',')}}`]
-    if (refs.length) bits.push(`{${refs.join(',')}}`)
+    if (refs.length || attrs.length) bits.push(refs.length ? `{${refs.join(',')}}` : 'false')
+    if (attrs.length) bits.push(`{${attrs.join(',')}}`)
     return { list: 'nodes', text: `{${bits.join(',')}}` }
   })
   return { rows, root: top ? rowOf.get(top)! : 0 }
@@ -306,23 +371,75 @@ function dataSection(rows: Row[], comments: Partial<Record<ListKey, string>>, pa
 }
 
 const NODES_COMMENT = `-- The instances, children before their parents: { ClassName, Name, parent (row; 0 = the effect's
--- Model), { property, value, ... }, { reference property, row, ... }? }. Used without the template.`
+-- Model), { property, value, ... }, { reference property, row, ... } or false?, { attribute,
+-- value, ... }? }. Used without the template.`
 
-// Builds the model from NODES (when there is no template next to the module).
-const BUILD = (template: string, root: number) => `local ROOT = ${root}
+// Scripts cannot set MeshPart.MeshId: a MeshPart row with a mesh is made by
+// AssetService:CreateMeshPartAsync (it yields), else a plain MeshPart (MeshId tried, may be refused).
+const CREATE_MESHES = `local AssetService = game:GetService("AssetService")
 
-local function build(): Model
+local function create(n: { any }): Instance
+\tif n[1] == "MeshPart" then
+\t\tlocal props = n[4]
+\t\tfor p = 1, #props, 2 do
+\t\t\tif props[p] == "MeshId" and props[p + 1] ~= "" then
+\t\t\t\tlocal ok, part = pcall(AssetService.CreateMeshPartAsync, AssetService, props[p + 1])
+\t\t\t\tif ok and part then
+\t\t\t\t\treturn part
+\t\t\t\tend
+\t\t\tend
+\t\tend
+\tend
+\treturn Instance.new(n[1])
+end
+
+local warned = false
+`
+
+// Builds the model from NODES (when there is no template next to the module). meshes: the effect
+// has MeshParts / unions, which only the template carries whole: the rebuild warns once.
+const BUILD = (template: string, root: number, meshes: boolean, name: string) => `local ROOT = ${root}
+
+${meshes ? CREATE_MESHES : ''}local function build(): Model
 \tlocal template = script:FindFirstChild(${luauString(template)})
 \tif template then
 \t\treturn (template :: any):Clone()
 \tend
-\tlocal made: { any } = {}
+${
+  meshes
+    ? `\tif not warned then
+\t\twarned = true
+\t\twarn(${luauString(`${name}: built without its ${template} template (Effect.rbxmx next to the module): meshes load through AssetService:CreateMeshPartAsync and unions have no geometry.`)})
+\tend
+`
+    : ''
+}\tlocal made: { any } = {}
 \tfor i, n in NODES do
-\t\tlocal inst: any = Instance.new(n[1])
+\t\tlocal inst: any = ${meshes ? 'create(n)' : 'Instance.new(n[1])'}
 \t\tinst.Name = n[2]
 \t\tlocal props = n[4]
 \t\tfor p = 1, #props, 2 do
-\t\t\tinst[props[p]] = props[p + 1]
+${
+  meshes
+    ? `\t\t\tlocal key, v = props[p], props[p + 1]
+\t\t\tif key == "MeshId" and inst:IsA("MeshPart") then
+\t\t\t\tif inst.MeshId ~= v then
+\t\t\t\t\tpcall(function()
+\t\t\t\t\t\tinst.MeshId = v
+\t\t\t\t\tend)
+\t\t\t\tend
+\t\t\telse
+\t\t\t\tinst[key] = v
+\t\t\tend
+`
+    : `\t\t\tinst[props[p]] = props[p + 1]
+`
+}\t\tend
+\t\tlocal attrs = n[6]
+\t\tif attrs then
+\t\t\tfor a = 1, #attrs, 2 do
+\t\t\t\tpcall(inst.SetAttribute, inst, attrs[a], attrs[a + 1])
+\t\t\tend
 \t\tend
 \t\tmade[i] = inst
 \tend
@@ -356,7 +473,7 @@ export interface EffectModules {
 // opts.cap: the size past which the data moves to parts (SOURCE_CAP; tests force a split with less).
 export function effectModules(authored: VfxEffect, opts: { description?: string; templateName?: string; cap?: number } = {}): EffectModules {
   const cap = opts.cap ?? SOURCE_CAP
-  const effect = centreEffect(authored)
+  const effect = shippedEffect(centreEffect(authored))
   const nodes = allNodes(effect.roots)
   const byId = new Map(nodes.map((n) => [n.id, n]))
   const { rows: instanceRows, root } = nodeRows(effect)
@@ -368,9 +485,11 @@ export function effectModules(authored: VfxEffect, opts: { description?: string;
     }),
     ...nodes.filter((n) => n.className === 'Trail').map((n) => Number(n.props.Lifetime ?? 2))
   )
+  const meshes = nodes.some((n) => n.className === 'MeshPart' || n.className === 'UnionOperation')
   const p: ModuleParts = {
     byId,
-    build: BUILD(opts.templateName ?? 'Effect', root),
+    build: BUILD(opts.templateName ?? 'Effect', root, meshes, effect.name),
+    duration: moduleDuration(effect),
     maxLife,
     desc: (opts.description ?? '').replace(/\s+/g, ' ').trim()
   }
@@ -398,15 +517,22 @@ export function luauModule(authored: VfxEffect, opts: { description?: string; te
 interface ModuleParts {
   byId: Map<string, VfxNode>
   build: string
+  duration: number
   maxLife: number
   desc: string
 }
 
-// Plain cues: { at, instance name, "emit" | "enable" | "disable", count }.
+// A cue target's ForgeId (shippedEffect gives every cue target one).
+const nodeId = (n: VfxNode): number => Number(n.attrs?.[NODE_ID_ATTR]) || 0
+
+// Plain cues: { at, instance id (ForgeId), instance name, "emit" | "enable" | "disable", count }.
 function plainRows(effect: VfxEffect, p: ModuleParts): Row[] {
   return effect.cues
     .filter((c) => p.byId.has(c.target))
-    .map((c) => ({ list: 'cues', text: `{ ${fmt(c.at)}, ${luauString(p.byId.get(c.target)!.name)}, "${c.action === 'emit' ? 'emit' : c.action === 'enable' ? 'enable' : 'disable'}"${c.action === 'emit' ? `, ${Math.round(c.count ?? 16)}` : ''} }` }))
+    .map((c) => {
+      const n = p.byId.get(c.target)!
+      return { list: 'cues', text: `{ ${fmt(c.at)}, ${nodeId(n)}, ${luauString(n.name)}, "${c.action === 'emit' ? 'emit' : c.action === 'enable' ? 'enable' : 'disable'}"${c.action === 'emit' ? `, ${Math.round(c.count ?? 16)}` : ''} }` }
+    })
 }
 
 function plainModule(effect: VfxEffect, p: ModuleParts, rows: Row[], parts: number): string {
@@ -420,10 +546,10 @@ local Debris = game:GetService("Debris")
 local Effect = {}
 
 -- Seconds of the timeline, and how long the last particles can live after it.
-Effect.Duration = ${fmt(effect.duration)}
+Effect.Duration = ${fmt(p.duration)}
 Effect.Linger = ${fmt(Math.min(20, p.maxLife))}
 
-${dataSection(rows, { nodes: NODES_COMMENT, cues: '-- Timeline: Emit bursts and Enabled toggles, by instance name: { at, name, action, count }.' }, parts, ['nodes', 'cues'])}
+${dataSection(rows, { nodes: NODES_COMMENT, cues: `-- Timeline: Emit bursts and Enabled toggles: { at, instance (its ${NODE_ID_ATTR} attribute), name, action, count }.` }, parts, ['nodes', 'cues'])}
 
 ${p.build}
 
@@ -455,12 +581,31 @@ local function place(model: Model, target: any)
 \tend
 end
 
-local function run(fx: any, cue: { any })
-\tif cue[3] == "emit" then
-\t\tfx:Emit(cue[4])
-\telse
-\t\tfx.Enabled = cue[3] == "enable"
+local TOGGLES: { [string]: boolean } = { ParticleEmitter = true, Beam = true, Trail = true, PointLight = true, SpotLight = true, SurfaceLight = true, Highlight = true }
+
+-- Emit only on ParticleEmitters, Enabled only on what has it (a Part may share an emitter's name).
+local function run(fx: Instance, cue: { any })
+\tif cue[4] == "emit" then
+\t\tif fx:IsA("ParticleEmitter") then
+\t\t\tfx:Emit(cue[5])
+\t\tend
+\telseif TOGGLES[fx.ClassName] then
+\t\t(fx :: any).Enabled = cue[4] == "enable"
 \tend
+end
+
+-- The instances each cue addresses, by their ${NODE_ID_ATTR} attribute (names repeat in imported packs).
+local function byId(model: Model): { [number]: { Instance } }
+\tlocal out: { [number]: { Instance } } = {}
+\tfor _, d in model:GetDescendants() do
+\t\tlocal id = d:GetAttribute("${NODE_ID_ATTR}")
+\t\tif type(id) == "number" then
+\t\t\tlocal list = out[id] or {}
+\t\t\tout[id] = list
+\t\t\ttable.insert(list, d)
+\t\tend
+\tend
+\treturn out
 end
 
 -- Builds, places and plays the effect; it removes itself when done.
@@ -468,9 +613,15 @@ function Effect.play(target: any, parent: Instance?): Model
 \tlocal model = build()
 \tplace(model, target or CFrame.new())
 \tmodel.Parent = parent or workspace
+\tlocal ids = byId(model)
 \tfor _, cue in CUES do
-\t\tlocal fx = model:FindFirstChild(cue[2], true)
-\t\tif fx then
+\t\tlocal targets = ids[cue[2]]
+\t\tif not targets then
+\t\t\t-- A template without ids: the first instance with the name.
+\t\t\tlocal found = model:FindFirstChild(cue[3], true)
+\t\t\ttargets = if found then { found } else {}
+\t\tend
+\t\tfor _, fx in targets do
 \t\t\tif cue[1] <= 0 then
 \t\t\t\trun(fx, cue)
 \t\t\telse
@@ -498,7 +649,7 @@ return Effect
 function scriptedRows(effect: VfxEffect, p: ModuleParts): Row[] {
   const cues = effect.cues.filter((c) => p.byId.has(c.target))
   const node = (c: VfxCue) => p.byId.get(c.target)!
-  const rows: Row[] = cues.filter((c) => c.prelude && c.props).map((c) => ({ list: 'init', text: `{ name = ${luauString(node(c).name)}, goals = ${goalsTable(node(c), c.props!)} }` }))
+  const rows: Row[] = cues.filter((c) => c.prelude && c.props).map((c) => ({ list: 'init', text: `{ ${nodeId(node(c)) ? `id = ${nodeId(node(c))}, ` : ''}name = ${luauString(node(c).name)}, goals = ${goalsTable(node(c), c.props!)} }` }))
   const live = cues.filter((c) => !c.prelude)
   for (const s of new Set(live.filter((c) => c.spawn).map((c) => c.spawn!))) {
     for (const c of live.filter((c) => c.spawn === s)) rows.push({ list: 'spawns', spawn: s, text: cueTable(c, node(c), 'dt', Math.max(0, c.at - (c.spawnAt ?? 0))) })
@@ -531,12 +682,13 @@ function scriptedModule(effect: VfxEffect, p: ModuleParts, rows: Row[], parts: n
 -- The timeline is the Timeline module next to this one (the script from Forge's Script tab); the
 -- ${RUNTIME_MODULE} module runs it with TweenService, task.wait / task.delay, Emit and Enabled.
 local Debris = game:GetService("Debris")
+local RunService = game:GetService("RunService")
 local ${RUNTIME_MODULE} = require(script.Parent:WaitForChild("${RUNTIME_MODULE}"))
 
 local Effect = {}
 
 -- Seconds of the timeline, and how long the last particles can live after it.
-Effect.Duration = ${fmt(effect.duration)}
+Effect.Duration = ${fmt(p.duration)}
 Effect.Linger = ${fmt(Math.min(20, p.maxLife))}
 Effect.Stages = { ${stages.join(', ')} }
 
@@ -555,6 +707,30 @@ local function pivot(target: any): CFrame
 \treturn CFrame.new()
 end
 
+-- A BasePart or Attachment target: the effect moves with it every frame until the model is gone
+-- (re-pivoted by how far the target moved; ForgeFX drives part tweens relative to the effect, so
+-- they keep their motion while it follows).
+local function follow(model: Model, fx: any, target: any)
+\tif typeof(target) ~= "Instance" or not (target:IsA("BasePart") or target:IsA("Attachment")) then
+\t\treturn
+\tend
+\tlocal last = pivot(target)
+\tlocal conn
+\tconn = RunService.Heartbeat:Connect(function()
+\t\tif not model.Parent or not target.Parent then
+\t\t\tconn:Disconnect()
+\t\t\treturn
+\t\tend
+\t\tlocal now = pivot(target)
+\t\tif now ~= last then
+\t\t\tlocal moved = now * last:Inverse()
+\t\t\tlast = now
+\t\t\tmodel:PivotTo(moved * model:GetPivot())
+\t\t\tfx.pivot = moved * fx.pivot
+\t\tend
+\tend)
+end
+
 -- Builds, places and plays the effect; it removes itself when done. Returns the model and the fx
 -- object (fx:stop() cancels what is still scheduled).
 function Effect.play(target: any, parent: Instance?, options: { onStage: ((string, number) -> ())? }?): (Model, any)
@@ -570,9 +746,19 @@ function Effect.play(target: any, parent: Instance?, options: { onStage: ((strin
 \tlocal fx = ${RUNTIME_MODULE}.new(model, { spawns = SPAWNS, onStage = options and options.onStage })
 \tfx:prelude(INIT)
 \tmodel.Parent = parent or workspace
+\tfollow(model, fx, target)
+\t-- The Timeline module returns the timeline function; without one (or when it returns nothing, as
+\t-- a Timeline.luau left from an older scripted version does) the compiled cues play.
 \tlocal timeline = script:FindFirstChild("Timeline")
+\tlocal ok, fn = false, nil
 \tif timeline then
-${hasBase ? '\t\tfx:runCues(BASE_CUES)\n' : ''}\t\tfx:run(require(timeline) :: any)
+\t\tok, fn = pcall(require, timeline)
+\t\tif not ok then
+\t\t\twarn(${luauString(`${name}: its Timeline module failed (the compiled cues play instead): `)} .. tostring(fn))
+\t\tend
+\tend
+\tif ok and type(fn) == "function" then
+${hasBase ? '\t\tfx:runCues(BASE_CUES)\n' : ''}\t\tfx:run(fn)
 \telse
 \t\tfx:runCues(CUES, Effect.Stages)
 \tend

@@ -305,7 +305,9 @@ export function readRbxmxTree(xml: string): RbxmxTree {
         continue
       }
       if (key === 'AttributesSerialize') {
-        const a = decodeAttributes(p.text)
+        // The plugin sets plain values only (SetAttribute); vector / range / sequence attributes
+        // are not carried by insert jobs yet.
+        const a = Object.fromEntries(Object.entries(decodeAttributes(p.text)).filter((e): e is [string, string | number | boolean] => typeof e[1] !== 'object'))
         if (Object.keys(a).length) node.attributes = a
         continue
       }

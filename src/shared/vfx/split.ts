@@ -18,6 +18,7 @@
 //  - Duplicate names get " (2)", " (3)" suffixes.
 
 import { allNodes, pruneToVfx } from './analyze.ts'
+import { meshEffectParts } from './emitPlan.ts'
 import { PART_CLASSES } from './schema.ts'
 import { revealedByCues, tweenCuesFromScripts } from './scriptTweens.ts'
 import type { VfxNode } from './types.ts'
@@ -47,7 +48,8 @@ export function splitEffects(roots: VfxNode[], opts: { packs?: boolean } = {}): 
 
   // The children a pack container splits into; null when the container is one effect.
   const packKids = (n: VfxNode): VfxNode[] | null => {
-    if (!isGroup(n)) return null
+    // A ForgeVFX mesh effect (Start / End parts) is one effect.
+    if (!isGroup(n) || meshEffectParts(n)) return null
     const kids = n.children.filter(hasContent)
     if (n.className === 'Folder') return kids.length >= 2 && kids.some(isGroup) ? kids : null
     // A Model splits only when it has nothing of its own (no emitters or visible parts outside its

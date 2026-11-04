@@ -181,10 +181,11 @@ test('imported effects last up to 30 s, and modules run until the last cue', () 
   assert.equal(effectDuration(nodes, [{ at: 45, target: 'E', action: 'emit', count: 1 }]), 30)
   // A module plays at least until its last cue (and tween end), even past the effect's duration.
   const short: VfxEffect = { ...fx, duration: 5 }
-  assert.equal(moduleDuration(short), 24)
+  // The beam has no EmitDuration: it stays on to the end of the play, at least 1 s (emitPlan rule), so it switches off at 25.
+  assert.equal(moduleDuration(short), 25)
   assert.equal(moduleDuration({ ...short, cues: [...short.cues, { at: 26, target: 'B', action: 'tween', duration: 2, props: { Width0: 2 } }] }), 28)
-  assert.match(luauModule(short), /Effect\.Duration = 24\n/)
-  assert.equal(livePayload(short).duration, 24)
+  assert.match(luauModule(short), /Effect\.Duration = 25\n/)
+  assert.equal(livePayload(short).duration, 25)
 })
 
 // ------------------------------------------------------------ 5. part classes and meshes

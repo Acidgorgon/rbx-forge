@@ -21,6 +21,7 @@ import { mockPrincipleWeights, recordPrincipleRating } from './mockPrinciples'
 import { effectHash } from '@shared/vfx/fingerprint'
 import { autoTagGroups, autoTags, baseName, flatTags, groupsFromTags, isGenericName, nameFromTags, tagGroupsOf, uniqueName } from '@shared/vfx/tags'
 import { normalizeLiveSettings, type LiveStatus } from '@shared/vfx/live'
+import type { SelectionPlayStatus } from '@shared/vfx/emitStudio'
 import type { VfxImportRow, VfxImportScan } from '@shared/types'
 
 // What a vision critic would add for the principles code cannot measure (shape, readability), so the
@@ -184,6 +185,12 @@ export function vfxMock(emit: Emit): VfxApi {
     live = { ...live, ...patch }
     emit('vfx:live', live)
     return live
+  }
+  let selection: SelectionPlayStatus = { state: 'off', loop: false, gap: 0.75, plays: 0, names: [], count: 0 }
+  const selectionEmit = (patch: Partial<SelectionPlayStatus>) => {
+    selection = { ...selection, ...patch }
+    emit('vfx:selection', selection)
+    return selection
   }
   const scanOf = (names: string[], source: 'files' | 'studio'): VfxImportScan => {
     const index = new Map(entries.filter((e) => e.effect).map((e) => [effectHash(e.effect!), e]))
@@ -365,6 +372,23 @@ export function vfxMock(emit: Emit): VfxApi {
     },
     async vfxLiveStatus() {
       return live
+    },
+    async vfxPlaySelection(opts) {
+      const st = selectionEmit({ state: 'playing', loop: !!opts?.loop, gap: opts?.gap ?? selection.gap, plays: 1, names: ['Fireball'], count: 1 })
+      if (!opts?.loop) setTimeout(() => selectionEmit({ state: 'off' }), 1500)
+      return st
+    },
+    async vfxStopSelection() {
+      return selectionEmit({ state: 'off' })
+    },
+    async vfxSelectionGap(gap) {
+      return selectionEmit({ gap })
+    },
+    async vfxSelectionStatus() {
+      return selection
+    },
+    async vfxInstallEmitRuntime() {
+      return { path: 'src/shared/VFX/ForgeVFX.luau', status: 'written' as const }
     },
     async vfxChooseImport() {
       return ['~/Downloads/vfx-pack/Ice_Shatter.rbxm']

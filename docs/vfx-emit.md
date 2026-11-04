@@ -87,3 +87,24 @@ comes from a seeded RNG in the preview and `Random.new()` in game.
 - Forge Bridge job "Play selection": plays the current Studio selection with ForgeVFX (clone into
   `Workspace.ForgeLivePreview`, Archivable false), once or looped, from the VFX Lab ("Play Studio selection").
 - Import from Studio keeps Start/End mesh effects and all attributes; exported templates keep attributes.
+
+## Runtime notes (ForgeVFX.luau, emitStudio.ts)
+
+Where the runtime goes past this spec or pins down open points (agreed with the preview plan):
+
+- Duration: if no layer is timed but an Enabled layer has no attributes, Duration = 1 s; an open
+  Beam/Trail/light window keeps the effect going at least 1 s past its start. `options.duration` overrides.
+- Clean-up also waits for particles riding on mesh copies (copy death + their Lifetime.Max), so they
+  are never cut off.
+- `FadeOut` also fades a Highlight (Fill/OutlineTransparency). It is linear.
+- Mesh copies: CFrame overshoot extrapolates position linearly and rotation by axis-angle (the same as
+  `Lerp` inside 0..1). Part Color is clamped to 0..1; Decal Color3 and SpecialMesh VertexColor are not.
+  Random values are drawn when `emit` is called, so `Duration` uses the real lifetimes.
+- Extras: `e:Stop(true)` removes everything at once, `e:IsPlaying()`, `e.Instance`, `options.offset`
+  (CFrame), `options.duration`. A Folder template is wrapped in a Model (pivot = centre of its bounding
+  box) and an Attachment template in an invisible part. A Model `at` is followed by re-pivoting every frame.
+- Project files: ForgeVFX.luau is written next to an effect when ForgeFX is written, and also for
+  attribute-driven effects (emit attributes or a Start/End mesh effect). "Install ForgeVFX" in the VFX
+  Lab writes it on request.
+- Play Studio selection reads the selection once when it starts and plays each effect at its own
+  pivot, on top of the template being edited. Press it again after selecting something else.

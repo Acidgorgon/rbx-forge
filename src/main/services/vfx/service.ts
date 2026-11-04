@@ -22,6 +22,7 @@ import { compileTimeline, finishRun } from '../../../shared/vfx/compile.ts'
 import { findExample, VFX_EXAMPLES, CHARGE_SLASH } from '../../../shared/vfx/examples.ts'
 import { RECORDED } from '../../../shared/vfx/examples.recorded.ts'
 import { FORGEFX_SOURCE, isOwnRuntime, RUNTIME_MODULE } from '../../../shared/vfx/runtime.ts'
+import { EMIT_RUNTIME_MODULE, FORGEVFX_SOURCE, isOwnEmitRuntime, usesEmitAttributes } from '../../../shared/vfx/emitRuntime.ts'
 import { timelineSummary } from '../../../shared/vfx/timeline.ts'
 import { promptTags } from '../../../shared/vfx/draft.ts'
 import { DATA_HEADER, effectModules, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
@@ -1112,7 +1113,26 @@ export class VfxService {
     // replaced it with their own.
     const parent = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : ''
     if (needsRuntime(fx)) out.push({ path: `${parent ? parent + '/' : ''}${RUNTIME_MODULE}.luau`, content: FORGEFX_SOURCE, role: 'ForgeFX runtime', owned: isOwnRuntime })
+    // ForgeVFX (attribute-driven effects, docs/vfx-emit.md): plays the exported template with
+    // ForgeVFX.emit; written next to ForgeFX (same ownership rule) and for attribute-driven effects.
+    if (needsRuntime(fx) || usesEmitAttributes(fx.roots)) out.push({ path: `${parent ? parent + '/' : ''}${EMIT_RUNTIME_MODULE}.luau`, content: FORGEVFX_SOURCE, role: 'ForgeVFX runtime', owned: isOwnEmitRuntime })
     return out
+  }
+
+  // "Install ForgeVFX in project" (VFX Lab header): writes src/shared/VFX/ForgeVFX.luau without an
+  // effect. A file that is not ours (someone replaced it) is left alone.
+  async installEmitRuntime(): Promise<{ path: string; status: 'written' | 'unchanged' | 'kept' }> {
+    const root = this.deps.projectRoot()
+    if (!root) throw new VfxError('Open a game project first: ForgeVFX is written to src/shared/VFX/ForgeVFX.luau.')
+    const path = `${VFX_SRC_DIR}/${EMIT_RUNTIME_MODULE}.luau`
+    const abs = resolve(root, path)
+    const cur = await readFile(abs, 'utf8').catch(() => null)
+    if (cur !== null && !isOwnEmitRuntime(cur)) return { path, status: 'kept' }
+    if (cur === FORGEVFX_SOURCE) return { path, status: 'unchanged' }
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, FORGEVFX_SOURCE, 'utf8')
+    this.deps.log?.(`vfx: wrote ${path}`)
+    return { path, status: 'written' }
   }
 
   private async prepareTextures(effect: VfxEffect, scope?: VfxScope, reuse = false): Promise<VfxEffect> {

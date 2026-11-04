@@ -41,7 +41,7 @@ test('live: settings, poll / error messages, payload, job', () => {
   const job = liveJob({ id: 'job-live-1', port: 34877, mode: 'origin', frame: false, camera: [1, 2, 3, 1, 0, 0, 0, 1, 0, 0, 0, 1] })
   assert.equal(job.kind, 'vfx')
   assert.equal(job.entry, LIVE_ENTRY)
-  assert.deepEqual(job.modules.map((m) => m.name), ['ForgeFX', LIVE_ENTRY])
+  assert.deepEqual(job.modules.map((m) => m.name), ['ForgeFX', LIVE_ENTRY, 'ForgeVFX'])
   assert.ok(job.timeout >= 3600)
   const src = job.modules[1].source ?? ''
   assert.match(src, /local MODE = "origin"/)

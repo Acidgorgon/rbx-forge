@@ -113,7 +113,8 @@ local function extract(roots)
 				end
 			end
 		end
-		-- Instance attributes (EmitCount / EmitDelay / EmitDuration and friends): plain values only.
+		-- Instance attributes (EmitCount / EmitDelay / EmitDuration and friends, the ForgeVFX
+		-- mesh-effect ones): plain values, Vector2 / Vector3 / Color3 / NumberRange / NumberSequence.
 		local okAttrs, attrs = pcall(function()
 			return inst:GetAttributes()
 		end)
@@ -124,6 +125,9 @@ local function extract(roots)
 				local t = typeof(v)
 				if t == "number" or t == "boolean" or t == "string" then
 					plain[k] = v
+					any = true
+				elseif t == "Vector2" or t == "Vector3" or t == "Color3" or t == "NumberRange" or t == "NumberSequence" then
+					plain[k] = convert(v, ids)
 					any = true
 				end
 			end

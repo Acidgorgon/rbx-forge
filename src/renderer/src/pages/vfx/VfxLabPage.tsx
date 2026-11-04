@@ -28,6 +28,7 @@ import { useRestateGate } from '../../components/useRestateGate'
 import { RestatedBrief } from '../../components/RestateCard'
 import { AddToGameButton } from '../qolc/AddToGame'
 import { EffectImportReview, importProgressText, rowName, useImportProgress } from './EffectImport'
+import { SelectionPlayControls } from './SelectionPlay'
 import { DuplicatesPanel, LiveControls, liveLine, matchesTagFilter, TagFilters, TagGroupEditor, type TagFilter } from './LibraryTools'
 import { nameFromTags, tagGroupsOf } from '@shared/vfx/tags'
 import { chooseRecipe, fitToPriors, priorFit } from '@shared/vfx/priors'
@@ -929,6 +930,7 @@ export function VfxLabPage() {
               <Icon name="memory" size={12} /> Learn
             </button>
             <LiveControls live={live} enabled={liveOn} onToggle={setLiveOn} onSettings={(st) => void h.vfxLiveSettings(st).then(setLive)} />
+            <SelectionPlayControls projectOpen={!!status?.projectRoot} />
             <StudioTargetPicker />
           </div>
         </div>

@@ -165,7 +165,7 @@ test('the game module plays an imported effect where it is asked, not at its old
   assert.match(scripted, /model\.WorldPivot = CFrame\.new\(\)\n\tend\n\tmodel:PivotTo\(pivot\(target\)\)/)
   assert.match(scripted, /Position = Vector3\.new\(3, 10, 0\)/)
   assert.match(FORGEFX_SOURCE, /self\.pivot = model:GetPivot\(\)/)
-  assert.match(FORGEFX_SOURCE, /local frame = if self\.root then self\.root\.CFrame else self\.pivot/)
+  assert.match(FORGEFX_SOURCE, /if self\.root and self\.root ~= inst then\n\t\treturn self\.root\.CFrame\n\tend\n\treturn self\.pivot/)
   // The exported template (Effect.rbxmx) is centred the same way.
   const dir = await mkdtemp(join(tmpdir(), 'forge-vfx-place-'))
   const svc = new VfxService({ userDir: join(dir, 'user'), projectRoot: () => null, lune: async () => ({ error: 'no lune' }), runtimeDir: () => null } as never)

@@ -11,8 +11,9 @@
 // The binary format (.rbxm) is read through Lune (services/vfx/lune.ts); this reader also gives
 // Forge a no-Lune path for .rbxmx and is used to check what we write.
 
-import { ENUMS, SCHEMA, enumName } from './schema.ts'
-import type { ColorKey, NumKey, PropValue, VfxNode } from './types.ts'
+import { ENUMS, PART_CLASSES, SCHEMA, enumName } from './schema.ts'
+import { arrayAttrType } from './emitPlan.ts'
+import type { ColorKey, NumKey, PropValue, VfxAttrValue, VfxNode } from './types.ts'
 
 // ------------------------------------------------------------------ tiny XML DOM
 
@@ -190,19 +191,29 @@ function b64bytes(text: string): Uint8Array {
 
 // Instance attributes as Roblox serialises them (AttributesSerialize, a BinaryString in .rbxmx):
 // u32 count, then per attribute a u32-length name, a type byte and the value. Numbers set from Luau
-// are Float64 (0x06); strings 0x02, booleans 0x03, Float32 0x05. Other types are skipped by size;
-// an unknown type ends the read (the attributes before it are kept). Little-endian throughout.
-// Format: rbx-dom docs/attributes.md.
-const ATTR_SIZES: Record<number, number> = { 0x04: 4, 0x09: 8, 0x0a: 16, 0x0e: 4, 0x0f: 12, 0x10: 8, 0x11: 12, 0x1b: 8, 0x1c: 16 }
-export function decodeAttributes(input: string | Uint8Array): Record<string, number | boolean | string> {
+// are Float64 (0x06); strings 0x02, booleans 0x03, Float32 0x05. ForgeVFX attributes (emitPlan.ts)
+// also use Color3 0x0F (3 x f32), Vector2 0x10 (2 x f32), Vector3 0x11 (3 x f32), NumberRange 0x1B
+// (2 x f32) and NumberSequence 0x17 (u32 n, then n x envelope / time / value f32); these read as
+// the prop shapes ([r, g, b], [x, y], [x, y, z], [min, max], NumKey[]). ColorSequence (0x19) and
+// fixed-size types are skipped by size; an unknown type ends the read (the attributes before it
+// are kept). Little-endian throughout. Format: rbx-dom docs/attributes.md.
+const ATTR_SIZES: Record<number, number> = { 0x04: 4, 0x09: 8, 0x0a: 16, 0x0e: 4, 0x1c: 16 }
+const ATTR_FLOATS: Record<number, number> = { 0x0f: 3, 0x10: 2, 0x11: 3, 0x1b: 2 }
+const f6 = (x: number) => Math.round(x * 1e6) / 1e6
+export function decodeAttributes(input: string | Uint8Array): Record<string, VfxAttrValue> {
   const bytes = typeof input === 'string' ? b64bytes(input) : input
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
-  const out: Record<string, number | boolean | string> = {}
+  const out: Record<string, VfxAttrValue> = {}
   let at = 0
   const u32 = () => {
     const v = view.getUint32(at, true)
     at += 4
     return v
+  }
+  const f32 = () => {
+    const v = view.getFloat32(at, true)
+    at += 4
+    return f6(v)
   }
   const str = () => {
     const n = u32()
@@ -219,13 +230,26 @@ export function decodeAttributes(input: string | Uint8Array): Record<string, num
       const type = bytes[at++]
       if (type === 0x02) out[name] = str()
       else if (type === 0x03) out[name] = bytes[at++] !== 0
-      else if (type === 0x05) {
-        out[name] = Math.round(view.getFloat32(at, true) * 1e6) / 1e6
-        at += 4
-      } else if (type === 0x06) {
+      else if (type === 0x05) out[name] = f32()
+      else if (type === 0x06) {
         out[name] = view.getFloat64(at, true)
         at += 8
-      } else if (ATTR_SIZES[type]) at += ATTR_SIZES[type]
+      } else if (ATTR_FLOATS[type]) out[name] = Array.from({ length: ATTR_FLOATS[type] }, f32)
+      else if (type === 0x17) {
+        const n = u32()
+        const keys: NumKey[] = []
+        for (let k = 0; k < n; k++) {
+          const e = f32()
+          const t = f32()
+          const v = f32()
+          keys.push(e ? { t, v, e } : { t, v })
+        }
+        out[name] = keys
+      } else if (type === 0x19) {
+        const n = u32()
+        at += n * 20
+      }
+      else if (ATTR_SIZES[type]) at += ATTR_SIZES[type]
       else break
     }
   } catch {
@@ -234,21 +258,42 @@ export function decodeAttributes(input: string | Uint8Array): Record<string, num
   return out
 }
 
-export function encodeAttributes(attrs: Record<string, number | boolean | string>): string {
+// Array attributes are written as the type their name has in ForgeVFX (ATTR_TYPES: Lifetime is a
+// NumberRange, SpreadAngle a Vector2, ...); other 2-arrays as Vector2, 3-arrays as Vector3,
+// NumKey[] as NumberSequence.
+export function encodeAttributes(attrs: Record<string, VfxAttrValue>): string {
   const parts: number[] = []
   const u32 = (v: number) => parts.push(v & 255, (v >>> 8) & 255, (v >>> 16) & 255, (v >>> 24) & 255)
+  const f32 = (v: number) => {
+    const f = new DataView(new ArrayBuffer(4))
+    f.setFloat32(0, v, true)
+    for (let i = 0; i < 4; i++) parts.push(f.getUint8(i))
+  }
   const str = (s: string) => {
     const b = new TextEncoder().encode(s)
     u32(b.length)
     parts.push(...b)
   }
-  const entries = Object.entries(attrs)
+  const entries = Object.entries(attrs).filter(([k, v]) => !Array.isArray(v) || arrayAttrType(k, v) !== null)
   u32(entries.length)
   for (const [k, v] of entries) {
     str(k)
     if (typeof v === 'string') (parts.push(0x02), str(v))
     else if (typeof v === 'boolean') parts.push(0x03, v ? 1 : 0)
-    else {
+    else if (Array.isArray(v)) {
+      if (v.every((x) => typeof x === 'number')) {
+        const nums = v as number[]
+        const kind = arrayAttrType(k, nums)
+        parts.push(kind === 'NumberRange' ? 0x1b : kind === 'Vector2' ? 0x10 : kind === 'Color3' ? 0x0f : 0x11)
+        const n = kind === 'NumberRange' || kind === 'Vector2' ? 2 : 3
+        for (let i = 0; i < n; i++) f32(Number(nums[i] ?? nums[nums.length - 1]) || 0)
+      } else {
+        const keys = v as NumKey[]
+        parts.push(0x17)
+        u32(keys.length)
+        for (const key of keys) (f32(Number(key.e) || 0), f32(Number(key.t) || 0), f32(Number(key.v) || 0))
+      }
+    } else {
       parts.push(0x06)
       const f = new DataView(new ArrayBuffer(8))
       f.setFloat64(0, v, true)
@@ -270,7 +315,7 @@ export function readRbxmx(xml: string): VfxNode[] {
     const props: Record<string, PropValue> = {}
     let name = className
     let source: string | undefined
-    let attrs: Record<string, number | boolean | string> | undefined
+    let attrs: Record<string, VfxAttrValue> | undefined
     const propsEl = child(item, 'Properties')
     for (const p of propsEl?.children ?? []) {
       let key = p.attrs.name ?? ''
@@ -384,13 +429,14 @@ export function writeRbxmx(roots: VfxNode[]): string {
     for (const [key, value] of Object.entries(nd.props)) {
       const spec = schema[key]
       if (!spec || value === undefined || value === null) continue
-      // Part colour is written as Color3uint8 (what BasePart serialises).
-      if ((nd.className === 'Part' || nd.className === 'MeshPart') && key === 'Color' && Array.isArray(value)) {
+      // BasePart colour is written as Color3uint8 and Size as "size" (what BasePart serialises; every
+      // part class: Part, MeshPart, WedgePart, UnionOperation).
+      if (PART_CLASSES.has(nd.className) && key === 'Color' && Array.isArray(value)) {
         const c = (value as number[]).map((x) => Math.max(0, Math.min(255, Math.round(x * 255))))
         lines.push(`${pad}\t\t<Color3uint8 name="Color3uint8">${(((c[0] << 16) | (c[1] << 8) | c[2]) >>> 0).toString()}</Color3uint8>`)
         continue
       }
-      if ((nd.className === 'Part' || nd.className === 'MeshPart') && key === 'Size') {
+      if (PART_CLASSES.has(nd.className) && key === 'Size') {
         const a = value as number[]
         lines.push(`${pad}\t\t<Vector3 name="size"><X>${n(a[0])}</X><Y>${n(a[1])}</Y><Z>${n(a[2])}</Z></Vector3>`)
         continue

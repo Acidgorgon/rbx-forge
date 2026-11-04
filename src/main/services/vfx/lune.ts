@@ -6,7 +6,7 @@ import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { SCHEMA } from '../../../shared/vfx/schema.ts'
-import type { ColorKey, NumKey, PropValue, VfxNode } from '../../../shared/vfx/types.ts'
+import type { ColorKey, NumKey, PropValue, VfxAttrValue, VfxNode } from '../../../shared/vfx/types.ts'
 import { parseLuauError, type RecordResult } from '../../../shared/vfx/compile.ts'
 import { planSpawn, run, toolEnv } from '../tools.ts'
 
@@ -52,8 +52,15 @@ export function normalizeLuneNode(raw: any): VfxNode {
   }
   if (typeof raw?.source === 'string') node.source = raw.source
   if (raw?.attrs && typeof raw.attrs === 'object' && !Array.isArray(raw.attrs)) {
-    const attrs: Record<string, number | boolean | string> = {}
-    for (const [k, v] of Object.entries(raw.attrs as Record<string, unknown>)) if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') attrs[k] = v
+    // Plain values, and the ForgeVFX shapes: Vector2 / Vector3 / Color3 / NumberRange as number
+    // arrays, NumberSequence as keypoints.
+    const attrs: Record<string, VfxAttrValue> = {}
+    for (const [k, v] of Object.entries(raw.attrs as Record<string, unknown>)) {
+      if (typeof v === 'number' || typeof v === 'boolean' || typeof v === 'string') attrs[k] = v
+      else if (Array.isArray(v) && v.length >= 2 && v.length <= 3 && v.every((x) => typeof x === 'number')) attrs[k] = v.map((x) => r6(x as number))
+      else if (Array.isArray(v) && v.length >= 2 && v.every((x) => x && typeof x === 'object' && typeof x.t === 'number' && typeof x.v === 'number'))
+        attrs[k] = (v as any[]).map((key): NumKey => (Number(key.e) ? { t: r6(key.t), v: r6(key.v), e: r6(key.e) } : { t: r6(key.t), v: r6(key.v) }))
+    }
     if (Object.keys(attrs).length) node.attrs = attrs
   }
   return node

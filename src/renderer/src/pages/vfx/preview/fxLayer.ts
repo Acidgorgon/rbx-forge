@@ -550,6 +550,8 @@ export class FxLayer {
     if (extraCues) {
       // Preview-only bursts ("Emit burst"): appended to each emitter's schedule.
       for (const e of this.prepared.emitters) {
+        // Layers riding mesh-effect copies keep the plan's schedule.
+        if (e.copyOf) continue
         e.bursts = this.effect!.cues.filter((c) => c.target === e.id && c.action === 'emit').map((c) => ({ at: c.at, count: c.count ?? 16 }))
         for (const c of extraCues) if (c.target === e.id && c.action === 'emit') e.bursts.push({ at: c.at, count: c.count ?? 16 })
       }
@@ -649,6 +651,7 @@ export class FxLayer {
       for (const d of m.decals) {
         const dop = (1 - Math.max(0, Math.min(1, d.decal.transparency(t)))) * opacity
         d.mat.opacity = d.mat.map ? dop : 0
+        if (d.decal.colorAt) d.mat.color.setRGB(...linearColor(d.decal.colorAt(t)))
         d.mesh.visible = !!d.mat.map && dop > 0.003
         if (d.tiled && d.decal.tile) {
           // Texture: repeats every StudsPerTile studs across the face.

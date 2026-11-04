@@ -46,10 +46,14 @@ export interface VfxNode {
   source?: string
   // Made by a timeline script's fx:spawn (kit preset name); rebuilt each time the script runs.
   kit?: string
-  // Instance attributes (numbers, booleans, strings) from the imported model, e.g. the community
-  // EmitCount / EmitDelay / EmitDuration convention (analyze.ts cuesFromAttributes).
-  attrs?: Record<string, number | boolean | string>
+  // Instance attributes from the imported model, e.g. the EmitCount / EmitDelay / EmitDuration
+  // convention and the ForgeVFX mesh-effect attributes (docs/vfx-emit.md, emitPlan.ts).
+  attrs?: Record<string, VfxAttrValue>
 }
+
+// An attribute value, normalised like props: number, boolean, string, Vector2 [x, y],
+// Vector3 / Color3 [x, y, z], NumberRange [min, max], NumberSequence NumKey[].
+export type VfxAttrValue = number | boolean | string | number[] | NumKey[]
 
 // Roblox Enum.EasingStyle / Enum.EasingDirection item names (TweenInfo).
 export type EasingStyle = 'Linear' | 'Sine' | 'Back' | 'Quad' | 'Quart' | 'Quint' | 'Bounce' | 'Elastic' | 'Exponential' | 'Circular' | 'Cubic'

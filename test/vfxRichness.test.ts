@@ -132,7 +132,7 @@ test('compose on a library copy: unique names, spawns win name clashes, the copy
   // The exported module plays the copy's cues next to the Timeline module.
   const lua = luauModule(aligned.effect)
   assert.match(lua, /local BASE_CUES = \{/)
-  assert.match(lua, /fx:runCues\(BASE_CUES\)\n\t\tfx:run\(require\(timeline\)/)
+  assert.match(lua, /fx:runCues\(BASE_CUES\)\n\t\tfx:run\(fn\)/)
   // A script on an empty base exports as before.
   assert.doesNotMatch(luauModule(compileTimeline(EMPTY, DOME_FLARE_OPS, '-- x').effect), /BASE_CUES/)
   // A script that names one of its own rigs twice still fails.

@@ -22,9 +22,10 @@ import { compileTimeline, finishRun } from '../../../shared/vfx/compile.ts'
 import { findExample, VFX_EXAMPLES, CHARGE_SLASH } from '../../../shared/vfx/examples.ts'
 import { RECORDED } from '../../../shared/vfx/examples.recorded.ts'
 import { FORGEFX_SOURCE, isOwnRuntime, RUNTIME_MODULE } from '../../../shared/vfx/runtime.ts'
+import { EMIT_RUNTIME_MODULE, FORGEVFX_SOURCE, isOwnEmitRuntime, usesEmitAttributes } from '../../../shared/vfx/emitRuntime.ts'
 import { timelineSummary } from '../../../shared/vfx/timeline.ts'
 import { promptTags } from '../../../shared/vfx/draft.ts'
-import { DATA_HEADER, effectModules, needsRuntime, timelineModule } from '../../../shared/vfx/luau.ts'
+import { DATA_HEADER, effectModules, needsRuntime, playsWithForgeVFX, templateRoots, timelineModule } from '../../../shared/vfx/luau.ts'
 import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { centreEffect } from '../../../shared/vfx/placement.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeMatches, recipeSkill } from '../../../shared/vfx/recipes.ts'
@@ -1104,15 +1105,36 @@ export class VfxService {
     const out: { path: string; content: string; role: string; owned?: (current: string) => boolean; onlyIfExists?: boolean }[] = [
       { path: `${dir}/init.luau`, content: mod.source, role: 'effect module' },
       ...mod.data.map((d) => ({ path: `${dir}/${d.name}.luau`, content: d.source, role: 'effect data' })),
-      { path: `${dir}/Effect.rbxmx`, content: writeRbxmx(fx.roots), role: 'effect model' }
+      // The template: no scripts (they would play next to the module), cue ids (luau.ts templateRoots).
+      { path: `${dir}/Effect.rbxmx`, content: writeRbxmx(templateRoots(fx)), role: 'effect model' }
     ]
     if (fx.script) out.push({ path: `${dir}/Timeline.luau`, content: timelineModule(fx.script), role: 'timeline script' })
-    else out.push({ path: `${dir}/Timeline.luau`, content: '-- No timeline script (the effect plays its compiled cues).\nreturn nil\n', role: 'timeline script', onlyIfExists: true })
+    else out.push({ path: `${dir}/Timeline.luau`, content: '-- No timeline script (the effect plays its compiled cues).\nreturn false\n', role: 'timeline script', onlyIfExists: true })
     // ForgeFX: rewritten when it is ours (starts with the runtime header), left alone when someone
     // replaced it with their own.
     const parent = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : ''
     if (needsRuntime(fx)) out.push({ path: `${parent ? parent + '/' : ''}${RUNTIME_MODULE}.luau`, content: FORGEFX_SOURCE, role: 'ForgeFX runtime', owned: isOwnRuntime })
+    // ForgeVFX (attribute-driven effects, docs/vfx-emit.md): plays the exported template with
+    // ForgeVFX.emit; written next to ForgeFX (same ownership rule) and for attribute-driven effects,
+    // always for the effects whose module requires it (mesh effects, FadeOut: playsWithForgeVFX).
+    if (needsRuntime(fx) || usesEmitAttributes(fx.roots) || playsWithForgeVFX(fx)) out.push({ path: `${parent ? parent + '/' : ''}${EMIT_RUNTIME_MODULE}.luau`, content: FORGEVFX_SOURCE, role: 'ForgeVFX runtime', owned: isOwnEmitRuntime })
     return out
+  }
+
+  // "Install ForgeVFX in project" (VFX Lab header): writes src/shared/VFX/ForgeVFX.luau without an
+  // effect. A file that is not ours (someone replaced it) is left alone.
+  async installEmitRuntime(): Promise<{ path: string; status: 'written' | 'unchanged' | 'kept' }> {
+    const root = this.deps.projectRoot()
+    if (!root) throw new VfxError('Open a game project first: ForgeVFX is written to src/shared/VFX/ForgeVFX.luau.')
+    const path = `${VFX_SRC_DIR}/${EMIT_RUNTIME_MODULE}.luau`
+    const abs = resolve(root, path)
+    const cur = await readFile(abs, 'utf8').catch(() => null)
+    if (cur !== null && !isOwnEmitRuntime(cur)) return { path, status: 'kept' }
+    if (cur === FORGEVFX_SOURCE) return { path, status: 'unchanged' }
+    await mkdir(dirname(abs), { recursive: true })
+    await writeFile(abs, FORGEVFX_SOURCE, 'utf8')
+    this.deps.log?.(`vfx: wrote ${path}`)
+    return { path, status: 'written' }
   }
 
   private async prepareTextures(effect: VfxEffect, scope?: VfxScope, reuse = false): Promise<VfxEffect> {

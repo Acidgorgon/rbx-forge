@@ -35,7 +35,8 @@
 //               so their tweens apply to particles already alive; Rate changes the emission schedule.
 //               Speed, Drag and Acceleration keep their authored values in the closed-form motion.
 
-import { add, alignY, cf, IDENTITY, isCFrame, mul, norm, NORMALS, point, pos, rotate, scale, fromEuler } from './cframe.ts'
+import { add, alignY, cf, IDENTITY, inverse, isCFrame, mul, norm, NORMALS, point, pos, rotate, scale, fromEuler } from './cframe.ts'
+import { emitPlan, fadeAt, meshCopyAt, templateIds, type EmitPlan, type MeshCopy, type MeshCopyState, type MeshEffectPlan } from './emitPlan.ts'
 import { centreEffect } from './placement.ts'
 import { prop } from './schema.ts'
 import { envelopeOffsets, evalColorSequence, evalNumberSequence, hashSeed, rng, sequenceMax, sequenceMean } from './sequence.ts'
@@ -79,6 +80,8 @@ export interface PreparedEmitter {
   // Spawn times per window when Rate is tweened (the closed-form schedule needs a constant Rate).
   spawnTimes?: number[][]
   look?: (t: number) => EmitterLook
+  // A layer riding a mesh-effect copy: the template node's id (the schedule comes from the plan).
+  copyOf?: string
 }
 
 // Per-frame look of an emitter under the timeline (virtual SizeScale / Fade / tint, tweened props).
@@ -99,6 +102,9 @@ export interface PreparedLink {
   a1: ((t: number) => CFrameArr) | null
   windows: [number, number][]
   timeline?: Timeline
+  // FadeOut ramp (emitPlan.ts): visibility 1 -> 0 over [from, to].
+  fade?: [number, number]
+  copyOf?: string
 }
 
 export interface PreparedLight {
@@ -108,6 +114,8 @@ export interface PreparedLight {
   at: (t: number) => CFrameArr
   windows: [number, number][]
   timeline?: Timeline
+  fade?: [number, number]
+  copyOf?: string
 }
 
 export interface PreparedMesh {
@@ -129,6 +137,8 @@ export interface PreparedMesh {
   decals: PartDecal[]
   // A Highlight parented to (or adorning) this part.
   highlight?: VfxNode
+  // A mesh-effect copy (emitPlan.ts): the effect's id, the copy index and when it is alive.
+  copy?: { effect: string; index: number; spawn: number; death: number }
 }
 
 export interface MeshLook {
@@ -154,6 +164,8 @@ export interface PartDecal {
   texture: string
   color: Rgb
   transparency: (t: number) => number
+  // Colour over time (mesh-effect copies lerp Color3 from Start to End).
+  colorAt?: (t: number) => Rgb
   // Texture: studs per tile (Decal: stretched over the face).
   tile?: [number, number]
 }
@@ -201,6 +213,8 @@ export interface PreparedEffect {
   meshes: PreparedMesh[]
   root: (t: number) => CFrameArr
   timeline: Timeline
+  // The ForgeVFX plan (attribute timing, mesh-effect copies).
+  plan: EmitPlan
 }
 
 const ATTACH_CLASSES = new Set(['Attachment', 'Bone'])
@@ -279,11 +293,16 @@ export function prepareEffect(authored: VfxEffect, seed = 1): PreparedEffect {
     }
   }
 
-  const out: PreparedEffect = { effect, seed, emitters: [], beams: [], trails: [], lights: [], highlights: [], meshes: [], root, timeline: tl }
+  // Mesh-effect templates (Start / End) are not drawn: their copies are (below).
+  const plan = emitPlan(effect.roots, { seed })
+  const templates = templateIds(effect.roots)
+  const out: PreparedEffect = { effect, seed, emitters: [], beams: [], trails: [], lights: [], highlights: [], meshes: [], root, timeline: tl, plan }
   const byId = new Map<string, (t: number) => CFrameArr>()
   const pending: { node: VfxNode; at: (t: number) => CFrameArr; parentPart: VfxNode | null; parentIsAttachment: boolean }[] = []
+  const fades = new Map(plan.layers.filter((l) => l.fade).map((l) => [l.id, l.fade!]))
 
   const walk = (n: VfxNode, parentAt: (t: number) => CFrameArr, parentPart: VfxNode | null, parentIsAttachment: boolean) => {
+    if (templates.has(n.id)) return
     let here = parentAt
     if (PART_CLASSES.has(n.className)) {
       const local = localAt(n)
@@ -314,9 +333,11 @@ export function prepareEffect(authored: VfxEffect, seed = 1): PreparedEffect {
     } else if (n.className === 'Beam' || n.className === 'Trail') {
       const a0 = typeof n.props.Attachment0 === 'string' ? byId.get(n.props.Attachment0) ?? null : null
       const a1 = typeof n.props.Attachment1 === 'string' ? byId.get(n.props.Attachment1) ?? null : null
-      ;(n.className === 'Beam' ? out.beams : out.trails).push({ id: n.id, name: n.name, node: n, a0, a1, windows, timeline: tl })
+      const fade = fades.get(n.id)
+      ;(n.className === 'Beam' ? out.beams : out.trails).push({ id: n.id, name: n.name, node: n, a0, a1, windows, timeline: tl, ...(fade ? { fade } : {}) })
     } else if (LIGHT_CLASSES.has(n.className)) {
-      out.lights.push({ id: n.id, name: n.name, node: n, at, windows, timeline: tl })
+      const fade = fades.get(n.id)
+      out.lights.push({ id: n.id, name: n.name, node: n, at, windows, timeline: tl, ...(fade ? { fade } : {}) })
     } else if (n.className === 'Highlight') {
       // On the dummy only when it is not on (or adorning) a part of the effect.
       const onPart = (parentPart && !parentIsAttachment && pending.find((p) => p.node.children.includes(n))?.node === parentPart) || (typeof n.props.Adornee === 'string' && byId.has(n.props.Adornee))
@@ -383,7 +404,86 @@ export function prepareEffect(authored: VfxEffect, seed = 1): PreparedEffect {
       out.meshes.push({ id: n.id, name: n.name, node: n, at, size, look, shape: ms.shape, material: String(n.props.Material ?? 'Plastic'), file, decals, ...(highlight ? { highlight } : {}) })
     }
   }
+  for (const m of plan.meshEffects) for (const copy of m.copies) prepareCopy(out, m, copy, root, byId, tl, localAt)
   return out
+}
+
+// One mesh-effect copy: the Start part drawn in its state over time (emitPlan.ts meshCopyAt), and
+// the layers riding it (emitters / beams / trails / lights under Start) on the plan's schedule.
+function prepareCopy(out: PreparedEffect, m: MeshEffectPlan, copy: MeshCopy, root: (t: number) => CFrameArr, byId: Map<string, (t: number) => CFrameArr>, tl: Timeline, localAt: (n: VfxNode) => (t: number) => CFrameArr): void {
+  const key = (id: string) => `${id}~${copy.index}`
+  let memoT = NaN
+  let memo: MeshCopyState | null = null
+  const state = (t: number): MeshCopyState => {
+    if (t !== memoT || !memo) (memo = meshCopyAt(m, copy, t)), (memoT = t)
+    return memo
+  }
+  // SyncPosition: the copy follows the origin; else it stays where it spawned.
+  const origin = (t: number) => root(m.sync ? Math.max(t, copy.spawn) : copy.spawn)
+  const frame = (t: number) => mul(origin(t), state(t).cframe)
+  const S = m.start
+  const ms = meshShape(S)
+  const mf = meshFileOf(S)
+  const primitiveScale = !!S.children.find((c) => c.className === 'SpecialMesh') && !mf
+  const raw = prop<number[]>(S, 'Size') as Vec3
+  const hidden: MeshLook = { size: [raw[0] * ms.scale[0], raw[1] * ms.scale[1], raw[2] * ms.scale[2]], transparency: 1, color: prop<Rgb>(S, 'Color') }
+  const look = (t: number): MeshLook => {
+    const st = state(t)
+    if (!st.alive) return hidden
+    const k = primitiveScale && st.meshScale ? st.meshScale : ms.scale
+    return { size: [st.size[0] * k[0], st.size[1] * k[1], st.size[2] * k[2]], transparency: st.transparency, color: st.color.map((c) => Math.max(0, Math.min(1, c))) as Rgb, ...(mf?.mode === 'special' && st.meshScale ? { scale: st.meshScale } : {}) }
+  }
+  const file: MeshFile | undefined = mf
+    ? { meshId: mf.meshId, textureId: mf.textureId, mode: mf.mode, offset: (t) => state(t).meshOffset ?? [0, 0, 0], vertexColor: (t) => (state(t).meshVertexColor ?? [1, 1, 1]) as Rgb }
+    : undefined
+  const decals: PartDecal[] = S.children
+    .filter((c) => (c.className === 'Decal' || c.className === 'Texture') && typeof c.props.Texture === 'string' && c.props.Texture)
+    .map((c) => ({
+      id: key(c.id),
+      face: String(c.props.Face ?? 'Front'),
+      texture: String(c.props.Texture),
+      color: prop<Rgb>(c, 'Color3'),
+      transparency: (t: number) => {
+        const st = state(t)
+        return st.alive ? st.decals[c.name]?.transparency ?? prop<number>(c, 'Transparency') : 1
+      },
+      colorAt: (t: number) => state(t).decals[c.name]?.color ?? prop<Rgb>(c, 'Color3'),
+      ...(c.className === 'Texture' ? { tile: [prop<number>(c, 'StudsPerTileU') || 2, prop<number>(c, 'StudsPerTileV') || 2] as [number, number] } : {})
+    }))
+  out.meshes.push({ id: key(S.id), name: `${m.name} #${copy.index + 1}`, node: S, at: frame, size: hidden.size, look, shape: ms.shape, material: String(S.props.Material ?? 'Plastic'), file, decals, copy: { effect: m.id, index: copy.index, spawn: copy.spawn, death: copy.death } })
+
+  // Riding layers: frames of Start's attachments / parts for this copy.
+  const startInv = inverse(prop<number[]>(S, 'CFrame') as CFrameArr)
+  const local = new Map<string, (t: number) => CFrameArr>()
+  const parentPartOf = new Map<string, boolean>()
+  const walk = (n: VfxNode, parentAt: (t: number) => CFrameArr, onPart: boolean) => {
+    let here = parentAt
+    if (ATTACH_CLASSES.has(n.className)) {
+      const l = localAt(n)
+      here = (t) => mul(parentAt(t), l(t))
+    } else if (PART_CLASSES.has(n.className)) {
+      // A part inside Start moves rigidly with the copy.
+      const l = localAt(n)
+      here = (t) => mul(frame(t), mul(startInv, l(t)))
+    }
+    local.set(n.id, here)
+    parentPartOf.set(n.id, onPart)
+    const nextOnPart = ATTACH_CLASSES.has(n.className) ? false : PART_CLASSES.has(n.className) ? true : onPart
+    for (const c of n.children) walk(c, here, nextOnPart)
+  }
+  for (const c of S.children) walk(c, frame, true)
+  const ref = (v: unknown) => (typeof v === 'string' ? local.get(v) ?? byId.get(v) ?? null : null)
+  for (const l of copy.riding) {
+    const at = local.get(l.id)
+    if (!at) continue
+    const base = { id: key(l.id), name: l.name, node: l.node, windows: l.windows, copyOf: l.id }
+    if (l.kind === 'emitter') {
+      const size = parentPartOf.get(l.id) ? (prop<number[]>(S, 'Size') as Vec3) : null
+      out.emitters.push({ ...base, parentAt: at, partSize: size, bursts: l.bursts, look: emitterLook(l.node, tl) })
+    } else if (l.kind === 'beam' || l.kind === 'trail') {
+      ;(l.kind === 'beam' ? out.beams : out.trails).push({ ...base, a0: ref(l.node.props.Attachment0), a1: ref(l.node.props.Attachment1), timeline: tl, ...(l.fade ? { fade: l.fade } : {}) })
+    } else if (LIGHT_CLASSES.has(l.className)) out.lights.push({ ...base, at, timeline: tl, ...(l.fade ? { fade: l.fade } : {}) })
+  }
 }
 
 function emitterLook(n: VfxNode, tl: Timeline): (t: number) => EmitterLook {
@@ -759,7 +859,7 @@ export function simulateBeam(b: PreparedLink, t: number): BeamFrame | null {
   const tl = b.timeline
   const v = (name: string): number => (tl ? tl.value(n.id, name, prop<number>(n, name), t) : prop<number>(n, name))
   const widthK = tl ? tl.sizeScale(n.id, t) : 1
-  const fade = tl ? tl.fade(n.id, t) : 0
+  const fade = 1 - (1 - (tl ? tl.fade(n.id, t) : 0)) * fadeAt(b.fade, t)
   const tint = tl ? tl.tint(n.id, t) : null
   const p1 = add(p0, scale(x0, v('CurveSize0')))
   const p2 = add(p3, scale(x1, -v('CurveSize1')))
@@ -820,7 +920,7 @@ export function simulateTrail(tr: PreparedLink, t: number): TrailFrame | null {
   const tl = tr.timeline
   const v = (name: string): number => (tl ? tl.value(n.id, name, prop<number>(n, name), t) : prop<number>(n, name))
   const widthK = tl ? tl.sizeScale(n.id, t) : 1
-  const fade = tl ? tl.fade(n.id, t) : 0
+  const fade = 1 - (1 - (tl ? tl.fade(n.id, t) : 0)) * fadeAt(tr.fade, t)
   const tint = tl ? tl.tint(n.id, t) : null
   const maxLen = v('MaxLength') || 0
   const minLen = Math.max(0, v('MinLength'))
@@ -878,7 +978,7 @@ export function simulateLight(l: PreparedLight, t: number): LightFrame | null {
     pos: pos(c),
     dir: rotate(c, face),
     color: v<Rgb>('Color'),
-    brightness: v<number>('Brightness') * (tl ? 1 - tl.fade(id, t) : 1),
+    brightness: v<number>('Brightness') * (tl ? 1 - tl.fade(id, t) : 1) * fadeAt(l.fade, t),
     range: v<number>('Range') * (tl ? tl.sizeScale(id, t) : 1),
     angle: v<number>('Angle') ?? 90
   }

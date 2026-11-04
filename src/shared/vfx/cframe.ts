@@ -89,3 +89,70 @@ export const NORMALS: Record<string, Vec3> = {
   Bottom: [0, -1, 0],
   Front: [0, 0, -1]
 }
+
+// CFrame.Angles(rx, ry, rz) (= fromEulerAnglesXYZ: Rx * Ry * Rz), radians.
+export function anglesXYZ(rx: number, ry: number, rz: number, at: Vec3 = [0, 0, 0]): CFrameArr {
+  const cx = Math.cos(rx), sx = Math.sin(rx), cy = Math.cos(ry), sy = Math.sin(ry), cz = Math.cos(rz), sz = Math.sin(rz)
+  const X: CFrameArr = [0, 0, 0, 1, 0, 0, 0, cx, -sx, 0, sx, cx]
+  const Y: CFrameArr = [0, 0, 0, cy, 0, sy, 0, 1, 0, -sy, 0, cy]
+  const Z: CFrameArr = [0, 0, 0, cz, -sz, 0, sz, cz, 0, 0, 0, 1]
+  const m = mul(mul(X, Y), Z)
+  m[0] = at[0]
+  m[1] = at[1]
+  m[2] = at[2]
+  return m
+}
+
+export function inverse(c: CFrameArr): CFrameArr {
+  const rt: CFrameArr = [0, 0, 0, c[3], c[6], c[9], c[4], c[7], c[10], c[5], c[8], c[11]]
+  const p = rotate(rt, [c[0], c[1], c[2]])
+  rt[0] = -p[0]
+  rt[1] = -p[1]
+  rt[2] = -p[2]
+  return rt
+}
+
+type Quat = [number, number, number, number] // x, y, z, w
+
+function quatOf(c: CFrameArr): Quat {
+  const m00 = c[3], m01 = c[4], m02 = c[5], m10 = c[6], m11 = c[7], m12 = c[8], m20 = c[9], m21 = c[10], m22 = c[11]
+  const tr = m00 + m11 + m22
+  let q: Quat
+  if (tr > 0) {
+    const s = Math.sqrt(tr + 1) * 2
+    q = [(m21 - m12) / s, (m02 - m20) / s, (m10 - m01) / s, 0.25 * s]
+  } else if (m00 > m11 && m00 > m22) {
+    const s = Math.sqrt(1 + m00 - m11 - m22) * 2
+    q = [0.25 * s, (m01 + m10) / s, (m02 + m20) / s, (m21 - m12) / s]
+  } else if (m11 > m22) {
+    const s = Math.sqrt(1 + m11 - m00 - m22) * 2
+    q = [(m01 + m10) / s, 0.25 * s, (m12 + m21) / s, (m02 - m20) / s]
+  } else {
+    const s = Math.sqrt(1 + m22 - m00 - m11) * 2
+    q = [(m02 + m20) / s, (m12 + m21) / s, 0.25 * s, (m10 - m01) / s]
+  }
+  const l = Math.hypot(...q) || 1
+  return [q[0] / l, q[1] / l, q[2] / l, q[3] / l]
+}
+
+function rotationOfQuat(q: Quat): CFrameArr {
+  const [x, y, z, w] = q
+  return [0, 0, 0, 1 - 2 * (y * y + z * z), 2 * (x * y - z * w), 2 * (x * z + y * w), 2 * (x * y + z * w), 1 - 2 * (x * x + z * z), 2 * (y * z - x * w), 2 * (x * z - y * w), 2 * (y * z + x * w), 1 - 2 * (x * x + y * y)]
+}
+
+// CFrame:Lerp(b, t): position linearly, rotation along the shortest arc (t outside 0..1
+// extrapolates, for overshooting easings).
+export function lerpCFrame(a: CFrameArr, b: CFrameArr, t: number): CFrameArr {
+  const ra: CFrameArr = [0, 0, 0, ...a.slice(3)]
+  const rel = mul(inverse(ra), [0, 0, 0, ...b.slice(3)])
+  let [x, y, z, w] = quatOf(rel)
+  if (w < 0) (x = -x), (y = -y), (z = -z), (w = -w)
+  const half = Math.acos(Math.max(-1, Math.min(1, w)))
+  const s = Math.sin(half)
+  const q: Quat = s < 1e-9 ? [0, 0, 0, 1] : [(x / s) * Math.sin(half * t), (y / s) * Math.sin(half * t), (z / s) * Math.sin(half * t), Math.cos(half * t)]
+  const r = mul(ra, rotationOfQuat(q))
+  r[0] = a[0] + (b[0] - a[0]) * t
+  r[1] = a[1] + (b[1] - a[1]) * t
+  r[2] = a[2] + (b[2] - a[2]) * t
+  return r
+}

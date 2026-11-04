@@ -6,9 +6,11 @@ import { useMemo, useState } from 'react'
 import type { ColorKey, NumKey, PropValue, VfxCue, VfxEffect, VfxMotion, VfxNode } from '@shared/types'
 import { ENUMS, SCHEMA, type PropSpec } from '@shared/vfx/schema'
 import { evalNumberSequence, fromHex, hex } from '@shared/vfx/sequence'
-import { nodeRole } from '@shared/vfx/analyze'
+import { nodeRole, retimeFromAttributes } from '@shared/vfx/analyze'
+import { makeMeshEffect, meshEffectParts } from '@shared/vfx/emitPlan'
 import { editProp } from '@shared/vfx/spec'
 import { Icon } from '../../components/Icons'
+import { AttrEditor } from './AttrEditor'
 import { TexturePicker } from './TexturePicker'
 
 const LAYER = new Set(['ParticleEmitter', 'Beam', 'Trail', 'PointLight', 'SpotLight', 'SurfaceLight', 'Highlight', 'Part', 'MeshPart', 'SpecialMesh', 'Attachment'])
@@ -17,6 +19,14 @@ const MOTIONS: VfxMotion[] = ['static', 'swing', 'orbit', 'dash', 'rise']
 function layers(effect: VfxEffect): VfxNode[] {
   const out: VfxNode[] = []
   const walk = (n: VfxNode) => {
+    // Mesh effects (ForgeVFX): the Model (its attributes), then its Start / End templates.
+    const me = meshEffectParts(n)
+    if (me) {
+      out.push(n, me.start, me.end)
+      for (const c of n.children) if (c !== me.start && c !== me.end) walk(c)
+      for (const c of me.start.children) walk(c)
+      return
+    }
     if (LAYER.has(n.className) && (n.className !== 'Attachment' || n.children.length === 0) && n.className !== 'Part' && n.className !== 'Attachment') out.push(n)
     // Scripted effects: the visible kit parts (orb spheres, shockwave shells) are layers too.
     else if (n.kit === 'rig' && n.className === 'Part' && Number(n.props.Transparency ?? 0) < 1) out.push(n)
@@ -222,6 +232,21 @@ export function ParamEditor({ effect, onChange }: { effect: VfxEffect; onChange:
             ))}
           </select>
         </label>
+        {!scripted && (
+          <button
+            className="btn ghost small"
+            onClick={() => {
+              const stamp = Date.now().toString(36)
+              let k = 0
+              const fx = makeMeshEffect((p) => `${p}-${stamp}-${k++}`)
+              onChange(retimeFromAttributes({ ...effect, roots: [...effect.roots, fx] }))
+              setSel(fx.id)
+            }}
+            title="A Model with Start and End parts: copies of Start animate to End (a shockwave ring that grows and fades). Edit its attributes below; ForgeVFX.emit plays it in game."
+          >
+            <Icon name="plus" size={10} /> Mesh effect
+          </button>
+        )}
         <label className="vfx-adv">
           <input type="checkbox" className="switch" checked={advanced} onChange={(e) => setAdvanced(e.target.checked)} /> <span className="faint">all properties</span>
         </label>
@@ -229,7 +254,7 @@ export function ParamEditor({ effect, onChange }: { effect: VfxEffect; onChange:
       <div className="vfx-layers" role="tablist" aria-label="Layers">
         {list.map((n) => (
           <button key={n.id} role="tab" aria-selected={node?.id === n.id} className={`badge-o${node?.id === n.id ? ' hot' : ''}`} onClick={() => setSel(n.id)} title={n.className}>
-            {n.name} <span className="faint">{nodeRole(n)}</span>
+            {n.name} <span className="faint">{meshEffectParts(n) ? 'mesh effect' : n.className === 'Part' ? 'template' : nodeRole(n)}</span>
           </button>
         ))}
       </div>
@@ -256,6 +281,7 @@ export function ParamEditor({ effect, onChange }: { effect: VfxEffect; onChange:
               )}
             </div>
           ))}
+          <AttrEditor effect={effect} node={node} onChange={onChange} />
           {scripted && (
             <div className="vfx-prop wide">
               <span className="vfx-prop-name mono">Timeline</span>

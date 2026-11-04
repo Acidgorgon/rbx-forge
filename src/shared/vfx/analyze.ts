@@ -199,8 +199,9 @@ export function importNotes(raw: VfxNode[], effect: VfxEffect, attrs: Map<string
 }
 
 // Bumped when the importer keeps more of a model than before (2: script-revealed parts, meshes,
-// decals and script tweens), so older library entries offer "Re-import".
-export const IMPORT_VERSION = 2
+// decals and script tweens; 3: ForgeVFX mesh effects, vector / range / sequence attributes and
+// additive EmitDelay), so older library entries offer "Re-import".
+export const IMPORT_VERSION = 3
 
 export function effectFromNodes(name: string, nodes: VfxNode[]): VfxEffect {
   // Part tweens / sets from scripts first (on the full tree, so script.Parent paths resolve): they

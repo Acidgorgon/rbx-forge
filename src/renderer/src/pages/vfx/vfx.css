@@ -142,6 +142,10 @@ select.vfx-live-opt { height: 26px; font-size: 11px; }
 .vfx-curve .ln { fill: none; stroke: var(--ember); stroke-width: 1.5; vector-effect: non-scaling-stroke; }
 .vfx-curve .pt { fill: var(--fg); }
 .vfx-grad { width: 100%; max-width: 420px; height: 16px; border: 1px solid var(--line); border-radius: var(--r-sm); }
+/* ForgeVFX attributes (AttrEditor) */
+.vfx-attrs .vfx-props { grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); }
+.vfx-attrs .vfx-key select.input { max-width: 220px; }
+.vfx-attr-plan { margin: 0; font-size: 11px; }
 
 /* Iterations side by side */
 .vfx-iters { display: grid; grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); gap: 10px; }

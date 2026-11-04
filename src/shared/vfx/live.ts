@@ -18,7 +18,8 @@
 import { assertModuleSizes, CAMERAS } from '../studio/payload.ts'
 import { KEY_COLOR } from '../studio/crop.ts'
 import { BRIDGE_VERSION, type BridgeJob } from '../studio/protocol.ts'
-import { effectModules, moduleDuration, timelineModule } from './luau.ts'
+import { EMIT_RUNTIME_MODULE, FORGEVFX_SOURCE } from './emitRuntime.ts'
+import { effectModules, forgeVfxTiming, moduleDuration, playsWithForgeVFX, timelineModule } from './luau.ts'
 import { FORGEFX_SOURCE, RUNTIME_MODULE } from './runtime.ts'
 import type { VfxEffect } from './types.ts'
 
@@ -91,19 +92,33 @@ export function lingerOf(effect: VfxEffect): number {
   return Math.min(4, max)
 }
 
+// How long one play of the effect's module takes (seconds) and how long its particles outlive it
+// (capped for the loop). ForgeVFX effects (luau.ts playsWithForgeVFX): the module's Duration and
+// Linger, from the emit plan; others: Effect.Duration (at least until the last cue) and lingerOf.
+export function playTiming(effect: VfxEffect): { duration: number; linger: number; forge: boolean } {
+  if (playsWithForgeVFX(effect)) {
+    const t = forgeVfxTiming(effect)
+    return { duration: t.duration, linger: Math.min(4, t.linger), forge: true }
+  }
+  return { duration: moduleDuration(effect), linger: lingerOf(effect), forge: false }
+}
+
 // Throws (ModuleTooLargeError) when a module could not be built in Studio.
 export function livePayload(effect: VfxEffect): LiveEffectPayload {
   const m = effectModules(effect, {})
   const timeline = effect.script ? timelineModule(effect.script) : null
   assertModuleSizes([{ name: effect.name, className: 'ModuleScript', source: m.source, children: [...m.data.map((d) => ({ name: d.name, className: 'ModuleScript' as const, source: d.source })), ...(timeline ? [{ name: 'Timeline', className: 'ModuleScript' as const, source: timeline }] : [])] }])
+  const t = playTiming(effect)
   return {
     name: effect.name,
     source: m.source,
     ...(m.data.length ? { data: m.data } : {}),
     ...(timeline ? { timeline } : {}),
-    // As long as the module plays it (Effect.Duration: at least until the last cue).
-    duration: Math.max(0.1, moduleDuration(effect) || 1),
-    linger: lingerOf(effect)
+    // As long as the module plays it (Effect.Duration: at least until the last cue). A ForgeVFX
+    // play also waits for its particles (Duration + Linger, as the Lab's loop does): the loop
+    // clears the folder before each replay. ForgeVFX (liveJob) plays it.
+    duration: t.forge ? Math.max(0.1, Math.round((t.duration + t.linger) * 1000) / 1000) : Math.max(0.1, t.duration || 1),
+    linger: t.linger
   }
 }
 
@@ -249,7 +264,12 @@ function M.play(origin, _stage, _opts)
 	local function clear()
 		if lastFx then
 			pcall(function()
-				lastFx:stop()
+				-- ForgeVFX emission (Stop(true) removes everything at once) or ForgeFX fx (stop).
+				if lastFx.Stop then
+					lastFx:Stop(true)
+				else
+					lastFx:stop()
+				end
 			end)
 			lastFx = nil
 		end
@@ -354,11 +374,13 @@ return M
 `
 }
 
-// The runtime (ForgeFX) always ships: scripted effects need it and any version may be one.
+// The runtimes always ship (the effect modules require them as siblings): ForgeFX for scripted
+// effects and ForgeVFX for mesh / FadeOut effects (luau.ts playsWithForgeVFX); any version may be one.
 export function liveJob(opts: { id: string; port: number; mode: LiveMode; frame: boolean; camera?: number[] | null }): BridgeJob {
   const modules: BridgeJob['modules'] = [
     { name: RUNTIME_MODULE, className: 'ModuleScript', source: FORGEFX_SOURCE },
-    { name: LIVE_ENTRY, className: 'ModuleScript', source: liveModuleSource({ ...opts, jobId: opts.id }) }
+    { name: LIVE_ENTRY, className: 'ModuleScript', source: liveModuleSource({ ...opts, jobId: opts.id }) },
+    { name: EMIT_RUNTIME_MODULE, className: 'ModuleScript', source: FORGEVFX_SOURCE }
   ]
   assertModuleSizes(modules)
   return {

@@ -16,12 +16,14 @@
 // jobs. Both forms build the same instances and play the same cues.
 
 import { allNodes } from './analyze.ts'
+import { arrayAttrType, attrRange, attrSequence, attrVec, emitPlan, templateIds } from './emitPlan.ts'
+import { EMIT_RUNTIME_MODULE } from './emitRuntime.ts'
 import { centreEffect } from './placement.ts'
 import { NODE_ID_ATTR, RUNTIME_MODULE } from './runtime.ts'
 import { SCHEMA, SCRIPT_CLASSES } from './schema.ts'
 import { fmt } from './sequence.ts'
 import { tweenKind } from './timeline.ts'
-import type { ColorKey, NumKey, PropValue, VfxCue, VfxEffect, VfxNode } from './types.ts'
+import type { ColorKey, NumKey, PropValue, VfxAttrValue, VfxCue, VfxEffect, VfxNode } from './types.ts'
 
 // Roblox's limit (a Source must be shorter), and the size Forge keeps each generated module under.
 export const SOURCE_LIMIT = 200_000
@@ -101,6 +103,34 @@ function value(kind: string, v: PropValue): string | null {
   }
 }
 
+// A NumberSequence Roblox accepts (NumberSequence.new errors otherwise): keypoints by time inside
+// 0..1, the first at 0 and the last at 1 (added, holding the end values, when missing), at most
+// 20, envelopes not negative.
+function sequenceKeys(seq: NumKey[]): NumKey[] {
+  let keys = seq.map((k) => ({ t: Math.min(1, Math.max(0, Number(k.t) || 0)), v: Number(k.v) || 0, e: Math.max(0, Number(k.e) || 0) }))
+  if (keys[0].t > 0) keys.unshift({ ...keys[0], t: 0 })
+  if (keys[keys.length - 1].t < 1) keys.push({ ...keys[keys.length - 1], t: 1 })
+  if (keys.length > 20) keys = [...keys.slice(0, 19), keys[keys.length - 1]]
+  return keys
+}
+
+// One attribute value of a NODES row. Numbers, booleans and strings as they are; array values as
+// { Roblox type, components... }, typed the way Effect.rbxmx writes them (emitPlan.arrayAttrType:
+// ATTR_TYPES by name, else a 2-array is a Vector2, a 3-array a Vector3, NumKey[] a
+// NumberSequence as time, value, envelope per keypoint); the rebuild makes the value (attrValue).
+// null: not an attribute Roblox can hold (skipped, as the template skips it).
+export function attrLiteral(name: string, v: VfxAttrValue): string | null {
+  if (typeof v === 'number') return Number.isFinite(v) ? String(v) : null
+  if (typeof v === 'boolean') return v ? 'true' : 'false'
+  if (typeof v === 'string') return luauString(v)
+  const type = arrayAttrType(name, v)
+  if (type === 'NumberSequence') return `{"NumberSequence",${sequenceKeys(attrSequence(v)!).map((k) => `${fmt(k.t)},${fmt(k.v)},${fmt(k.e ?? 0)}`).join(',')}}`
+  if (type === 'NumberRange') return `{"NumberRange",${attrRange(v)!.map(fmt).join(',')}}`
+  if (type === 'Vector2') return `{"Vector2",${attrVec(v, 2)!.map(fmt).join(',')}}`
+  if (type === 'Vector3' || type === 'Color3') return `{"${type}",${attrVec(v, 3)!.map(fmt).join(',')}}`
+  return null
+}
+
 const VALUE_HELPERS = `local NR = NumberRange.new
 local function NS(k: any): NumberSequence
 	if type(k) == "number" then
@@ -126,6 +156,16 @@ end`
 // Scripted effects (and effects with tweens) play through the ForgeFX runtime.
 export function needsRuntime(effect: VfxEffect): boolean {
   return !!effect.script || effect.cues.some((c) => c.action === 'tween' || c.action === 'set')
+}
+
+// Effects the compiled cue list cannot play: a Start/End mesh effect (copies, Lifetime, Ease
+// curves, SpreadAngle, Spin, Rate ...) or a FadeOut (emitPlan.ts). Their module hands the template
+// to ForgeVFX.emit (docs/vfx-emit.md), which plays every ForgeVFX attribute the way the Lab
+// previews it. Scripted / tweened effects keep the ForgeFX module (it runs the timeline script).
+export function playsWithForgeVFX(effect: VfxEffect): boolean {
+  if (needsRuntime(effect)) return false
+  const plan = emitPlan(effect.roots)
+  return plan.meshEffects.length > 0 || plan.layers.some((l) => (l.fadeOut ?? 0) > 0)
 }
 
 // The effect's Timeline ModuleScript: the script as written in Forge. Scripts in the
@@ -247,7 +287,8 @@ interface Row {
 // GetChildren order is the same): { ClassName, Name, parent row (0 = the effect's Model), { prop,
 // value, ... } in authored order, { reference prop, row, ... } (or false)?, { attribute, value,
 // ... }? }.
-function nodeRows(effect: VfxEffect): { rows: Row[]; root: number } {
+function nodeRows(effect: VfxEffect): { rows: Row[]; root: number; typed: boolean } {
+  let typed = false
   const order: VfxNode[] = []
   const parentOf = new Map<VfxNode, VfxNode | null>()
   const walk = (n: VfxNode, parent: VfxNode | null) => {
@@ -277,12 +318,15 @@ function nodeRows(effect: VfxEffect): { rows: Row[]; root: number } {
       const text = value(spec.kind, val)
       if (text !== null) props.push(luauString(k), text)
     }
-    // Attributes (SetAttribute): numbers, booleans and strings (the cue id, EmitCount ...).
+    // Attributes (SetAttribute): numbers, booleans and strings (the cue id, EmitCount ...), and
+    // typed values (NumberRange Lifetime, Vector2 SpreadAngle, Vector3 Spin, NumberSequence Ease
+    // curves ...) as { type, components... } tables (attrLiteral).
     const attrs: string[] = []
     for (const [k, val] of Object.entries(n.attrs ?? {})) {
-      if (typeof val === 'number' && Number.isFinite(val)) attrs.push(luauString(k), String(val))
-      else if (typeof val === 'boolean') attrs.push(luauString(k), val ? 'true' : 'false')
-      else if (typeof val === 'string') attrs.push(luauString(k), luauString(val))
+      const text = attrLiteral(k, val)
+      if (text === null) continue
+      attrs.push(luauString(k), text)
+      if (text.startsWith('{')) typed = true
     }
     const parent = parentOf.get(n)
     const bits = [luauString(n.className), luauString(n.name), String(parent ? rowOf.get(parent)! : 0), `{${props.join(',')}}`]
@@ -290,7 +334,7 @@ function nodeRows(effect: VfxEffect): { rows: Row[]; root: number } {
     if (attrs.length) bits.push(`{${attrs.join(',')}}`)
     return { list: 'nodes', text: `{${bits.join(',')}}` }
   })
-  return { rows, root: top ? rowOf.get(top)! : 0 }
+  return { rows, root: top ? rowOf.get(top)! : 0, typed }
 }
 
 const LIST_NAMES: Record<ListKey, string> = { nodes: 'NODES', init: 'INIT', spawns: 'SPAWNS', cues: 'CUES', base: 'BASE_CUES' }
@@ -398,9 +442,37 @@ local warned = false
 
 // Builds the model from NODES (when there is no template next to the module). meshes: the effect
 // has MeshParts / unions, which only the template carries whole: the rebuild warns once.
-const BUILD = (template: string, root: number, meshes: boolean, name: string) => `local ROOT = ${root}
+// Typed attribute values of NODES rows ({ type, components... }, attrLiteral) as Roblox values.
+const ATTR_VALUE = `-- A NODES attribute value: as it is, or { type, components... } (NumberSequence: time, value,
+-- envelope per keypoint) made into that Roblox type.
+local function attrValue(v: any): any
+\tif type(v) ~= "table" then
+\t\treturn v
+\tend
+\tlocal kind = v[1]
+\tif kind == "NumberRange" then
+\t\treturn NumberRange.new(v[2], v[3])
+\telseif kind == "Vector2" then
+\t\treturn Vector2.new(v[2], v[3])
+\telseif kind == "Vector3" then
+\t\treturn Vector3.new(v[2], v[3], v[4])
+\telseif kind == "Color3" then
+\t\treturn Color3.new(v[2], v[3], v[4])
+\telseif kind == "NumberSequence" then
+\t\tlocal points = {}
+\t\tfor i = 2, #v, 3 do
+\t\t\ttable.insert(points, NumberSequenceKeypoint.new(v[i], v[i + 1], v[i + 2]))
+\t\tend
+\t\treturn NumberSequence.new(points)
+\tend
+\treturn nil
+end
 
-${meshes ? CREATE_MESHES : ''}local function build(): Model
+`
+
+const BUILD = (template: string, root: number, meshes: boolean, name: string, typed = false) => `local ROOT = ${root}
+
+${meshes ? CREATE_MESHES : ''}${typed ? ATTR_VALUE : ''}local function build(): Model
 \tlocal template = script:FindFirstChild(${luauString(template)})
 \tif template then
 \t\treturn (template :: any):Clone()
@@ -438,8 +510,17 @@ ${
 \t\tlocal attrs = n[6]
 \t\tif attrs then
 \t\t\tfor a = 1, #attrs, 2 do
-\t\t\t\tpcall(inst.SetAttribute, inst, attrs[a], attrs[a + 1])
-\t\t\tend
+${
+  typed
+    ? `\t\t\t\t-- A value Roblox refuses (attrValue errors) leaves the attribute out, as SetAttribute does.
+\t\t\t\tlocal ok, v = pcall(attrValue, attrs[a + 1])
+\t\t\t\tif ok then
+\t\t\t\t\tpcall(inst.SetAttribute, inst, attrs[a], v)
+\t\t\t\tend
+`
+    : `\t\t\t\tpcall(inst.SetAttribute, inst, attrs[a], attrs[a + 1])
+`
+}\t\t\tend
 \t\tend
 \t\tmade[i] = inst
 \tend
@@ -476,7 +557,7 @@ export function effectModules(authored: VfxEffect, opts: { description?: string;
   const effect = shippedEffect(centreEffect(authored))
   const nodes = allNodes(effect.roots)
   const byId = new Map(nodes.map((n) => [n.id, n]))
-  const { rows: instanceRows, root } = nodeRows(effect)
+  const { rows: instanceRows, root, typed } = nodeRows(effect)
   const maxLife = Math.max(
     0,
     ...nodes.filter((n) => n.className === 'ParticleEmitter').map((n) => {
@@ -486,15 +567,18 @@ export function effectModules(authored: VfxEffect, opts: { description?: string;
     ...nodes.filter((n) => n.className === 'Trail').map((n) => Number(n.props.Lifetime ?? 2))
   )
   const meshes = nodes.some((n) => n.className === 'MeshPart' || n.className === 'UnionOperation')
+  const forge = playsWithForgeVFX(effect) ? forgeVfxSchedule(effect) : undefined
   const p: ModuleParts = {
     byId,
-    build: BUILD(opts.templateName ?? 'Effect', root, meshes, effect.name),
-    duration: moduleDuration(effect),
+    build: BUILD(opts.templateName ?? 'Effect', root, meshes, effect.name, typed),
+    duration: forge ? forge.duration : moduleDuration(effect),
     maxLife,
-    desc: (opts.description ?? '').replace(/\s+/g, ' ').trim()
+    desc: (opts.description ?? '').replace(/\s+/g, ' ').trim(),
+    ...(forge ? { forge } : {})
   }
-  const make = needsRuntime(effect) ? scriptedModule : plainModule
-  const rows = [...instanceRows, ...(needsRuntime(effect) ? scriptedRows(effect, p) : plainRows(effect, p))]
+  const make = needsRuntime(effect) ? scriptedModule : forge ? forgeVfxModule : plainModule
+  const cueRows = needsRuntime(effect) ? scriptedRows(effect, p) : plainRows(forge ? { ...effect, cues: forge.cues } : effect, p)
+  const rows = [...instanceRows, ...cueRows]
   const inline = make(effect, p, rows, 0)
   if (sourceLength(inline) < cap) return { source: inline, data: [] }
   const parts = splitRows(effect.name, rows, cap)
@@ -520,6 +604,196 @@ interface ModuleParts {
   duration: number
   maxLife: number
   desc: string
+  forge?: ForgeVfxSchedule
+}
+
+// ------------------------------------------------------------ ForgeVFX effects
+
+export interface ForgeVfxTiming {
+  // Effect.Duration: the longest a play can take (emitPlan's Duration with every mesh copy at its
+  // Lifetime max, so ForgeVFX's emission.Duration, drawn per play, is never longer), and at least
+  // until the last cue of a layer without attributes.
+  duration: number
+  // Effect.Linger: how long particles and trail segments can outlive it.
+  linger: number
+}
+
+interface ForgeVfxSchedule extends ForgeVfxTiming {
+  // Cues of the layers ForgeVFX does not time (no emit attributes, not inside Start / End): the
+  // Lab's timeline for them, played by the module on the clone (as the preview plays them).
+  cues: VfxCue[]
+  // ForgeVFX options: duration (only when those cues run past the plan; otherwise open windows end
+  // where the preview ends them) and keepFor (the clone stays until their particles are gone).
+  runFor?: number
+  keepFor?: number
+}
+
+const round3 = (x: number) => Math.round(x * 1000) / 1000
+
+// Call on the shipped effect (effectModules), or use forgeVfxTiming.
+function forgeVfxSchedule(effect: VfxEffect): ForgeVfxSchedule {
+  const plan = emitPlan(effect.roots)
+  const driven = new Set(plan.layers.map((l) => l.id))
+  const tpl = templateIds(effect.roots)
+  const byId = new Map(allNodes(effect.roots).map((n) => [n.id, n]))
+  const cues = effect.cues.filter((c) => byId.has(c.target) && !driven.has(c.target) && !tpl.has(c.target) && (c.action === 'emit' || c.action === 'enable' || c.action === 'disable'))
+  // Mesh copies at their longest; layers riding them can end that much later too.
+  let planEnd = plan.duration
+  let spread = 0
+  for (const m of plan.meshEffects) {
+    for (const c of m.copies) planEnd = Math.max(planEnd, c.spawn + m.lifetime[1])
+    if (m.copies.some((c) => c.riding.length)) spread = Math.max(spread, m.lifetime[1] - m.lifetime[0])
+  }
+  const cueEnd = Math.max(0, ...cues.map((c) => c.at))
+  const duration = round3(Math.max(planEnd, cueEnd))
+  // Particles / trail segments of the cued layers: from their last cue, or from the end when a cue
+  // (or the authored Enabled) may leave them on.
+  let cueTail = 0
+  for (const id of new Set(cues.map((c) => c.target))) {
+    const n = byId.get(id)!
+    const mine = cues.filter((c) => c.target === id)
+    const l = n.props.Lifetime
+    const life = n.className === 'ParticleEmitter' ? (Array.isArray(l) ? Number(l[1] ?? l[0]) || 0 : 10) : n.className === 'Trail' ? (l === undefined ? 2 : Number(l) || 0) : 0
+    if (life <= 0) continue
+    const on = mine.some((c) => c.action === 'enable') || (n.props.Enabled !== false && !mine.some((c) => c.action === 'disable'))
+    cueTail = Math.max(cueTail, (on ? duration : Math.max(...mine.map((c) => c.at))) + Math.min(20, life))
+  }
+  const tail = Math.max(plan.duration + plan.linger + spread, cueTail)
+  return {
+    duration,
+    linger: round3(Math.max(0, tail - duration)),
+    cues,
+    ...(cueEnd > planEnd ? { runFor: duration } : {}),
+    ...(cueTail > 0 ? { keepFor: round3(cueTail) } : {})
+  }
+}
+
+// Effect.Duration / Effect.Linger of the module of an effect that playsWithForgeVFX (Live and
+// Studio checks time their plays with them).
+export function forgeVfxTiming(authored: VfxEffect): ForgeVfxTiming {
+  const s = forgeVfxSchedule(shippedEffect(centreEffect(authored)))
+  return { duration: s.duration, linger: s.linger }
+}
+
+// The module of an effect that playsWithForgeVFX: builds the template as the other modules do (the
+// Effect child, else NODES), once, never parented, and plays it with ForgeVFX.emit, which clones it
+// (ForgeVFX is the sibling module, as ForgeFX is for scripted effects). Cues of layers without
+// attributes play on the clone; Stages fire options.onStage.
+function forgeVfxModule(effect: VfxEffect, p: ModuleParts, rows: Row[], parts: number): string {
+  const s = p.forge!
+  const name = effect.name
+  const R = EMIT_RUNTIME_MODULE
+  const hasCues = rows.some((r) => r.list === 'cues')
+  const stages = (effect.stages ?? []).map((st) => `{ at = ${fmt(st.at)}, label = ${luauString(st.label)} }`)
+  const emitOpts = ['parent = parent', ...(s.runFor !== undefined ? ['duration = Effect.Duration'] : []), ...(s.keepFor !== undefined ? [`keepFor = ${fmt(s.keepFor)}`] : [])]
+  return `--!strict
+-- ${name}: made with the RBX Forge VFX Lab; played by ${R} (mesh effects, FadeOut, emit attributes).${p.desc ? `\n-- ${p.desc.slice(0, 200)}` : ''}
+-- Usage:
+--   local ${name} = require(ReplicatedStorage.Shared.VFX.${name})
+--   local model, emission = ${name}.play(target, parent?) -- target: CFrame, BasePart or Attachment
+--   emission.Finished:Wait()   emission:Stop()   emission.Duration (this play; Effect.Duration is the longest)
+-- The ${R} module next to this one plays the template: its attributes are the timeline (EmitDelay,
+-- EmitCount, EmitDuration, Rate, FadeOut, Start/End mesh effects; docs/vfx-emit.md in RBX Forge).
+local ${R} = require(script.Parent:WaitForChild("${R}"))
+
+local Effect = {}
+
+-- Seconds a play takes at most (mesh copies at their longest Lifetime), and how long the last
+-- particles can live after it.
+Effect.Duration = ${fmt(p.duration)}
+Effect.Linger = ${fmt(Math.min(20, s.linger))}
+${stages.length ? `Effect.Stages = { ${stages.join(', ')} }\n` : ''}
+${dataSection(rows, { nodes: NODES_COMMENT, cues: `-- Emit bursts and Enabled toggles of the layers without ${R} attributes: { at, instance (its ${NODE_ID_ATTR} attribute), name, action, count }.` }, parts, ['nodes'])}
+
+${p.build}
+
+-- The template ${R}.emit clones: built once and never parented (never in the world). The effect's
+-- anchor is the model's origin (a new Model's pivot would be the centre of its bounding box).
+local cached: Model? = nil
+local function getTemplate(): Model
+\tif cached then
+\t\treturn cached
+\tend
+\tlocal model = build()
+\tif not model.PrimaryPart then
+\t\tmodel.WorldPivot = CFrame.new()
+\tend
+\tcached = model
+\treturn model
+end
+${
+  hasCues
+    ? `
+local TOGGLES: { [string]: boolean } = { ParticleEmitter = true, Beam = true, Trail = true, PointLight = true, SpotLight = true, SurfaceLight = true, Highlight = true }
+
+-- Emit only on ParticleEmitters, Enabled only on what has it (a Part may share an emitter's name).
+local function run(fx: Instance, cue: { any })
+\tif cue[4] == "emit" then
+\t\tif fx:IsA("ParticleEmitter") then
+\t\t\tfx:Emit(cue[5])
+\t\tend
+\telseif TOGGLES[fx.ClassName] then
+\t\t(fx :: any).Enabled = cue[4] == "enable"
+\tend
+end
+
+-- The instances each cue addresses, by their ${NODE_ID_ATTR} attribute (names repeat in imported packs).
+local function byId(model: Instance): { [number]: { Instance } }
+\tlocal out: { [number]: { Instance } } = {}
+\tfor _, d in model:GetDescendants() do
+\t\tlocal id = d:GetAttribute("${NODE_ID_ATTR}")
+\t\tif type(id) == "number" then
+\t\t\tlocal list = out[id] or {}
+\t\t\tout[id] = list
+\t\t\ttable.insert(list, d)
+\t\tend
+\tend
+\treturn out
+end
+`
+    : ''
+}
+-- Plays the effect at the target (nil: the origin): ${R} clones the template into parent (default
+-- Workspace.${R}), follows a BasePart / Attachment target and removes the clone when done. Returns
+-- the playing clone and the ${R} emission (emission:Stop(), emission.Finished, emission.Duration).
+function Effect.play(target: any, parent: Instance?, options: { [string]: any }?): (Model, any)
+\tlocal emission = ${R}.emit(getTemplate(), target, { ${emitOpts.join(', ')} })
+\tlocal model = emission.Instance :: Model
+${
+  hasCues
+    ? `\tlocal ids = byId(model)
+\tfor _, cue in CUES do
+\t\tlocal targets = ids[cue[2]]
+\t\tif not targets then
+\t\t\t-- A template without ids: the first instance with the name.
+\t\t\tlocal found = model:FindFirstChild(cue[3], true)
+\t\t\ttargets = if found then { found } else {}
+\t\tend
+\t\tfor _, fx in targets do
+\t\t\tif cue[1] <= 0 then
+\t\t\t\trun(fx, cue)
+\t\t\telse
+\t\t\t\ttask.delay(cue[1], run, fx, cue)
+\t\t\tend
+\t\tend
+\tend
+`
+    : ''
+}${
+  stages.length
+    ? `\tlocal onStage = options and options.onStage
+\tif onStage then
+\t\tfor _, stage in Effect.Stages do
+\t\t\ttask.delay(stage.at, onStage, stage.label, stage.at)
+\t\tend
+\tend
+`
+    : ''
+}\treturn model, emission
+end
+
+return Effect
+`
 }
 
 // A cue target's ForgeId (shippedEffect gives every cue target one).

@@ -129,3 +129,37 @@ Where the runtime goes past this spec or pins down open points (agreed with the 
   Lab writes it on request.
 - Play Studio selection reads the selection once when it starts and plays each effect at its own
   pivot, on top of the template being edited. Press it again after selecting something else.
+
+## Effect modules (Add to game, Test in Studio, Loop in Studio)
+
+The per-effect module (`luau.ts effectModules`, `require(...VFX.<Name>).play(target, parent?, opts)`)
+plays the compiled cue list, which cannot do Start/End mesh effects or FadeOut. An effect that
+`playsWithForgeVFX` (`luau.ts`: a mesh effect or a FadeOut in its emit plan, and not scripted /
+tweened; those keep the ForgeFX module) gets a module that hands its template to ForgeVFX instead:
+
+- It builds the template exactly as the other modules do (the `Effect` child, else the NODES rows),
+  once per module, with its anchor at the model's origin, and never parents it (never in the world).
+- `play(target, parent?, options?)` calls `ForgeVFX.emit(template, target, { parent = parent, ... })`
+  (`ForgeVFX` is required as a sibling ModuleScript, like `ForgeFX`; `parent` nil means
+  `Workspace.ForgeVFX`) and **returns `(model, emission)`**: the playing clone (a Model, as before) and
+  the ForgeVFX emission (`emission:Stop()`, `emission.Finished`, `emission.Duration`). A BasePart or
+  Attachment target is followed (ForgeVFX's default).
+- Cues of layers ForgeVFX does not time (no emit attributes, outside Start/End: the Lab's own timeline
+  for them) still play, on the clone, as the preview plays them. When they run past the plan the
+  module passes `duration`; `keepFor` keeps the clone until their particles are gone.
+- `options.onStage(label, t)` fires at the effect's stages, if it has any.
+- `Effect.Duration` = emitPlan's Duration with every mesh copy at its Lifetime max (and at least the
+  last of those cues), so `emission.Duration`, drawn per play, is never longer; `Effect.Linger` = how
+  long particles / trail segments outlive it. Live replays every `Duration + Linger (max 4) + gap`
+  (the Lab loop); Studio checks record `Duration` (at least to the last beat) plus the linger.
+- ForgeVFX ships with it: the project files (`ForgeVFX.luau` next to `ForgeFX.luau`), the Studio check
+  job (a sibling module of `Effect`), the ability check's VFX folder and the Live job.
+
+NODES rows (the rebuild without `Effect.rbxmx`, used by Live and Studio checks) keep typed attributes:
+an array value is written as `{ type, components... }` with the type Effect.rbxmx uses
+(`emitPlan.arrayAttrType`: `ATTR_TYPES` by name, else a 2-array is a Vector2, a 3-array a Vector3,
+`NumKey[]` a NumberSequence as time, value, envelope per keypoint) and made into that Roblox value
+before `SetAttribute`. NumberSequences are made valid first (times in 0..1, keypoints at 0 and 1, at
+most 20); a value Roblox still refuses leaves the attribute out.
+
+`ForgeVFX.emit` option `keepFor` (seconds from the start): the clone stays at least that long.

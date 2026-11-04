@@ -12,7 +12,7 @@
 // Forge a no-Lune path for .rbxmx and is used to check what we write.
 
 import { ENUMS, PART_CLASSES, SCHEMA, enumName } from './schema.ts'
-import { ATTR_TYPES } from './emitPlan.ts'
+import { arrayAttrType } from './emitPlan.ts'
 import type { ColorKey, NumKey, PropValue, VfxAttrValue, VfxNode } from './types.ts'
 
 // ------------------------------------------------------------------ tiny XML DOM
@@ -274,7 +274,7 @@ export function encodeAttributes(attrs: Record<string, VfxAttrValue>): string {
     u32(b.length)
     parts.push(...b)
   }
-  const entries = Object.entries(attrs).filter(([, v]) => !Array.isArray(v) || (v.length >= 2 && (v.every((x) => typeof x === 'number') ? v.length <= 3 : true)))
+  const entries = Object.entries(attrs).filter(([k, v]) => !Array.isArray(v) || arrayAttrType(k, v) !== null)
   u32(entries.length)
   for (const [k, v] of entries) {
     str(k)
@@ -283,7 +283,7 @@ export function encodeAttributes(attrs: Record<string, VfxAttrValue>): string {
     else if (Array.isArray(v)) {
       if (v.every((x) => typeof x === 'number')) {
         const nums = v as number[]
-        const kind = ATTR_TYPES[k] ?? (nums.length === 2 ? 'Vector2' : 'Vector3')
+        const kind = arrayAttrType(k, nums)
         parts.push(kind === 'NumberRange' ? 0x1b : kind === 'Vector2' ? 0x10 : kind === 'Color3' ? 0x0f : 0x11)
         const n = kind === 'NumberRange' || kind === 'Vector2' ? 2 : 3
         for (let i = 0; i < n; i++) f32(Number(nums[i] ?? nums[nums.length - 1]) || 0)

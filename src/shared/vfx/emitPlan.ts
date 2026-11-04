@@ -112,6 +112,19 @@ export function attrSequence(v: VfxAttrValue | undefined): NumKey[] | undefined 
   return [...(v as NumKey[])].sort((a, b) => a.t - b.t)
 }
 
+// The Roblox type an array attribute is written as (Effect.rbxmx and the module's NODES rebuild
+// agree on it): the name's type in ATTR_TYPES, else a 2-array is a Vector2 and a 3-array a
+// Vector3; NumKey[] is a NumberSequence. null: not an array attribute Roblox can hold.
+export type ArrayAttrType = (typeof ATTR_TYPES)[string] | 'NumberSequence'
+export function arrayAttrType(name: string, v: VfxAttrValue): ArrayAttrType | null {
+  if (!Array.isArray(v) || v.length < 2) return null
+  if (v.every((x) => typeof x === 'number')) {
+    if (v.length > 3) return null
+    return ATTR_TYPES[name] ?? (v.length === 2 ? 'Vector2' : 'Vector3')
+  }
+  return attrSequence(v) ? 'NumberSequence' : null
+}
+
 // ------------------------------------------------------------------ easing (TweenService:GetValue)
 
 // The "In" curve of each style (Out and InOut are built from it, as Roblox / Penner do; Back and

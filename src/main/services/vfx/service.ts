@@ -25,7 +25,7 @@ import { FORGEFX_SOURCE, isOwnRuntime, RUNTIME_MODULE } from '../../../shared/vf
 import { EMIT_RUNTIME_MODULE, FORGEVFX_SOURCE, isOwnEmitRuntime, usesEmitAttributes } from '../../../shared/vfx/emitRuntime.ts'
 import { timelineSummary } from '../../../shared/vfx/timeline.ts'
 import { promptTags } from '../../../shared/vfx/draft.ts'
-import { DATA_HEADER, effectModules, needsRuntime, templateRoots, timelineModule } from '../../../shared/vfx/luau.ts'
+import { DATA_HEADER, effectModules, needsRuntime, playsWithForgeVFX, templateRoots, timelineModule } from '../../../shared/vfx/luau.ts'
 import { readRbxmx, writeRbxmx } from '../../../shared/vfx/rbxmx.ts'
 import { centreEffect } from '../../../shared/vfx/placement.ts'
 import { extractRecipe, extractRecipes, RECIPE_PREFIX, recipeMatches, recipeSkill } from '../../../shared/vfx/recipes.ts'
@@ -1115,8 +1115,9 @@ export class VfxService {
     const parent = dir.includes('/') ? dir.slice(0, dir.lastIndexOf('/')) : ''
     if (needsRuntime(fx)) out.push({ path: `${parent ? parent + '/' : ''}${RUNTIME_MODULE}.luau`, content: FORGEFX_SOURCE, role: 'ForgeFX runtime', owned: isOwnRuntime })
     // ForgeVFX (attribute-driven effects, docs/vfx-emit.md): plays the exported template with
-    // ForgeVFX.emit; written next to ForgeFX (same ownership rule) and for attribute-driven effects.
-    if (needsRuntime(fx) || usesEmitAttributes(fx.roots)) out.push({ path: `${parent ? parent + '/' : ''}${EMIT_RUNTIME_MODULE}.luau`, content: FORGEVFX_SOURCE, role: 'ForgeVFX runtime', owned: isOwnEmitRuntime })
+    // ForgeVFX.emit; written next to ForgeFX (same ownership rule) and for attribute-driven effects,
+    // always for the effects whose module requires it (mesh effects, FadeOut: playsWithForgeVFX).
+    if (needsRuntime(fx) || usesEmitAttributes(fx.roots) || playsWithForgeVFX(fx)) out.push({ path: `${parent ? parent + '/' : ''}${EMIT_RUNTIME_MODULE}.luau`, content: FORGEVFX_SOURCE, role: 'ForgeVFX runtime', owned: isOwnEmitRuntime })
     return out
   }
 

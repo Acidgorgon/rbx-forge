@@ -4,8 +4,9 @@
 // version being judged.
 
 import { stageAt, stageFrameTimes } from '../vfx/critique.ts'
-import { effectModules, moduleDuration, needsRuntime, sourceLength, SOURCE_LIMIT, timelineModule } from '../vfx/luau.ts'
-import { lingerOf } from '../vfx/live.ts'
+import { EMIT_RUNTIME_MODULE, FORGEVFX_SOURCE } from '../vfx/emitRuntime.ts'
+import { effectModules, needsRuntime, playsWithForgeVFX, sourceLength, SOURCE_LIMIT, timelineModule } from '../vfx/luau.ts'
+import { playTiming } from '../vfx/live.ts'
 import { FORGEFX_SOURCE, RUNTIME_MODULE } from '../vfx/runtime.ts'
 import { parseXml, type XmlEl } from '../vfx/rbxmx.ts'
 import type { VfxEffect } from '../vfx/types.ts'
@@ -137,6 +138,8 @@ export function assertModuleSizes(modules: BridgeModule[], path: string[] = []):
 }
 
 const runtimeModule = (): BridgeModule => ({ name: RUNTIME_MODULE, className: 'ModuleScript', source: FORGEFX_SOURCE })
+// ForgeVFX, next to the module of an effect that playsWithForgeVFX (it requires the sibling).
+const emitRuntimeModule = (): BridgeModule => ({ name: EMIT_RUNTIME_MODULE, className: 'ModuleScript', source: FORGEVFX_SOURCE })
 
 // Beat times and labels for an effect: one inside each stage, else spread over the play.
 export function vfxBeats(effect: VfxEffect, n = 4): BridgeBeat[] {
@@ -149,7 +152,13 @@ export function vfxJob(effect: VfxEffect, opts: JobBase & { times?: number[]; ca
   const beats = opts.times?.length ? opts.times.map((t, i) => ({ t, label: stageAt(effect, t) ?? `t${i + 1}` })) : vfxBeats(effect)
   const modules: BridgeModule[] = [vfxModules(effect)]
   if (needsRuntime(effect)) modules.unshift(runtimeModule())
+  if (playsWithForgeVFX(effect)) modules.unshift(emitRuntimeModule())
   assertModuleSizes(modules)
+  // The module's Duration (ForgeVFX effects: from the emit plan) and its particles' linger. A
+  // ForgeVFX play is shorter than the Lab's loop (Duration + Linger, at least 1 s): the recording
+  // runs at least to the last beat.
+  const timing = playTiming(effect)
+  const duration = timing.forge ? Math.max(timing.duration, ...beats.map((b) => b.t)) : timing.duration
   return {
     id: opts.id,
     version: BRIDGE_VERSION,
@@ -157,15 +166,15 @@ export function vfxJob(effect: VfxEffect, opts: JobBase & { times?: number[]; ca
     mode: 'realtime',
     name: effect.name,
     rig: 'R15',
-    duration: moduleDuration(effect),
+    duration,
     beats,
     camera: CAMERAS.vfx,
     modules,
     entry: 'Effect',
     calibrate: opts.calibrate ?? true,
     key: KEY_COLOR,
-    linger: lingerOf(effect),
-    timeout: Math.ceil(moduleDuration(effect) + 40)
+    linger: timing.linger,
+    timeout: Math.ceil(duration + 40)
   }
 }
 
@@ -201,12 +210,13 @@ export function abilityJob(ability: Ability, effects: Record<string, VfxEffect>,
     if (!fx) continue
     seen.add(ev.effectName)
     vfx.push(vfxModules(fx, ev.effectName))
+    if (playsWithForgeVFX(fx) && !vfx.some((m) => m.name === EMIT_RUNTIME_MODULE)) vfx.splice(1, 0, emitRuntimeModule())
   }
   const lengths = { vfx: (id: string) => effects[id]?.duration, stages: (id: string) => effects[id]?.stages }
   const anim = ability.animation
   const playClip = clip ?? (anim && isPlaceholder(anim.clip) ? placeholderClip(anim.clip) : null)
   let lingerS = 0
-  for (const fx of Object.values(effects)) lingerS = Math.max(lingerS, lingerOf(fx))
+  for (const fx of Object.values(effects)) lingerS = Math.max(lingerS, playTiming(fx).linger)
   const modules: BridgeModule[] = [
     { name: 'VFX', className: 'Folder', children: vfx },
     { name: RUNNER_MODULE, className: 'ModuleScript', source: runnerModule([...JOB_ROOT, 'VFX']) },

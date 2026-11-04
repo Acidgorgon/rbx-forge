@@ -58,7 +58,8 @@ ${EMIT_RUNTIME_HEADER} (v${EMIT_RUNTIME_VERSION}).
 --   local e = ForgeVFX.emit(template, at, options)   -- at: CFrame | BasePart | Attachment | Model | nil
 --   e.Finished:Wait()   e.Finished:Connect(fn)   e:Stop()   e.Duration   e.Instance
 --   ForgeVFX.stopAll()
--- options: parent (default Workspace.ForgeVFX), follow (default true), offset (CFrame), duration (s).
+-- options: parent (default Workspace.ForgeVFX), follow (default true), offset (CFrame), duration (s),
+--   keepFor (s: keep the clone at least this long, for particles you emit on it yourself).
 -- Attributes (seconds; EmitDelay adds up down the tree, the others inherit from the nearest ancestor):
 --   EmitDelay, EmitDuration, EmitCount, Rate (mesh effects), FadeOut (beams, trails, lights).
 -- Mesh effect: a Model / Folder with BaseParts "Start" and "End"; attributes on it: Lifetime
@@ -1258,6 +1259,11 @@ function ForgeVFX.emit(template: Instance, at: any?, options: any?)
 		end
 		run.duration = duration
 		run.cleanupAt = duration + finishScope(scope, duration)
+		-- options.keepFor: seconds from the start the clone stays at least (particles the caller
+		-- emits itself, as the effect modules Forge generates do for layers without attributes).
+		if typeof(o.keepFor) == "number" and o.keepFor > run.cleanupAt then
+			run.cleanupAt = math.min(o.keepFor, MAX_DELAY + MAX_WINDOW + 20)
+		end
 		root:PivotTo(run.placeCF)
 		root.Parent = o.parent or defaultParent()
 		if run.welded then

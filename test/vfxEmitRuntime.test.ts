@@ -17,6 +17,7 @@ import type { LiveBridge } from '../src/main/services/vfx/live.ts'
 import { VfxService } from '../src/main/services/vfx/service.ts'
 import { findLune } from '../src/main/services/tests/lune.ts'
 import type { VfxEffect, VfxNode } from '../src/shared/vfx/types.ts'
+import { EASING_DIRECTIONS, EASING_STYLES } from '../src/shared/vfx/emitPlan.ts'
 import { luauCheck } from './luauCheck.ts'
 
 // ------------------------------------------------------------------ structural Luau checks
@@ -58,13 +59,15 @@ test('ForgeVFX source: the Roblox API it relies on', () => {
     'pe:Emit(n)', 'pe.Lifetime.Max', 'pe.Rate', 'a.Enabled = true', 'a.Enabled = false', 'a.Lifetime',
     'NumberSequence.new(keys)', 'NumberSequenceKeypoint.new(kp.Time', 'seq.Keypoints', 'kp.Envelope',
     // attributes
-    'inst:GetAttribute(name)', 'typeof(v) == "NumberRange"', 'v.Min, v.Max', 'typeof(spread) == "Vector2"', 'typeof(v) == "Vector3"', 'typeof(v) == "NumberSequence"', 'GetAttribute("SyncPosition") == true',
+    'inst:GetAttribute(name)', 'kind == "NumberRange"', 'v.Min, v.Max', 'kind == "Vector2"', 'v.X, v.Y', 'kind == "Vector3"', 'kind == "Color3"', 'typeof(v) == "NumberSequence"', 'boolAttr(container, "SyncPosition") == true',
     // easing and randomness
-    'TweenService:GetValue(math.clamp(a, 0, 1), style, direction)', 'Enum.EasingStyle:GetEnumItems()', 'Enum.EasingDirection:GetEnumItems()', 'Random.new()', 'rng:NextNumber()',
+    'TweenService:GetValue(math.clamp(a, 0, 1), style, direction)', 'Enum.EasingStyle[name]', 'Enum.EasingDirection.InOut', 'Random.new()', 'rng:NextNumber()',
     // mesh effects
     'FindFirstChildOfClass("SpecialMesh")', 'copy.mesh.Scale', 'copy.mesh.Offset', 'copy.mesh.VertexColor', 'd:IsA("Decal")', 'd.Color3', 'CFrame.fromAxisAngle(axis, angle * k)', ':ToAxisAngle()', 'a:Lerp(b, k)',
     // threads
-    'task.spawn(', 'coroutine.yield()',
+    'task.spawn(', 'coroutine.yield()', 'coroutine.status(co) == "suspended"',
+    // pivot and a destroyed parent
+    'model.PrimaryPart = nil', 'model.WorldPivot = run.pivot0', 'run.root.Parent == nil',
     // API
     'function ForgeVFX.emit(template: Instance, at: any?, options: any?)', 'function ForgeVFX.stopAll(', 'function ForgeVFX.init()', 'shared.ForgeVFX = ForgeVFX', 'function Emission:Stop(', 'Finished = run.signal', 'Duration = run.duration'
   ]
@@ -106,9 +109,82 @@ test('ForgeVFX source: timing rules match cuesFromAttributes and the preview pla
   assert.match(src, /local DEFAULT_LIFETIME = 0\.5/)
   // Riding children: inheritance restarts at Start.
   assert.match(src, /walk\(scope, inst, ROOT_CTX\)\n\tlocal linger = finishScope\(scope, copy\.life\)/)
-  // Ease strings: case-insensitive, Enum prefix, unknown -> Quad.Out.
-  assert.match(src, /\^enum%\.easingstyle%\./)
-  assert.match(src, /style = Enum\.EasingStyle\.Quad\n\t\tdirection = Enum\.EasingDirection\.Out/)
+  // Ease strings: case-insensitive, Enum prefix, unknown -> the fallback (Ease, else Quad.Out).
+  assert.match(src, /if string\.lower\(string\.sub\(s, 1, 17\)\) == "enum\.easingstyle\." then/)
+  assert.match(src, /local QUAD_OUT = easeFn\(Enum\.EasingStyle\.Quad, Enum\.EasingDirection\.Out\)/)
+})
+
+// The Lua body of one `local function name(...)` in the source (up to its closing top-level end).
+const luauFn = (src: string, name: string): string => {
+  const m = new RegExp(`\\nlocal function ${name}\\([^]*?\\nend\\n`).exec(src)
+  assert.ok(m, name)
+  return m[0]
+}
+
+test('ForgeVFX source: plan parity (ease strings, attribute forms, copy deaths, untimed layers)', () => {
+  const src = FORGEVFX_SOURCE
+  assert.deepEqual(luauCheck(src), [])
+  // Ease strings read like parseEase: the same style / direction names, the same separators and the
+  // camelCase In / Out / InOut suffix; empty or unknown strings fall back (per-property -> Ease).
+  const styles = /for _, name in \{ ([^}]*) \} do\n\tSTYLES\[string\.lower\(name\)\] = Enum\.EasingStyle\[name\]/.exec(src)
+  assert.ok(styles)
+  assert.deepEqual(styles[1].split(', ').map((x) => JSON.parse(x)), EASING_STYLES)
+  assert.deepEqual(EASING_DIRECTIONS.map((d) => d.toLowerCase()), ['in', 'out', 'inout'])
+  assert.match(src, /local DIRECTIONS = \{ \["in"\] = Enum\.EasingDirection\.In, out = Enum\.EasingDirection\.Out, inout = Enum\.EasingDirection\.InOut \}/)
+  const ease = luauFn(src, 'easeFromString')
+  assert.match(ease, /^\nlocal function easeFromString\(text: string, fallback: \(number\) -> number\): \(number\) -> number/)
+  assert.match(ease, /for _, suffix in \{ "In", "Out", "InOut" \} do/, 'descending cut positions')
+  assert.match(ease, /string\.match\(string\.sub\(s, at - 1, at - 1\), "%l"\)/)
+  assert.match(ease, /string\.gmatch\(s, "\[\^%\.%s_\/%-\]\+"\)/)
+  assert.match(ease, /local dir = string\.lower\(table\.concat\(parts, "", 2\)\)/)
+  assert.equal(ease.match(/return fallback/g)?.length, 2)
+  assert.doesNotMatch(ease, /EasingStyle\.Quad/, 'no hard-coded Quad.Out fallback')
+  assert.match(luauFn(src, 'easeOf'), /return easeFromString\(v, fallback\)/)
+  assert.match(luauFn(src, 'meshSpec'), /local default = easeOf\(container, "Ease", QUAD_OUT\)/)
+  assert.match(luauFn(src, 'meshSpec'), /easeCF = easeOf\(container, "EaseCFrame", default\)/)
+  // Attribute forms as emitPlan.ts reads them: numbersOf / attrRange / attrVec / attrBool.
+  const nums = luauFn(src, 'numbersOf')
+  for (const k of ['NumberRange', 'Vector2', 'Vector3', 'Color3', 'number', 'string']) assert.ok(nums.includes(`kind == "${k}"`), k)
+  assert.match(nums, /string\.gmatch\(v, "\[\^%s,\]\+"\)/)
+  assert.match(luauFn(src, 'vecAttr'), /if type\(v\) == "number" then\n\t\treturn nil/)
+  assert.match(luauFn(src, 'vecAttr'), /return \{ n\[1\] or 0, n\[2\] or 0, n\[3\] or 0 \}/)
+  assert.match(luauFn(src, 'boolAttr'), /s == "true" or s == "yes" or s == "1"/)
+  assert.match(luauFn(src, 'boolAttr'), /s == "false" or s == "no" or s == "0"/)
+  assert.match(luauFn(src, 'boolAttr'), /return v ~= 0/)
+  assert.match(luauFn(src, 'lifetimeRange'), /numbersOf\(inst:GetAttribute\("Lifetime"\)\)/)
+  assert.match(luauFn(src, 'lifetimeRange'), /return math\.max\(0, math\.min\(a, b\)\), math\.max\(0, a, b\)/)
+  assert.match(luauFn(src, 'meshSpec'), /local spread = vecAttr\(container, "SpreadAngle"\)/)
+  // Cues: one sorted queue popped from the end (no per-frame rebuild); a copy's cues after its death
+  // are dropped even on a long frame.
+  const fire = luauFn(src, 'fireDue')
+  assert.doesNotMatch(fire, /table\.sort|table\.insert/)
+  assert.match(fire, /if c == nil or c\.t > rt then\n\t\t\treturn/)
+  assert.match(fire, /if not c\.scope\.dead and not \(copy and c\.t > copy\.born \+ copy\.life\) then\n\t\t\tc\.fn\(\)/)
+  assert.match(luauFn(src, 'cue'), /if list\[mid\]\.t > at then\n\t\t\tlo = mid \+ 1\n\t\telse\n\t\t\thi = mid/)
+  assert.match(luauFn(src, 'cue'), /table\.insert\(list, lo, \{ t = at, fn = fn, scope = scope \}\)/)
+  // Riding windows end at the copy's death (particle / trail linger, fade ramp).
+  assert.match(luauFn(src, 'stopOf'), /return if scope\.copy then scope\.copy\.life else math\.huge/)
+  const pl = luauFn(src, 'particleLayer')
+  assert.match(pl, /if rate > 0 and delay < stop then\n\t\t\t\tlastEmit = math\.min\(delay \+ dur, stop\)/)
+  assert.match(pl, /scope\.lingerT = math\.max\(scope\.lingerT, lastEmit \+ life\)/)
+  const tl = luauFn(src, 'toggleLayer')
+  assert.match(tl, /local wEnd = math\.min\(delay \+ dur, stop\)/)
+  assert.match(tl, /scope\.lingerT = math\.max\(scope\.lingerT, wEnd \+ a\.Lifetime\)/)
+  assert.match(tl, /scheduleFade\(scope, x, base, math\.max\(delay, wEnd - fade\), wEnd\)/)
+  // EmitCount 0 schedules nothing, so it does not stretch Duration.
+  assert.doesNotMatch(pl, /local last = delay/)
+  assert.match(pl, /if last ~= nil then\n\t\tscope\.endT = math\.max\(scope\.endT, last\)/)
+  assert.doesNotMatch(luauFn(src, 'meshLayer'), /scope\.endT = math\.max\(scope\.endT, clampDelay/)
+  // Untimed top-level layers: left as authored until clean-up, no linger; Stop switches them off.
+  assert.match(luauFn(src, 'untimedLayer'), /if scope\.copy then\n\t\ttable\.insert\(scope\.layers, x\)\n\telse\n\t\ttable\.insert\(scope\.free, x\)/)
+  assert.match(pl, /if scope\.copy and pe\.Enabled and pe\.Rate > 0 then/)
+  assert.match(tl, /if scope\.copy and isTrail and a\.Enabled then/)
+  assert.match(luauFn(src, 'stopRun'), /for _, x in scope\.free do\n\t\t\ttable\.insert\(scope\.layers, x\)/)
+  // Waiters: only suspended threads are resumed.
+  assert.match(src, /if coroutine\.status\(co\) == "suspended" then\n\t\t\ttask\.spawn\(co\)/)
+  // Start / End leaving a Model keeps its pivot; a destroyed instance / parent ends the play.
+  assert.match(src, /walk\(scope, root, ROOT_CTX\)\n\t\tprepParts\(root\)\n(\t\t--[^\n]*\n)*\t\tif root:IsA\("Model"\) then\n\t\t\tlocal model = root :: Model\n\t\t\tmodel\.PrimaryPart = nil\n\t\t\tmodel\.WorldPivot = run\.pivot0/)
+  assert.match(luauFn(src, 'stepRun'), /^\nlocal function stepRun\(run, now: number\)\n\tif run\.finished then\n\t\treturn\n\tend\n(\t--[^\n]*\n)*\tif run\.root\.Parent == nil then\n\t\tcleanup\(run\)\n\t\treturn\n\tend\n\tlocal rt = /)
 })
 
 // ------------------------------------------------------------------ project files

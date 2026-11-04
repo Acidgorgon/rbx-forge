@@ -222,7 +222,7 @@ export function ParamEditor({ effect, onChange }: { effect: VfxEffect; onChange:
       <div className="vfx-effect-row">
         <label>
           <span className="faint">duration</span>
-          <input className="input mono" type="number" min={0.2} max={10} step={0.1} value={Math.round(effect.duration * 100) / 100} disabled={scripted} title={scripted ? 'Set by the timeline script (fx:duration, or the last cue)' : undefined} onChange={(e) => onChange({ ...effect, duration: Math.max(0.2, Math.min(10, num(e.target.value, effect.duration))) })} aria-label="Effect duration" />
+          <input className="input mono" type="number" min={0.2} max={30} step={0.1} value={Math.round(effect.duration * 100) / 100} disabled={scripted} title={scripted ? 'Set by the timeline script (fx:duration, or the last cue)' : undefined} onChange={(e) => onChange({ ...effect, duration: Math.max(0.2, Math.min(30, num(e.target.value, effect.duration))) })} aria-label="Effect duration" />
         </label>
         <label>
           <span className="faint">motion</span>

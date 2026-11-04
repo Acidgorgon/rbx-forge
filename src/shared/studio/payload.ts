@@ -4,7 +4,8 @@
 // version being judged.
 
 import { stageAt, stageFrameTimes } from '../vfx/critique.ts'
-import { effectModules, needsRuntime, sourceLength, SOURCE_LIMIT, timelineModule } from '../vfx/luau.ts'
+import { effectModules, moduleDuration, needsRuntime, sourceLength, SOURCE_LIMIT, timelineModule } from '../vfx/luau.ts'
+import { lingerOf } from '../vfx/live.ts'
 import { FORGEFX_SOURCE, RUNTIME_MODULE } from '../vfx/runtime.ts'
 import { parseXml, type XmlEl } from '../vfx/rbxmx.ts'
 import type { VfxEffect } from '../vfx/types.ts'
@@ -137,17 +138,6 @@ export function assertModuleSizes(modules: BridgeModule[], path: string[] = []):
 
 const runtimeModule = (): BridgeModule => ({ name: RUNTIME_MODULE, className: 'ModuleScript', source: FORGEFX_SOURCE })
 
-function linger(effect: VfxEffect): number {
-  let max = 0
-  const walk = (n: VfxEffect['roots'][number]) => {
-    const life = n.props.Lifetime
-    if (Array.isArray(life)) max = Math.max(max, Number(life[1] ?? life[0]) || 0)
-    n.children.forEach(walk)
-  }
-  effect.roots.forEach(walk)
-  return Math.min(4, max)
-}
-
 // Beat times and labels for an effect: one inside each stage, else spread over the play.
 export function vfxBeats(effect: VfxEffect, n = 4): BridgeBeat[] {
   const staged = effect.stages?.length ? stageFrameTimes(effect, Math.max(n, Math.min(8, effect.stages.length))) : []
@@ -167,15 +157,15 @@ export function vfxJob(effect: VfxEffect, opts: JobBase & { times?: number[]; ca
     mode: 'realtime',
     name: effect.name,
     rig: 'R15',
-    duration: effect.duration,
+    duration: moduleDuration(effect),
     beats,
     camera: CAMERAS.vfx,
     modules,
     entry: 'Effect',
     calibrate: opts.calibrate ?? true,
     key: KEY_COLOR,
-    linger: linger(effect),
-    timeout: Math.ceil(effect.duration + 40)
+    linger: lingerOf(effect),
+    timeout: Math.ceil(moduleDuration(effect) + 40)
   }
 }
 
@@ -216,7 +206,7 @@ export function abilityJob(ability: Ability, effects: Record<string, VfxEffect>,
   const anim = ability.animation
   const playClip = clip ?? (anim && isPlaceholder(anim.clip) ? placeholderClip(anim.clip) : null)
   let lingerS = 0
-  for (const fx of Object.values(effects)) lingerS = Math.max(lingerS, linger(fx))
+  for (const fx of Object.values(effects)) lingerS = Math.max(lingerS, lingerOf(fx))
   const modules: BridgeModule[] = [
     { name: 'VFX', className: 'Folder', children: vfx },
     { name: RUNNER_MODULE, className: 'ModuleScript', source: runnerModule([...JOB_ROOT, 'VFX']) },

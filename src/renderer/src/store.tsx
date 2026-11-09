@@ -571,7 +571,7 @@ export interface Actions {
   // A layout saved by QolRoot, applied over the tabs open now.
   restoreGroups(raw: unknown): void
   // An editor's text: reaches state.files at once when the dirty state flips, else once typing
-  // pauses (see createStore). Dirty flags are always current.
+  // pauses (lib/pendingEdits.ts). Dirty flags are always current.
   editFile(path: string, contents: string): void
   // Puts pending editor text into state.files now (before reading `current` for its exact text).
   flushEdits(): void
@@ -652,7 +652,7 @@ interface Store {
   get(): State
   subscribe(listener: () => void): () => void
   dispatch(action: Action): void
-  // Editor text (Actions.editFile): see createStore.
+  // Editor text (Actions.editFile): lib/pendingEdits.ts.
   editText(path: string, contents: string): void
   flushEdits(): void
 }

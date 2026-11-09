@@ -45,7 +45,10 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   const rojo = state.services.find((s) => s.id === 'rojo')
   const active = state.activeFile
   const cmds: Command[] = []
-  const add = (group: string, id: string, label: string, run: () => void, extra: Partial<Command> = {}) => cmds.push({ id, group, label, run, ...extra })
+  const add = (group: string, id: string, label: string, run: () => void, extra: Partial<Command> = {}) => {
+    if (extra.keys) registerBoundKey(extra.keys)
+    cmds.push({ id, group, label, run, ...extra })
+  }
 
   // Create
   add('Create', 'new.feature', 'New Feature…', () => actions.requestCreate('Feature'), { keys: 'mod+shift+n', icon: <Icon name="trio" />, detail: 'shared + Service + Controller' })
@@ -234,6 +237,22 @@ export function buildCommands(state: State, actions: Actions): Command[] {
     groupOrder(state.editor).forEach((_, i) => add('View', `editor.focus${i + 1}`, `Focus editor group ${i + 1}`, () => focusGroupAt(actions, i), { keys: `mod+${i + 1}`, icon: <Icon name="split" /> }))
   }
   return cmds
+}
+
+// Every shortcut a command above may bind (some only in some states, e.g. mod+s with a file open),
+// so the global keydown handler builds the command list only for these keys. A key missing here
+// still binds once the commands have been built (the palette, or a key that is listed).
+const BOUND_SPECS = ['mod+shift+n', 'mod+n', 'mod+shift+r', 'ctrl+`', 'ctrl+shift+`', 'mod+shift+s', 'mod+o', 'mod+shift+f', 'mod+p', 'ctrl+g', 'mod+shift+h', 'mod+comma', 'alt+mod+r', 'alt+mod+arrowdown', 'alt+mod+arrowup', 'mod+l', 'mod+shift+l', 'mod+shift+a', 'mod+b', 'mod+j', 'mod+shift+e', 'mod+shift+j', 'mod+shift+v', 'mod+shift+g', 'mod+s', 'mod+w', 'mod+backslash', 'mod+1', 'mod+2', 'mod+3', 'mod+4']
+let boundKeys: Set<string> | null = null
+function registerBoundKey(spec: string): void {
+  boundKeys ??= new Set(BOUND_SPECS.map(normalizeSpec))
+  boundKeys.add(normalizeSpec(spec))
+}
+
+// Whether a keydown spec (keySpec) can match a command shortcut.
+export function isBoundKey(spec: string): boolean {
+  boundKeys ??= new Set(BOUND_SPECS.map(normalizeSpec))
+  return boundKeys.has(normalizeSpec(spec))
 }
 
 // "mod+shift+n" from a keyboard event (mod = ⌘ on macOS, Ctrl elsewhere).

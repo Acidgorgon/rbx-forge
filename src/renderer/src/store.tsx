@@ -723,6 +723,21 @@ export function useStoreSelector<T>(select: (s: State) => T, isEqual: (a: T, b: 
   return useSyncExternalStore(store.subscribe, getSnapshot)
 }
 
+// A few top-level fields, re-rendering only when one of them changes identity:
+// `const state = useStorePick('git', 'layout')` keeps `state.git` / `state.layout` reads as they were.
+export function useStorePick<K extends keyof State>(...keys: K[]): Pick<State, K> {
+  return useStoreSelector((s) => {
+    const o = {} as Pick<State, K>
+    for (const k of keys) o[k] = s[k]
+    return o
+  }, shallowEqual)
+}
+
+// Reads the latest state without subscribing (event handlers, effects, timers).
+export function useGetState(): () => State {
+  return useStoreObject().get
+}
+
 export function tabTitle(path: string): string {
   if (/\.(luau?)$/.test(path)) return instanceNameOfFile(path)
   return basename(path)

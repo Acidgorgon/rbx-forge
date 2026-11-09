@@ -78,7 +78,7 @@ import { createStudioWiring } from './services/studio/wire.ts'
 import { SyncEngine } from './services/sync/engine.ts'
 import { duplicateMappings, duplicateMappingText, loadPlaces, type PlaceMap, placeFor } from './services/sync/mapping.ts'
 import { createSync } from './services/sync/wire.ts'
-import { STATUS_DELAY_MS } from './services/sync/service.ts'
+import { engineSetting, STATUS_DELAY_MS } from './services/sync/service.ts'
 import { pluginsDir } from '../shared/studio/plugin.ts'
 import { homedir } from 'node:os'
 import { studioElectronDeps } from './services/studio/electron.ts'
@@ -490,9 +490,14 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
 
   conflicts = new StudioConflicts(full)
   // The project's studio-sync.py conflicts; with Forge Sync on, Forge Sync reports conflicts instead.
-  conflicts.watch((list) => {
-    if (forgeSync.studioConflicts() === null) emit('studio:conflicts', list)
-  })
+  // While the engine is 'forge' the poll reads nothing (its result would be dropped here anyway).
+  conflicts.watch(
+    (list) => {
+      if (forgeSync.studioConflicts() === null) emit('studio:conflicts', list)
+    },
+    undefined,
+    () => engineSetting(settings).engine !== 'forge'
+  )
 
   emit('project:changed', opened.info)
   emit('tree:changed', opened.tree)

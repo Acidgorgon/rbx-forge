@@ -57,8 +57,10 @@ export class StudioConflicts {
   }
 
   // Polls the folder (it may not exist yet) and calls onChange when the held files change.
-  watch(onChange: (conflicts: StudioConflict[]) => void, intervalMs = CONFLICTS_POLL_MS): void {
+  // active: false skips the poll's disk reads (Forge Sync reports conflicts instead of studio-sync.py).
+  watch(onChange: (conflicts: StudioConflict[]) => void, intervalMs = CONFLICTS_POLL_MS, active: () => boolean = () => true): void {
     const check = async () => {
+      if (!active()) return
       const signature = await this.currentSignature()
       if (signature === this.signature) return
       this.signature = signature

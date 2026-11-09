@@ -141,7 +141,7 @@ function emit<K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]
   }
 }
 
-const settings = new Settings(app.getPath('userData'))
+const settings = new Settings(app.getPath('userData'), { onError: (error) => console.error(`settings: could not save: ${error}`) })
 const logs = new LogBuffer((line) => emit('log:line', line))
 // Forge's crash-safe build of rojo (rojoBinary.ts): rojo 7.7.0 exits when a folder is renamed or
 // deleted right after files were written into it, which cut Studio's Rojo plugin off mid-sync.
@@ -1210,6 +1210,7 @@ app.on('before-quit', (event) => {
   const rojoStopped = supervisor.stopAll().catch(() => undefined)
   const watchdog = setTimeout(() => {
     supervisor.killAllSync()
+    settings.flushSync()
     app.exit(0)
   }, 10_000)
   agentIpc.dispose()
@@ -1235,8 +1236,13 @@ app.on('before-quit', (event) => {
 
 // Windows does not end a parent's children with it: whatever path leaves the app (will-quit, exit,
 // a signal), the rojo processes are killed, trees included, and their records cleared.
-app.on('will-quit', () => supervisor.killAllSync())
+app.on('will-quit', () => {
+  supervisor.killAllSync()
+  // Settings and chats save asynchronously and coalesced: write what is still pending before leaving.
+  settings.flushSync()
+})
 process.on('exit', () => {
+  settings.flushSync()
   terminal.dispose()
   lsp.dispose()
   supervisor.killAllSync()

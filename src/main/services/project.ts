@@ -2,6 +2,7 @@ import { watch, type Dirent, type FSWatcher } from 'node:fs'
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MtimeJsonCache } from './jsonCache.ts'
+import { normalizeWatchDirs } from './watchDirs.ts'
 import { rojoGlob } from './sync/mapping.ts'
 import type {
   PlaceInfo,
@@ -79,6 +80,8 @@ export const CATEGORY_ORDER: ScriptCategory[] = [
 ]
 
 const IGNORED_DIRS = new Set(['node_modules', '.git', 'Packages', 'ServerPackages', '.studio-sync'])
+// Script sources (not .meta.json / .model.json / project files, whose content shapes the tree).
+const SCRIPT_FILE = /\.(luau|lua)$/
 const SCRIPT_KINDS = new Set(['ModuleScript', 'Script', 'LocalScript'])
 const KNOWN_SERVICES = new Set([
   'Workspace', 'Lighting', 'ReplicatedFirst', 'ReplicatedStorage', 'ServerScriptService', 'ServerStorage',
@@ -706,6 +709,7 @@ export class Project {
       places: signatures.places !== this.signatures.places || activeFile !== this.activePlace
     }
     this.signatures = signatures
+    this.knownScripts = new Set(scripts.flatMap((group) => group.scripts.map((script) => script.path)))
     this.places = places
     this.activePlace = activeFile
     this.info = info
@@ -733,15 +737,18 @@ export class Project {
     const schedule = () => this.schedule()
     const add = (path: string, recursive: boolean, filter?: (file: string) => boolean) => {
       try {
-        const watcher = watch(path, { recursive }, (_event, file) => {
+        const watcher = watch(path, { recursive }, (event, file) => {
           const name = file ? toPosix(String(file)) : ''
           if (filter) {
             if (name && !filter(name)) return
           } else if (name && name.split('/').some((part) => IGNORED_DIRS.has(part))) {
             return
           }
-          if (name) this.changedFiles.add(toPosix(relative(this.root, join(path, name))))
-          schedule()
+          const rel = name ? toPosix(relative(this.root, join(path, name))) : ''
+          if (rel) this.changedFiles.add(rel)
+          // A content edit of a script the tree already has cannot change the tree (names, kinds and
+          // the sourcemap shape it); anything else rebuilds.
+          this.schedule(!filter && event === 'change' && SCRIPT_FILE.test(rel) && this.knownScripts.has(rel))
         })
         watcher.on('error', () => watcher.close())
         this.watchers.push(watcher)
@@ -759,7 +766,8 @@ export class Project {
     })
     add(join(this.root, 'tools'), false, (file) => file === 'studio-sync.json')
     let recursiveOk = true
-    for (const dir of this.watchDirs) {
+    // Top-most folders only: src and src/shared would both deliver every event under src/shared.
+    for (const dir of normalizeWatchDirs(this.watchDirs)) {
       if (IGNORED_DIRS.has(dir.split('/')[0])) continue
       if (!add(join(this.root, dir), true)) recursiveOk = false
     }
@@ -802,6 +810,10 @@ export class Project {
   // scripts and LSP never see the half-done state; resume() refreshes once.
   private pauses = 0
   private missed = false
+  // Something other than a content edit of a known script happened since the last rebuild.
+  private structural = false
+  // Repo-relative files of the scripts in the tree (the last refresh).
+  private knownScripts = new Set<string>()
 
   pause(): void {
     this.pauses++
@@ -819,8 +831,11 @@ export class Project {
     return this.pauses > 0
   }
 
-  private schedule(): void {
+  // contentOnly: the caller saw a content edit of a known script (see watch()); a burst made only of
+  // those skips the rebuild and just reports the files.
+  private schedule(contentOnly = false): void {
     if (this.closed) return
+    if (!contentOnly) this.structural = true
     if (this.pauses > 0) {
       this.missed = true
       return
@@ -830,15 +845,30 @@ export class Project {
       this.debounce = null
       const files = [...this.changedFiles]
       this.changedFiles.clear()
-      this.refresh()
-        .then((change) => {
-          if (!this.closed && (change.info || change.tree || change.scripts || change.places)) this.onChange?.(change)
+      const structural = this.structural
+      this.structural = false
+      if (!structural && files.length) {
+        // Still there (a delete reported as a change would otherwise leave it in the tree).
+        void Promise.all(files.map((f) => stat(join(this.root, f)).then((i) => i.isFile(), () => false))).then((present) => {
+          if (this.closed) return
+          if (present.every(Boolean)) this.onFiles?.(files)
+          else this.rebuild(files)
         })
-        .catch(() => undefined)
-        .finally(() => {
-          if (!this.closed && files.length) this.onFiles?.(files)
-        })
+        return
+      }
+      this.rebuild(files)
     }, 300)
+  }
+
+  private rebuild(files: string[]): void {
+    this.refresh()
+      .then((change) => {
+        if (!this.closed && (change.info || change.tree || change.scripts || change.places)) this.onChange?.(change)
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!this.closed && files.length) this.onFiles?.(files)
+      })
   }
 
   async readFile(path: string): Promise<string> {

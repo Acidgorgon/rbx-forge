@@ -39,6 +39,9 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { LogLine, TreeNode } from '@shared/types'
 import { trailingDebounce, type TrailingDebounce } from '../../shared/debounce.ts'
 import { DataModelSync } from './lspDataModel.ts'
+import { normalizeWatchDirs } from './watchDirs.ts'
+
+export { normalizeWatchDirs }
 
 const HEALTHY_MS = 60_000
 const MAX_BACKOFF_MS = 30_000
@@ -675,16 +678,6 @@ export class LspBridge {
     this.sourcemapDebounce.cancel()
     this.pendingSourcemap.clear()
   }
-}
-
-// Mapped folders as watch roots: repo-relative, posix, without "./" or a trailing slash ("" is the
-// root), and only the top-most of nested ones (src covers src/shared).
-export function normalizeWatchDirs(dirs: string[]): string[] {
-  const clean = [...new Set(dirs.map((d) => d.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/\/+$/, '').replace(/^\.$/, '')))].sort()
-  if (clean.includes('')) return ['']
-  const out: string[] = []
-  for (const dir of clean) if (!out.some((d) => dir === d || dir.startsWith(d + '/'))) out.push(dir)
-  return out
 }
 
 export const SKIP_DIRS = new Set(['node_modules', '.git', 'out', 'dist'])

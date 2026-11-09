@@ -225,6 +225,32 @@ test('reports content-only file edits (open editors reload them)', async () => {
   project.close()
 })
 
+test('a content edit of a known script reports the file without rebuilding the tree', async () => {
+  const root = makeProject()
+  roots.push(root)
+  write(root, 'src/shared/Known.luau', 'return 1\n')
+  const project = await open(root)
+  assert.ok(project.scripts.some((g) => g.scripts.some((s) => s.path === 'src/shared/Known.luau')))
+  let refreshes = 0
+  const refresh = project.refresh.bind(project)
+  project.refresh = () => {
+    refreshes++
+    return refresh()
+  }
+  const batches: string[][] = []
+  project.watch(() => undefined, (files) => batches.push(files))
+  await new Promise((r) => setTimeout(r, 50))
+  write(root, 'src/shared/Known.luau', 'return 2\n')
+  for (let i = 0; i < 400 && !batches.length; i++) await new Promise((r) => setTimeout(r, 10))
+  assert.deepEqual(batches.flat(), ['src/shared/Known.luau'])
+  assert.equal(refreshes, 0)
+  // A new file is structural: rebuilt.
+  write(root, 'src/shared/Brand.luau', 'return 3\n')
+  for (let i = 0; i < 400 && refreshes === 0; i++) await new Promise((r) => setTimeout(r, 10))
+  assert.ok(refreshes >= 1)
+  project.close()
+})
+
 test('refuses paths that leave the project root', async () => {
   const root = makeProject()
   roots.push(root)

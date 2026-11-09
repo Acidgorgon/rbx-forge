@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { CHECK_EVERY_MS, FIRST_CHECK_DELAY_MS, UpdateController, type UpdaterLike, type UpdateControllerDeps } from '../src/main/services/updater/controller.ts'
-import { classifyUpdateError, macSignatureKind, notesToText, parseFeedConfig, releasePageUrl } from '../src/main/services/updater/util.ts'
+import { baseVersion, classifyUpdateError, macDmgUrl, macDownloadArch, macSignatureKind, notesToText, parseFeedConfig, releasePageUrl } from '../src/main/services/updater/util.ts'
 import { restartBlockers } from '../src/renderer/src/updates/blockers.ts'
 import type { UpdateState } from '../src/shared/updateTypes.ts'
 // @ts-expect-error plain .mjs build script without types
@@ -181,6 +181,67 @@ test('manual mode (unsigned Mac): no background download, available opens the re
   assert.throws(() => controller.install(), /release page/)
   controller.openRelease()
   assert.deepEqual(opened, ['https://github.com/Acidgorgon/rbx-forge/releases/tag/v0.2.1'])
+})
+
+// An unsigned Mac picks a dmg on the release page; picking the Intel one on Apple Silicon runs Forge
+// under Rosetta. Manual mode on macOS opens the right dmg straight away.
+async function macOffer(arch: string, translated: boolean, version = '0.2.1') {
+  const env = setup({ mode: 'manual', platform: 'darwin', arch, translated })
+  env.updater.next = async (u) => {
+    u.emit('update-available', { ...INFO, version })
+    return {}
+  }
+  await env.controller.check()
+  return env
+}
+
+test('manual mode on macOS opens the offered dmg for this chip (arm64, x64, Rosetta)', async () => {
+  const arm = await macOffer('arm64', false)
+  arm.controller.openRelease()
+  assert.deepEqual(arm.opened, ['https://github.com/Acidgorgon/rbx-forge/releases/download/v0.2.1/RBX-Forge-0.2.1-mac-arm64.dmg'])
+  const intel = await macOffer('x64', false)
+  intel.controller.openRelease()
+  assert.deepEqual(intel.opened, ['https://github.com/Acidgorgon/rbx-forge/releases/download/v0.2.1/RBX-Forge-0.2.1-mac-x64.dmg'])
+  // The Intel build under Rosetta on Apple Silicon gets the Apple Silicon dmg.
+  const rosetta = await macOffer('x64', true, '0.3.0-beta.2')
+  rosetta.controller.openRelease()
+  assert.deepEqual(rosetta.opened, ['https://github.com/Acidgorgon/rbx-forge/releases/download/v0.3.0-beta.2/RBX-Forge-0.3.0-beta.2-mac-arm64.dmg'])
+  // "Release page" still opens the page; the offer keeps the page URL.
+  rosetta.controller.openRelease(true)
+  assert.equal(rosetta.opened[1], 'https://github.com/Acidgorgon/rbx-forge/releases/tag/v0.3.0-beta.2')
+  assert.equal(rosetta.controller.current.offer?.url, 'https://github.com/Acidgorgon/rbx-forge/releases/tag/v0.3.0-beta.2')
+})
+
+test('macOS without a known version, and Windows, open the release page', () => {
+  const mac = setup({ mode: 'manual', platform: 'darwin', arch: 'arm64', translated: false })
+  mac.controller.openRelease()
+  assert.deepEqual(mac.opened, ['https://github.com/Acidgorgon/rbx-forge/releases/latest'])
+  const win = setup({ mode: 'manual', platform: 'win32', arch: 'x64', translated: false })
+  win.controller.openRelease()
+  assert.deepEqual(win.opened, ['https://github.com/Acidgorgon/rbx-forge/releases/latest'])
+})
+
+test('Rosetta: the state links the Apple Silicon dmg of the running base version', () => {
+  const quick = setup({ currentVersion: '0.6.2-quick.3', platform: 'darwin', arch: 'x64', translated: true })
+  assert.equal(quick.controller.current.rosettaDownload, 'https://github.com/Acidgorgon/rbx-forge/releases/download/v0.6.2/RBX-Forge-0.6.2-mac-arm64.dmg')
+  // Development builds have no feed: the default repo.
+  const dev = setup({ feed: null, disabledReason: 'Development build.', platform: 'darwin', arch: 'x64', translated: true })
+  assert.equal(dev.controller.current.rosettaDownload, 'https://github.com/Acidgorgon/rbx-forge/releases/download/v0.2.0/RBX-Forge-0.2.0-mac-arm64.dmg')
+  for (const [platform, arch, translated] of [['darwin', 'arm64', false], ['darwin', 'x64', false], ['win32', 'x64', true]] as const) {
+    assert.equal(setup({ platform, arch, translated }).controller.current.rosettaDownload, undefined)
+  }
+})
+
+test('dmg helpers: arch choice, quick suffix stripping, feed fallback', () => {
+  assert.equal(macDownloadArch('arm64', false), 'arm64')
+  assert.equal(macDownloadArch('x64', true), 'arm64')
+  assert.equal(macDownloadArch('x64', false), 'x64')
+  assert.equal(baseVersion('0.6.2-quick.12'), '0.6.2')
+  assert.equal(baseVersion('v0.6.2'), '0.6.2')
+  assert.equal(baseVersion('0.7.0-beta.1'), '0.7.0-beta.1')
+  assert.equal(baseVersion('0.7.0-beta.1-quick.2'), '0.7.0-beta.1')
+  assert.equal(macDmgUrl({ owner: 'me', repo: 'fork' }, '1.2.3-quick.1', 'x64'), 'https://github.com/me/fork/releases/download/v1.2.3/RBX-Forge-1.2.3-mac-x64.dmg')
+  assert.equal(macDmgUrl(null, '1.2.3', 'arm64'), 'https://github.com/Acidgorgon/rbx-forge/releases/download/v1.2.3/RBX-Forge-1.2.3-mac-arm64.dmg')
 })
 
 test('disabled builds never check or schedule', async () => {

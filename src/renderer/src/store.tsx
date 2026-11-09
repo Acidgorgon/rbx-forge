@@ -733,6 +733,14 @@ export function useStorePick<K extends keyof State>(...keys: K[]): Pick<State, K
   }, shallowEqual)
 }
 
+// Paths of the open files with unsaved edits, one per line: a string, so a selector on it re-renders
+// only when a file's dirty state flips, not when its text changes.
+export function selectDirtyPaths(s: State): string {
+  let out = ''
+  for (const f of s.files) if (f.current !== f.saved) out += (out ? '\n' : '') + f.path
+  return out
+}
+
 // Reads the latest state without subscribing (event handlers, effects, timers).
 export function useGetState(): () => State {
   return useStoreObject().get

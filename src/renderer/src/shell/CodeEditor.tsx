@@ -4,7 +4,7 @@
 // (markers -> Problems, model disposal, save hooks) live in useEditorServices, mounted once.
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
-import { useStore, type ProblemItem } from '../store'
+import { useActions, useStoreSelector, type ProblemItem } from '../store'
 import { languageForPath, monaco } from '../monaco'
 import { useAppearance } from '../theme'
 import { startLuauLsp } from '../lsp'
@@ -32,12 +32,15 @@ const lastViewState = new Map<string, monaco.editor.ICodeEditorViewState>()
 
 // App-wide editor wiring, mounted once (EditorArea) however many editors there are.
 export function useEditorServices(): void {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const editorProblems = useStoreSelector((s) => s.editorProblems)
+  const activeFile = useStoreSelector((s) => s.activeFile)
+  const blink = useStoreSelector((s) => s.blink)
   const appearance = useAppearance()
   const actionsRef = useRef(actions)
   actionsRef.current = actions
-  const problemsRef = useRef(state.editorProblems)
-  problemsRef.current = state.editorProblems
+  const problemsRef = useRef(editorProblems)
+  problemsRef.current = editorProblems
 
   // StyLua (Format Document, format on save) and AI ghost text; toasts go to the app.
   useEffect(() => {
@@ -62,7 +65,7 @@ export function useEditorServices(): void {
   // Dispose models of files that were closed (editors keep models between tab switches). With no
   // file open at all this drops every model, so a file with the same path in the next project does
   // not reopen the old project's text (Monaco reuses a model by path).
-  const openPaths = state.files.map((f) => f.path).join('\n')
+  const openPaths = useStoreSelector((s) => s.files.map((f) => f.path).join('\n'))
   useEffect(() => {
     const open = new Set(openPaths ? openPaths.split('\n') : [])
     for (const m of monaco.editor.getModels()) {
@@ -81,8 +84,8 @@ export function useEditorServices(): void {
 
   // Nothing shows a file: no cursor in the status bar.
   useEffect(() => {
-    if (!state.activeFile) setCursor(null)
-  }, [state.activeFile])
+    if (!activeFile) setCursor(null)
+  }, [activeFile])
 
   // Markers (luau-lsp, Blink) feed the Problems panel and status bar.
   useEffect(() => {
@@ -115,7 +118,7 @@ export function useEditorServices(): void {
 
   // Blink compile errors as markers on events.blink and its imports.
   useEffect(() => {
-    const diagnostics = state.blink?.diagnostics ?? []
+    const diagnostics = blink?.diagnostics ?? []
     const apply = (model: monaco.editor.ITextModel) => {
       const p = pathOf(model)
       const lines = model.getLineCount()
@@ -141,20 +144,24 @@ export function useEditorServices(): void {
     monaco.editor.getModels().forEach(apply)
     const sub = monaco.editor.onDidCreateModel(apply)
     return () => sub.dispose()
-  }, [state.blink])
+  }, [blink])
 }
 
 export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: { path: string; readOnlyReason: string | null; visible: boolean; active: boolean; groupId: string }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  // This editor's buffers and pending reveal only: other files and the rest of the app do not
+  // re-render it.
+  const file = useStoreSelector((s) => s.files.find((f) => f.path === path))
+  const reveal = useStoreSelector((s) => s.reveal)
   const appearance = useAppearance()
-  const file = state.files.find((f) => f.path === path)
   const ready = !!file && !file.loading
   // The path the Monaco model shows. A file that is still loading (or gone) keeps the previous one
   // under a spinner, so the editor is built once per group and not again on every first open.
   const modelPath = useRef<string | null>(null)
   if (ready) modelPath.current = path
   const editorPath = modelPath.current
-  const shownFile = editorPath === path ? file : editorPath ? state.files.find((f) => f.path === editorPath) : undefined
+  const otherFile = useStoreSelector((s) => (editorPath && editorPath !== path ? s.files.find((f) => f.path === editorPath) : undefined))
+  const shownFile = editorPath === path ? file : otherFile
   const editorRef = useRef<monaco.editor.IStandaloneCodeEditor | null>(null)
   const [editorInstance, setEditorInstance] = useState<monaco.editor.IStandaloneCodeEditor | null>(null)
   const actionsRef = useRef(actions)
@@ -162,8 +169,8 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
   const activeRef = useRef(active)
   activeRef.current = active
   const pendingReveal = useRef<{ path: string; position: { lineNumber: number; column: number }; end?: { lineNumber: number; column: number } } | null>(null)
-  const stateReveal = useRef(state.reveal)
-  stateReveal.current = state.reveal
+  const stateReveal = useRef(reveal)
+  stateReveal.current = reveal
   // This editor's own view state per path (the same file in another group scrolls on its own).
   const viewStates = useRef(new Map<string, monaco.editor.ICodeEditorViewState>())
   // The path the view state events belong to (Monaco fires scroll events mid model swap).
@@ -406,13 +413,12 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
 
   // openFileAt / palette ":" — the active group reveals once the file shows.
   useEffect(() => {
-    const reveal = state.reveal
     if (!active || !reveal || reveal.path !== path || file?.loading) return
     pendingReveal.current = { path: reveal.path, position: { lineNumber: reveal.line, column: reveal.column }, ...(reveal.end ? { end: { lineNumber: reveal.end.line, column: reveal.end.column } } : {}) }
     actions.set({ reveal: null })
     const t = setTimeout(revealPending)
     return () => clearTimeout(t)
-  }, [state.reveal, path, file?.loading, active])
+  }, [reveal, path, file?.loading, active])
 
   const spinner = <div className="editor-loading"><span className="spinner" /></div>
   if (!editorPath) return spinner

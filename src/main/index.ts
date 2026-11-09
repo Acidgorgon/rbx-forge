@@ -133,7 +133,7 @@ function installCsp(): void {
 // Quality of life (services/qol): sees every event for done notifications and the away digest.
 let qolObserve: ((event: string, payload: unknown) => void) | null = null
 // High-volume streams qol has no use for (log lines, language server traffic).
-const QOL_UNOBSERVED = new Set<string>(['lsp:message', 'log:line'])
+const QOL_UNOBSERVED = new Set<string>(['lsp:message', 'log:line', 'log:lines'])
 function emit<K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]): void {
   if (!QOL_UNOBSERVED.has(event)) qolObserve?.(event, payload)
   for (const window of BrowserWindow.getAllWindows()) {
@@ -142,7 +142,8 @@ function emit<K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]
 }
 
 const settings = new Settings(app.getPath('userData'), { onError: (error) => console.error(`settings: could not save: ${error}`) })
-const logs = new LogBuffer((line) => emit('log:line', line))
+// Lines go to the renderer in batches (at most one IPC message per 100 ms).
+const logs = new LogBuffer((lines) => emit('log:lines', lines))
 // Forge's crash-safe build of rojo (rojoBinary.ts): rojo 7.7.0 exits when a folder is renamed or
 // deleted right after files were written into it, which cut Studio's Rojo plugin off mid-sync.
 const forgeRojo = new ForgeRojo({

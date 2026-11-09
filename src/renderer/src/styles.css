@@ -356,6 +356,8 @@ input[type="checkbox"]:not(.switch) { accent-color: var(--fg-muted); }
 .panel > .panel-inner { display: flex; flex-direction: column; min-height: 0; height: 100%; transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-panel) var(--ease-out); }
 .side .panel-inner { width: calc(var(--side-w) - 2px); }
 .right .panel-inner { width: calc(var(--right-w) - 2px); }
+/* The Assistant body mounts on open (AssistantPanel): fade it in. */
+.right .panel-inner { animation: rf-fade-in var(--dur-base) var(--ease-out); }
 .app.side-off .side { width: 0; border-width: 0; opacity: 0; }
 .app.side-off .side .panel-inner { opacity: 0; transform: translateX(-8px); pointer-events: none; }
 .app.right-off .right { width: 0; border-color: transparent; opacity: 0; }

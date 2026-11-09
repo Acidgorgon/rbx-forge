@@ -12,7 +12,7 @@ import type { ChatTodo } from '@shared/chatModes'
 import { useStore } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
-import { ChecklistCard, isGroup, PlanCard, SpeakerHead } from './GroupChat'
+import { ChecklistCard, isGroup, participants, PlanCard, SpeakerHead } from './GroupChat'
 import { MessageImages } from './ChatImages'
 import { RestateMessage } from './RestateMessage'
 import { ConclusionCard, PatchCard, ReviewCard, SettingsNotice, splitStance, StancePill } from './GroupCards'
@@ -55,6 +55,16 @@ export function AgentTag({ id }: { id: string }) {
   )
 }
 
+// A message reads only the chat's seats (host model and guests, for speaker heads); the chat object
+// itself is new on every chat:updated (usage, todos, title), so compare the seats, not the object.
+function chatSeats(chat?: ChatSession): string {
+  return participants(chat)
+    .map((p) => `${p.provider}/${p.model}`)
+    .join('|')
+}
+const sameMessageProps = (a: { m: ChatMessage; chat?: ChatSession }, b: { m: ChatMessage; chat?: ChatSession }): boolean =>
+  a.m === b.m && (a.chat === b.chat || chatSeats(a.chat) === chatSeats(b.chat))
+
 export const Message = memo(function Message({ m, chat }: { m: ChatMessage; chat?: ChatSession }) {
   if (m.role === 'user') {
     return (
@@ -91,7 +101,7 @@ export const Message = memo(function Message({ m, chat }: { m: ChatMessage; chat
       {m.images?.length ? <MessageImages images={m.images} attachable /> : null}
     </div>
   )
-})
+}, sameMessageProps)
 
 // A compaction (auto or /compact): one divider line; the summary folds out under it.
 function CompactDivider({ m }: { m: ChatMessage }) {

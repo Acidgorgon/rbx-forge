@@ -129,7 +129,7 @@ test('settings: chats.json wins over a leftover settings key, which is kept asid
     writeFileSync(join(dir, 'chats.json'), JSON.stringify({ sessions: [{ id: 'new', messages: [] }] }))
     writeFileSync(join(dir, 'settings.json'), JSON.stringify({ chats: { sessions: [{ id: 'stale', messages: [] }] } }))
     const s = new Settings(dir)
-    assert.equal((s.get('chats', null) as { sessions: { id: string }[] }).sessions[0].id, 'new')
+    assert.equal(s.get<{ sessions: { id: string }[] } | null>('chats', null)?.sessions[0].id, 'new')
     assert.equal('chats' in readJson(join(dir, 'settings.json')), false)
     const legacy = readdirSync(dir).find((f) => f.startsWith('chats.legacy-'))
     assert.ok(legacy)

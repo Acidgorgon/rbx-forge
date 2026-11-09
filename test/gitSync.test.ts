@@ -118,3 +118,20 @@ test('initGit creates a repo and pushes to a new remote', async () => {
   assert.equal(status.ahead, 0)
   assert.match(git(remote, 'log', '--format=%s', 'main'), /Initial commit/)
 })
+
+test('refresh sends git:status only when the status changed', async () => {
+  const { me } = setup()
+  const sent: number[] = []
+  const sync = new GitSync({ root: me, settings: () => settings, onStatus: (s) => sent.push(s.dirty) })
+  await sync.refresh()
+  await sync.refresh()
+  assert.deepEqual(sent, [0])
+  writeFileSync(join(me, 'new.luau'), 'return 1\n')
+  const status = await sync.refresh()
+  assert.equal(status.dirty, 1)
+  assert.deepEqual(sent, [0, 1])
+  // refresh still returns the status to its caller when nothing changed.
+  assert.equal((await sync.refresh()).dirty, 1)
+  assert.deepEqual(sent, [0, 1])
+  sync.dispose()
+})

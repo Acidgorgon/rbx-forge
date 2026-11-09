@@ -8,6 +8,7 @@ import { BACKGROUNDS, VfxScene, type Background, type View } from './preview/sce
 import { hasTimeline, TimelineStrip } from './TimelineStrip'
 import { prefersReducedMotion } from './motion'
 import { webglMessage } from '../../lib/webgl'
+import { frameLoop, type FrameLoop } from '../../lib/frameLoop'
 import { sharedMeshes } from './preview/meshes'
 import type { MeshInfo } from './preview/fxLayer'
 import type { MeshLoadReport } from '@shared/vfxMeshTypes'
@@ -23,6 +24,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dar
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<VfxScene | null>(null)
+  const loopRef = useRef<FrameLoop | null>(null)
   const tRef = useRef(0)
   const extra = useRef<VfxCue[]>([])
   const [playing, setPlaying] = useState(!prefersReducedMotion())
@@ -31,7 +33,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dar
   const [bg, setBg] = useState<Background>(background)
   const [view, setView] = useState<View>('front')
   const [t, setT] = useState(0)
-  const [stats, setStats] = useState({ particles: 0 })
+  const [particles, setParticles] = useState(0)
   const [error, setError] = useState<string | null>(null)
   const [placeholders, setPlaceholders] = useState(false)
   const [texStats, setTexStats] = useState<{ total: number; missing: string[] }>({ total: 0, missing: [] })
@@ -63,13 +65,11 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dar
       scene.render()
     })
     ro.observe(wrap)
-    let raf = 0
-    let last = performance.now()
+    // Draws only while playing or after a change (seek, load, orbit, settings); see lib/frameLoop.
+    // The HUD updates about 10 times a second while playing, and only when what it shows changed.
     let tick = 0
-    const step = (now: number) => {
-      raf = requestAnimationFrame(step)
-      const dt = Math.min(0.1, (now - last) / 1000)
-      last = now
+    const shown = { t: -1, particles: -1 }
+    const frames = frameLoop(wrap, (dt) => {
       const p = playRef.current
       if (p.playing) {
         let next = tRef.current + dt * p.speed
@@ -87,14 +87,24 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dar
       }
       const s = scene.setTime(tRef.current, extra.current)
       scene.render()
-      if (++tick % 6 === 0) {
-        setT(tRef.current)
-        setStats({ particles: s.particles })
+      if (!p.playing || ++tick % 6 === 0) {
+        const t = Math.round(tRef.current * 100)
+        if (t !== shown.t) {
+          shown.t = t
+          setT(tRef.current)
+        }
+        if (s.particles !== shown.particles) {
+          shown.particles = s.particles
+          setParticles(s.particles)
+        }
       }
-    }
-    raf = requestAnimationFrame(step)
+      return p.playing
+    })
+    loopRef.current = frames
+    scene.onDirty = frames.invalidate
     return () => {
-      cancelAnimationFrame(raf)
+      frames.dispose()
+      loopRef.current = null
       ro.disconnect()
       scene.dispose()
       sceneRef.current = null
@@ -105,8 +115,10 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dar
     const scene = sceneRef.current
     if (!scene) return
     let live = true
+    loopRef.current?.invalidate()
     void scene.load(effect).then(async () => {
       if (!live) return
+      loopRef.current?.invalidate()
       setPlaceholders(await scene.usesPlaceholders())
       setTexStats(await scene.textureStats())
       const info = scene.meshInfo
@@ -125,6 +137,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dar
         onSnapshot(scene.snapshot())
         scene.setTime(tRef.current)
       }
+      loopRef.current?.invalidate()
     })
     return () => {
       live = false
@@ -156,8 +169,16 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dar
     }
   }
 
-  useEffect(() => sceneRef.current?.setBackground(bg), [bg])
-  useEffect(() => sceneRef.current?.setView(view), [view])
+  useEffect(() => {
+    sceneRef.current?.setBackground(bg)
+    loopRef.current?.invalidate()
+  }, [bg])
+  useEffect(() => {
+    sceneRef.current?.setView(view)
+    loopRef.current?.invalidate()
+  }, [view])
+  // Play / pause, loop and speed: wake the loop (it stops by itself when paused).
+  useEffect(() => loopRef.current?.invalidate(), [playing, loop, speed])
   const timeline = hasTimeline(effect)
   const stage = timeline ? [...(effect.stages ?? [])].filter((s) => s.at <= t + 1e-6).pop()?.label : undefined
 
@@ -177,6 +198,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dar
   const scrub = (v: number) => {
     tRef.current = v
     setT(v)
+    loopRef.current?.invalidate()
   }
 
   return (
@@ -185,7 +207,7 @@ export function VfxPreview({ effect, onSnapshot, autoSnapshot, background = 'dar
         <canvas ref={canvasRef} aria-label={`3D preview of ${effect.name}`} />
         {error && <div className="vfx-canvas-err note">{error}</div>}
         <div className="vfx-hud mono" aria-live="off">
-          {t.toFixed(2)}s / {effect.duration.toFixed(2)}s{stage ? ` · ${stage}` : ''} · {stats.particles} particles{speed !== 1 ? ` · ${speed}×` : ''}
+          {t.toFixed(2)}s / {effect.duration.toFixed(2)}s{stage ? ` · ${stage}` : ''} · {particles} particles{speed !== 1 ? ` · ${speed}×` : ''}
         </div>
       </div>
       {timeline && <TimelineStrip effect={effect} t={Math.min(t, effect.duration)} onScrub={(v) => (setPlaying(false), scrub(v))} />}

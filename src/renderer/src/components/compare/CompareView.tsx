@@ -16,17 +16,21 @@ import type { CompareItem, ParamChangeKind, ScoreDelta, SyncMode } from '@shared
 import { principleLabel } from '@shared/principles/catalog'
 import { Icon } from '../Icons'
 import { prefersReducedMotion } from '../../pages/vfx/motion'
+import { frameLoop, type FrameLoop } from '../../lib/frameLoop'
 import './compare.css'
 
 export type CompareSide = 'a' | 'b'
 
-// What a pane gets: which side it is and the shared clock to attach its draw to.
+// What a pane gets: which side it is, the shared clock to attach its draw to, and invalidate() to
+// ask for a frame when the pane changed on its own (loaded, resized, orbited).
 export interface PaneContext {
   side: CompareSide
   attach: (draw: (t: number) => void) => () => void
+  invalidate: () => void
 }
 
-// Drive any renderer from the compare clock: draw(t) runs every frame with this pane's own time.
+// Drive any renderer from the compare clock: draw(t) runs on every frame the clock draws (every
+// frame while playing; once after a seek, a setting change or ctx.invalidate() while paused).
 export function useCompareTime(ctx: PaneContext, draw: (t: number) => void): void {
   const ref = useRef(draw)
   ref.current = draw
@@ -124,17 +128,23 @@ export function CompareView<P>({ items, a: a0, b: b0, focus, renderPane, onUse, 
   const draws = useRef<Record<CompareSide, Set<(t: number) => void>>>({ a: new Set(), b: new Set() })
   const live = useRef({ playing, loop, speed, mode, durA: A?.duration ?? 0, durB: B?.duration ?? 0 })
   live.current = { playing, loop, speed, mode, durA: A?.duration ?? 0, durB: B?.duration ?? 0 }
-  const ctxA = useMemo<PaneContext>(() => ({ side: 'a', attach: (d) => (draws.current.a.add(d), () => void draws.current.a.delete(d)) }), [])
-  const ctxB = useMemo<PaneContext>(() => ({ side: 'b', attach: (d) => (draws.current.b.add(d), () => void draws.current.b.delete(d)) }), [])
+  const rootRef = useRef<HTMLDivElement>(null)
+  const loopRef = useRef<FrameLoop | null>(null)
+  const invalidate = () => loopRef.current?.invalidate()
+  const attachTo = (side: CompareSide) => (d: (t: number) => void) => {
+    draws.current[side].add(d)
+    invalidate()
+    return () => void draws.current[side].delete(d)
+  }
+  const ctxA = useMemo<PaneContext>(() => ({ side: 'a', attach: attachTo('a'), invalidate }), [])
+  const ctxB = useMemo<PaneContext>(() => ({ side: 'b', attach: attachTo('b'), invalidate }), [])
 
+  // Draws only while playing or after a change (see lib/frameLoop); the time readout updates about
+  // 15 times a second while playing, only when the shown value changed.
   useEffect(() => {
-    let raf = 0
-    let last = performance.now()
     let tick = 0
-    const frame = (now: number) => {
-      raf = requestAnimationFrame(frame)
-      const dt = Math.min(0.1, (now - last) / 1000)
-      last = now
+    let shown = -1
+    const frames = frameLoop(rootRef.current, (dt) => {
       const p = live.current
       if (p.playing) {
         const s = stepClock(p.mode, clockRef.current, dt, p.speed, p.durA, p.durB, p.loop)
@@ -145,16 +155,29 @@ export function CompareView<P>({ items, a: a0, b: b0, focus, renderPane, onUse, 
       const tb = paneTime(p.mode, clockRef.current, p.durB)
       draws.current.a.forEach((d) => d(ta))
       draws.current.b.forEach((d) => d(tb))
-      if (++tick % 4 === 0) setClock(clockRef.current)
+      if (!p.playing || ++tick % 4 === 0) {
+        const c = Math.round(clockRef.current * (p.mode === 'stretch' ? 1000 : 100))
+        if (c !== shown) {
+          shown = c
+          setClock(clockRef.current)
+        }
+      }
+      return p.playing
+    })
+    loopRef.current = frames
+    return () => {
+      frames.dispose()
+      loopRef.current = null
     }
-    raf = requestAnimationFrame(frame)
-    return () => cancelAnimationFrame(raf)
   }, [])
+  // Play / pause, loop, speed, sync mode and the versions: wake the loop (it stops when paused).
+  useEffect(invalidate, [playing, loop, speed, mode, A?.duration, B?.duration])
 
   const len = clockLength(mode, A?.duration ?? 0, B?.duration ?? 0)
   const seek = (v: number) => {
     clockRef.current = Math.max(0, Math.min(len, v))
     setClock(clockRef.current)
+    invalidate()
   }
   const switchMode = (m: SyncMode) => {
     // Keep the same moment of A when switching between seconds and stretch.
@@ -165,7 +188,6 @@ export function CompareView<P>({ items, a: a0, b: b0, focus, renderPane, onUse, 
   }
 
   // Keys while the compare has focus: space play / pause, f (or tab in flip) flips, , and . step a frame.
-  const rootRef = useRef<HTMLDivElement>(null)
   useEffect(() => {
     const el = rootRef.current
     if (!el) return

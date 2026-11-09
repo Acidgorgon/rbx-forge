@@ -91,6 +91,9 @@ class AbilityPaneScene {
     this.scene = new AbilityScene(canvas, { resolver })
     this.scene.shakeEnabled = !this.reduced
   }
+  set onDirty(f: (() => void) | null) {
+    this.scene.onDirty = f
+  }
   load(ability: Ability, effects: Record<string, VfxEffect>): Promise<void> {
     return this.scene.load(ability, effects)
   }

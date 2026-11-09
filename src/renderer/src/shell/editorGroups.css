@@ -1,10 +1,11 @@
 /* Split editor (EditorArea): groups as absolutely placed boxes, sashes between them, drag preview. */
 
 .eg-grid { flex: 1; min-height: 0; min-width: 0; position: relative; }
-.eg-cell { position: absolute; display: flex; min-width: 0; min-height: 0; transition: left var(--dur-panel) var(--ease-out), top var(--dur-panel) var(--ease-out), width var(--dur-panel) var(--ease-out), height var(--dur-panel) var(--ease-out); }
+/* No left / top / width / height transition: each frame would re-lay out the editors inside (Monaco
+   automaticLayout). Splits and closes snap. */
+.eg-cell { position: absolute; display: flex; min-width: 0; min-height: 0; }
 .eg-cell.edge-l { border-left: 1px solid var(--line); }
 .eg-cell.edge-t { border-top: 1px solid var(--line); }
-body.resizing .eg-cell { transition: none; }
 .eg-group { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; animation: rf-fade-in var(--dur-slow) var(--ease-out); }
 /* No transform on groups (or their cells): it would make them the containing block of fixed menus
    and Monaco's overflow widgets. */

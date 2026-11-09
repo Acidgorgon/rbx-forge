@@ -19,6 +19,7 @@ export type DoctorAction =
   | 'stopStrayRojo' // a rojo Forge does not run that holds a serve port
   | 'checkUpdates'
   | 'openScreenRecording' // macOS System Settings > Privacy > Screen Recording
+  | 'downloadNative' // the Apple Silicon dmg of this version (the Intel build under Rosetta)
 
 export type DoctorFix =
   | { kind: 'action'; action: DoctorAction; label: string }

@@ -125,4 +125,5 @@ test('Rosetta check needs the x64 build translated on macOS', () => {
   assert.equal(warned[0].id, 'rosetta')
   assert.equal(warned[0].status, 'warn')
   assert.match(warned[0].detail, /Rosetta.*mac-arm64/)
+  assert.deepEqual(warned[0].fix, { kind: 'action', action: 'downloadNative', label: 'Download Apple Silicon version' })
 })

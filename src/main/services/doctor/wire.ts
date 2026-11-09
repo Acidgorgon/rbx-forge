@@ -260,6 +260,13 @@ export function createDoctorWiring(deps: DoctorWiringDeps): { service: DoctorSer
     openScreenRecording: async () => {
       deps.openExternal('x-apple.systempreferences:com.apple.preference.security?Privacy_ScreenCapture')
       return 'Opened System Settings > Privacy & Security > Screen Recording. Turn on RBX Forge, then restart it.'
+    },
+    // The Intel build under Rosetta: the updater state carries this version's Apple Silicon dmg.
+    downloadNative: async () => {
+      const url = (await deps.updateState()).rosettaDownload
+      if (!url) throw new Error('Forge is not running under Rosetta.')
+      deps.openExternal(url)
+      return 'Downloading the Apple Silicon version. Quit Forge, then drag it from the dmg into Applications.'
     }
   }
 

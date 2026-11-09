@@ -189,7 +189,7 @@ export function UpdatesSection() {
           <div className="upd-notes-head">
             <div className="set-title">What's new in {update.offer.version}</div>
             <span className="grow" />
-            <button className="link-btn" onClick={() => void window.harness.updateOpenRelease()}>
+            <button className="link-btn" onClick={() => void window.harness.updateOpenRelease('page')}>
               Release page <Icon name="external" size={11} />
             </button>
           </div>

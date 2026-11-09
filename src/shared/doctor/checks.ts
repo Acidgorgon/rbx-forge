@@ -200,7 +200,7 @@ export function isRosetta(platform: string, arch: string, translated: boolean): 
 
 export function appChecks(i: DoctorInputs): DoctorCheck[] {
   const out: DoctorCheck[] = []
-  if (i.rosetta) out.push({ id: 'rosetta', group: 'App', title: 'Native build', status: 'warn', detail: 'Forge is running the Intel build under Rosetta; install the mac-arm64 download for Apple Silicon.' })
+  if (i.rosetta) out.push({ id: 'rosetta', group: 'App', title: 'Native build', status: 'warn', detail: 'Forge is running the Intel build under Rosetta; install the mac-arm64 download for Apple Silicon.', fix: { kind: 'action', action: 'downloadNative', label: 'Download Apple Silicon version' } })
   const u = i.updater
   if (!u || !i.isPackaged || u.state === 'disabled') out.push({ id: 'updater', group: 'App', title: 'Auto-update', status: 'skip', detail: u?.error ?? `This build (v${i.appVersion}) does not update itself.` })
   else if (u.state === 'error') out.push({ id: 'updater', group: 'App', title: 'Auto-update', status: 'warn', detail: `Last check failed: ${u.error ?? 'unknown error'}`, fix: { kind: 'action', action: 'checkUpdates', label: 'Check now' } })

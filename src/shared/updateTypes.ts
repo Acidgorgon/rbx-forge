@@ -51,6 +51,9 @@ export interface UpdateState {
   lastCheck?: number
   // Quick updates (main/services/quick): new app code without a new installer.
   quick?: QuickUpdateState
+  // Set when the Intel (x64) build runs under Rosetta on an Apple Silicon Mac: the Apple Silicon dmg
+  // of this version (the renderer shows a notice, Doctor a fix).
+  rosettaDownload?: string
 }
 
 export interface UpdateSettings {
@@ -96,8 +99,9 @@ export interface UpdateApi {
   // Restarts into the downloaded update (mode install, phase ready). The renderer asks first when
   // an agent is running or an editor has unsaved changes; this never checks.
   updateInstall(): Promise<void>
-  // Opens the offered (or latest) release page in the browser.
-  updateOpenRelease(): Promise<void>
+  // Opens the offered (or latest) release page in the browser. On an unsigned Mac (manual mode) it
+  // opens the offered version's dmg for this Mac's chip instead, unless target is 'page'.
+  updateOpenRelease(target?: 'page'): Promise<void>
   // Restarts Forge into the downloaded quick update (quick phase ready). The renderer asks first,
   // like updateInstall.
   updateQuickRestart(): Promise<void>

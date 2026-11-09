@@ -605,6 +605,8 @@ const updater = wireUpdater({
   isPackaged: app.isPackaged,
   version: app.getVersion(),
   platform: process.platform,
+  arch: process.arch,
+  translated: app.runningUnderARM64Translation,
   resourcesPath: process.resourcesPath,
   execPath: process.execPath,
   settings,

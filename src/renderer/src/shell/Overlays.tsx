@@ -2,7 +2,7 @@
 // new Blink event, join project, feature branch, pull request.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { JoinProgress, JoinStepId } from '@shared/types'
-import { useActions, useStore, type ToastSpec } from '../store'
+import { useActions, useGetState, useStore, useStoreSelector, type ToastSpec } from '../store'
 import { Icon } from '../components/Icons'
 import { featuresOf, scriptsFlat } from '../lib/roblox'
 import { errorText, keyHint } from '../lib/format'
@@ -69,17 +69,16 @@ function Toast({ t }: { t: ToastSpec }) {
 }
 
 function useRemove() {
-  const { state, actions } = useStore()
-  const ref = useRef(state.toasts)
-  ref.current = state.toasts
-  return (id: number) => actions.set({ toasts: ref.current.filter((x) => x.id !== id) })
+  const actions = useActions()
+  const getState = useGetState()
+  return (id: number) => actions.set({ toasts: getState().toasts.filter((x) => x.id !== id) })
 }
 
 export function Toasts() {
-  const { state } = useStore()
+  const toasts = useStoreSelector((s) => s.toasts)
   return (
     <div className="toasts" aria-live="polite">
-      {state.toasts.map((t) => (
+      {toasts.map((t) => (
         <Toast key={t.id} t={t} />
       ))}
     </div>
@@ -575,8 +574,8 @@ function PullRequestDialog({ onClose }: { onClose: () => void }) {
 }
 
 export function Dialogs() {
-  const { state, actions } = useStore()
-  const d = state.dialog
+  const actions = useActions()
+  const d = useStoreSelector((s) => s.dialog)
   if (!d) return null
   const close = () => actions.openDialog(null)
   switch (d.kind) {

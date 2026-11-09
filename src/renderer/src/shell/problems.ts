@@ -1,13 +1,12 @@
 // Problems from every source in one list: Monaco markers (luau-lsp, Blink), selene/StyLua lint,
 // and Blink compile diagnostics for files that are not open.
 import { useMemo } from 'react'
-import { useStore, type ProblemItem } from '../store'
+import { useStorePick, type ProblemItem } from '../store'
 
 const RANK = { error: 0, warning: 1, info: 2 } as const
 
 export function useProblems(): ProblemItem[] {
-  const { state } = useStore()
-  const { editorProblems, lint, blink } = state
+  const { editorProblems, lint, blink } = useStorePick('editorProblems', 'lint', 'blink')
   return useMemo(() => {
     const seen = new Set<string>()
     const out: ProblemItem[] = []

@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { useChatDraft, useChatScroll, rememberChatScroll } from '../qol/chatSession'
 import type { BoardView, ChatImage, OrchestrateMode, TaskView } from '@shared/types'
-import { useStore } from '../store'
+import { useStore, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
 import { ModelPicker } from '../components/ModelPicker'
@@ -36,7 +36,7 @@ export { Message, MessageList } from './Thread'
 const TASK_ICON: Record<TaskView['state'], string> = { queued: '○', running: '◐', blocked: '◌', done: '●', failed: '×', cancelled: '–' }
 
 function Board({ b }: { b: BoardView }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [open, setOpen] = useState(b.state !== 'done' && b.state !== 'cancelled')
   const live = b.state === 'planning' || b.state === 'running' || b.state === 'integrating'
   const done = b.tasks.filter((t) => t.state === 'done').length

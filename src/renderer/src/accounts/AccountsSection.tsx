@@ -4,7 +4,7 @@
 // Keys go straight to the main process; only masked hints come back.
 import { useEffect, useRef, useState } from 'react'
 import type { AccountCheck, AccountId, AccountSummary, SignInProgress } from '@shared/accountTypes'
-import { useStore } from '../store'
+import { useActions } from '../store'
 import { ProviderMark } from '../components/ModelPicker'
 import { ago, errorText } from '../lib/format'
 import './accounts.css'
@@ -54,7 +54,7 @@ function CheckLine({ check, testing }: { check?: AccountCheck; testing: boolean 
 }
 
 function KeyEditor({ a, onDone }: { a: AccountSummary; onDone?: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [key, setKey] = useState('')
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -103,7 +103,7 @@ function KeyEditor({ a, onDone }: { a: AccountSummary; onDone?: () => void }) {
 
 // Codex's one-time device code: big, copyable, with the page to enter it on.
 function DeviceCode({ code, url }: { code: string; url?: string }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [copied, setCopied] = useState(false)
   const copy = async () => {
     try {
@@ -130,7 +130,7 @@ function DeviceCode({ code, url }: { code: string; url?: string }) {
 }
 
 function SignInProgressPanel({ a, p }: { a: AccountSummary; p: SignInProgress }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [code, setCode] = useState('')
   return (
     <div className="acct-progress" role="status" data-stage={p.stage ?? ''}>
@@ -170,7 +170,7 @@ function SignInProgressPanel({ a, p }: { a: AccountSummary; p: SignInProgress })
 }
 
 function SignOutConfirm({ a, onClose }: { a: AccountSummary; onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [busy, setBusy] = useState(false)
   const tool = a.id === 'claude' ? 'Claude Code' : (a.signIn?.needs ?? 'the CLI')
   const go = async (cliLogout: boolean) => {
@@ -209,7 +209,7 @@ function SignOutConfirm({ a, onClose }: { a: AccountSummary; onClose: () => void
 }
 
 function AccountCard({ a, progress, testing, onTest }: { a: AccountSummary; progress?: SignInProgress; testing: boolean; onTest: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [showKey, setShowKey] = useState(false)
   const [confirmOut, setConfirmOut] = useState(false)
   const b = badge(a)

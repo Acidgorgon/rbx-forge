@@ -6,7 +6,7 @@ import { useEffect, useState } from 'react'
 import type { PrincipleDomain, PrincipleScore, PrincipleView } from '@shared/types'
 import { principle, principleLabel } from '@shared/principles/catalog'
 import { Icon } from '../../components/Icons'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { errorText } from '../../lib/format'
 import './principles.css'
 
@@ -93,7 +93,7 @@ const LAB_LABEL: Record<string, string> = { vfx: 'vfx', anim: 'anim', ability: '
 
 // "Your priorities": how much each principle counts for this user, learned from their ratings.
 export function PrinciplePriorities({ domains }: { domains: PrincipleDomain[] }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [view, setView] = useState<PrincipleView | null>(null)
   const [busy, setBusy] = useState(false)
   useEffect(() => {

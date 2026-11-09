@@ -5,7 +5,7 @@
 import { useState } from 'react'
 import type { Thumb, ThumbStatus } from '@shared/types'
 import { ctrOf, ctrTotals, formatCtr, wilson } from '@shared/thumbs/ctr'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Lightbox } from '../../components/Lightbox'
 import { errorText } from '../../lib/format'
@@ -14,7 +14,7 @@ import { RestatedBrief } from '../../components/RestateCard'
 import { useThumbFile } from './parts'
 
 export function ThumbDetail({ thumb, status, busy, onClose, onRefined }: { thumb: Thumb; status: ThumbStatus | null; busy: string | null; onClose: () => void; onRefined: (id: string) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const url = useThumbFile('thumb', thumb.id, 'image', thumb.updatedAt)
   const weights = usePrincipleWeights()

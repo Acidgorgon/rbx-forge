@@ -7,7 +7,7 @@ import { usePersisted } from '../../qol/sessionStore'
 import type { LiveStatus, VfxEffect, VfxEntry, VfxImportResult, VfxImportScan, VfxLabStatus, VfxRecipe, VfxRefineProgress, VfxScope, VfxStudioPack } from '@shared/types'
 import { RUBRIC_KEYS } from '@shared/vfx/types'
 import { dedupeWarnings, IMPORT_VERSION, layerRoles, perfWarnings } from '@shared/vfx/analyze'
-import { useStore } from '../../store'
+import { useStore, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { VfxPreview } from './VfxPreview'
@@ -184,7 +184,7 @@ function Media({ entry }: { entry: VfxEntry }) {
 // The entry's name: rename (the user's: bulk "Name from tags" leaves it), name it from its tags
 // ("Lightning Impact"), or go back to its original name. Layers inside keep their names.
 function EntryName({ entry }: { entry: VfxEntry }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [text, setText] = useState(entry.name)
   useEffect(() => setText(entry.name), [entry.id, entry.name])
   const tagName = nameFromTags(tagGroupsOf(entry), '')
@@ -223,7 +223,7 @@ function EntryName({ entry }: { entry: VfxEntry }) {
 }
 
 function Detail({ entry, entries, progress, recipes, live, onClose, onTrashed }: { entry: VfxEntry; entries: VfxEntry[]; progress?: VfxRefineProgress; recipes: VfxRecipe[]; live: LiveStatus | null; onClose: () => void; onTrashed: (batch: string, n: number) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [tab, setTab] = useState<'params' | 'script' | 'iterations' | 'studio' | 'info'>(entry.effect ? (entry.effect.script ? 'script' : 'params') : 'info')
   const [draft, setDraft] = useState<VfxEffect | undefined>(entry.effect)

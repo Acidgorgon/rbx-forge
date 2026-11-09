@@ -2,7 +2,7 @@
 // (scenarios played in Studio or reviewed in code, with transcripts in editor tabs).
 import { useEffect, useMemo, useState } from 'react'
 import type { ModelChoice, TestAgent, TestCaseResult } from '@shared/types'
-import { useStore } from '../store'
+import { useStore, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ModelPicker, providerLabel } from '../components/ModelPicker'
 import { useMenu } from '../components/Menu'
@@ -12,7 +12,7 @@ import { fmtDuration, fmtUsd, errorText, keyHint } from '../lib/format'
 const AGENT_TAG: Record<TestAgent['state'], string> = { queued: '', running: 'info', passed: 'ok', failed: 'err', error: 'err', cancelled: '' }
 
 function ResultRow({ r }: { r: TestCaseResult }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [open, setOpen] = useState(r.status === 'fail')
   return (
     <>

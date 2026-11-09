@@ -1,12 +1,12 @@
 // Chat empty state when nothing can answer: no provider is ready, or the chat's provider stopped
 // working (e.g. the Claude sign-in expired). Links to Settings > Accounts.
 import type { ProviderInfo } from '@shared/types'
-import { useStore } from '../store'
+import { useActions } from '../store'
 import { Icon } from '../components/Icons'
 import './accounts.css'
 
 export function AccountsPrompt({ providers, current }: { providers: ProviderInfo[] | null; current?: ProviderInfo }) {
-  const { actions } = useStore()
+  const actions = useActions()
   if (!providers || !providers.length) return null
   const none = !providers.some((p) => p.ready)
   if (none) {

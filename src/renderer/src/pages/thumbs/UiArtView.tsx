@@ -8,7 +8,7 @@ import type { ThumbEstimate, ThumbStatus, ThumbsEvents, UiAsset, UiAssetKind, Ui
 import { UI_KINDS, UI_KIND_IDS, splitNames } from '@shared/thumbs/builder'
 import { uiLuau, uiScore } from '@shared/thumbs/uiart'
 import { CODEX_IMAGE_NOTE } from '@shared/artTypes'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { Swatches, useThumbFile } from './parts'
@@ -118,7 +118,7 @@ function RealSize({ a, url }: { a: UiAsset; url: string }) {
 }
 
 function UiDetail({ a, status, onClose }: { a: UiAsset; status: ThumbStatus | null; onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const url = useThumbFile('ui', a.id, 'image', a.updatedAt)
   const [working, setWorking] = useState<string | null>(null)
@@ -299,7 +299,7 @@ function KitView({ kit, assets, onOpen }: { kit: UiKit | null; assets: UiAsset[]
 }
 
 export function UiArtView({ status, ready }: { status: ThumbStatus | null; ready: boolean }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [assets, setAssets] = useState<UiAsset[]>([])
   const [kit, setKit] = useState<UiKit | null>(null)

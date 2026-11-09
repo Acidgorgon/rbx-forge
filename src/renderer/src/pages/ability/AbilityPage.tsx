@@ -9,7 +9,7 @@ import { timingChecks } from '@shared/ability/critique'
 import { applyPatch } from '@shared/ability/model'
 import { ABILITY_RUBRIC, type Ability, type AbilityEntry, type AbilityExportResult, type AbilityStatus, type TimeRef } from '@shared/ability/types'
 import type { VfxEffect, VfxEntry } from '@shared/types'
-import { useStore } from '../../store'
+import { useStore, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { AbilityPreview } from './AbilityPreview'
@@ -146,7 +146,7 @@ function CritiquePanel({ entry, ability, busy, onCritique, ctx }: { entry: Abili
 }
 
 function ExportPanel({ entry, status, onExport, result, busy }: { entry: AbilityEntry; status: AbilityStatus | null; onExport: () => void; result: AbilityExportResult | null; busy: boolean }) {
-  const { actions } = useStore()
+  const actions = useActions()
   return (
     <div className="ab-export">
       <div className="ab-crit-bar">
@@ -201,7 +201,7 @@ function ExportPanel({ entry, status, onExport, result, busy }: { entry: Ability
 }
 
 function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; status: AbilityStatus | null; vfxEntries: VfxEntry[]; onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [draft, setDraft] = useState<Ability>(entry.ability)
   const [selected, setSelected] = useState<string | null>(null)

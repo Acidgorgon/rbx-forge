@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import type { Digest } from '@shared/types'
 import { restorePlan } from '@shared/qol/session'
 import { serializeGroups } from '@shared/editorGroups'
-import { useStore, type Layout, type PageKind } from '../store'
+import { useStore, useActions, type Layout, type PageKind } from '../store'
 import { BugReportDialog } from './BugReportDialog'
 import { AwayDigest } from './AwayDigest'
 import { KNOWN_PAGES, navigate } from './navigate'
@@ -222,7 +222,7 @@ function digestCard(card: ReactElement): ReactNode {
 
 // Forge put (or updated) the Forge Bridge plugin in Studio's plugins folder at startup.
 function usePluginAutoNotice(): void {
-  const { actions } = useStore()
+  const actions = useActions()
   useEffect(
     () =>
       window.harness.on('studio:pluginAuto', (e) =>
@@ -233,7 +233,7 @@ function usePluginAutoNotice(): void {
 }
 
 export function QolRoot() {
-  const { actions } = useStore()
+  const actions = useActions()
   const [bug, setBug] = useState<{ screenshot: boolean } | null>(null)
   const actionsRef = useRef(actions)
   actionsRef.current = actions

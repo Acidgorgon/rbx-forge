@@ -4,7 +4,7 @@
 // at each beat. The work happens in main (services/studio); the plugin plays the item in Studio.
 import { useCallback, useEffect, useState } from 'react'
 import type { StudioCheckKind, StudioCheckRecord, StudioProgress, StudioStatus } from '@shared/types'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { StudioTargetPicker } from './StudioTarget'
@@ -64,7 +64,7 @@ export function StudioStateTag({ status }: { status: StudioStatus | null }) {
 
 // Runs a check (critique on) and reports it; `before` saves pending edits first.
 export function useRunStudioCheck(kind: StudioCheckKind, id: string, opts: { before?: () => Promise<void> | void; after?: (r: StudioCheckRecord) => void } = {}) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [running, setRunning] = useState(false)
   const run = async () => {
     if (running) return
@@ -130,7 +130,7 @@ const PHASE_TEXT: Record<StudioProgress['phase'], string> = {
 }
 
 export function StudioCheckPanel({ kind, id, before }: { kind: StudioCheckKind; id: string; before?: () => Promise<void> | void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [status, refresh] = useStudioStatus()
   const progress = useStudioProgress(kind, id)
   const [record, setRecord] = useState<StudioCheckRecord | null>(null)

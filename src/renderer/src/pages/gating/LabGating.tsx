@@ -4,7 +4,7 @@ import { useCallback, useEffect, useState } from 'react'
 import type { GateDecision, GateMode, GatingView, LabId, ModelMode } from '@shared/types'
 import { COST_TIERS, DECISION_INFO, GATE_INFO, LAB_NAMES } from '@shared/gating/types'
 import { formatTokens, formatUsd } from '@shared/gating/costs'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { errorText } from '../../lib/format'
 import './gating.css'
 
@@ -125,7 +125,7 @@ function Seg<T extends string>({ value, options, onChange, label }: { value: T; 
 
 // Settings > Labs: gates, decision models, the cost table.
 export function GatingSettings() {
-  const { actions } = useStore()
+  const actions = useActions()
   const { view, reload } = useGating({ limit: 8 })
   const [busy, setBusy] = useState(false)
   if (!view) return <div className="note">Loading...</div>

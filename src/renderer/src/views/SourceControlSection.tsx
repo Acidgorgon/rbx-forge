@@ -5,7 +5,7 @@
 // State and flows: scmState.ts (shared with the palette's "Git: …" commands).
 import { useEffect, useRef, useState } from 'react'
 import type { ScmFile } from '@shared/types'
-import { useStore } from '../store'
+import { useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { FileGlyph } from '../components/ClassIcon'
 import { keyHint } from '../lib/format'
@@ -22,7 +22,7 @@ let focusedNonce = 0
 const LETTER_CLASS: Record<ScmFile['letter'], string> = { M: 'warn', T: 'warn', A: 'ok', U: 'ok', C: 'ok', D: 'err', R: 'info', '!': 'err' }
 
 export function SourceControlSection() {
-  const { actions } = useStore()
+  const actions = useActions()
   const scm = useScm()
   const s = scm.status
   const box = useRef<HTMLTextAreaElement>(null)

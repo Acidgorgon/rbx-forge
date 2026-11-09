@@ -16,7 +16,7 @@ import { glowText, motionText } from "@shared/videoref/prompt";
 import { animNumericMatch, vfxNumericMatch } from "@shared/videoref/match";
 import { refPrinciples } from "@shared/principles/ref";
 import { principleName } from "@shared/principles/catalog";
-import { useStore } from "../../store";
+import { useActions } from "../../store";
 import { Icon } from "../../components/Icons";
 import { errorText } from "../../lib/format";
 import { BEAT_COLORS } from "./decode";
@@ -305,7 +305,7 @@ export function RefDetail({
   onMade: (id: string) => void;
   onPin?: (ref: { id: string; name: string }) => void;
 }) {
-  const { actions } = useStore();
+  const actions = useActions();
   const h = window.harness;
   const v = entry.video!;
   const a = v.analysis;

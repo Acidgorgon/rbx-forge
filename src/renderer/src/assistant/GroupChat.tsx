@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from 'react'
 import type { ChatMessage, ChatSession, GroupParticipant, ModelChoice, Speaker } from '@shared/types'
 import { makeParticipant, modelAlias, modelLabel, sameModel } from '@shared/modelResolve'
-import { useStore } from '../store'
+import { useStore, useActions } from '../store'
 import { InlineMarkdown, Markdown } from '../components/Markdown'
 import { ModelPicker, ProviderMark } from '../components/ModelPicker'
 import { IconCheck, IconClose, IconCopy, IconList, IconPlus, IconRound } from '../components/Icons'
@@ -74,7 +74,7 @@ export function SpeakerHead({ s, host, chat }: { s: Speaker; host?: boolean; cha
 // ---------------------------------------------------------------- participants bar
 
 function RoundtablePop({ onClose, guestTools }: { onClose: () => void; guestTools: boolean }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [topic, setTopic] = useState('')
   const [rounds, setRounds] = useState(2)
   const ref = useRef<HTMLDivElement>(null)
@@ -214,7 +214,7 @@ export function GroupTokens() {
 // ---------------------------------------------------------------- cards
 
 export function PlanCard({ m }: { m: ChatMessage }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const chat = useActiveChat()
   const accent = m.speaker ? accentOf(chat, m.speaker) : 0
   return (

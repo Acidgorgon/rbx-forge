@@ -5,7 +5,7 @@
 // detail, viewer) opens LayersPanel. Keys never reach this page; it only sees whether they are set.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ArtCostEstimate, ArtGenerateInput, ArtItem, ArtQuality, ArtRegistryEntry, ArtSettings, ArtStatus, ArtStyleId } from '@shared/types'
-import { useStore } from '../../store'
+import { useStore, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Lightbox, type LightboxItem } from '../../components/Lightbox'
 import { errorText } from '../../lib/format'
@@ -101,7 +101,7 @@ function Thumb({ item, selected, onSelect, onOpen }: { item: ArtItem; selected: 
 }
 
 function KeyCard({ status, onStatus }: { status: ArtStatus; onStatus: (s: ArtStatus) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [key, setKey] = useState('')
   const [scope, setScope] = useState<'project' | 'global'>('project')
   const [ids, setIds] = useState({ user: status.settings.creatorUserId ? String(status.settings.creatorUserId) : '', group: status.settings.creatorGroupId ? String(status.settings.creatorGroupId) : '' })

@@ -1,14 +1,14 @@
 // Mount point for the qol-c overlays: Forge Doctor and "Add to game" dialogs (opened through window
 // events, see events.ts) and the spending-cap alert toasts.
 import { useEffect, useState } from 'react'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { AddToGameDialog } from './AddToGame'
 import { DoctorDialog } from './Doctor'
 import { ADD_TO_GAME_EVENT, DOCTOR_EVENT } from './events'
 import { useSpendAlerts } from './Spend'
 
 export function QolcOverlays() {
-  const { actions } = useStore()
+  const actions = useActions()
   const [doctor, setDoctor] = useState(false)
   const [add, setAdd] = useState<{ lab: string; id: string } | null>(null)
   useSpendAlerts(actions)

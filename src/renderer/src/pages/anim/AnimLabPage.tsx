@@ -20,7 +20,7 @@ import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
 import { clipRig } from '@shared/anim/sample'
 import { MOVE_TAGS } from '@shared/anim/style'
 import { qeulerDeg, xfToCf } from '@shared/anim/math'
-import { useStore } from '../../store'
+import { useStore, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { AnimPreview } from './AnimPreview'
@@ -576,7 +576,7 @@ function defaultOp(kind: RemixOpKind, clips: AnimEntry[]): RemixOp {
 // A remixed clip's origin: the base clip, the edit ops as editable values, and Re-apply (the ops run
 // again on the base, or on another base clip picked here).
 function RemixPanel({ entry, entries, disabled, onOpen }: { entry: AnimEntry; entries: AnimEntry[]; disabled: boolean; onOpen: (id: string) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const origin = entry.remix!
   const [ops, setOps] = useState<RemixOp[]>(origin.ops)
   const [base, setBase] = useState(origin.base)
@@ -718,7 +718,7 @@ function RemixPanel({ entry, entries, disabled, onOpen }: { entry: AnimEntry; en
 }
 
 function Detail({ entry, entries, progress, status, onClose, onOpen }: { entry: AnimEntry; entries: AnimEntry[]; progress?: AnimRefineProgress; status: AnimLabStatus | null; onClose: () => void; onOpen: (id: string) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const firstTab = (e: AnimEntry) => (e.remix ? 'remix' : e.clip.script ? 'script' : 'info')
   const [tab, setTab] = useState<'remix' | 'script' | 'checks' | 'iterations' | 'studio' | 'info'>(firstTab(entry))

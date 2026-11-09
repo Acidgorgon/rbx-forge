@@ -3,7 +3,7 @@
 // Everything goes through window.harness.toolchain* (main/setup.ts); nothing here blocks the app.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SetupMode, SetupProgress, SetupResult, ToolStatus, ToolchainStatus } from '@shared/types'
-import { useStore } from '../store'
+import { useStore, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { AnvilMark } from '../components/Brand'
 import { errorText } from '../lib/format'
@@ -89,7 +89,7 @@ function ToolRow({ name, sub, version, step, tag, action }: { name: string; sub:
 // ---------------------------------------------------------------- first run
 
 export function ToolchainGate() {
-  const { actions } = useStore()
+  const actions = useActions()
   const tc = useToolchain()
   const [open, setOpen] = useState(false)
   const started = useRef(false)
@@ -238,7 +238,7 @@ function LunePathRow() {
 }
 
 export function ToolchainSection() {
-  const { actions } = useStore()
+  const actions = useActions()
   const tc = useToolchain()
   const s = tc.status
   const go = async (mode: SetupMode, tools?: string[]) => {

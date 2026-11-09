@@ -9,7 +9,7 @@ import { SCRIPT_TEMPLATE } from '@shared/vfx/compile'
 import { VFX_EXAMPLES } from '@shared/vfx/examples'
 import { monaco } from '../../monaco'
 import { useAppearance } from '../../theme'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { prefersReducedMotion } from './motion'
@@ -17,7 +17,7 @@ import { prefersReducedMotion } from './motion'
 const OWNER = 'vfx-timeline'
 
 export function ScriptPanel({ entry, effect, onPreview }: { entry: VfxEntry; effect: VfxEffect; onPreview: (effect: VfxEffect) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const appearance = useAppearance()
   const saved = entry.effect?.script ?? ''
   const [code, setCode] = useState(effect.script || saved || SCRIPT_TEMPLATE)

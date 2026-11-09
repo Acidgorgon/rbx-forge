@@ -4,7 +4,7 @@
 import { useEffect, useState } from 'react'
 import type { StudioMcpStatus, StudioMcpTestResult } from '@shared/types'
 import { formatArgs, formatCommand, parseArgs, STUDIO_MCP_HELP } from '@shared/studioMcp'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { errorText } from '../../lib/format'
 
 // The live status (Settings and the chat's Studio pill share it).
@@ -37,7 +37,7 @@ export function studioMcpLabel(s: StudioMcpStatus): { text: string; led: 'ok' | 
 }
 
 export function StudioMcpSettings() {
-  const { actions } = useStore()
+  const actions = useActions()
   const s = useStudioMcp()
   const [cmd, setCmd] = useState('')
   const [args, setArgs] = useState('')

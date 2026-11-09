@@ -3,7 +3,7 @@
 // after reading its diff, then write. AddToGameButton is the lab-page button.
 import { useEffect, useMemo, useState } from 'react'
 import type { AddToGameOptions, AddToGamePlan, AddToGameResult, AddToGameTarget } from '@shared/types'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Dialog } from '../../shell/Overlays'
 import { errorText } from '../../lib/format'
@@ -23,7 +23,7 @@ export function AddToGameButton({ lab, id, disabled, title, compact }: { lab: st
 }
 
 export function AddToGameDialog({ lab, id, onClose }: { lab: string; id: string; onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [opts, setOpts] = useState<AddToGameOptions | null>(null)
   const [error, setError] = useState<string | null>(null)

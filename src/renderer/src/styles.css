@@ -341,7 +341,10 @@ input[type="checkbox"]:not(.switch) { accent-color: var(--fg-muted); }
 
 /* panels: floating cards */
 .panel { background: var(--bg-panel); display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.side, .right { border: 1px solid var(--line); border-radius: var(--r-lg); transition: width var(--dur-panel) var(--ease-out), border-color var(--dur-panel), opacity var(--dur-panel); }
+/* Panels open and close in one step (no width / height transition): animating a panel's size
+   re-lays out the whole window, and Monaco (automaticLayout) with it, on every frame. Only the
+   contents fade in (opacity / transform, composited). */
+.side, .right { border: 1px solid var(--line); border-radius: var(--r-lg); }
 .side { width: var(--side-w); flex: none; }
 .right { width: var(--right-w); flex: none; }
 .panel > .panel-inner { display: flex; flex-direction: column; min-height: 0; height: 100%; transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-panel) var(--ease-out); }
@@ -430,7 +433,7 @@ button.badge-o:hover:not(:disabled) { border-color: var(--fg-faint); color: var(
 .page-head .actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 /* bottom panel (inside the center card) */
-.bottom { height: var(--bottom-h); flex: none; border-top: 1px solid var(--line); transition: height var(--dur-panel) var(--ease-out), border-color var(--dur-panel); }
+.bottom { height: var(--bottom-h); flex: none; border-top: 1px solid var(--line); }
 .app.bottom-off .bottom { height: 0; border-top-color: transparent; }
 .app.bottom-off .bottom .panel-inner { opacity: 0; transform: translateY(6px); pointer-events: none; }
 .bottom .panel-inner { height: var(--bottom-h); }

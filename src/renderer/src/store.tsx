@@ -44,6 +44,7 @@ import type { GroupsState } from '@shared/editorGroups'
 import { isBuiltin, parseSlash } from '@shared/chatCommands'
 import { afterTurn, editQueued as editIn, enqueue, moveToFront, outgoingText, removeQueued as removeFrom, turnOutcome, type QueuedPrompt, type QueuePause } from './assistant/queue'
 import { appendCapped, createBatcher } from './lib/logBatch'
+import { createPendingEdits } from './lib/pendingEdits'
 
 // ---------------------------------------------------------------- types
 
@@ -671,24 +672,17 @@ function createStore(): Store {
     state = next
     for (const l of [...listeners]) l()
   }
-  // Typing does not dispatch per keystroke (each one re-rendered every subscriber of `files`): the
-  // store takes an editor's text at once only when it changes the file's dirty state (or pins its
-  // preview tab), else EDIT_SETTLE_MS after typing pauses, or before any action above. So
-  // `current !== saved` (the dirty flag every tab, prompt and autosave reads) is always right, while
-  // `current` itself may trail the Monaco model by up to EDIT_SETTLE_MS: whatever needs the exact
-  // text reads the model (saves do: editorAssist/saveHooks via CodeEditor) or calls flushEdits.
-  // Pending text only exists while the file is dirty, so it never meets a reload from disk (those
-  // apply to clean buffers only).
-  const pending = new Map<string, string>()
-  let timer: ReturnType<typeof setTimeout> | undefined
-  const flushEdits = () => {
-    clearTimeout(timer)
-    timer = undefined
-    if (!pending.size) return
-    const edits = [...pending]
-    pending.clear()
-    for (const [path, contents] of edits) apply({ type: 'fileEdit', path, contents })
-  }
+  // Typing does not dispatch per keystroke (lib/pendingEdits.ts): dirty flags are always right,
+  // `current` may trail the Monaco model by up to EDIT_SETTLE_MS. Whatever needs the exact text
+  // reads the model (saves do: editorAssist/saveHooks via CodeEditor) or flushes first.
+  const edits = createPendingEdits(
+    {
+      buffer: (path) => state.files.find((f) => f.path === path),
+      isPreview: (path) => state.tabs.some((t) => t.kind === 'file' && t.path === path && t.preview),
+      apply: (path, contents) => apply({ type: 'fileEdit', path, contents })
+    },
+    EDIT_SETTLE_MS
+  )
   return {
     get: () => state,
     subscribe(listener) {
@@ -698,32 +692,14 @@ function createStore(): Store {
       }
     },
     dispatch(action) {
-      if (pending.size && FLUSH_EDITS_FIRST.has(action.type)) flushEdits()
+      if (edits.size && FLUSH_EDITS_FIRST.has(action.type)) edits.flush()
       // A direct fileEdit (format on save) leaves newer pending text alone: it is what the editor
       // shows, and it lands before the save is recorded (fileSaved flushes first), so the file stays
       // dirty with it.
       apply(action)
     },
-    editText(path, contents) {
-      const f = state.files.find((x) => x.path === path)
-      const wasDirty = !!f && f.current !== f.saved
-      const dirty = !f || contents !== f.saved
-      const pins = state.tabs.some((t) => t.kind === 'file' && t.path === path && t.preview)
-      if (!f || wasDirty !== dirty || pins) {
-        pending.delete(path)
-        apply({ type: 'fileEdit', path, contents })
-        return
-      }
-      // Clean before and after: the store already holds this text.
-      if (!dirty) {
-        pending.delete(path)
-        return
-      }
-      pending.set(path, contents)
-      clearTimeout(timer)
-      timer = setTimeout(flushEdits, EDIT_SETTLE_MS)
-    },
-    flushEdits
+    editText: edits.edit,
+    flushEdits: edits.flush
   }
 }
 

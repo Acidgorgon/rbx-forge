@@ -42,6 +42,8 @@ export interface SyncWireDeps {
   onStudioTree?: () => void
   // The Forge Bridge (Game tab "Delete in Studio" queues a delete job for the plugin).
   bridge?: () => DeleteBridge | null
+  // SyncServiceDeps.statusDelayMs: the app coalesces status pushes (STATUS_DELAY_MS); tests leave it 0.
+  statusDelayMs?: number
 }
 
 export interface GitLike {
@@ -106,13 +108,33 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
   const git = deps.git ?? defaultGit
   const offAnswer = { ok: false as const, error: 'No project open in Forge' }
 
+  // The last sync:status / studio:conflicts payloads sent: an unchanged one is not sent again (the
+  // plugin's polls refresh the status every second or so, mostly with nothing new).
+  let lastStatus: string | null = null
+  let lastConflicts: string | null = null
   const emit = (event: 'sync:status' | 'sync:entry', payload: unknown) => {
-    deps.emit(event, payload)
-    if (event !== 'sync:status') return
+    if (event !== 'sync:status') {
+      deps.emit(event, payload)
+      return
+    }
     const status = payload as SyncStatus
-    const summary = syncSummary(status)
-    deps.supervisor.setSyncSummary(summary.state, summary.detail)
-    if (status.engine === 'forge') deps.emit('studio:conflicts', wiring.studioConflicts() ?? [])
+    const statusJson = JSON.stringify(status)
+    if (statusJson !== lastStatus) {
+      lastStatus = statusJson
+      deps.emit(event, payload)
+      const summary = syncSummary(status)
+      deps.supervisor.setSyncSummary(summary.state, summary.detail)
+    }
+    if (status.engine === 'forge') {
+      const conflicts = wiring.studioConflicts() ?? []
+      const conflictsJson = JSON.stringify(conflicts)
+      if (conflictsJson === lastConflicts) return
+      lastConflicts = conflictsJson
+      deps.emit('studio:conflicts', conflicts)
+    } else {
+      // studio-sync.py's watcher reports conflicts now: send Forge Sync's again when it is back.
+      lastConflicts = null
+    }
   }
 
   const need = (): SyncService => {
@@ -199,6 +221,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     handler,
     handlers,
     async onProjectOpen(root) {
+      lastStatus = null
+      lastConflicts = null
       current?.close()
       current = new SyncService({
         root,
@@ -216,7 +240,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
         onGate: (file, gate, detail, reason) => deps.supervisor.setGate(file, gate, detail, reason),
         emit,
         log: deps.log,
-        onStudioTree: deps.onStudioTree
+        onStudioTree: deps.onStudioTree,
+        statusDelayMs: deps.statusDelayMs
       })
       await current.start().catch((e) => deps.log?.(`sync: ${(e as Error).message}`, 'stderr'))
     },
@@ -224,6 +249,8 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
       return current ? current.liveTree(projectFile) : null
     },
     onProjectClose() {
+      lastStatus = null
+      lastConflicts = null
       current?.close()
       current = null
     },

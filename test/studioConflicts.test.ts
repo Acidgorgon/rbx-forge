@@ -51,3 +51,19 @@ test('watch reports new conflicts', async () => {
   assert.equal(await seen, 1)
   conflicts.close()
 })
+
+test('watch reads nothing while inactive (Forge Sync on) and resumes when active again', async () => {
+  const root = makeProject()
+  roots.push(root)
+  const conflicts = new StudioConflicts(root)
+  let active = false
+  const seen: number[] = []
+  conflicts.watch((list) => seen.push(list.length), 20, () => active)
+  write(root, '.studio-sync/conflicts/src__shared__events__server.luau', 'x\n')
+  await new Promise((r) => setTimeout(r, 80))
+  assert.deepEqual(seen, [])
+  active = true
+  await new Promise((r) => setTimeout(r, 80))
+  assert.deepEqual(seen, [1])
+  conflicts.close()
+})

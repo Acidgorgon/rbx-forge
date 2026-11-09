@@ -604,6 +604,8 @@ export interface BlinkModel {
 export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents, ModelEvents, StudioMcpEvents, SearchEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
+  // Batched log lines (main sends these; one message per ~100 ms).
+  'log:lines': LogLine[]
   'project:changed': ProjectInfo | null
   'tree:changed': TreeNode[]
   // Repo-relative files changed on disk (watcher), so clean open editor tabs reload them.

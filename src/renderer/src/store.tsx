@@ -1255,6 +1255,9 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       h.on('sync:entry', (entries) => void refreshOpen(entries.flatMap((e) => (e.from ? [e.file, e.from] : [e.file])))),
       h.on('services:status', (services) => set({ services })),
       h.on('log:line', (line) => logBatch.push(line)),
+      h.on('log:lines', (lines) => {
+        for (const line of lines) logBatch.push(line)
+      }),
       // A Labs model call failed: say why (once a minute per lab and error) instead of a silent fallback.
       h.on('labs:modelError', ({ lab, message }) => {
         const key = `${lab ?? ''}|${message}`

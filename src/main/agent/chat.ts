@@ -1,5 +1,5 @@
 // Chat sessions with the main harness agent.
-// Sessions and their messages persist in the 'chats' setting. Each chat has a provider and model.
+// Sessions and their messages persist in the 'chats' setting (Settings keeps it in userData/chats.json). Each chat has a provider and model.
 // On anthropic it runs through the Agent SDK and remembers its SDK session id so follow-ups resume
 // the conversation; on the other providers it runs runOpenAiLoop and keeps the OpenAI-format
 // history itself. Switching provider mid-chat hands the visible transcript to the new provider.

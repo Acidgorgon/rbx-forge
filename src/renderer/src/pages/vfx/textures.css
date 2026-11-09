@@ -49,7 +49,16 @@
 .tex-big img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .tex-flip { position: relative; flex: 0 1 180px; aspect-ratio: 1; border: 1px solid var(--line); border-radius: var(--r-md); background: #0c0c0e; overflow: hidden; }
 .tex-flip-cell { position: absolute; inset: 0; background-repeat: no-repeat; }
-.tex-flip-n { position: absolute; left: 6px; bottom: 4px; font-size: 10px; color: rgba(255, 255, 255, .55); }
+.tex-flip-n { position: absolute; left: 6px; bottom: 4px; font-size: 10px; line-height: 1.2em; color: rgba(255, 255, 255, .55); }
+/* FlipbookPreview: CSS-only stepping (TextureLab.tsx). */
+@keyframes tex-flip-x { from { background-position-x: 0% } to { background-position-x: var(--flip-end) } }
+@keyframes tex-flip-y { from { background-position-y: 0% } to { background-position-y: var(--flip-end) } }
+@keyframes tex-flip-k { to { transform: translateY(-100%) } }
+.tex-flip-k { display: inline-block; height: 1.2em; overflow: hidden; vertical-align: bottom; text-align: right; }
+.tex-flip-k > span { display: flex; flex-direction: column; }
+@media (prefers-reduced-motion: reduce) { .tex-flip-cell, .tex-flip-k > span { animation: none !important; } }
+:root[data-motion="reduced"] .tex-flip-cell, :root[data-motion="reduced"] .tex-flip-k > span,
+:root[data-motion="off"] .tex-flip-cell, :root[data-motion="off"] .tex-flip-k > span { animation: none !important; }
 .tex-hint { margin: 0; font-size: 11px; }
 .tex-detail .vfx-actions .btn .mono { font-size: 10.5px; }
 

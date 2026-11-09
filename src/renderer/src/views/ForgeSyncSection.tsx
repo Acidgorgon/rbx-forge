@@ -10,7 +10,7 @@
 import { useEffect, useState } from 'react'
 import type { GateState, PlaceDrift, PlaceInfo, PlaceSyncStatus, SyncAction, SyncEntry, SyncRef, SyncStatus, UnlinkedPlace } from '@shared/types'
 import { collisionLabels } from '@shared/sync/labels'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ago, errorText } from '../lib/format'
 import { basename } from '../lib/roblox'
@@ -66,7 +66,8 @@ function countsText(p: PlaceSyncStatus): string {
 }
 
 export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | null; setStatus: (s: SyncStatus) => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activePlace', 'appSettings', 'places', 'project', 'services', 'studioConflicts')
   const [busy, setBusy] = useState<string | null>(null)
   const [showPending, setShowPending] = useState(false)
   const [showRefs, setShowRefs] = useState(false)

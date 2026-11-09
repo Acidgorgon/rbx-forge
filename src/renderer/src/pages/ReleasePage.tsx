@@ -19,7 +19,7 @@ import type {
   SecretScope,
   VersionType
 } from '@shared/types'
-import { useStore, useActions } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ago, errorText } from '../lib/format'
 
@@ -78,7 +78,8 @@ function SecretRow({ kind, label, set, hint, onChange }: { kind: ReleaseSecretKi
 }
 
 export function ReleasePage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const [plan, setPlan] = useState<ReleasePlan | null>(null)
   const [loading, setLoading] = useState(false)

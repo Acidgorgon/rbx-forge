@@ -9,7 +9,7 @@ import '@fontsource/source-sans-3/latin-400-italic.css'
 import '@fontsource/source-sans-3/latin-600.css'
 import type { ChatMessage, ChatSession } from '@shared/types'
 import type { ChatTodo } from '@shared/chatModes'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
 import { ChecklistCard, isGroup, PlanCard, SpeakerHead } from './GroupChat'
@@ -46,7 +46,8 @@ export function turnStart(messages: ChatMessage[]): number | null {
 // ---------------------------------------------------------------- messages
 
 export function AgentTag({ id }: { id: string }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('agents')
   const agent = state.agents.find((a) => a.id === id)
   return (
     <button className="agent-tag" title={agent?.scenario} onClick={() => actions.openTranscript(id, agent ? `Agent: ${agent.scenario.slice(0, 24)}` : 'Agent')}>

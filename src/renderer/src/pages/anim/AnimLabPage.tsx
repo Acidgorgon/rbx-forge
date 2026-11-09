@@ -20,7 +20,7 @@ import { convertClip, RIG_CONVERT_WARNING } from '@shared/anim/convert'
 import { clipRig } from '@shared/anim/sample'
 import { MOVE_TAGS } from '@shared/anim/style'
 import { qeulerDeg, xfToCf } from '@shared/anim/math'
-import { useStore, useActions } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { AnimPreview } from './AnimPreview'
@@ -1025,7 +1025,8 @@ function PinnedCompare({ entry }: { entry: AnimEntry }) {
 }
 
 export function AnimLabPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const [status, setStatus] = useState<AnimLabStatus | null>(null)
   const [entries, setEntries] = useState<AnimEntry[]>([])

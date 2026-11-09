@@ -5,7 +5,7 @@
 // last one is remembered. Every section stays mounted (hidden), so search and showSettingsSection() reach all of them.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { BudgetLimits, ProviderId, ProviderInfo, SyncSettings, UsageSummary } from '@shared/types'
-import { useStore, useActions } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { ModelPicker, ProviderMark } from '../../components/ModelPicker'
 import { setChatFont, setMotionMode, setThemeMode, useAppearance, type ChatFont, type MotionMode, type ThemeMode } from '../../theme'
@@ -220,7 +220,8 @@ function UsageHistory() {
 }
 
 export function SettingsPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activePlace', 'appSettings', 'defaultModel', 'places', 'project', 'providers', 'settingsFocus', 'syncSettings')
   const appearance = useAppearance()
   const providers = state.providers
   const ready = providers?.filter((p) => p.ready).length ?? 0

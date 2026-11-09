@@ -9,7 +9,7 @@ import { timingChecks } from '@shared/ability/critique'
 import { applyPatch } from '@shared/ability/model'
 import { ABILITY_RUBRIC, type Ability, type AbilityEntry, type AbilityExportResult, type AbilityStatus, type TimeRef } from '@shared/ability/types'
 import type { VfxEffect, VfxEntry } from '@shared/types'
-import { useStore, useActions } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { AbilityPreview } from './AbilityPreview'
@@ -408,7 +408,8 @@ function Detail({ entry, status, vfxEntries, onClose }: { entry: AbilityEntry; s
 }
 
 export function AbilityPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const [status, setStatus] = useState<AbilityStatus | null>(null)
   const [entries, setEntries] = useState<AbilityEntry[]>([])

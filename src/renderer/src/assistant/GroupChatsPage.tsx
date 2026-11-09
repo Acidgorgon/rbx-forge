@@ -6,7 +6,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { ChatMessage, ChatSession, ModelChoice, OrchestrateMode } from '@shared/types'
 import { makeParticipant, sameModel } from '@shared/modelResolve'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
 import { ModelPicker, ProviderMark } from '../components/ModelPicker'
@@ -27,7 +27,8 @@ function lastActivity(chat: ChatSession, messages: ChatMessage[] | undefined): n
 // ---------------------------------------------------------------- list + new
 
 function NewGroupChat({ onCreated, onCancel }: { onCreated: (id: string) => void; onCancel?: () => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('chats', 'defaultModel', 'providers')
   const [host, setHost] = useState<ModelChoice | null>(state.defaultModel)
   const [guests, setGuests] = useState<ModelChoice[]>([])
   const [title, setTitle] = useState('')
@@ -113,7 +114,8 @@ function NewGroupChat({ onCreated, onCancel }: { onCreated: (id: string) => void
 }
 
 function GroupList({ onOpen }: { onOpen: (id: string) => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'busy', 'chats', 'messages')
   const groups = useMemo(
     () =>
       state.chats
@@ -199,7 +201,8 @@ function GroupList({ onOpen }: { onOpen: (id: string) => void }) {
 // ---------------------------------------------------------------- open chat
 
 function ParticipantsRail({ chat, onBack }: { chat: ChatSession; onBack: () => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('busy', 'providers')
   const busy = !!state.busy[chat.id]
   const people = participants(chat)
   const usage = chat.usage ?? []
@@ -253,7 +256,8 @@ function ParticipantsRail({ chat, onBack }: { chat: ChatSession; onBack: () => v
 }
 
 function RoundPanel({ chat }: { chat: ChatSession }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('busy', 'messages')
   const busy = !!state.busy[chat.id]
   const [topic, setTopic] = useState('')
   const [rounds, setRounds] = useState(2)
@@ -373,7 +377,7 @@ function RoundPanel({ chat }: { chat: ChatSession }) {
 }
 
 function Conversation({ chat }: { chat: ChatSession }) {
-  const { state } = useStore()
+  const state = useStorePick('busy', 'messages')
   const messages = state.messages[chat.id] ?? []
   const busy = !!state.busy[chat.id]
   const scroller = useRef<HTMLDivElement>(null)
@@ -415,7 +419,8 @@ function Conversation({ chat }: { chat: ChatSession }) {
 }
 
 export function GroupChatsPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'chats')
   const active = state.chats.find((c) => c.id === state.activeChatId)
   const [openId, setOpenId] = useState<string | null>(active?.guests?.length ? active.id : null)
   const open = openId ? state.chats.find((c) => c.id === openId) : undefined

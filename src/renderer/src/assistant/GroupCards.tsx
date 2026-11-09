@@ -4,7 +4,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { BoardItem, BoardKind, ChatMessage, ChatSession, GroupSettings, ModelChoice } from '@shared/types'
 import { modelLabel } from '@shared/modelResolve'
-import { useStore, useActions } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { InlineMarkdown, Markdown } from '../components/Markdown'
 import { ProviderMark } from '../components/ModelPicker'
@@ -31,7 +31,8 @@ async function run(label: string, fn: () => Promise<unknown>, toast: (t: { text:
 // ---------------------------------------------------------------- conclusion
 
 export function ConclusionCard({ m }: { m: ChatMessage }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('busy')
   const chat = useActiveChat()
   const c = m.conclusion
   if (!c) return null
@@ -168,7 +169,8 @@ function DiffBody({ diff }: { diff: string }) {
 const PATCH_STATE: Record<string, string> = { proposed: 'proposed', applied: 'applied', merging: 'host merging', failed: 'did not apply', dismissed: 'dismissed' }
 
 export function PatchCard({ m }: { m: ChatMessage }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('busy')
   const chat = useActiveChat()
   const p = m.patch
   const [open, setOpen] = useState(p?.state === 'proposed' && (p?.diff.split('\n').length ?? 0) <= 40)
@@ -426,7 +428,8 @@ export function BoardPanel({ chat }: { chat: ChatSession }) {
 // ---------------------------------------------------------------- consult settings
 
 export function ConsultSettings({ chat }: { chat: ChatSession }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('providers')
   const [s, setS] = useState<GroupSettings | null>(null)
   useEffect(() => {
     void window.harness.getGroupSettings().then(setS, () => setS(null))

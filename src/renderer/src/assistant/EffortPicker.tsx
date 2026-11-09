@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react'
 import type { ChatSession, EffortChoice, ModelChoice } from '@shared/types'
 import { EFFORT_LABEL, EFFORT_SHORT, effortSupport, routeSummary, supportsVision } from '@shared/modelCaps'
-import { useActions, useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { useMenu } from '../components/Menu'
 import { errorText } from '../lib/format'
 
@@ -18,7 +18,7 @@ const HINT: Record<EffortChoice, string> = {
 
 // Runtime metadata the main process reported for a model (OpenRouter, Ollama).
 export function useModelMeta(choice: ModelChoice | null) {
-  const { state } = useStore()
+  const state = useStorePick('providers')
   if (!choice) return undefined
   return state.providers?.find((p) => p.id === choice.provider)?.meta?.[choice.model]
 }
@@ -29,7 +29,8 @@ export function useVision(choice: ModelChoice | null): boolean {
 }
 
 export function EffortPicker({ chat, choice }: { chat?: ChatSession; choice: ModelChoice | null }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('chats', 'pendingEffort')
   const menu = useMenu()
   const meta = useModelMeta(choice)
   if (!choice) return null

@@ -4,7 +4,7 @@
 import { useState } from 'react'
 import type { ChatMessage } from '@shared/types'
 import { modeLabel, type RunMode } from '@shared/chatModes'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Markdown } from '../../components/Markdown'
 import { errorText } from '../../lib/format'
 import './modes.css'
@@ -22,7 +22,8 @@ function inline(s: string) {
 }
 
 export function PlanModeCard({ m }: { m: ChatMessage }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'busy')
   const p = m.planMode!
   const sessionId = m.sessionId ?? state.activeChatId
   const busy = sessionId ? !!state.busy[sessionId] : false

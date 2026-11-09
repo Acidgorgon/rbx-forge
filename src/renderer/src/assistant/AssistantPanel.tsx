@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { useChatDraft, useChatScroll, rememberChatScroll } from '../qol/chatSession'
 import type { BoardView, ChatImage, OrchestrateMode, TaskView } from '@shared/types'
-import { useStore, useActions } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
 import { ModelPicker } from '../components/ModelPicker'
@@ -114,7 +114,8 @@ function TurnTimer({ started }: { started: number }) {
 }
 
 export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m: OrchestrateMode) => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'activeFile', 'busy', 'composerInsert', 'defaultModel', 'layout', 'messages', 'pendingModel', 'scripts')
   const id = state.activeChatId
   const busy = id ? !!state.busy[id] : false
   const activeChat = useActiveChat()
@@ -509,7 +510,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
 // ---------------------------------------------------------------- panel
 
 function Meter() {
-  const { state } = useStore()
+  const state = useStorePick('usage')
   const chat = useActiveChat()
   const snap = state.usage.chat
   const t = snap?.totals
@@ -542,7 +543,8 @@ function Meter() {
 }
 
 export function AssistantPanel() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'messages', 'busy', 'pendingModel', 'defaultModel', 'boards', 'chats', 'layout', 'providers', 'activeFile')
   const menu = useMenu()
   const chat = useActiveChat()
   const id = state.activeChatId

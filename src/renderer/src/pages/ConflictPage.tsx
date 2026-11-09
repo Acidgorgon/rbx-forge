@@ -4,13 +4,14 @@
 import { useEffect, useRef, useState } from 'react'
 import { DiffEditor } from '@monaco-editor/react'
 import { monaco } from '../monaco'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { useTheme } from '../theme'
 import { errorText } from '../lib/format'
 
 export function ConflictPage({ path }: { path: string }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('studioConflicts')
   const theme = useTheme()
   const c = state.studioConflicts.find((x) => x.path === path)
   const [busy, setBusy] = useState<null | 'studio' | 'repo'>(null)

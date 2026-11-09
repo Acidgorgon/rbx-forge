@@ -2,7 +2,7 @@
 // (installed state, curated tools, updates). Backed by main/services/packages.ts.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { PackagesChanged, RokitTool, WallyDependency, WallyPackage, WallyRealm } from '@shared/types'
-import { useStore, useActions } from '../store'
+import { useStorePick, useActions } from '../store'
 import { IconAlert, IconCheck, IconClose, IconSearch, IconTool } from '../components/Icons'
 import { errorText } from '../lib/format'
 import './packages.css'
@@ -31,7 +31,7 @@ function shortVersion(v?: string): string {
 type Tab = 'wally' | 'tools'
 
 export function PackagesPage() {
-  const { state } = useStore()
+  const state = useStorePick('project')
   const h = window.harness
   const [tab, setTab] = useState<Tab>('wally')
   const [deps, setDeps] = useState<WallyDependency[] | null>(null)

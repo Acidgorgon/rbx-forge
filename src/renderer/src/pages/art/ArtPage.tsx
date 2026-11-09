@@ -5,7 +5,7 @@
 // detail, viewer) opens LayersPanel. Keys never reach this page; it only sees whether they are set.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ArtCostEstimate, ArtGenerateInput, ArtItem, ArtQuality, ArtRegistryEntry, ArtSettings, ArtStatus, ArtStyleId } from '@shared/types'
-import { useStore, useActions } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Lightbox, type LightboxItem } from '../../components/Lightbox'
 import { errorText } from '../../lib/format'
@@ -211,7 +211,8 @@ function Detail({ item, status, registry, onClose, onChanged, onCompose, onFulls
   onFullscreen: () => void
   onSplit: () => void
 }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('files', 'scripts')
   const full = useThumb(item.path, true)
   const [name, setName] = useState(item.roblox?.name ?? regName(item.slug))
   const [busy, setBusy] = useState<string | null>(null)
@@ -384,7 +385,8 @@ function Detail({ item, status, registry, onClose, onChanged, onCompose, onFulls
 }
 
 export function ArtPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const [status, setStatus] = useState<ArtStatus | null>(null)
   const [items, setItems] = useState<ArtItem[]>([])

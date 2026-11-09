@@ -7,7 +7,7 @@ import { usePersisted } from '../../qol/sessionStore'
 import type { LiveStatus, VfxEffect, VfxEntry, VfxImportResult, VfxImportScan, VfxLabStatus, VfxRecipe, VfxRefineProgress, VfxScope, VfxStudioPack } from '@shared/types'
 import { RUBRIC_KEYS } from '@shared/vfx/types'
 import { dedupeWarnings, IMPORT_VERSION, layerRoles, perfWarnings } from '@shared/vfx/analyze'
-import { useStore, useActions } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { VfxPreview } from './VfxPreview'
@@ -617,7 +617,8 @@ function PinnedCompare({ entry, effect }: { entry: VfxEntry; effect: VfxEffect }
 }
 
 export function VfxLabPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('defaultModel', 'project')
   const h = window.harness
   const [status, setStatus] = useState<VfxLabStatus | null>(null)
   const [entries, setEntries] = useState<VfxEntry[]>([])

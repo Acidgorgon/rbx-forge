@@ -2,7 +2,7 @@
 // 'update:state' for the whole renderer; components read it with useUpdate().
 import { useCallback, useSyncExternalStore } from 'react'
 import type { UpdateState } from '@shared/types'
-import { useStore } from '../store'
+import { useActions, useGetState } from '../store'
 import { errorText } from '../lib/format'
 import { restartBlockers } from './blockers'
 
@@ -39,8 +39,11 @@ export function setUpdateState(next: UpdateState): void {
 // Restart into a downloaded update; asks first when that would interrupt work. kind 'quick' restarts
 // into a downloaded quick update (new app code, no installer); a full update wins when both are ready.
 export function useRestartForUpdate(kind: 'full' | 'quick' = 'full'): () => void {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const getState = useGetState()
+  // Reads the work in progress when clicked; subscribing to it re-rendered the pill on every edit.
   return useCallback(() => {
+    const state = getState()
     const quick = kind === 'quick'
     const version = (quick ? current?.quick?.version : current?.offer?.version) ?? 'the update'
     const go = () => {
@@ -60,5 +63,5 @@ export function useRestartForUpdate(kind: 'full' | 'quick' = 'full'): () => void
       danger: true,
       run: go
     })
-  }, [kind, state.files, state.busy, state.agents, state.boards, state.tests.running, actions])
+  }, [kind, getState, actions])
 }

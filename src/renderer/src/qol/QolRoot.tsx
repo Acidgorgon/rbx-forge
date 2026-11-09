@@ -5,7 +5,7 @@ import { createPortal } from 'react-dom'
 import type { Digest } from '@shared/types'
 import { restorePlan } from '@shared/qol/session'
 import { serializeGroups } from '@shared/editorGroups'
-import { useStore, useActions, type Layout, type PageKind } from '../store'
+import { useStorePick, useActions, type Layout, type PageKind } from '../store'
 import { BugReportDialog } from './BugReportDialog'
 import { AwayDigest } from './AwayDigest'
 import { KNOWN_PAGES, navigate } from './navigate'
@@ -53,7 +53,8 @@ function useErrorCapture(): void {
 
 // Restore once on start (first project), then keep the session file in step with the workbench.
 function useSessionRestore(): void {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project', 'layout', 'studioConflicts', 'chats', 'activeChatId', 'tabs', 'activeTab', 'editor')
   const restored = useRef<'pending' | 'running' | 'done'>('pending')
   const [ready, setReady] = useState(false)
   const chatRestored = useRef(false)
@@ -144,7 +145,7 @@ function useSessionRestore(): void {
 }
 
 function useDigest(): [Digest | null, () => void] {
-  const { state } = useStore()
+  const state = useStorePick('project')
   const [digest, setDigest] = useState<Digest | null>(null)
   const root = state.project?.root ?? null
   const lastActive = useRef(Date.now())

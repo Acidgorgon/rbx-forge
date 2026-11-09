@@ -15,7 +15,7 @@ import type {
   AnalyticsSource,
   AnalyticsStatus
 } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ago, errorText, fmtNum } from '../lib/format'
 
@@ -119,7 +119,8 @@ function Chart({ data }: { data: AnalyticsSeriesResult }) {
 }
 
 export function AnalyticsPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const [status, setStatus] = useState<AnalyticsStatus | null>(null)
   const [range, setRange] = useState<string>('7d')

@@ -3,13 +3,14 @@
 // Each tier is a dropdown (LabModelSelect): Auto, the ready providers' models, or Custom… for any id.
 import { useCallback, useEffect, useState } from 'react'
 import { LAB_TIERS, LAB_TIER_INFO, smallModelHint, type LabModelInfo, type LabModels, type LabTier } from '@shared/labModels'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { errorText } from '../../lib/format'
 import { GatingSettings } from '../gating/LabGating'
 import { LabModelSelect } from './LabModelSelect'
 
 export function LabsSettings() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('defaultModel', 'providers')
   const [saved, setSaved] = useState<LabModels | null>(null)
   const [info, setInfo] = useState<LabModelInfo | null>(null)
 

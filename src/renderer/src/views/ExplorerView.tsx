@@ -5,7 +5,7 @@
 import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import type { ScriptEntry, TreeNode } from '@shared/types'
 import { robloxPaths } from '@shared/robloxPath'
-import { useStore } from '../store'
+import { useActions, useGetState, useStorePick } from '../store'
 import { Icon } from '../components/Icons'
 import { ClassIcon, FileGlyph } from '../components/ClassIcon'
 import { useMenu, type MenuEntry } from '../components/Menu'
@@ -211,7 +211,10 @@ const TreeRow = memo(function TreeRow({ r, id, isOpen, selected, focus, active, 
 })
 
 export function ExplorerView() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const getState = useGetState()
+  // Not the open files (their text changes as you type): delete flows read them when they run.
+  const state = useStorePick('activeFile', 'appSettings', 'blink', 'createRequest', 'explorerReveal', 'project', 'scripts', 'services', 'tree')
   const menu = useMenu()
   const [mode, setModeState] = useState<Mode>(() => (localStorage.getItem(MODE_KEY) as Mode) || 'tree')
   const setMode = (m: Mode) => {
@@ -489,7 +492,7 @@ export function ExplorerView() {
     const entry = diskEntry(r)
     if (!entry) return
     const target = entryTarget(entry.path, entry.isDir)
-    const unsaved = state.files.filter((f) => isUnder(f.path, target.path) && f.current !== f.saved).length
+    const unsaved = getState().files.filter((f) => isUnder(f.path, target.path) && f.current !== f.saved).length
     const bin = trashName()
     const what = target.isDir ? `the folder ${target.path} and everything in it` : target.path
     const run = () => {
@@ -512,7 +515,7 @@ export function ExplorerView() {
 
   // Del / Delete: a Studio-only instance goes through the Forge Bridge, anything else to the trash.
   const deleteRow = (r: Row) => {
-    if (r.studio && r.instancePath && mode === 'tree') void deleteInStudio(state, actions, r.instancePath, r.className)
+    if (r.studio && r.instancePath && mode === 'tree') void deleteInStudio(getState(), actions, r.instancePath, r.className)
     else confirmDelete(r)
   }
 
@@ -554,8 +557,8 @@ export function ExplorerView() {
   // only Studio-only instances goes through Delete in Studio instead.
   const deleteSelection = () => {
     const { plan, hidden } = selectionPlan()
-    if (!plan.disk.length && plan.studio.length) void deleteManyInStudio(state, actions, plan)
-    else deleteManyFromDisk(state, actions, plan, hidden)
+    if (!plan.disk.length && plan.studio.length) void deleteManyInStudio(getState(), actions, plan)
+    else deleteManyFromDisk(getState(), actions, plan, hidden)
   }
 
   const openMany = async (paths: string[]) => {
@@ -605,7 +608,7 @@ export function ExplorerView() {
     if (plan.disk.length || !plan.studio.length) {
       items.push(
         plan.disk.length
-          ? { label: `Delete ${plan.disk.length} item${plan.disk.length === 1 ? '' : 's'}`, icon: <Icon name="trash" />, hint: isMac ? '⌘⌫' : 'Del', danger: true, sub: skips, onSelect: () => deleteManyFromDisk(state, actions, plan, hidden) }
+          ? { label: `Delete ${plan.disk.length} item${plan.disk.length === 1 ? '' : 's'}`, icon: <Icon name="trash" />, hint: isMac ? '⌘⌫' : 'Del', danger: true, sub: skips, onSelect: () => deleteManyFromDisk(getState(), actions, plan, hidden) }
           : { label: 'Delete', icon: <Icon name="trash" />, disabled: true, reason: plan.skipped[0] ? `Nothing here can be deleted (${plan.skipped[0].reason})` : 'Nothing here can be deleted' }
       )
     }
@@ -616,7 +619,7 @@ export function ExplorerView() {
     // Studio-only rows: the same check as the single "Delete in Studio", then one batch.
     void studioDeletable(plan).then(({ ok, refused }) => {
       const del: MenuEntry = ok.length
-        ? { label: `Delete ${ok.length} in Studio`, icon: <Icon name="trash" />, hint: plan.disk.length ? undefined : isMac ? '⌘⌫' : 'Del', danger: true, sub: refused.length ? `${refused.length} refused: ${refused[0].reason}` : undefined, onSelect: () => void deleteManyInStudio(state, actions, plan) }
+        ? { label: `Delete ${ok.length} in Studio`, icon: <Icon name="trash" />, hint: plan.disk.length ? undefined : isMac ? '⌘⌫' : 'Del', danger: true, sub: refused.length ? `${refused.length} refused: ${refused[0].reason}` : undefined, onSelect: () => void deleteManyInStudio(getState(), actions, plan) }
         : { label: `Delete ${plan.studio.length} in Studio`, icon: <Icon name="trash" />, disabled: true, reason: refused[0]?.reason }
       menu.openAt(at, [...items, del])
     })
@@ -658,7 +661,7 @@ export function ExplorerView() {
       ]).then(([target, check]) => {
         const del: MenuEntry =
           'ok' in check
-            ? { label: 'Delete in Studio', icon: <Icon name="trash" />, hint: isMac ? '⌘⌫' : 'Del', danger: true, onSelect: () => void deleteInStudio(state, actions, ip, r.className) }
+            ? { label: 'Delete in Studio', icon: <Icon name="trash" />, hint: isMac ? '⌘⌫' : 'Del', danger: true, onSelect: () => void deleteInStudio(getState(), actions, ip, r.className) }
             : { label: 'Delete in Studio', icon: <Icon name="trash" />, disabled: true, reason: check.reason }
         if (!target) {
           menu.openAt(at, [...items, 'separator', del])
@@ -713,7 +716,7 @@ export function ExplorerView() {
     if (feature) {
       items.push({ label: `Rename Feature ${feature}…`, icon: <Icon name="pencil" />, hint: 'F2', onSelect: () => actions.openDialog({ kind: 'renameFeature', from: feature }) })
       const info = featureInfo(feature)
-      if (info) items.push({ label: `Delete Feature ${feature}…`, icon: <Icon name="trash" />, danger: true, sub: 'shared, Service and Controller', onSelect: () => deleteFeature(state, actions, info) })
+      if (info) items.push({ label: `Delete Feature ${feature}…`, icon: <Icon name="trash" />, danger: true, sub: 'shared, Service and Controller', onSelect: () => deleteFeature(getState(), actions, info) })
     }
     items.push('separator')
     if (paths) {
@@ -1020,7 +1023,9 @@ export function ExplorerView() {
 }
 
 function FeaturesList({ features, onNew }: { features: ReturnType<typeof featuresOf>; scripts: ScriptEntry[]; onNew: () => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const getState = useGetState()
+  const state = useStorePick('activeFile')
   const menu = useMenu()
   const part = (label: string, path: string | undefined, cls: string, realm: 'shared' | 'server' | 'client') =>
     path ? (
@@ -1046,7 +1051,7 @@ function FeaturesList({ features, onNew }: { features: ReturnType<typeof feature
               menu.openAt(e, [
                 { header: `Feature ${f.name}` },
                 { label: 'Rename Feature…', icon: <Icon name="pencil" />, hint: 'F2', onSelect: () => actions.openDialog({ kind: 'renameFeature', from: f.name }) },
-                { label: 'Delete Feature…', icon: <Icon name="trash" />, danger: true, sub: [f.shared && 'shared', f.service && 'Service', f.controller && 'Controller'].filter(Boolean).join(', '), onSelect: () => deleteFeature(state, actions, f) },
+                { label: 'Delete Feature…', icon: <Icon name="trash" />, danger: true, sub: [f.shared && 'shared', f.service && 'Service', f.controller && 'Controller'].filter(Boolean).join(', '), onSelect: () => deleteFeature(getState(), actions, f) },
                 { label: 'Ask Assistant about this feature', icon: <Icon name="at" />, onSelect: () => actions.ask(`Feature ${f.name} (${[f.shared, f.service, f.controller].filter(Boolean).join(', ')}) `) },
                 ...(f.shared ? [{ label: 'Reveal in game tree', icon: <Icon name="reveal" />, onSelect: () => actions.revealInstance(['ReplicatedStorage', 'Shared', 'Features', f.name]) }] : [])
               ])

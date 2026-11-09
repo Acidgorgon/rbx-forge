@@ -3,13 +3,14 @@
 // lines, redacted. Saved under userData/bug-reports/<ts>/ and copied as markdown. Never uploads.
 import { useEffect, useState } from 'react'
 import type { BugReportInput, BugReportResult } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Dialog } from '../shell/Overlays'
 import { Icon } from '../components/Icons'
 import { errorText } from '../lib/format'
 
 export function BugReportDialog({ screenshot, onClose }: { screenshot: boolean; onClose: () => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeTab', 'project', 'tabs')
   const tab = state.tabs.find((t) => t.id === state.activeTab)
   const [what, setWhat] = useState('')
   const [expected, setExpected] = useState('')

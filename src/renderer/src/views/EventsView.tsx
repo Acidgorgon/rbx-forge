@@ -3,7 +3,7 @@
 import { useMemo, useState, type MouseEvent } from 'react'
 import type { BlinkEvent, BlinkModel } from '@shared/types'
 import { blinkUsage } from '@shared/blink/usage'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ClassIcon } from '../components/ClassIcon'
 import { useMenu, type MenuEntry } from '../components/Menu'
@@ -18,7 +18,8 @@ function Dir({ ev }: { ev: BlinkEvent }) {
 }
 
 function FileGroup({ model, q, collapsed, toggle }: { model: BlinkModel; q: string; collapsed: Set<string>; toggle: (k: string) => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeFile')
   const menu = useMenu()
   const file = model.file ?? 'events.blink'
   const events = model.events.filter((ev) => !q || fullName(ev).toLowerCase().includes(q) || (ev.data ?? '').toLowerCase().includes(q))
@@ -112,7 +113,8 @@ function FileGroup({ model, q, collapsed, toggle }: { model: BlinkModel; q: stri
 }
 
 export function EventsView() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('blink', 'project')
   const [filter, setFilter] = useState('')
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const q = filter.trim().toLowerCase()

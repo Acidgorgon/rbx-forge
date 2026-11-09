@@ -2,7 +2,7 @@
 // ">" = commands, "#" = instances across the game tree, ":" = go to line.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { TreeNode } from '@shared/types'
-import { useStore } from '../store'
+import { useStore, useStoreSelector } from '../store'
 import { buildCommands } from './commands'
 import { fuzzy, fuzzyFields } from '../lib/fuzzy'
 import { keyHint } from '../lib/format'
@@ -70,7 +70,14 @@ function modeOf(value: string): { mode: 'files' | 'commands' | 'instances' | 'li
   return { mode: 'files', query: value.trim() }
 }
 
+// Closed (nearly always): subscribes to nothing but whether it is open. Open, it reads the whole
+// state (commands, tree, scripts, recent files).
 export function Palette() {
+  const open = useStoreSelector((s) => s.palette !== null)
+  return open ? <OpenPalette /> : null
+}
+
+function OpenPalette() {
   const { state, actions } = useStore()
   const req = state.palette
   const [value, setValue] = useState('')

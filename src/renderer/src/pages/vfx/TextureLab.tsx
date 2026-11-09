@@ -8,7 +8,7 @@ import type { TextureGenerateInput, TextureStatus, TintMode, VfxTexture } from '
 import { PROCEDURAL_INFO, PROCEDURAL_PARAMS, PROCEDURAL_TYPES, type ProceduralType } from '@shared/vfx/tex/procedural'
 import { texRef, TEXTURE_PRESETS, texturePreset, type TextureKind } from '@shared/vfx/tex/textures'
 import { FLIPBOOK_GRID } from '@shared/vfx/tex/image'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { TextureImport, TexturePolicyControl } from './TextureImport'
@@ -110,7 +110,7 @@ function FlipbookPreview({ url, layout }: { url: string; layout: keyof typeof FL
 }
 
 function TexDetail({ t, status, onClose }: { t: VfxTexture; status: TextureStatus | null; onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const url = useTextureUrl(t)
   const [tags, setTags] = useState(t.tags.join(', '))
@@ -216,7 +216,7 @@ function TexDetail({ t, status, onClose }: { t: VfxTexture; status: TextureStatu
 }
 
 function Generator({ status, onMade }: { status: TextureStatus | null; onMade: (items: VfxTexture[]) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [ai, setAi] = useState(false)
   const [kind, setKind] = useState<TextureKind>('ring')
@@ -405,7 +405,7 @@ function Generator({ status, onMade }: { status: TextureStatus | null; onMade: (
 }
 
 export function TextureLab() {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [status, setStatus] = useState<TextureStatus | null>(null)
   const [items, setItems] = useState<VfxTexture[]>([])

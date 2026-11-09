@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { LiveStatus, VfxEntry } from '@shared/types'
 import { TAG_GROUP_ORDER, tagGroupsOf, type TagGroup, type TagGroups } from '@shared/vfx/tags'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 
@@ -46,7 +46,7 @@ export function TagFilters({ entries, filter, onChange }: { entries: VfxEntry[];
 
 // Tags of one entry by group; edits mark the group as the user's (re-tag keeps it).
 export function TagGroupEditor({ entry }: { entry: VfxEntry }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const groups = tagGroupsOf(entry)
   const [text, setText] = useState<Record<TagGroup, string>>(() => Object.fromEntries(TAG_GROUP_ORDER.map((k) => [k, groups[k].join(', ')])) as Record<TagGroup, string>)
   useEffect(() => {
@@ -80,7 +80,7 @@ export function TagGroupEditor({ entry }: { entry: VfxEntry }) {
 
 // Groups of identical effects; "Remove extras" keeps the first of each group.
 export function DuplicatesPanel({ onClose, onRemoved }: { onClose: () => void; onRemoved: (batch: string, n: number) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [groups, setGroups] = useState<{ hash: string; scope: string; entries: VfxEntry[] }[] | null>(null)
   useEffect(() => {
     window.harness

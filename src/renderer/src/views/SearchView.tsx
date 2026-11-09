@@ -8,7 +8,7 @@ import { memo, useCallback, useEffect, useMemo, useRef } from 'react'
 import type { SearchFileResult, SearchMatch } from '@shared/types'
 import { buildMatcher, replacementFor, type Matcher } from '@shared/search/matcher'
 import { MAX_SEARCH_MATCHES } from '@shared/search/limits'
-import { useStore } from '../store'
+import { useStorePick, useActions, selectDirtyPaths, useStoreSelector } from '../store'
 import { Icon } from '../components/Icons'
 import { FileGlyph } from '../components/ClassIcon'
 import { keyHint } from '../lib/format'
@@ -106,7 +106,8 @@ const FileGroup = memo(function FileGroup({ file, collapsed, dirty, replaceOpen,
 })
 
 export function SearchView() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const s = useSearch()
   const findRef = useRef<HTMLInputElement>(null)
   const replaceRef = useRef<HTMLInputElement>(null)
@@ -125,7 +126,8 @@ export function SearchView() {
     box?.select()
   })
 
-  const dirty = useMemo(() => new Set(state.files.filter((f) => f.current !== f.saved).map((f) => f.path)), [state.files])
+  const dirtyPaths = useStoreSelector(selectDirtyPaths)
+  const dirty = useMemo(() => new Set(dirtyPaths ? dirtyPaths.split('\n') : []), [dirtyPaths])
   const matcher = useMemo(() => {
     if (!s.ran) return null
     const built = buildMatcher(s.ran)

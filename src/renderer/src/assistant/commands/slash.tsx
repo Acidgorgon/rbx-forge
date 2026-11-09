@@ -6,7 +6,7 @@ import { createPortal } from 'react-dom'
 import type { ChatMessage } from '@shared/types'
 import { BUILTIN_COMMANDS, matchCommands, parseSlash, type ChatCommandInfo, type ChatCommandResult } from '@shared/chatCommands'
 import type { ChatMode } from '@shared/chatModes'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { useMenu, type MenuEntry } from '../../components/Menu'
 import { Markdown } from '../../components/Markdown'
 import { Icon } from '../../components/Icons'
@@ -44,7 +44,8 @@ export function slashMatches(list: ChatCommandInfo[], text: string): ChatCommand
 const COMPOSER_OWNED = new Set(['new', 'team', 'roundtable', 'agents', 'tests', 'lint', 'sync', 'restate'])
 
 export function useSlashRunner(opts: { anchor: () => HTMLElement | null; mode: ChatMode; send: (text: string, mode?: ChatMode) => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('providers')
   const menu = useMenu()
 
   const handle = useCallback(

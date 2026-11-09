@@ -1,6 +1,6 @@
 // Titlebar (SPEC §7.1): brand, project + place switchers, omnibox, Sync, Serve, panel toggles, theme.
 import { useEffect, useRef, useState } from 'react'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { AnvilMark, Wordmark } from '../components/Brand'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
@@ -17,7 +17,8 @@ function parentDir(root: string): string {
 }
 
 export function Titlebar() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('git', 'services', 'places', 'activePlace', 'layout', 'project', 'appSettings', 'studioConflicts')
   const menu = useMenu()
   const appearance = useAppearance()
   const [syncing, setSyncing] = useState(false)

@@ -2,7 +2,7 @@
 // release's notes. Errors (a private feed repo, offline) are explained here, never as popups.
 import type { ReactNode } from 'react'
 import type { QuickUpdateState, UpdateChannel, UpdateState } from '@shared/types'
-import { useStore } from '../store'
+import { useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ago, errorText } from '../lib/format'
 import { setUpdateState, useRestartForUpdate, useUpdate } from './useUpdate'
@@ -55,7 +55,7 @@ function quickLine(q: QuickUpdateState): { text: string; badge?: { cls: string; 
 
 export function UpdatesSection() {
   const update = useUpdate()
-  const { actions } = useStore()
+  const actions = useActions()
   const restart = useRestartForUpdate()
   const restartQuick = useRestartForUpdate('quick')
   if (!update) return <div className="note">Loading...</div>

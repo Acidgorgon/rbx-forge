@@ -4,7 +4,7 @@
 // Same look as the texture import review (textures.css tex-imp-*).
 import { useEffect, useState } from 'react'
 import type { VfxImportProgress, VfxImportResult, VfxImportRow, VfxImportScan, VfxScope, VfxStudioPack } from '@shared/types'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import './textures.css'
@@ -110,7 +110,7 @@ function PackPicker({ packs, busy, onRead }: { packs: VfxStudioPack[]; busy: boo
 }
 
 export function EffectImportReview({ scan, scope: initialScope, projectOpen, onClose, onDone, onRescan }: { scan: VfxImportScan; scope: VfxScope; projectOpen: boolean; onClose: () => void; onDone: (r: VfxImportResult) => void; onRescan: (packs: VfxStudioPack[]) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [scope, setScope] = useState<VfxScope>(initialScope)
   const [fromTags, setFromTags] = useState(scan.nameFromTags !== false)
   const [edit, setEdit] = useState<Record<string, Edit>>(() => defaults(scan, initialScope, scan.nameFromTags !== false))

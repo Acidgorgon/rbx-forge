@@ -3,10 +3,11 @@
 // autoCompactPct); every chat provider path Forge controls reads it on the next turn.
 import { useEffect, useState } from 'react'
 import { AUTO_COMPACT_DEFAULT, AUTO_COMPACT_MAX_PCT, AUTO_COMPACT_MIN_PCT, clampCompactPct } from '@shared/autoCompact'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 
 export function AutoCompactSettingRows() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('appSettings')
   const s = state.appSettings
   const pct = s?.autoCompactPct ?? AUTO_COMPACT_DEFAULT.pct
   // Typed value, saved on Enter / blur (saving each keystroke would clamp "6" before "65" arrives).

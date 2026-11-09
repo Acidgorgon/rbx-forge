@@ -7,19 +7,21 @@ import { useEffect, useRef } from 'react'
 import type * as Monaco from 'monaco-editor'
 import { DEFAULT_EDITOR_ASSIST } from '@shared/editorAssist/types'
 import { shouldAutoSave, type AutoSaveTrigger } from '@shared/editorAssist/policy'
-import { useStore } from '../store'
+import { useActions, useGetState, useStoreSelector } from '../store'
 import { useEditorAssist } from './state'
 
 export function useAutoSave(editor: Monaco.editor.IStandaloneCodeEditor | null, path: string): void {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const getState = useGetState()
   const assist = useEditorAssist()
   const mode = assist?.settings.autoSave ?? DEFAULT_EDITOR_ASSIST.autoSave
   const delay = assist?.settings.autoSaveDelayMs ?? DEFAULT_EDITOR_ASSIST.autoSaveDelayMs
-  const live = useRef({ state, actions, mode, path })
-  live.current = { state, actions, mode, path }
+  const live = useRef({ actions, mode, path })
+  live.current = { actions, mode, path }
 
   const trySave = (p: string, trigger: AutoSaveTrigger) => {
-    const { state: s, actions: a, mode: m } = live.current
+    const { actions: a, mode: m } = live.current
+    const s = getState()
     const f = s.files.find((x) => x.path === p)
     if (!f) return
     const conflicted = s.studioConflicts.some((c) => c.path === p)
@@ -45,22 +47,22 @@ export function useAutoSave(editor: Monaco.editor.IStandaloneCodeEditor | null, 
   // The window losing focus (alt-tab to Studio): every open file with changes.
   useEffect(() => {
     const onBlur = () => {
-      for (const f of live.current.state.files) trySave(f.path, 'windowBlur')
+      for (const f of getState().files) trySave(f.path, 'windowBlur')
     }
     window.addEventListener('blur', onBlur)
     return () => window.removeEventListener('blur', onBlur)
   }, [])
 
-  // After delay: once edits pause (every edit replaces state.files), every file with changes. In the
-  // other modes the effect has nothing to restart, so it does not depend on the files at all
-  // (otherwise it re-ran, and walked every open file, on each keystroke).
+  // After delay: once edits pause (every edit that reaches the store replaces state.files), every
+  // file with changes. In the other modes nothing here subscribes to the files at all (otherwise the
+  // editor re-rendered, and the effect walked every open file, on each edit).
   const timed = mode === 'afterDelay'
-  const anyDirty = timed && state.files.some((f) => f.current !== f.saved)
-  const files = timed ? state.files : null
+  const anyDirty = useStoreSelector((s) => timed && s.files.some((f) => f.current !== f.saved))
+  const files = useStoreSelector((s) => (timed ? s.files : null))
   useEffect(() => {
     if (!timed || !anyDirty) return
     const t = setTimeout(() => {
-      for (const f of live.current.state.files) trySave(f.path, 'delay')
+      for (const f of getState().files) trySave(f.path, 'delay')
     }, delay)
     return () => clearTimeout(t)
   }, [files, timed, anyDirty, delay])

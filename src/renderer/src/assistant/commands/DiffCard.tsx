@@ -3,7 +3,7 @@
 // Non-file actions (add_blink_event, Bash, Studio tools) show the call and Accept / Reject.
 import { useEffect, useState } from 'react'
 import type { ChatMessage } from '@shared/types'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { errorText } from '../../lib/format'
 import './modes.css'
 
@@ -11,7 +11,8 @@ const STATE = { pending: 'waiting for you', accepted: 'accepted', rejected: 'rej
 
 // expanded: shown inside an opened activity row, so the hunks show without another click.
 export function DiffCard({ m, expanded }: { m: ChatMessage; expanded?: boolean }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId')
   const d = m.diff!
   const sessionId = m.sessionId ?? state.activeChatId
   const live = d.state === 'pending'

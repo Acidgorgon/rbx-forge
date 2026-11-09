@@ -2,7 +2,7 @@
 // switches: "since you were away" digest and reopening tabs/drafts on start.
 import { useEffect, useState, type ReactNode } from 'react'
 import type { NotifyCategory, NotifyMode, QolSettings as Settings, QolSettingsPatch } from '@shared/types'
-import { useStore } from '../store'
+import { useActions } from '../store'
 import { errorText } from '../lib/format'
 import { Icon } from '../components/Icons'
 import { showSettingsSection } from '../pages/settings/settingsNav'
@@ -40,7 +40,7 @@ export function openNotificationSettings(openSettings: () => void): void {
 }
 
 export function QolSettings() {
-  const { actions } = useStore()
+  const actions = useActions()
   const [s, setS] = useState<Settings | null>(null)
   useEffect(() => {
     void window.harness.qolGetSettings().then(setS).catch(() => undefined)

@@ -4,7 +4,7 @@
 import { useEffect, useSyncExternalStore } from 'react'
 import { createPortal } from 'react-dom'
 import { CHAT_MODES, DEFAULT_CHAT_MODE, modeLabel, nextChatMode, type ChatMode } from '@shared/chatModes'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { useMenu } from '../../components/Menu'
 import { errorText } from '../../lib/format'
 import { useActiveChat } from '../GroupChat'
@@ -22,7 +22,8 @@ const setPending = (m: ChatMode) => {
 const subscribe = (l: () => void) => (listeners.add(l), () => void listeners.delete(l))
 
 export function useChatMode(): { mode: ChatMode; setMode: (m: ChatMode) => void; pendingMode: ChatMode | null } {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'chats')
   const chat = useActiveChat()
   const pend = useSyncExternalStore(subscribe, () => pending)
   const id = state.activeChatId

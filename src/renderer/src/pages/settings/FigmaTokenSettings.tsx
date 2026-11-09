@@ -3,12 +3,12 @@
 // back to the renderer: this page only learns whether one is set.
 import { useEffect, useState } from 'react'
 import type { FigmaTokenStatus } from '@shared/types'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { errorText } from '../../lib/format'
 
 export function FigmaTokenSettings() {
   const h = window.harness
-  const { actions } = useStore()
+  const actions = useActions()
   const [status, setStatus] = useState<FigmaTokenStatus | null>(null)
   const [draft, setDraft] = useState('')
   const [busy, setBusy] = useState<string | null>(null)

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import { DiffEditor } from '@monaco-editor/react'
 import type { ScmDiff } from '@shared/types'
 import { monaco } from '../monaco'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { useTheme } from '../theme'
 import { errorText } from '../lib/format'
@@ -17,7 +17,8 @@ function languageOf(path: string): string {
 }
 
 export function GitDiffPage({ path, staged }: { path: string; staged: boolean }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('git')
   const theme = useTheme()
   const scm = useScm()
   const [diff, setDiff] = useState<ScmDiff | null>(null)

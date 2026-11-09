@@ -3,7 +3,7 @@
 // project). Main: services/vfx/selectionPlay.ts and VfxService.installEmitRuntime.
 import { useEffect, useRef, useState } from 'react'
 import type { SelectionPlayStatus } from '@shared/types'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { usePersisted } from '../../qol/sessionStore'
@@ -16,7 +16,7 @@ export function selectionLine(st: SelectionPlayStatus | null): string | null {
 }
 
 export function SelectionPlayControls({ projectOpen }: { projectOpen: boolean }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [st, setSt] = useState<SelectionPlayStatus | null>(null)
   const [loop, setLoop] = usePersisted<boolean>('vfx.selectionLoop', false)

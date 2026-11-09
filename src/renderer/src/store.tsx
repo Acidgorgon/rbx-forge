@@ -1,6 +1,6 @@
 // App state: one reducer fed by HarnessApi calls and HarnessEvents, plus the workbench layout
 // (panels, tabs, palette) persisted per machine in localStorage.
-import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { ChatMode } from '@shared/chatModes'
 import type {
   AppSettings,
@@ -44,6 +44,7 @@ import type { GroupsState } from '@shared/editorGroups'
 import { isBuiltin, parseSlash } from '@shared/chatCommands'
 import { afterTurn, editQueued as editIn, enqueue, moveToFront, outgoingText, removeQueued as removeFrom, turnOutcome, type QueuedPrompt, type QueuePause } from './assistant/queue'
 import { appendCapped, createBatcher } from './lib/logBatch'
+import { createPendingEdits } from './lib/pendingEdits'
 
 // ---------------------------------------------------------------- types
 
@@ -486,6 +487,7 @@ function reducer(state: State, a: Action): State {
     case 'fileLoaded':
       return { ...state, files: state.files.map((f) => (f.path === a.path ? { ...f, saved: a.contents, current: a.contents, loading: false } : f)) }
     case 'fileEdit': {
+      if (!state.files.some((f) => f.path === a.path)) return state
       // The first edit pins a preview tab.
       const tabs = state.tabs.some((t) => t.kind === 'file' && t.path === a.path && t.preview) ? state.tabs.map((t) => (t.kind === 'file' && t.path === a.path ? { ...t, preview: false } : t)) : state.tabs
       return { ...state, tabs, files: state.files.map((f) => (f.path === a.path ? { ...f, current: a.contents } : f)) }
@@ -568,7 +570,11 @@ export interface Actions {
   editorGroups(update: (gs: GroupsState) => GroupsState): void
   // A layout saved by QolRoot, applied over the tabs open now.
   restoreGroups(raw: unknown): void
+  // An editor's text: reaches state.files at once when the dirty state flips, else once typing
+  // pauses (lib/pendingEdits.ts). Dirty flags are always current.
   editFile(path: string, contents: string): void
+  // Puts pending editor text into state.files now (before reading `current` for its exact text).
+  flushEdits(): void
   // reason 'auto' = autosave (editorAssist/autosave): skipped when nothing changed, and formats only
   // when "format on autosave" is on.
   saveFile(path: string, opts?: { reason?: SaveReason }): Promise<void>
@@ -638,14 +644,81 @@ export interface Actions {
   runLint(): Promise<void>
 }
 
-const Ctx = createContext<{ state: State; actions: Actions } | null>(null)
+// The state lives outside React (one object per StoreProvider) so components can subscribe to the
+// part they read (useStoreSelector) instead of re-rendering on every dispatch, which a single
+// context value forces on every consumer: a keystroke, a log batch or a click would otherwise
+// re-render the whole workbench.
+interface Store {
+  get(): State
+  subscribe(listener: () => void): () => void
+  dispatch(action: Action): void
+  // Editor text (Actions.editFile): lib/pendingEdits.ts.
+  editText(path: string, contents: string): void
+  flushEdits(): void
+}
+
+// How long typing may pause before the store gets an open file's latest text.
+export const EDIT_SETTLE_MS = 250
+// Actions that read or replace an open file's text (or drop its buffer): pending editor text goes
+// into the store first, so they see what the editor shows.
+const FLUSH_EDITS_FIRST = new Set<Action['type']>(['fileLoaded', 'fileReloaded', 'fileSaved', 'closeTab', 'pathChanged', 'projectSwitched'])
+
+function createStore(): Store {
+  let state = initial
+  const listeners = new Set<() => void>()
+  const apply = (action: Action) => {
+    const next = reducer(state, action)
+    if (next === state) return
+    state = next
+    for (const l of [...listeners]) l()
+  }
+  // Typing does not dispatch per keystroke (lib/pendingEdits.ts): dirty flags are always right,
+  // `current` may trail the Monaco model by up to EDIT_SETTLE_MS. Whatever needs the exact text
+  // reads the model (saves do: editorAssist/saveHooks via CodeEditor) or flushes first.
+  const edits = createPendingEdits(
+    {
+      buffer: (path) => state.files.find((f) => f.path === path),
+      isPreview: (path) => state.tabs.some((t) => t.kind === 'file' && t.path === path && t.preview),
+      apply: (path, contents) => apply({ type: 'fileEdit', path, contents })
+    },
+    EDIT_SETTLE_MS
+  )
+  return {
+    get: () => state,
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    dispatch(action) {
+      if (edits.size && FLUSH_EDITS_FIRST.has(action.type)) edits.flush()
+      // A direct fileEdit (format on save) leaves newer pending text alone: it is what the editor
+      // shows, and it lands before the save is recorded (fileSaved flushes first), so the file stays
+      // dirty with it.
+      apply(action)
+    },
+    editText: edits.edit,
+    flushEdits: edits.flush
+  }
+}
+
+const StoreCtx = createContext<Store | null>(null)
 // Actions never change identity, so components that only dispatch use this and skip every state update.
 const ActionsCtx = createContext<Actions | null>(null)
 
+function useStoreObject(): Store {
+  const store = useContext(StoreCtx)
+  if (!store) throw new Error('useStore outside StoreProvider')
+  return store
+}
+
+// The whole state: re-renders on every dispatch. Prefer useStoreSelector in anything always mounted.
 export function useStore(): { state: State; actions: Actions } {
-  const v = useContext(Ctx)
-  if (!v) throw new Error('useStore outside StoreProvider')
-  return v
+  const store = useStoreObject()
+  const actions = useActions()
+  const state = useSyncExternalStore(store.subscribe, store.get)
+  return useMemo(() => ({ state, actions }), [state, actions])
 }
 
 export function useActions(): Actions {
@@ -654,15 +727,70 @@ export function useActions(): Actions {
   return v
 }
 
+// Shallow equality of arrays (item by item) and plain objects (key by key), for selectors that
+// build a small tuple or object: `useStoreSelector((s) => [s.a, s.b], shallowEqual)`.
+export function shallowEqual<T>(a: T, b: T): boolean {
+  if (Object.is(a, b)) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || !a || !b) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  const ka = Object.keys(a)
+  if (ka.length !== Object.keys(b).length) return false
+  for (const k of ka) if (!Object.prototype.hasOwnProperty.call(b, k) || !Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) return false
+  return true
+}
+
+// Re-renders only when the selected value changes (by isEqual). Select primitives or existing
+// object references; a selector that builds a new object or array needs a comparator such as
+// shallowEqual, or the component re-renders on every dispatch again.
+export function useStoreSelector<T>(select: (s: State) => T, isEqual: (a: T, b: T) => boolean = Object.is): T {
+  const store = useStoreObject()
+  // Last (state, selector) -> value, so one render reads one value and an equal result keeps its reference.
+  const memo = useRef<{ state: State; select: (s: State) => T; value: T } | null>(null)
+  const getSnapshot = (): T => {
+    const state = store.get()
+    const m = memo.current
+    if (m && m.state === state && m.select === select) return m.value
+    const value = select(state)
+    const keep = m !== null && isEqual(m.value, value)
+    memo.current = { state, select, value: keep ? m!.value : value }
+    return memo.current.value
+  }
+  return useSyncExternalStore(store.subscribe, getSnapshot)
+}
+
+// A few top-level fields, re-rendering only when one of them changes identity:
+// `const state = useStorePick('git', 'layout')` keeps `state.git` / `state.layout` reads as they were.
+export function useStorePick<K extends keyof State>(...keys: K[]): Pick<State, K> {
+  return useStoreSelector((s) => {
+    const o = {} as Pick<State, K>
+    for (const k of keys) o[k] = s[k]
+    return o
+  }, shallowEqual)
+}
+
+// Paths of the open files with unsaved edits, one per line: a string, so a selector on it re-renders
+// only when a file's dirty state flips, not when its text changes.
+export function selectDirtyPaths(s: State): string {
+  let out = ''
+  for (const f of s.files) if (f.current !== f.saved) out += (out ? '\n' : '') + f.path
+  return out
+}
+
+// Reads the latest state without subscribing (event handlers, effects, timers).
+export function useGetState(): () => State {
+  return useStoreObject().get
+}
+
 export function tabTitle(path: string): string {
   if (/\.(luau?)$/.test(path)) return instanceNameOfFile(path)
   return basename(path)
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, initial)
-  const stateRef = useRef(state)
-  stateRef.current = state
+  const [store] = useState(createStore)
+  const dispatch = store.dispatch
+  // Always the latest state (dispatch applies the reducer at once).
+  const stateRef = useMemo(() => ({ get current(): State { return store.get() } }), [store])
   const h = window.harness
 
   const actions = useMemo<Actions>(() => {
@@ -844,11 +972,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       closeTab: (id, group) => dispatch({ type: 'closeTab', id, group }),
       editorGroups: (update) => dispatch({ type: 'groups', update }),
       restoreGroups: (raw) => dispatch({ type: 'restoreGroups', raw }),
-      editFile: (path, contents) => dispatch({ type: 'fileEdit', path, contents }),
+      editFile: (path, contents) => store.editText(path, contents),
+      flushEdits: () => store.flushEdits(),
       async saveFile(path, opts) {
         const reason = opts?.reason ?? 'manual'
         // Saves of one file run one after another, so an older text never lands on disk last.
         const run = async () => {
+          // The text typed up to now (runBeforeSave also reads the live Monaco model).
+          store.flushEdits()
           const f = stateRef.current.files.find((x) => x.path === path)
           if (!f || f.loading) return
           if (reason === 'auto' && f.current === f.saved) return
@@ -1204,7 +1335,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     }
     return self
-  }, [h])
+  }, [h, dispatch, stateRef, store])
 
   // Events and the first load.
   useEffect(() => {
@@ -1367,24 +1498,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       logBatch.cancel()
       offs.forEach((off) => off())
     }
-  }, [h, actions])
+  }, [h, actions, dispatch, stateRef])
 
   // Layout is saved shortly after it stops changing, and on the way out.
   useEffect(() => {
-    if (state.layout === initial.layout) return
-    const t = setTimeout(() => saveLayout(state.layout), 300)
-    return () => clearTimeout(t)
-  }, [state.layout])
-  useEffect(() => {
-    const flush = () => saveLayout(stateRef.current.layout)
+    let last = store.get().layout
+    let t: ReturnType<typeof setTimeout> | undefined
+    const off = store.subscribe(() => {
+      const l = store.get().layout
+      if (l === last) return
+      last = l
+      clearTimeout(t)
+      t = setTimeout(() => saveLayout(l), 300)
+    })
+    const flush = () => saveLayout(store.get().layout)
     window.addEventListener('pagehide', flush)
-    return () => window.removeEventListener('pagehide', flush)
-  }, [])
+    return () => {
+      off()
+      clearTimeout(t)
+      window.removeEventListener('pagehide', flush)
+    }
+  }, [store])
 
-  const value = useMemo(() => ({ state, actions }), [state, actions])
   return (
-    <ActionsCtx.Provider value={actions}>
-      <Ctx.Provider value={value}>{children}</Ctx.Provider>
-    </ActionsCtx.Provider>
+    <StoreCtx.Provider value={store}>
+      <ActionsCtx.Provider value={actions}>{children}</ActionsCtx.Provider>
+    </StoreCtx.Provider>
   )
 }

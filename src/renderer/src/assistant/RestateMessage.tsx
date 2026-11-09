@@ -2,12 +2,13 @@
 // with the confirmed reading (confirmChatRestate in main).
 import { useState } from 'react'
 import type { ChatMessage, Restatement } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { errorText } from '../lib/format'
 import { RestateCard } from '../components/RestateCard'
 
 export function RestateMessage({ m }: { m: ChatMessage }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'busy')
   const [sending, setSending] = useState(false)
   const r = m.restate!
   const sessionId = m.sessionId ?? state.activeChatId

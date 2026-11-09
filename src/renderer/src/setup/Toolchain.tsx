@@ -3,7 +3,7 @@
 // Everything goes through window.harness.toolchain* (main/setup.ts); nothing here blocks the app.
 import { useCallback, useEffect, useRef, useState } from 'react'
 import type { SetupMode, SetupProgress, SetupResult, ToolStatus, ToolchainStatus } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { AnvilMark } from '../components/Brand'
 import { errorText } from '../lib/format'
@@ -89,7 +89,7 @@ function ToolRow({ name, sub, version, step, tag, action }: { name: string; sub:
 // ---------------------------------------------------------------- first run
 
 export function ToolchainGate() {
-  const { actions } = useStore()
+  const actions = useActions()
   const tc = useToolchain()
   const [open, setOpen] = useState(false)
   const started = useRef(false)
@@ -212,7 +212,8 @@ function GitRow({ git, onCheck }: { git: ToolchainStatus['git']; onCheck: () => 
 // Settings > Toolchain > Lune path: an explicit lune binary for tests, UI Preview stories and the
 // labs' Lune previews (Model Lab, VFX timelines), when it is not on rokit / PATH.
 function LunePathRow() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('appSettings')
   const saved = state.appSettings?.lunePath ?? ''
   const [path, setPath] = useState(saved)
   useEffect(() => setPath(saved), [saved])
@@ -238,7 +239,7 @@ function LunePathRow() {
 }
 
 export function ToolchainSection() {
-  const { actions } = useStore()
+  const actions = useActions()
   const tc = useToolchain()
   const s = tc.status
   const go = async (mode: SetupMode, tools?: string[]) => {

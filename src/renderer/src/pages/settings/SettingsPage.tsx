@@ -5,7 +5,7 @@
 // last one is remembered. Every section stays mounted (hidden), so search and showSettingsSection() reach all of them.
 import { useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { BudgetLimits, ProviderId, ProviderInfo, SyncSettings, UsageSummary } from '@shared/types'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { ModelPicker, ProviderMark } from '../../components/ModelPicker'
 import { setChatFont, setMotionMode, setThemeMode, useAppearance, type ChatFont, type MotionMode, type ThemeMode } from '../../theme'
@@ -62,7 +62,7 @@ function Seg<T extends string>({ value, options, onChange }: { value: T; options
 }
 
 function KeyField({ p }: { p: ProviderInfo }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [key, setKey] = useState('')
   const [editing, setEditing] = useState(false)
   const [busy, setBusy] = useState(false)
@@ -104,7 +104,7 @@ function KeyField({ p }: { p: ProviderInfo }) {
 }
 
 function BaseUrlField({ p }: { p: ProviderInfo }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [url, setUrl] = useState(p.baseUrl ?? '')
   const [busy, setBusy] = useState(false)
   useEffect(() => setUrl(p.baseUrl ?? ''), [p.baseUrl])
@@ -220,7 +220,8 @@ function UsageHistory() {
 }
 
 export function SettingsPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activePlace', 'appSettings', 'defaultModel', 'places', 'project', 'providers', 'settingsFocus', 'syncSettings')
   const appearance = useAppearance()
   const providers = state.providers
   const ready = providers?.filter((p) => p.ready).length ?? 0

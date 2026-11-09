@@ -2,7 +2,7 @@
 // Ability Composer) each pick always / big tasks / never. Stored in main (agent/restate.ts).
 import { useEffect, useState } from 'react'
 import type { RestateMode, RestateScope, RestateSettings } from '@shared/types'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { errorText } from '../../lib/format'
 
 const OPTIONS: [RestateMode, string][] = [
@@ -23,7 +23,7 @@ const TEXT: Record<RestateScope, { title: string; desc: string }> = {
 }
 
 export function RestateSettingRow({ scope }: { scope: RestateScope }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [settings, setSettings] = useState<RestateSettings | null>(null)
   useEffect(() => {
     void window.harness

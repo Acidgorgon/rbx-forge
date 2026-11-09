@@ -1,7 +1,7 @@
 // Bottom panel (SPEC §7.6): Output (service logs), Problems, Dev · Rojo raw output.
 import { memo, useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import type { LogLine, ServiceId } from '@shared/types'
-import { useActions, useStore, type BottomTab, type ProblemItem } from '../store'
+import { useStorePick, useActions, type BottomTab, type ProblemItem } from '../store'
 import { Icon } from '../components/Icons'
 import { FileGlyph } from '../components/ClassIcon'
 import { useProblems } from './problems'
@@ -127,7 +127,8 @@ const LogView = memo(function LogView({ lines, follow, setFollow }: { lines: Log
 })
 
 function Output() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('logServices', 'logs', 'services')
   const [filter, setFilter] = useState('')
   const [follow, setFollow] = useState(true)
   const selected = state.logServices
@@ -189,7 +190,8 @@ function Output() {
 }
 
 function Problems() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('lsp', 'lintAt')
   const problems = useProblems()
   const [collapsed, setCollapsed] = useState<Set<string>>(new Set())
   const groups = useMemo(() => {
@@ -243,7 +245,8 @@ function Problems() {
 }
 
 function Terminal() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('logs', 'services')
   const [follow, setFollow] = useState(true)
   const lines = useMemo(() => state.logs.filter((l) => l.service === 'dev' || l.service === 'rojo'), [state.logs])
   const dev = state.services.find((s) => s.id === 'dev')
@@ -274,7 +277,8 @@ function Terminal() {
 }
 
 export function BottomPanel() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('layout', 'services')
   const problems = useProblems()
   const tab = state.layout.bottomTab
   const open = state.layout.bottomOpen

@@ -7,7 +7,7 @@
 import { useEffect, useMemo, useState } from 'react'
 import type { ArtItem, ArtLayer, ArtLayerKind, ArtLayerManifest, ArtLayerSpec, ArtLayersEstimate, ArtQuality, ArtStatus } from '@shared/types'
 import { defaultLayerSize, defaultTransparent, LAYER_KIND_LABELS, LAYER_KINDS, LAYER_SIZES, layerName, layersDir, MAX_LAYERS, themeSnippet } from '@shared/artLayers'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Dialog } from '../../shell/Overlays'
 import { errorText } from '../../lib/format'
@@ -45,7 +45,7 @@ function LayerThumb({ layer }: { layer: ArtLayer }) {
 }
 
 export function LayersPanel({ concept, status, onClose }: { concept: ArtItem; status: ArtStatus; onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [rows, setRows] = useState<Row[]>([])
   const [name, setName] = useState('')

@@ -5,12 +5,12 @@ import { useState } from 'react'
 import type { TextureImportRow, TextureImportScan, TexturePolicy, TextureStatus, VfxTexture } from '@shared/types'
 import { TEXTURE_PRESETS, type TextureKind } from '@shared/vfx/tex/textures'
 import { TEXTURE_POLICIES, TEXTURE_POLICY_INFO } from '@shared/vfx/tex/reuse'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 
 export function TexturePolicyControl({ status, onChange }: { status: TextureStatus | null; onChange: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const policy = status?.policy ?? 'library-first'
   const set = async (p: TexturePolicy) => {
     try {
@@ -79,7 +79,7 @@ function ReviewRow({ r, e, onEdit }: { r: TextureImportRow; e: Edit; onEdit: (pa
 }
 
 export function TextureImport({ status, onImported }: { status: TextureStatus | null; onImported: (items: VfxTexture[]) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [drag, setDrag] = useState(false)
   const [busy, setBusy] = useState<string | null>(null)

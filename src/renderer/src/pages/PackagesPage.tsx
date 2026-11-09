@@ -2,7 +2,7 @@
 // (installed state, curated tools, updates). Backed by main/services/packages.ts.
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import type { PackagesChanged, RokitTool, WallyDependency, WallyPackage, WallyRealm } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { IconAlert, IconCheck, IconClose, IconSearch, IconTool } from '../components/Icons'
 import { errorText } from '../lib/format'
 import './packages.css'
@@ -31,7 +31,7 @@ function shortVersion(v?: string): string {
 type Tab = 'wally' | 'tools'
 
 export function PackagesPage() {
-  const { state } = useStore()
+  const state = useStorePick('project')
   const h = window.harness
   const [tab, setTab] = useState<Tab>('wally')
   const [deps, setDeps] = useState<WallyDependency[] | null>(null)
@@ -277,7 +277,7 @@ function SearchRow({
   onAdded: (d: WallyDependency[]) => void
   onError: (e: string | null) => void
 }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [versions, setVersions] = useState(pkg.versions)
   const [version, setVersion] = useState(pkg.latest)
@@ -372,7 +372,7 @@ function DepRow({
   onChanged: (d: WallyDependency[]) => void
   onError: (e: string | null) => void
 }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [busy, setBusy] = useState<null | 'update' | 'remove'>(null)
   const [confirm, setConfirm] = useState(false)
@@ -468,7 +468,7 @@ function ToolsTab({
   reload: () => Promise<void>
   onError: (e: string | null) => void
 }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [busy, setBusy] = useState<string | null>(null)
   const [rowErrors, setRowErrors] = useState<Record<string, string>>({})

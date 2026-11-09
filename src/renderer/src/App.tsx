@@ -1,16 +1,16 @@
 // Workbench shell (SPEC §7): titlebar, activity bar, side panel, editor area + bottom panel,
 // Assistant panel, status bar, and the overlays (palette, menus, dialogs, toasts).
-import { useEffect, useRef, type CSSProperties } from 'react'
-import { StoreProvider, useStore, type SideView } from './store'
-import { Titlebar } from './shell/Titlebar'
-import { ActivityBar } from './shell/ActivityBar'
-import { StatusBar } from './shell/StatusBar'
-import { EditorArea } from './shell/EditorArea'
-import { BottomPanel } from './shell/BottomPanel'
-import { Palette } from './shell/Palette'
-import { Dialogs, Toasts } from './shell/Overlays'
-import { QolcOverlays } from './pages/qolc/QolcOverlays'
-import { buildCommands, keySpec, normalizeSpec } from './shell/commands'
+import { memo, useEffect, useRef, type CSSProperties } from 'react'
+import { StoreProvider, useActions, useGetState, useStoreSelector, type SideView } from './store'
+import { Titlebar as TitlebarView } from './shell/Titlebar'
+import { ActivityBar as ActivityBarView } from './shell/ActivityBar'
+import { StatusBar as StatusBarView } from './shell/StatusBar'
+import { EditorArea as EditorAreaView } from './shell/EditorArea'
+import { BottomPanel as BottomPanelView } from './shell/BottomPanel'
+import { Palette as PaletteView } from './shell/Palette'
+import { Dialogs as DialogsView, Toasts as ToastsView } from './shell/Overlays'
+import { QolcOverlays as QolcOverlaysView } from './pages/qolc/QolcOverlays'
+import { buildCommands, isBoundKey, keySpec, normalizeSpec } from './shell/commands'
 import { ExplorerView } from './views/ExplorerView'
 import { ScriptsView } from './views/ScriptsView'
 import { SearchView } from './views/SearchView'
@@ -18,10 +18,10 @@ import { EventsView } from './views/EventsView'
 import { SyncView } from './views/SyncView'
 import { TestsView } from './views/TestsView'
 import { TeamView } from './views/TeamView'
-import { AssistantPanel } from './assistant/AssistantPanel'
-import { ToolchainGate } from './setup/Toolchain'
+import { AssistantPanel as AssistantPanelView } from './assistant/AssistantPanel'
+import { ToolchainGate as ToolchainGateView } from './setup/Toolchain'
 import { terminalOwnsKey } from './terminal/session'
-import { QolRoot } from './qol/QolRoot'
+import { QolRoot as QolRootView } from './qol/QolRoot'
 import { startScm } from './views/scmState'
 import { activeGroupOf } from '@shared/editorGroups'
 import { focusGroupAt } from './shell/groupActions'
@@ -30,9 +30,25 @@ import './views/views.css'
 import './pages/pages.css'
 import './assistant/assistant.css'
 
+// The workbench's parts take no props: memo keeps a Shell re-render (a layout change) from
+// re-rendering all of them; each one subscribes to the store slice it reads.
+const Titlebar = memo(TitlebarView)
+const ActivityBar = memo(ActivityBarView)
+const StatusBar = memo(StatusBarView)
+const EditorArea = memo(EditorAreaView)
+const BottomPanel = memo(BottomPanelView)
+const Palette = memo(PaletteView)
+const Dialogs = memo(DialogsView)
+const Toasts = memo(ToastsView)
+const QolcOverlays = memo(QolcOverlaysView)
+const AssistantPanel = memo(AssistantPanelView)
+const ToolchainGate = memo(ToolchainGateView)
+const QolRoot = memo(QolRootView)
+
 // Drag handle between panels: 300ms hover delay before the ember line, double-click resets,
-// dragging past the minimum by 40px collapses.
-function Resizer({ axis, value, min, max, reset, invert, onChange, onCollapse }: { axis: 'x' | 'y'; value: number; min: number; max: () => number; reset: number; invert?: boolean; onChange: (v: number) => void; onCollapse: () => void }) {
+// dragging past the minimum by 40px collapses. While dragging, onPreview moves the panel (CSS
+// variables, no React render); the size is committed to the store once, on release.
+function Resizer({ axis, value, min, max, reset, invert, onPreview, onChange, onCollapse }: { axis: 'x' | 'y'; value: number; min: number; max: () => number; reset: number; invert?: boolean; onPreview: (v: number) => void; onChange: (v: number) => void; onCollapse: () => void }) {
   const ref = useRef<HTMLDivElement>(null)
   const onDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return
@@ -43,6 +59,8 @@ function Resizer({ axis, value, min, max, reset, invert, onChange, onCollapse }:
     el?.classList.add('dragging')
     document.body.classList.add('resizing')
     document.body.style.setProperty('--resize-cursor', axis === 'x' ? 'col-resize' : 'row-resize')
+    let last: number | null = null
+    let frame = 0
     const move = (ev: PointerEvent) => {
       const delta = (axis === 'x' ? ev.clientX : ev.clientY) - start
       const next = startValue + (invert ? -delta : delta)
@@ -51,9 +69,22 @@ function Resizer({ axis, value, min, max, reset, invert, onChange, onCollapse }:
         onCollapse()
         return
       }
-      onChange(Math.round(Math.max(min, Math.min(max(), next))))
+      last = Math.round(Math.max(min, Math.min(max(), next)))
+      if (!frame) {
+        frame = requestAnimationFrame(() => {
+          frame = 0
+          if (last !== null) onPreview(last)
+        })
+      }
     }
     const up = () => {
+      cancelAnimationFrame(frame)
+      frame = 0
+      if (last !== null) {
+        onPreview(last)
+        onChange(last)
+      }
+      last = null
       el?.classList.remove('dragging')
       document.body.classList.remove('resizing')
       window.removeEventListener('pointermove', move)
@@ -75,30 +106,36 @@ const VIEWS: Record<SideView, () => React.ReactElement> = {
   team: TeamView
 }
 
-function SidePanel() {
-  const { state } = useStore()
-  const View = VIEWS[state.layout.sideView] ?? ExplorerView
+const SidePanel = memo(function SidePanel() {
+  const sideView = useStoreSelector((s) => s.layout.sideView)
+  const sideOpen = useStoreSelector((s) => s.layout.sideOpen)
+  const View = VIEWS[sideView] ?? ExplorerView
   return (
-    <aside className="panel side" aria-label="Side panel" aria-hidden={!state.layout.sideOpen}>
-      <div className="panel-inner" key={state.layout.sideView}>
+    <aside className="panel side" aria-label="Side panel" aria-hidden={!sideOpen}>
+      <div className="panel-inner" key={sideView}>
         <View />
       </div>
     </aside>
   )
-}
+})
 
 // Global shortcuts, captured before Monaco so ⌘K / ⌘P / ⌘B / ⌘J / ⌘L work everywhere.
 function useShortcuts() {
-  const { state, actions } = useStore()
-  const ref = useRef({ state, actions })
-  ref.current = { state, actions }
+  const actions = useActions()
+  const getState = useGetState()
+  const ref = useRef({ getState, actions })
+  ref.current = { getState, actions }
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (e.isComposing || ref.current.state.dialog) return
+      // Plain typing (no Ctrl / ⌘ / Alt) is never a global shortcut: return before any work, since
+      // this runs for every keystroke in the editor.
+      if (e.isComposing || !(e.ctrlKey || e.metaKey || e.altKey)) return
+      if (ref.current.getState().dialog) return
       const spec = keySpec(e)
       // Focus in the integrated terminal: shell keys (Ctrl+R, Ctrl+K...) go to the shell.
       if (terminalOwnsKey(e, spec)) return
-      const { state: s, actions: a } = ref.current
+      const a = ref.current.actions
+      const s = ref.current.getState()
       // Palette entry points.
       if (spec === 'mod+k' || spec === 'mod+shift+p') {
         e.preventDefault()
@@ -148,6 +185,8 @@ function useShortcuts() {
       }
       if (s.palette) return
       // Leave tree/editor-local keys (F2, ⌘D, ⌘Z…) alone; match registered command shortcuts.
+      // Built only for a key that some command binds (commands.tsx BOUND_KEYS), not for every chord.
+      if (!isBoundKey(spec)) return
       const cmd = buildCommands(s, a).find((c) => c.keys && normalizeSpec(c.keys) === normalizeSpec(spec))
       if (!cmd) return
       // ⌘S only when a file is active; ⌘W closes the tab.
@@ -161,8 +200,14 @@ function useShortcuts() {
 }
 
 function Shell() {
-  const { state, actions } = useStore()
-  const l = state.layout
+  const actions = useActions()
+  const l = useStoreSelector((s) => s.layout)
+  const appRef = useRef<HTMLDivElement>(null)
+  // Drag preview: the panel sizes are CSS variables on .app, set directly until the drag ends.
+  const preview = (name: string, v: number) => {
+    appRef.current?.style.setProperty(name, `${v}px`)
+    if (name === '--right-w' && l.rightOpen) appRef.current?.style.setProperty('--toast-right', `${v}px`)
+  }
   useShortcuts()
   // Source control: the saved commit message draft reaches main at startup (the auto-sync skips its
   // commit while there is one), not only once the Sync view opens.
@@ -194,18 +239,18 @@ function Shell() {
   } as CSSProperties
 
   return (
-    <div className={`app${l.sideOpen ? '' : ' side-off'}${l.rightOpen ? '' : ' right-off'}${l.bottomOpen ? '' : ' bottom-off'}`} style={style}>
+    <div ref={appRef} className={`app${l.sideOpen ? '' : ' side-off'}${l.rightOpen ? '' : ' right-off'}${l.bottomOpen ? '' : ' bottom-off'}`} style={style}>
       <Titlebar />
       <div className="body">
         <ActivityBar />
         <SidePanel />
-        {l.sideOpen && <Resizer axis="x" value={l.sideW} min={200} max={() => 480} reset={268} onChange={(v) => actions.setLayout({ sideW: v })} onCollapse={() => actions.setLayout({ sideOpen: false })} />}
+        {l.sideOpen && <Resizer axis="x" value={l.sideW} min={200} max={() => 480} reset={268} onPreview={(v) => preview('--side-w', v)} onChange={(v) => actions.setLayout({ sideW: v })} onCollapse={() => actions.setLayout({ sideOpen: false })} />}
         <main className="center">
           <EditorArea />
-          {l.bottomOpen && <Resizer axis="y" invert value={l.bottomH} min={120} max={() => Math.round((window.innerHeight - 62) * 0.6)} reset={214} onChange={(v) => actions.setLayout({ bottomH: v })} onCollapse={() => actions.setLayout({ bottomOpen: false })} />}
+          {l.bottomOpen && <Resizer axis="y" invert value={l.bottomH} min={120} max={() => Math.round((window.innerHeight - 62) * 0.6)} reset={214} onPreview={(v) => preview('--bottom-h', v)} onChange={(v) => actions.setLayout({ bottomH: v })} onCollapse={() => actions.setLayout({ bottomOpen: false })} />}
           <BottomPanel />
         </main>
-        {l.rightOpen && <Resizer axis="x" invert value={l.rightW} min={300} max={() => 560} reset={360} onChange={(v) => actions.setLayout({ rightW: v })} onCollapse={() => actions.toggleRight(false)} />}
+        {l.rightOpen && <Resizer axis="x" invert value={l.rightW} min={300} max={() => 560} reset={360} onPreview={(v) => preview('--right-w', v)} onChange={(v) => actions.setLayout({ rightW: v })} onCollapse={() => actions.toggleRight(false)} />}
         <AssistantPanel />
       </div>
       <StatusBar />

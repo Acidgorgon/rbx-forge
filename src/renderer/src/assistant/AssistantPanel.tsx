@@ -3,7 +3,7 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { useChatDraft, useChatScroll, rememberChatScroll } from '../qol/chatSession'
 import type { BoardView, ChatImage, OrchestrateMode, TaskView } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useStoreSelector, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
 import { ModelPicker } from '../components/ModelPicker'
@@ -36,7 +36,7 @@ export { Message, MessageList } from './Thread'
 const TASK_ICON: Record<TaskView['state'], string> = { queued: '○', running: '◐', blocked: '◌', done: '●', failed: '×', cancelled: '–' }
 
 function Board({ b }: { b: BoardView }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [open, setOpen] = useState(b.state !== 'done' && b.state !== 'cancelled')
   const live = b.state === 'planning' || b.state === 'running' || b.state === 'integrating'
   const done = b.tasks.filter((t) => t.state === 'done').length
@@ -137,7 +137,8 @@ function TurnTimer({ started }: { started: number }) {
 // keep: the Assistant panel's composer (attachments survive the panel closing; the panel itself
 // takes images sent from other pages). Other composers (Group chats page) keep their own.
 export function Composer({ mode, setMode, keep }: { mode: OrchestrateMode; setMode: (m: OrchestrateMode) => void; keep?: boolean }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'activeFile', 'busy', 'composerInsert', 'defaultModel', 'layout', 'messages', 'pendingModel', 'scripts')
   const id = state.activeChatId
   const busy = id ? !!state.busy[id] : false
   const activeChat = useActiveChat()
@@ -534,7 +535,7 @@ export function Composer({ mode, setMode, keep }: { mode: OrchestrateMode; setMo
 // ---------------------------------------------------------------- panel
 
 function Meter() {
-  const { state } = useStore()
+  const state = useStorePick('usage')
   const chat = useActiveChat()
   const snap = state.usage.chat
   const t = snap?.totals
@@ -569,8 +570,8 @@ function Meter() {
 // The panel frame stays mounted; its body only while the panel is open, so a closed panel does not
 // re-render on every chat update or tick its timers.
 export function AssistantPanel() {
-  const { state, actions } = useStore()
-  const open = state.layout.rightOpen
+  const actions = useActions()
+  const open = useStoreSelector((s) => s.layout.rightOpen)
   // Images attached from elsewhere (the Art page's "Send to chat") open the panel and wait in its composer.
   useEffect(
     () =>
@@ -588,7 +589,8 @@ export function AssistantPanel() {
 }
 
 function AssistantBody() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'messages', 'busy', 'pendingModel', 'defaultModel', 'boards', 'chats', 'layout', 'providers', 'activeFile')
   const menu = useMenu()
   const chat = useActiveChat()
   const id = state.activeChatId

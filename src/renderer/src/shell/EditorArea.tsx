@@ -4,7 +4,7 @@
 // pure in @shared/editorGroups; copy-vs-move rules in ./groupActions.
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
-import { useStore, type Actions, type State, type Tab } from '../store'
+import { selectDirtyPaths, useActions, useGetState, useStorePick, useStoreSelector, type Actions, type State, type Tab } from '../store'
 import * as EG from '@shared/editorGroups'
 import type { EditorGroup, LayoutNode } from '@shared/editorGroups'
 import { dropTab, moveToOtherGroup, splitTab, canDuplicate, type DropTarget } from './groupActions'
@@ -217,19 +217,20 @@ function DragLayer() {
 // ---------------------------------------------------------------- tab strip
 
 function Tabs({ group, active, first, multi }: { group: EditorGroup; active: boolean; first: boolean; multi: boolean }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const getState = useGetState()
+  // Not the files themselves (their text): only which ones are dirty.
+  const state = useStorePick('tabs', 'editor')
+  const dirtyPaths = useStoreSelector(selectDirtyPaths)
   const menu = useMenu()
   const [closing, setClosing] = useState<string | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
-  const live = useRef({ state, actions })
-  live.current = { state, actions }
+  // A tab drag reads the state as it is when the pointer moves.
+  const live = useMemo(() => ({ current: { get state() { return getState() }, actions } }), [getState, actions])
   const tabs = group.tabs.map((id) => state.tabs.find((t) => t.id === id)).filter((t): t is Tab => !!t)
+  const dirtySet = useMemo(() => new Set(dirtyPaths ? dirtyPaths.split('\n') : []), [dirtyPaths])
 
-  const isDirty = (t: Tab) => {
-    if (t.kind !== 'file') return false
-    const f = state.files.find((x) => x.path === t.path)
-    return !!f && f.current !== f.saved
-  }
+  const isDirty = (t: Tab) => t.kind === 'file' && !!t.path && dirtySet.has(t.path)
   // Closing a dirty file loses edits only when no other group still shows it.
   const losesEdits = (t: Tab) => isDirty(t) && EG.groupsWithTab(state.editor, t.id).length <= 1
 
@@ -270,14 +271,14 @@ function Tabs({ group, active, first, multi }: { group: EditorGroup; active: boo
     if (t.preview) items.push({ label: 'Keep open', onSelect: () => actions.pinTab(t.id) })
     items.push(
       'separator',
-      { label: 'Split right', icon: <Icon name="split" />, hint: keyHint('mod+backslash'), disabled: !canSplitHere || (alone && !canDuplicate(t)), reason: canSplitHere ? 'The only tab in this group' : `Up to ${EG.MAX_GROUPS} groups`, onSelect: () => splitTab(state, actions, t.id, group.id, 'right') },
-      { label: 'Split down', icon: <Icon name="split" style={{ transform: 'rotate(90deg)' }} />, disabled: !canSplitHere || (alone && !canDuplicate(t)), reason: canSplitHere ? 'The only tab in this group' : `Up to ${EG.MAX_GROUPS} groups`, onSelect: () => splitTab(state, actions, t.id, group.id, 'bottom') },
-      { label: multi ? 'Move to other group' : 'Move to new group', icon: <Icon name="arrowRight" />, disabled: !multi && alone, onSelect: () => moveToOtherGroup(state, actions, t.id, group.id) }
+      { label: 'Split right', icon: <Icon name="split" />, hint: keyHint('mod+backslash'), disabled: !canSplitHere || (alone && !canDuplicate(t)), reason: canSplitHere ? 'The only tab in this group' : `Up to ${EG.MAX_GROUPS} groups`, onSelect: () => splitTab(getState(), actions, t.id, group.id, 'right') },
+      { label: 'Split down', icon: <Icon name="split" style={{ transform: 'rotate(90deg)' }} />, disabled: !canSplitHere || (alone && !canDuplicate(t)), reason: canSplitHere ? 'The only tab in this group' : `Up to ${EG.MAX_GROUPS} groups`, onSelect: () => splitTab(getState(), actions, t.id, group.id, 'bottom') },
+      { label: multi ? 'Move to other group' : 'Move to new group', icon: <Icon name="arrowRight" />, disabled: !multi && alone, onSelect: () => moveToOtherGroup(getState(), actions, t.id, group.id) }
     )
     if (multi) items.push({ label: 'Close group', onSelect: closeGroup })
     if (t.path) {
       items.push('separator', { label: 'Copy file path', icon: <Icon name="copy" />, onSelect: () => void actions.copy(t.path!, 'file path') })
-      const ip = instancePathOfFile(state.tree, t.path)
+      const ip = instancePathOfFile(getState().tree, t.path)
       if (ip) {
         items.push({ label: 'Copy require(…)', icon: <Icon name="code" />, onSelect: () => void actions.copy(requireExpression(ip), 'require') })
         items.push({ label: 'Reveal in Explorer', icon: <Icon name="reveal" />, hint: keyHint('alt+mod+r'), onSelect: () => actions.revealInstance(ip) })
@@ -347,7 +348,7 @@ function Tabs({ group, active, first, multi }: { group: EditorGroup; active: boo
             className="icon-btn"
             title={`Split right (${keyHint('mod+backslash')}) · Alt: split down`}
             aria-label="Split editor"
-            onClick={(e) => group.active && splitTab(state, actions, group.active, group.id, e.altKey ? 'bottom' : 'right')}
+            onClick={(e) => group.active && splitTab(getState(), actions, group.active, group.id, e.altKey ? 'bottom' : 'right')}
           >
             <Icon name="split" size={14} />
           </button>
@@ -364,10 +365,14 @@ function Tabs({ group, active, first, multi }: { group: EditorGroup; active: boo
 }
 
 function Crumbs({ path, groupId }: { path: string; groupId: string }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('tabs', 'tree')
+  const dirty = useStoreSelector((s) => {
+    const f = s.files.find((x) => x.path === path)
+    return !!f && f.current !== f.saved
+  })
   const problems = useProblems()
   const menu = useMenu()
-  const file = state.files.find((f) => f.path === path)
   // Walks the whole tree; only the tree or the file changing needs it, not every keystroke.
   const { ip, segs } = useMemo(() => {
     const ip = instancePathOfFile(state.tree, path)
@@ -377,7 +382,6 @@ function Crumbs({ path, groupId }: { path: string; groupId: string }) {
     return { ip, segs }
   }, [state.tree, path])
   const realm = path.endsWith('.blink') ? 'blink' : realmOfFile(path)
-  const dirty = !!file && file.current !== file.saved
 
   const siblings = (el: HTMLElement, segIp: string[]) => {
     const parent = segIp.length > 1 ? findNode(state.tree, segIp.slice(0, -1)) : null
@@ -488,7 +492,8 @@ function pageFor(tab: Tab): ReactNode {
 // One editor group: its tab strip, then breadcrumbs / notices and the active view. The group's editor
 // stays mounted under page tabs while the group has a file open.
 function GroupView({ group, active, first, multi }: { group: EditorGroup; active: boolean; first: boolean; multi: boolean }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('tabs', 'editor', 'blink', 'studioConflicts')
   const tab = state.tabs.find((t) => t.id === group.active) ?? state.tabs.find((t) => group.tabs.includes(t.id))
   const groupFiles = group.tabs.flatMap((id) => {
     const t = state.tabs.find((x) => x.id === id)
@@ -589,14 +594,15 @@ const pct = (v: number) => `${(v * 100).toFixed(4)}%`
 // Drag handle between two groups: 300ms hover delay before the line lights up (like the panel
 // resizers), double-click evens that split out.
 function Sash({ path, index, dir, at, split }: { path: number[]; index: number; dir: EG.SplitDir; at: number; split: Box }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const getState = useGetState()
   const ref = useRef<HTMLDivElement>(null)
   const onDown = (e: React.PointerEvent) => {
     if (e.button !== 0) return
     e.preventDefault()
     const el = ref.current
     const grid = el?.parentElement
-    const node = EG.nodeAt(state.editor.root, path)
+    const node = EG.nodeAt(getState().editor.root, path)
     if (!el || !grid || !node || node.type !== 'split') return
     const rect = grid.getBoundingClientRect()
     const total = dir === 'row' ? rect.width * split.w : rect.height * split.h
@@ -608,6 +614,15 @@ function Sash({ path, index, dir, at, split }: { path: number[]; index: number; 
     el.classList.add('dragging')
     document.body.classList.add('resizing')
     document.body.style.setProperty('--resize-cursor', dir === 'row' ? 'col-resize' : 'row-resize')
+    // One store update per animation frame, not per pointermove.
+    let pending: number[] | null = null
+    let frame = 0
+    const apply = () => {
+      frame = 0
+      const next = pending
+      pending = null
+      if (next) actions.editorGroups((gs) => EG.resizeSplit(gs, path, next))
+    }
     const move = (ev: PointerEvent) => {
       const delta = ((dir === 'row' ? ev.clientX : ev.clientY) - start) / total
       const a = sizes[index]
@@ -616,9 +631,12 @@ function Sash({ path, index, dir, at, split }: { path: number[]; index: number; 
       const next = sizes.slice()
       next[index] = a + d
       next[index + 1] = b - d
-      actions.editorGroups((gs) => EG.resizeSplit(gs, path, next))
+      pending = next
+      if (!frame) frame = requestAnimationFrame(apply)
     }
     const up = () => {
+      cancelAnimationFrame(frame)
+      apply()
       el.classList.remove('dragging')
       document.body.classList.remove('resizing')
       window.removeEventListener('pointermove', move)
@@ -628,7 +646,7 @@ function Sash({ path, index, dir, at, split }: { path: number[]; index: number; 
     window.addEventListener('pointerup', up)
   }
   const even = () => {
-    const node = EG.nodeAt(state.editor.root, path)
+    const node = EG.nodeAt(getState().editor.root, path)
     if (node?.type === 'split') actions.editorGroups((gs) => EG.resizeSplit(gs, path, node.children.map(() => 1)))
   }
   const style = dir === 'row' ? { left: pct(at), top: pct(split.y), height: pct(split.h) } : { top: pct(at), left: pct(split.x), width: pct(split.w) }
@@ -636,7 +654,7 @@ function Sash({ path, index, dir, at, split }: { path: number[]; index: number; 
 }
 
 export function EditorArea() {
-  const { state } = useStore()
+  const state = useStorePick('editor')
   useEditorServices()
   const multi = state.editor.groups.length > 1
   const firstGroup = EG.groupOrder(state.editor)[0]

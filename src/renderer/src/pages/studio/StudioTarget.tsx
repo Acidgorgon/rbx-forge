@@ -7,7 +7,7 @@
 import { useSyncExternalStore } from 'react'
 import type { StudioPlaces, StudioTarget } from '@shared/types'
 import { placeLabel, targetKey } from '@shared/studio/target'
-import { useStore, type ToastInput } from '../../store'
+import { useActions, type ToastInput } from '../../store'
 import { errorText } from '../../lib/format'
 import './studio.css'
 
@@ -66,7 +66,7 @@ export function useStudioPlaces(): StudioPlaces | null {
 }
 
 export function StudioTargetPicker({ className = '' }: { className?: string }) {
-  const { actions } = useStore()
+  const actions = useActions()
   toast = actions.toast
   const v = useStudioPlaces()
   if (!v || v.places.length < 2) return null

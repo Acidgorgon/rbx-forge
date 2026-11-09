@@ -4,13 +4,13 @@
 // in Settings > Integrations. The key itself never reaches this page; it only learns whether one is set.
 import { useEffect, useState } from 'react'
 import type { ModelInboxStatus } from '@shared/types'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { errorText } from '../../lib/format'
 
 // refresh: changes when the Open Cloud key or creator may have changed (the Art page passes its status).
 export function ModelInboxSettings({ refresh }: { refresh?: unknown }) {
   const h = window.harness
-  const { actions } = useStore()
+  const actions = useActions()
   const [status, setStatus] = useState<ModelInboxStatus | null>(null)
   const [busy, setBusy] = useState(false)
 

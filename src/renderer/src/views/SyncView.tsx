@@ -3,7 +3,7 @@
 // local changes, Studio conflicts (open as diff tabs), pre-sync check, feature branch / PR, settings.
 import { useEffect, useState } from 'react'
 import type { IncomingChanges, PreSyncReport, SyncSettings } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ago, errorText, keyHint } from '../lib/format'
 import { basename } from '../lib/roblox'
@@ -15,7 +15,8 @@ import { useScm } from './scmState'
 const STATUS_LETTER: Record<string, string> = { added: 'A', modified: 'M', deleted: 'D', renamed: 'R', copied: 'C', typechange: 'T', untracked: 'U', conflicted: '!', unknown: '?' }
 
 export function SyncView() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('git', 'project', 'studioConflicts', 'syncSettings')
   const git = state.git
   const [syncing, setSyncing] = useState(false)
   const [incoming, setIncoming] = useState<IncomingChanges | null>(null)

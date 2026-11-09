@@ -486,6 +486,7 @@ function reducer(state: State, a: Action): State {
     case 'fileLoaded':
       return { ...state, files: state.files.map((f) => (f.path === a.path ? { ...f, saved: a.contents, current: a.contents, loading: false } : f)) }
     case 'fileEdit': {
+      if (!state.files.some((f) => f.path === a.path)) return state
       // The first edit pins a preview tab.
       const tabs = state.tabs.some((t) => t.kind === 'file' && t.path === a.path && t.preview) ? state.tabs.map((t) => (t.kind === 'file' && t.path === a.path ? { ...t, preview: false } : t)) : state.tabs
       return { ...state, tabs, files: state.files.map((f) => (f.path === a.path ? { ...f, current: a.contents } : f)) }
@@ -568,7 +569,11 @@ export interface Actions {
   editorGroups(update: (gs: GroupsState) => GroupsState): void
   // A layout saved by QolRoot, applied over the tabs open now.
   restoreGroups(raw: unknown): void
+  // An editor's text: reaches state.files at once when the dirty state flips, else once typing
+  // pauses (see createStore). Dirty flags are always current.
   editFile(path: string, contents: string): void
+  // Puts pending editor text into state.files now (before reading `current` for its exact text).
+  flushEdits(): void
   // reason 'auto' = autosave (editorAssist/autosave): skipped when nothing changed, and formats only
   // when "format on autosave" is on.
   saveFile(path: string, opts?: { reason?: SaveReason }): Promise<void>
@@ -646,11 +651,44 @@ interface Store {
   get(): State
   subscribe(listener: () => void): () => void
   dispatch(action: Action): void
+  // Editor text (Actions.editFile): see createStore.
+  editText(path: string, contents: string): void
+  flushEdits(): void
 }
+
+// How long typing may pause before the store gets an open file's latest text.
+export const EDIT_SETTLE_MS = 250
+// Actions that read or replace an open file's text (or drop its buffer): pending editor text goes
+// into the store first, so they see what the editor shows.
+const FLUSH_EDITS_FIRST = new Set<Action['type']>(['fileLoaded', 'fileReloaded', 'fileSaved', 'closeTab', 'pathChanged', 'projectSwitched'])
 
 function createStore(): Store {
   let state = initial
   const listeners = new Set<() => void>()
+  const apply = (action: Action) => {
+    const next = reducer(state, action)
+    if (next === state) return
+    state = next
+    for (const l of [...listeners]) l()
+  }
+  // Typing does not dispatch per keystroke (each one re-rendered every subscriber of `files`): the
+  // store takes an editor's text at once only when it changes the file's dirty state (or pins its
+  // preview tab), else EDIT_SETTLE_MS after typing pauses, or before any action above. So
+  // `current !== saved` (the dirty flag every tab, prompt and autosave reads) is always right, while
+  // `current` itself may trail the Monaco model by up to EDIT_SETTLE_MS: whatever needs the exact
+  // text reads the model (saves do: editorAssist/saveHooks via CodeEditor) or calls flushEdits.
+  // Pending text only exists while the file is dirty, so it never meets a reload from disk (those
+  // apply to clean buffers only).
+  const pending = new Map<string, string>()
+  let timer: ReturnType<typeof setTimeout> | undefined
+  const flushEdits = () => {
+    clearTimeout(timer)
+    timer = undefined
+    if (!pending.size) return
+    const edits = [...pending]
+    pending.clear()
+    for (const [path, contents] of edits) apply({ type: 'fileEdit', path, contents })
+  }
   return {
     get: () => state,
     subscribe(listener) {
@@ -660,11 +698,32 @@ function createStore(): Store {
       }
     },
     dispatch(action) {
-      const next = reducer(state, action)
-      if (next === state) return
-      state = next
-      for (const l of [...listeners]) l()
-    }
+      if (pending.size && FLUSH_EDITS_FIRST.has(action.type)) flushEdits()
+      // A direct fileEdit (format on save) leaves newer pending text alone: it is what the editor
+      // shows, and it lands before the save is recorded (fileSaved flushes first), so the file stays
+      // dirty with it.
+      apply(action)
+    },
+    editText(path, contents) {
+      const f = state.files.find((x) => x.path === path)
+      const wasDirty = !!f && f.current !== f.saved
+      const dirty = !f || contents !== f.saved
+      const pins = state.tabs.some((t) => t.kind === 'file' && t.path === path && t.preview)
+      if (!f || wasDirty !== dirty || pins) {
+        pending.delete(path)
+        apply({ type: 'fileEdit', path, contents })
+        return
+      }
+      // Clean before and after: the store already holds this text.
+      if (!dirty) {
+        pending.delete(path)
+        return
+      }
+      pending.set(path, contents)
+      clearTimeout(timer)
+      timer = setTimeout(flushEdits, EDIT_SETTLE_MS)
+    },
+    flushEdits
   }
 }
 
@@ -937,11 +996,14 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       closeTab: (id, group) => dispatch({ type: 'closeTab', id, group }),
       editorGroups: (update) => dispatch({ type: 'groups', update }),
       restoreGroups: (raw) => dispatch({ type: 'restoreGroups', raw }),
-      editFile: (path, contents) => dispatch({ type: 'fileEdit', path, contents }),
+      editFile: (path, contents) => store.editText(path, contents),
+      flushEdits: () => store.flushEdits(),
       async saveFile(path, opts) {
         const reason = opts?.reason ?? 'manual'
         // Saves of one file run one after another, so an older text never lands on disk last.
         const run = async () => {
+          // The text typed up to now (runBeforeSave also reads the live Monaco model).
+          store.flushEdits()
           const f = stateRef.current.files.find((x) => x.path === path)
           if (!f || f.loading) return
           if (reason === 'auto' && f.current === f.saved) return
@@ -1297,7 +1359,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     }
     return self
-  }, [h, dispatch, stateRef])
+  }, [h, dispatch, stateRef, store])
 
   // Events and the first load.
   useEffect(() => {

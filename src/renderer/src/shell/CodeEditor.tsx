@@ -45,8 +45,9 @@ export function useEditorServices(): void {
   // StyLua (Format Document, format on save) and AI ghost text; toasts go to the app.
   useEffect(() => {
     setAssistToast((t) => actionsRef.current.toast(t))
-    // The store sees an edit one render after Monaco does, and a burst of typing can starve that render
-    // (Ctrl+S right after the last key): the model is the truth, so a save writes its text.
+    // The store's text trails Monaco (editFile hands it over when the dirty state flips or typing
+    // pauses, see store.tsx createStore; saveFile flushes it first): the model is the truth, so a save
+    // writes its text.
     setBeforeSave(async (p, contents, reason) => {
       const live = monaco.editor.getModels().find((m) => m.uri.scheme === 'file' && pathOf(m) === p)?.getValue() ?? contents
       return (await formatBeforeSave(monaco, p, live, reason)) ?? (live !== contents ? live : null)
@@ -315,8 +316,9 @@ export function CodeEditor({ path, readOnlyReason, visible, active, groupId }: {
   }
 
   // Text sync is one way per direction, so typing does no whole-file compare: the editor is
-  // uncontrolled (defaultValue seeds a new model, onChange feeds the store) and a text that did not
-  // come from this editor (reload from disk, format on save) is pushed into the model below.
+  // uncontrolled (defaultValue seeds a new model, onChange feeds the store, which takes the text
+  // when the dirty state flips or typing pauses) and a text that did not come from this editor
+  // (reload from disk, format on save) is pushed into the model below.
   const lastEdit = useRef<{ path: string; text: string; echoed: boolean } | null>(null)
   const applying = useRef(false)
   const onChange = useCallback((v: string | undefined) => {

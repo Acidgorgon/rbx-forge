@@ -78,6 +78,7 @@ import { createStudioWiring } from './services/studio/wire.ts'
 import { SyncEngine } from './services/sync/engine.ts'
 import { duplicateMappings, duplicateMappingText, loadPlaces, type PlaceMap, placeFor } from './services/sync/mapping.ts'
 import { createSync } from './services/sync/wire.ts'
+import { STATUS_DELAY_MS } from './services/sync/service.ts'
 import { pluginsDir } from '../shared/studio/plugin.ts'
 import { homedir } from 'node:os'
 import { studioElectronDeps } from './services/studio/electron.ts'
@@ -649,6 +650,8 @@ const studio = createStudioWiring({
 // Forge Sync (services/sync): Studio -> disk through the Forge Bridge plugin, reconciled per place
 // before rojo serve may run for it (supervisor gate). Studio conflicts, git-pull guard, legacy plugin.
 const forgeSync = createSync({
+  // A polling plugin refreshes the status every request: push it to the renderer at most this often.
+  statusDelayMs: STATUS_DELAY_MS,
   settings,
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[sync] ${text}` }),

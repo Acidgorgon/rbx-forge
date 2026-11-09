@@ -8,7 +8,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { Thumb, ThumbBase, ThumbEstimate, ThumbRef, ThumbStatus, ThumbStyleProfile, TasteView, ThumbsEvents } from '@shared/types'
 import { batchOf } from '@shared/thumbs/size'
 import { CODEX_IMAGE_NOTE } from '@shared/artTypes'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { useRestateGate } from '../../components/useRestateGate'
@@ -102,7 +102,8 @@ function LibRow({ t, on, onOpen }: { t: Thumb; on: boolean; onOpen: () => void }
 }
 
 export function ThumbLabPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const [status, setStatus] = useState<ThumbStatus | null>(null)
   const [refs, setRefs] = useState<ThumbRef[]>([])

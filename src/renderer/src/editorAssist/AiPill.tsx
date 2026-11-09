@@ -1,14 +1,15 @@
 // Status bar toggle for AI inline completions: click turns them on / off; without a ready provider
 // it opens Settings > Providers.
 import { useSyncExternalStore } from 'react'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { setEditorAssist, useEditorAssist } from './state'
 import { completionNote, onCompletionNote } from './inline'
 import { showSettingsSection } from '../pages/settings/settingsNav'
 
 export function AiCompletionsPill() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeFile')
   const s = useEditorAssist()
   const note = useSyncExternalStore(onCompletionNote, completionNote)
   if (!s || !state.activeFile) return null

@@ -5,7 +5,7 @@ import { useEffect, useRef, useState } from 'react'
 import type { FigmaImportResult, FigmaTokenStatus } from '@shared/types'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 
 export function MappingReportView({ result }: { result: FigmaImportResult }) {
   const r = result.report
@@ -57,7 +57,7 @@ export function MappingReportView({ result }: { result: FigmaImportResult }) {
 
 export function FigmaImport({ onDone, onClose }: { onDone: (r: FigmaImportResult) => void; onClose: () => void }) {
   const h = window.harness
-  const { actions } = useStore()
+  const actions = useActions()
   const [tab, setTab] = useState<'plugin' | 'link'>('plugin')
   const [json, setJson] = useState('')
   const [url, setUrl] = useState('')

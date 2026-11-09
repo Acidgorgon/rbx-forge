@@ -3,7 +3,7 @@
 import { useMemo, useState, type MouseEvent } from 'react'
 import type { ScriptCategory, ScriptEntry } from '@shared/types'
 import { robloxPaths } from '@shared/robloxPath'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ClassIcon } from '../components/ClassIcon'
 import { useMenu, type MenuEntry } from '../components/Menu'
@@ -14,7 +14,8 @@ const ORDER: ScriptCategory[] = ['Configs', 'Data', 'Services', 'Handlers', 'Con
 const COLLAPSE_KEY = 'forge.scripts.collapsed'
 
 export function ScriptsView() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeFile', 'places', 'project', 'scripts')
   const menu = useMenu()
   const [filter, setFilter] = useState('')
   const [realm, setRealm] = useState<'all' | ScriptEntry['realm']>('all')

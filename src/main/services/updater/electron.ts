@@ -23,6 +23,9 @@ export interface UpdaterWiringDeps {
   isPackaged: boolean
   version: string
   platform: NodeJS.Platform
+  // process.arch, and app.runningUnderARM64Translation (the Intel build under Rosetta).
+  arch: string
+  translated: boolean
   resourcesPath: string
   execPath: string
   settings: { get<T>(key: string, fallback: T): T; set(key: string, value: unknown): void }
@@ -83,6 +86,9 @@ async function createController(deps: UpdaterWiringDeps, feed: FeedConfig | null
     mode,
     modeNote,
     disabledReason,
+    platform: deps.platform,
+    arch: deps.arch,
+    translated: deps.translated,
     settings: deps.settings,
     emit: deps.emit,
     openExternal: deps.openExternal,
@@ -149,7 +155,7 @@ export function wireUpdater(deps: UpdaterWiringDeps): UpdaterWiring {
         return withQuick(state)
       },
       updateInstall: async () => (await controller()).install(),
-      updateOpenRelease: async () => (await controller()).openRelease(),
+      updateOpenRelease: async (target?: unknown) => (await controller()).openRelease(target === 'page'),
       updateQuickRestart: async () => quick().restart()
     },
     start() {

@@ -2,7 +2,7 @@
 // new Blink event, join project, feature branch, pull request.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
 import type { JoinProgress, JoinStepId } from '@shared/types'
-import { useActions, useStore, type ToastSpec } from '../store'
+import { useStorePick, useActions, useGetState, useStoreSelector, type ToastSpec } from '../store'
 import { Icon } from '../components/Icons'
 import { featuresOf, scriptsFlat } from '../lib/roblox'
 import { errorText, keyHint } from '../lib/format'
@@ -69,17 +69,16 @@ function Toast({ t }: { t: ToastSpec }) {
 }
 
 function useRemove() {
-  const { state, actions } = useStore()
-  const ref = useRef(state.toasts)
-  ref.current = state.toasts
-  return (id: number) => actions.set({ toasts: ref.current.filter((x) => x.id !== id) })
+  const actions = useActions()
+  const getState = useGetState()
+  return (id: number) => actions.set({ toasts: getState().toasts.filter((x) => x.id !== id) })
 }
 
 export function Toasts() {
-  const { state } = useStore()
+  const toasts = useStoreSelector((s) => s.toasts)
   return (
     <div className="toasts" aria-live="polite">
-      {state.toasts.map((t) => (
+      {toasts.map((t) => (
         <Toast key={t.id} t={t} />
       ))}
     </div>
@@ -162,7 +161,8 @@ function ConfirmDialog({ title, body, confirm, danger, run, list, dontAsk, onClo
 }
 
 function RenameFeatureDialog({ from, onClose }: { from?: string; onClose: () => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('scripts')
   const features = featuresOf(scriptsFlat(state.scripts))
   const [source, setSource] = useState(from ?? features[0]?.name ?? '')
   const [to, setTo] = useState(from ?? '')
@@ -229,7 +229,8 @@ function RenameFeatureDialog({ from, onClose }: { from?: string; onClose: () => 
 // Explorer rename of a script, folder or file. Scripts keep their Rojo suffix (.server.luau...); an
 // init script renames its folder. Main re-checks everything (collisions, Windows names, mounts).
 function RenamePathDialog({ path, isDir, onClose }: { path: string; isDir: boolean; onClose: () => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('blink', 'scripts')
   const target = entryTarget(path, isDir)
   const [name, setName] = useState(target.stem)
   const [busy, setBusy] = useState(false)
@@ -284,7 +285,8 @@ function RenamePathDialog({ path, isDir, onClose }: { path: string; isDir: boole
 }
 
 function BlinkEventDialog({ onClose }: { onClose: () => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('blink')
   const files = (state.blink?.files?.map((m) => m.file) ?? [state.blink?.file]).filter((x): x is string => !!x)
   const [file, setFile] = useState(files[0] ?? 'events.blink')
   const [name, setName] = useState('')
@@ -483,7 +485,8 @@ function JoinProjectDialog({ onClose }: { onClose: () => void }) {
 }
 
 function FeatureBranchDialog({ onClose }: { onClose: () => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('git')
   const [name, setName] = useState('')
   const [busy, setBusy] = useState(false)
   const [error, setError] = useState<string | null>(null)
@@ -520,7 +523,8 @@ function FeatureBranchDialog({ onClose }: { onClose: () => void }) {
 }
 
 function PullRequestDialog({ onClose }: { onClose: () => void }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('git')
   const [title, setTitle] = useState('')
   const [body, setBody] = useState('')
   const [base, setBase] = useState('')
@@ -575,8 +579,8 @@ function PullRequestDialog({ onClose }: { onClose: () => void }) {
 }
 
 export function Dialogs() {
-  const { state, actions } = useStore()
-  const d = state.dialog
+  const actions = useActions()
+  const d = useStoreSelector((s) => s.dialog)
   if (!d) return null
   const close = () => actions.openDialog(null)
   switch (d.kind) {

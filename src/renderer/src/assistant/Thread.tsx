@@ -9,10 +9,10 @@ import '@fontsource/source-sans-3/latin-400-italic.css'
 import '@fontsource/source-sans-3/latin-600.css'
 import type { ChatMessage, ChatSession } from '@shared/types'
 import type { ChatTodo } from '@shared/chatModes'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
-import { ChecklistCard, isGroup, PlanCard, SpeakerHead } from './GroupChat'
+import { ChecklistCard, isGroup, participants, PlanCard, SpeakerHead } from './GroupChat'
 import { MessageImages } from './ChatImages'
 import { RestateMessage } from './RestateMessage'
 import { ConclusionCard, PatchCard, ReviewCard, SettingsNotice, splitStance, StancePill } from './GroupCards'
@@ -46,7 +46,8 @@ export function turnStart(messages: ChatMessage[]): number | null {
 // ---------------------------------------------------------------- messages
 
 export function AgentTag({ id }: { id: string }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('agents')
   const agent = state.agents.find((a) => a.id === id)
   return (
     <button className="agent-tag" title={agent?.scenario} onClick={() => actions.openTranscript(id, agent ? `Agent: ${agent.scenario.slice(0, 24)}` : 'Agent')}>
@@ -54,6 +55,16 @@ export function AgentTag({ id }: { id: string }) {
     </button>
   )
 }
+
+// A message reads only the chat's seats (host model and guests, for speaker heads); the chat object
+// itself is new on every chat:updated (usage, todos, title), so compare the seats, not the object.
+function chatSeats(chat?: ChatSession): string {
+  return participants(chat)
+    .map((p) => `${p.provider}/${p.model}`)
+    .join('|')
+}
+const sameMessageProps = (a: { m: ChatMessage; chat?: ChatSession }, b: { m: ChatMessage; chat?: ChatSession }): boolean =>
+  a.m === b.m && (a.chat === b.chat || chatSeats(a.chat) === chatSeats(b.chat))
 
 export const Message = memo(function Message({ m, chat }: { m: ChatMessage; chat?: ChatSession }) {
   if (m.role === 'user') {
@@ -91,7 +102,7 @@ export const Message = memo(function Message({ m, chat }: { m: ChatMessage; chat
       {m.images?.length ? <MessageImages images={m.images} attachable /> : null}
     </div>
   )
-})
+}, sameMessageProps)
 
 // A compaction (auto or /compact): one divider line; the summary folds out under it.
 function CompactDivider({ m }: { m: ChatMessage }) {

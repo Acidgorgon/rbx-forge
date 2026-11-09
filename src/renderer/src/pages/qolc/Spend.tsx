@@ -5,7 +5,7 @@ import { useEffect, useState } from 'react'
 import type { SpendSettings, SpendState } from '@shared/types'
 import { SPEND_SOURCE_LABEL } from '@shared/spend/types'
 import { parseUsd } from '@shared/spend/cap'
-import { useStore, type Actions } from '../../store'
+import { useActions, type Actions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { useMenu } from '../../components/Menu'
 import { errorText, fmtUsd } from '../../lib/format'
@@ -71,7 +71,7 @@ function CapField({ label, value, onSave }: { label: string; value: number | nul
 
 // Settings > Usage.
 export function SpendSettingsSection() {
-  const { actions } = useStore()
+  const actions = useActions()
   const s = useSpend()
   const save = async (patch: Partial<SpendSettings>) => {
     try {
@@ -150,7 +150,7 @@ export function SpendSettingsSection() {
 
 // Status-bar pill: shown from the warn threshold on.
 export function SpendPill() {
-  const { actions } = useStore()
+  const actions = useActions()
   const s = useSpend()
   const menu = useMenu()
   if (!s || s.level === 'ok') return null

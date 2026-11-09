@@ -7,7 +7,7 @@
 import { useSyncExternalStore } from 'react'
 import type { StudioPlaces, StudioTarget } from '@shared/types'
 import { placeLabel, targetKey } from '@shared/studio/target'
-import { useStore, type ToastInput } from '../../store'
+import { useActions, type ToastInput } from '../../store'
 import { errorText } from '../../lib/format'
 import './studio.css'
 
@@ -21,8 +21,13 @@ let toast: ((t: ToastInput) => void) | null = null
 // The chosen place already reported as gone (one toast per disconnect).
 let lostKey: string | null = null
 
+// What the picker shows, as a string: lastSeen moves on every poll but nothing reads it.
+const shape = (v: StudioPlaces): string => JSON.stringify(v, (k, x: unknown) => (k === 'lastSeen' ? undefined : x))
+
 function publish(next: StudioPlaces): void {
   const prev = snapshot
+  // Polled every few seconds: keep the old snapshot (no re-render of the pickers) when nothing changed.
+  if (prev && shape(prev) === shape(next)) return
   snapshot = next
   if (next.chosen && next.why === 'lost') {
     const k = targetKey(next.chosen)
@@ -61,7 +66,7 @@ export function useStudioPlaces(): StudioPlaces | null {
 }
 
 export function StudioTargetPicker({ className = '' }: { className?: string }) {
-  const { actions } = useStore()
+  const actions = useActions()
   toast = actions.toast
   const v = useStudioPlaces()
   if (!v || v.places.length < 2) return null

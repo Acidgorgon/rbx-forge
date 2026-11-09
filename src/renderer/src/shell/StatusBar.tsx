@@ -1,7 +1,7 @@
 // Status bar (SPEC §7.7): home, branch, services, problems, realm, cursor, LSP, assistant meter, bell.
 import { useEffect, useRef, useState } from 'react'
 import type { LspCompanionStatus, ServiceStatus } from '@shared/types'
-import { useActions, useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { useCursor } from '../lib/cursor'
@@ -92,7 +92,8 @@ function SyncDriftPill() {
 }
 
 export function StatusBar() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeFile', 'activePlace', 'git', 'lsp', 'lspCompanion', 'notifications', 'places', 'project', 'services', 'usage')
   const cursor = useCursor()
   const problems = useProblems()
   const menu = useMenu()

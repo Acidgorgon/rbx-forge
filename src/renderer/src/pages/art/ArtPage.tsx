@@ -5,7 +5,7 @@
 // detail, viewer) opens LayersPanel. Keys never reach this page; it only sees whether they are set.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ArtCostEstimate, ArtGenerateInput, ArtItem, ArtQuality, ArtRegistryEntry, ArtSettings, ArtStatus, ArtStyleId } from '@shared/types'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Lightbox, type LightboxItem } from '../../components/Lightbox'
 import { errorText } from '../../lib/format'
@@ -101,7 +101,7 @@ function Thumb({ item, selected, onSelect, onOpen }: { item: ArtItem; selected: 
 }
 
 function KeyCard({ status, onStatus }: { status: ArtStatus; onStatus: (s: ArtStatus) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [key, setKey] = useState('')
   const [scope, setScope] = useState<'project' | 'global'>('project')
   const [ids, setIds] = useState({ user: status.settings.creatorUserId ? String(status.settings.creatorUserId) : '', group: status.settings.creatorGroupId ? String(status.settings.creatorGroupId) : '' })
@@ -211,7 +211,8 @@ function Detail({ item, status, registry, onClose, onChanged, onCompose, onFulls
   onFullscreen: () => void
   onSplit: () => void
 }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('files', 'scripts')
   const full = useThumb(item.path, true)
   const [name, setName] = useState(item.roblox?.name ?? regName(item.slug))
   const [busy, setBusy] = useState<string | null>(null)
@@ -384,7 +385,8 @@ function Detail({ item, status, registry, onClose, onChanged, onCompose, onFulls
 }
 
 export function ArtPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const [status, setStatus] = useState<ArtStatus | null>(null)
   const [items, setItems] = useState<ArtItem[]>([])

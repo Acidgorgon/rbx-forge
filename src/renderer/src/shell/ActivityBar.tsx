@@ -1,6 +1,6 @@
 // Activity bar (SPEC §7.2): side views on top, wide pages (Packages, Release, Analytics, Settings) below.
 import { useRef, useState, type ReactNode } from 'react'
-import { useStore, type PageKind, type SideView } from '../store'
+import { shallowEqual, useActions, useStoreSelector, type PageKind, type SideView, type State } from '../store'
 import { Icon, type IconName } from '../components/Icons'
 import { keyHint } from '../lib/format'
 
@@ -46,16 +46,26 @@ interface Item {
   dot?: boolean
 }
 
+// Badges and dots as primitives, so the bar re-renders only when one of them changes.
+function selectBar(state: State) {
+  return {
+    sideOpen: state.layout.sideOpen,
+    sideView: state.layout.sideView,
+    blinkErrors: state.blink?.diagnostics.filter((d) => d.severity === 'error').length ?? 0,
+    behind: (state.git?.behind ?? 0) + state.studioConflicts.length + (state.git?.conflicts.length ?? 0),
+    agentsRunning: state.agents.some((a) => a.state === 'running' || a.state === 'queued') || state.tests.running || state.boards.some((b) => b.state === 'running' || b.state === 'planning' || b.state === 'integrating'),
+    testFails: (state.tests.last?.failed ?? 0) + state.agents.filter((a) => a.state === 'failed' || a.state === 'error').length,
+    contested: state.claims.filter((c) => c.contested).length,
+    activePage: state.tabs.find((t) => t.id === state.activeTab)?.kind,
+    groupBusy: state.chats.some((c) => !!c.guests?.length && !!state.busy[c.id])
+  }
+}
+
 export function ActivityBar() {
-  const { state, actions } = useStore()
-  const l = state.layout
-  const blinkErrors = state.blink?.diagnostics.filter((d) => d.severity === 'error').length ?? 0
-  const behind = (state.git?.behind ?? 0) + state.studioConflicts.length + (state.git?.conflicts.length ?? 0)
-  const agentsRunning = state.agents.some((a) => a.state === 'running' || a.state === 'queued') || state.tests.running || state.boards.some((b) => b.state === 'running' || b.state === 'planning' || b.state === 'integrating')
-  const testFails = (state.tests.last?.failed ?? 0) + state.agents.filter((a) => a.state === 'failed' || a.state === 'error').length
+  const actions = useActions()
+  const { sideOpen, sideView, blinkErrors, behind, agentsRunning, testFails, contested, activePage, groupBusy } = useStoreSelector(selectBar, shallowEqual)
+  const l = { sideOpen, sideView }
   const outdated = 0
-  const contested = state.claims.filter((c) => c.contested).length
-  const activePage = state.tabs.find((t) => t.id === state.activeTab)?.kind
 
   const top: Item[] = [
     { icon: 'tree', label: 'Explorer', keys: 'mod+shift+e', view: 'explorer' },
@@ -66,7 +76,6 @@ export function ActivityBar() {
     { icon: 'flask', label: 'Tests & agents', keys: 'mod+shift+a', view: 'tests', dot: agentsRunning, badge: !agentsRunning && testFails ? { n: testFails, err: true } : null },
     { icon: 'team', label: 'Team', view: 'team', badge: contested ? { n: contested } : null }
   ]
-  const groupBusy = state.chats.some((c) => c.guests?.length && state.busy[c.id])
   const bottom: Item[] = [
     { icon: 'round', label: 'Group chats', page: 'groups', dot: groupBusy },
     { icon: 'package', label: 'Packages (Wally, Rokit)', page: 'packages', badge: outdated ? { n: outdated } : null },

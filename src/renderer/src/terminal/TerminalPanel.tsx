@@ -2,7 +2,7 @@
 // tasks, find, and the assistant's run_in_terminal confirmation.
 import { useEffect, useLayoutEffect, useRef, useState, useSyncExternalStore } from 'react'
 import type { TerminalInfo } from '@shared/types'
-import { useStore } from '../store'
+import { useActions, useStorePick } from '../store'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { useTheme } from '../theme'
@@ -191,7 +191,8 @@ function FindBar({ id, onClose }: { id: string; onClose: () => void }) {
 }
 
 export function TerminalPanel() {
-  const { state: app, actions } = useStore()
+  const actions = useActions()
+  const app = useStorePick('layout', 'project')
   const s = useTerminals()
   const theme = useTheme()
   const menu = useMenu()

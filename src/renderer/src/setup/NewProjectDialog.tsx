@@ -3,7 +3,7 @@
 // the new project opens.
 import { useEffect, useState } from 'react'
 import type { NewProjectProgress, NewProjectStepId, TemplateId } from '@shared/types'
-import { useStore } from '../store'
+import { useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { Dialog } from '../shell/Overlays'
 import { errorText, keyHint } from '../lib/format'
@@ -36,7 +36,7 @@ function joinPath(dir: string, name: string): string {
 }
 
 export function NewProjectDialog({ onClose }: { onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [name, setName] = useState('')
   const [parentDir, setParentDir] = useState('')
   const [template, setTemplate] = useState<TemplateId>('gentree')

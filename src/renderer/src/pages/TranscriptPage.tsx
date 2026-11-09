@@ -1,13 +1,14 @@
 // Transcript tab for a test agent or an orchestrator task (chat id "orch:<run>:<task>").
 import { useEffect, useMemo, useState } from 'react'
 import type { ChatMessage } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
 import { fmtTime, fmtTokens, fmtUsd } from '../lib/format'
 
 export function TranscriptPage({ agentId, title }: { agentId: string; title: string }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('agentMessages', 'agents', 'boards')
   const orch = /^orch:([^:]+):(.+)$/.exec(agentId)
   const [orchMessages, setOrchMessages] = useState<ChatMessage[] | null>(null)
   useEffect(() => {

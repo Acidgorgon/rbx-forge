@@ -3,12 +3,12 @@
 // upload to Roblox as Image assets and track moderation. Effects reference a texture as
 // forgetex://<id>; the preview uses the local file at once and the project files get rbxassetid://
 // once it is uploaded.
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import type { TextureGenerateInput, TextureStatus, TintMode, VfxTexture } from '@shared/types'
 import { PROCEDURAL_INFO, PROCEDURAL_PARAMS, PROCEDURAL_TYPES, type ProceduralType } from '@shared/vfx/tex/procedural'
 import { texRef, TEXTURE_PRESETS, texturePreset, type TextureKind } from '@shared/vfx/tex/textures'
 import { FLIPBOOK_GRID } from '@shared/vfx/tex/image'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { TextureImport, TexturePolicyControl } from './TextureImport'
@@ -76,30 +76,41 @@ function TexCard({ t, selected, onSelect }: { t: VfxTexture; selected: boolean; 
   )
 }
 
-// Animated flipbook: steps through the cells with CSS (paused when reduced motion is on).
+// Animated flipbook at 12 fps, all in CSS (no React render per frame): steps() walks the columns
+// (one row per n frames) and the rows (one sheet per n*n frames); the frame number is a column of
+// digits moved with a stepped transform, on the same clock. Reduced motion stops it on frame 1.
+const FLIP_FPS = 12
 function FlipbookPreview({ url, layout }: { url: string; layout: keyof typeof FLIPBOOK_GRID }) {
   const n = FLIPBOOK_GRID[layout]
-  const [frame, setFrame] = useState(0)
-  const reduce = typeof window !== 'undefined' && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-  useEffect(() => {
-    if (reduce) return
-    const id = setInterval(() => setFrame((f) => (f + 1) % (n * n)), 1000 / 12)
-    return () => clearInterval(id)
-  }, [n, reduce])
-  const x = frame % n
-  const y = Math.floor(frame / n)
+  const count = n * n
+  // backgroundPosition k/(n-1)*100% shows cell k; steps(n) over 0..end lands on k*end/n.
+  const end = n > 1 ? `${(n / (n - 1)) * 100}%` : '0%'
+  const cell = {
+    backgroundImage: `url(${url})`,
+    backgroundSize: `${n * 100}% ${n * 100}%`,
+    backgroundPosition: '0% 0%',
+    '--flip-end': end,
+    animation: `tex-flip-x ${n / FLIP_FPS}s steps(${n}) infinite, tex-flip-y ${count / FLIP_FPS}s steps(${n}) infinite`
+  } as CSSProperties
   return (
-    <div className="tex-flip" role="img" aria-label={`Flipbook ${layout}, frame ${frame + 1} of ${n * n}`}>
-      <div className="tex-flip-cell" style={{ backgroundImage: `url(${url})`, backgroundSize: `${n * 100}% ${n * 100}%`, backgroundPosition: `${n > 1 ? (x / (n - 1)) * 100 : 0}% ${n > 1 ? (y / (n - 1)) * 100 : 0}%` }} />
-      <span className="mono faint tex-flip-n">
-        {frame + 1}/{n * n}
+    <div className="tex-flip" role="img" aria-label={`Flipbook ${layout}, ${count} frames`}>
+      <div className="tex-flip-cell" style={cell} />
+      <span className="mono faint tex-flip-n" aria-hidden>
+        <span className="tex-flip-k">
+          <span style={{ animation: `tex-flip-k ${count / FLIP_FPS}s steps(${count}) infinite` }}>
+            {Array.from({ length: count }, (_, i) => (
+              <span key={i}>{i + 1}</span>
+            ))}
+          </span>
+        </span>
+        /{count}
       </span>
     </div>
   )
 }
 
 function TexDetail({ t, status, onClose }: { t: VfxTexture; status: TextureStatus | null; onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const url = useTextureUrl(t)
   const [tags, setTags] = useState(t.tags.join(', '))
@@ -205,7 +216,7 @@ function TexDetail({ t, status, onClose }: { t: VfxTexture; status: TextureStatu
 }
 
 function Generator({ status, onMade }: { status: TextureStatus | null; onMade: (items: VfxTexture[]) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [ai, setAi] = useState(false)
   const [kind, setKind] = useState<TextureKind>('ring')
@@ -394,7 +405,7 @@ function Generator({ status, onMade }: { status: TextureStatus | null; onMade: (
 }
 
 export function TextureLab() {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [status, setStatus] = useState<TextureStatus | null>(null)
   const [items, setItems] = useState<VfxTexture[]>([])

@@ -2,7 +2,7 @@
 // whether rojo serve waits for the Studio check.
 import { useEffect, useState } from 'react'
 import type { ForgeSyncSettings as Settings, SyncEngineChoice } from '@shared/types'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { errorText } from '../../lib/format'
 
 const ENGINES: [SyncEngineChoice, string][] = [
@@ -18,7 +18,7 @@ const ENGINE_NOTE: Record<SyncEngineChoice, string> = {
 }
 
 export function ForgeSyncSettings() {
-  const { actions } = useStore()
+  const actions = useActions()
   const [s, setS] = useState<Settings | null>(null)
   useEffect(() => {
     void window.harness.forgeSyncSettings().then(setS).catch(() => undefined)

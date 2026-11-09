@@ -2,7 +2,7 @@
 // features, recent files and the project's state at a glance. Without a project: open or join.
 import { useMemo } from 'react'
 import type { ServiceStatus } from '@shared/types'
-import { useStore, type CreateKind } from '../store'
+import { useStorePick, useActions, type CreateKind } from '../store'
 import { Icon, type IconName } from '../components/Icons'
 import { AnvilMark } from '../components/Brand'
 import { FileGlyph } from '../components/ClassIcon'
@@ -13,7 +13,7 @@ import { useProblems } from '../shell/problems'
 const STATE_BADGE: Record<ServiceStatus['state'], string> = { running: 'ok', starting: 'info', stopped: '', crashed: 'err', missing: 'warn' }
 
 function Welcome() {
-  const { actions } = useStore()
+  const actions = useActions()
   return (
     <div className="page">
       <div className="page-inner welcome">
@@ -36,7 +36,8 @@ function Welcome() {
 }
 
 export function ForgePage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activePlace', 'claims', 'git', 'places', 'project', 'recent', 'scripts', 'services', 'studioConflicts', 'tests')
   const problems = useProblems()
   const scripts = useMemo(() => scriptsFlat(state.scripts), [state.scripts])
   const features = useMemo(() => featuresOf(scripts), [scripts])

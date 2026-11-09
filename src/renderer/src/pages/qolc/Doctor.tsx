@@ -4,7 +4,7 @@
 import { useCallback, useEffect, useState } from 'react'
 import type { DoctorCheck, DoctorReport, DoctorStatus } from '@shared/types'
 import { doctorMarkdown } from '@shared/doctor/format'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Dialog } from '../../shell/Overlays'
 import { errorText } from '../../lib/format'
@@ -25,7 +25,7 @@ function useDoctorReport(): [DoctorReport | null, (r: DoctorReport) => void] {
 }
 
 function CheckRow({ c, onFixed }: { c: DoctorCheck; onFixed: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [busy, setBusy] = useState(false)
   const fix = c.fix
   const runAction = async () => {
@@ -83,7 +83,7 @@ function CheckRow({ c, onFixed }: { c: DoctorCheck; onFixed: () => void }) {
 }
 
 export function DoctorDialog({ onClose }: { onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [report, setReport] = useDoctorReport()
   const [running, setRunning] = useState(false)
   const [onlyProblems, setOnlyProblems] = useState(false)

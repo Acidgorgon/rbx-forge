@@ -94,15 +94,19 @@ export async function addImage(input: AttachInput): Promise<ChatImage> {
 // ---------------------------------------------------------------- composer hand-off
 
 type Listener = (ref: ChatImage) => void
-let listener: Listener | null = null
+// The newest registration gets the images (the Group chats page's composer while it is open, else
+// the Assistant panel); unregistering hands back to the one before.
+const listeners: Listener[] = []
 const queued: ChatImage[] = []
+const current = (): Listener | null => listeners[listeners.length - 1] ?? null
 
 // The composer registers here; images attached before it mounts are delivered then.
 export function onAttachRequest(fn: Listener): () => void {
-  listener = fn
+  listeners.push(fn)
   for (const ref of queued.splice(0)) fn(ref)
   return () => {
-    if (listener === fn) listener = null
+    const i = listeners.lastIndexOf(fn)
+    if (i >= 0) listeners.splice(i, 1)
   }
 }
 
@@ -111,6 +115,7 @@ export function onAttachRequest(fn: Listener): () => void {
 export async function attachImageToChat(input: AttachInput): Promise<ChatImage | null> {
   try {
     const ref = await addImage(input)
+    const listener = current()
     if (listener) listener(ref)
     else queued.push(ref)
     return ref
@@ -122,6 +127,7 @@ export async function attachImageToChat(input: AttachInput): Promise<ChatImage |
 // An image already in the chat store (one a model generated) back into the composer, to ask for
 // changes to it.
 export function attachStoredImage(ref: ChatImage): void {
+  const listener = current()
   if (listener) listener(ref)
   else queued.push(ref)
 }

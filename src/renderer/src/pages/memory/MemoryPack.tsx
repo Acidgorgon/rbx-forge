@@ -3,7 +3,7 @@
 // so the request survives the page mounting after the palette navigates to it).
 import { useEffect, useMemo, useState } from 'react'
 import type { BrainSyncMode, BrainSyncSettings, BrainSyncStatus, ExportCandidate, ExportCandidates, ImportChoice, ImportPreview, ImportPreviewItem } from '@shared/types'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Dialog } from '../../shell/Overlays'
 import { ago, errorText, plural } from '../../lib/format'
@@ -42,7 +42,7 @@ const size = (n: number) => (n < 1024 ? `${n} B` : n < 1024 * 1024 ? `${(n / 102
 // ------------------------------------------------------------------ export
 
 export function ExportDialog({ onClose }: { onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [data, setData] = useState<ExportCandidates | null>(null)
   const [err, setErr] = useState<string | null>(null)
   const [mode, setMode] = useState<'all' | 'pick'>('all')
@@ -172,7 +172,7 @@ const STATUS_TAG: Record<ImportPreviewItem['status'], { cls: string; label: stri
 const defaultChoice = (s: ImportPreviewItem['status']): ImportChoice => (s === 'new' || s === 'similar' ? 'theirs' : s === 'conflict' ? 'mine' : 'skip')
 
 export function ImportDialog({ preview, onClose }: { preview: ImportPreview; onClose: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [choices, setChoices] = useState<Record<string, ImportChoice>>(() => Object.fromEntries(preview.items.map((i) => [i.key, defaultChoice(i.status)])))
   const [busy, setBusy] = useState(false)
   const [err, setErr] = useState<string | null>(null)
@@ -306,7 +306,7 @@ const SYNC_MODES: { id: BrainSyncMode; label: string }[] = [
 ]
 
 export function SyncCard() {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [settings, setSettings] = useState<BrainSyncSettings | null>(null)
   const [status, setStatus] = useState<BrainSyncStatus | null>(null)

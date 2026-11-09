@@ -7,7 +7,7 @@ import type { BuildPromptInput, BuiltPrompt, PromptMode, PromptSection } from '@
 import { lintSections, renderSections } from '@shared/thumbs/builder'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 
 export interface BuilderState {
   built: BuiltPrompt | null
@@ -26,7 +26,7 @@ export function builderSections(b: BuilderState, ask: string, mode: PromptMode):
 const SOURCE_LABEL: Record<NonNullable<PromptSection['source']>, string> = { rules: 'rules', model: 'AI', kit: 'kit', user: 'you' }
 
 export function PromptBuilder({ mode, ask, input, state, setState, open, setOpen }: { mode: PromptMode; ask: string; input: Omit<BuildPromptInput, 'ask' | 'mode' | 'model'>; state: BuilderState; setState: (s: BuilderState) => void; open: boolean; setOpen: (o: boolean) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [busy, setBusy] = useState<'rules' | 'model' | null>(null)
   const stale = !!state.built && (state.ask.trim() !== ask.trim() || state.built.mode !== mode)
   const warnings = useMemo(() => (state.built ? lintSections(state.sections, mode, state.built.names) : []), [state.sections, mode, state.built])

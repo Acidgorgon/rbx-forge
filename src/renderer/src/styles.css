@@ -198,11 +198,15 @@ body.resizing .panel, body.resizing .bottom { transition: none !important; }
 .btn.primary:active:not(:disabled), .btn-forge:active:not(:disabled) { transform: translateY(1px); }
 .btn-forge { height: 24px; padding: 0 10px 0 8px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--r-md); font-size: 12.5px; position: relative; white-space: nowrap; transition: filter var(--dur-fast), transform var(--dur-instant), box-shadow var(--dur-base); }
 .btn-forge.crashed, .btn-forge.failed { background: var(--err-fill); color: var(--err); border-color: var(--err-line); }
-.btn-forge.held { background: var(--warn-fill); color: var(--warn); border-color: var(--warn-line); animation: forge-held-pulse 1.6s ease-in-out infinite; }
+/* Held: a ring that pulses three times when it starts, then stays still. The ring is a pseudo-element
+   faded with opacity (composited), not an animated box-shadow (repainted every frame). */
+.btn-forge.held { background: var(--warn-fill); color: var(--warn); border-color: var(--warn-line); }
+.btn-forge.held::after { content: ''; position: absolute; inset: -1px; border-radius: inherit; box-shadow: 0 0 0 3px var(--warn-fill); opacity: 0; pointer-events: none; animation: forge-held-pulse 1.6s ease-in-out 3; }
 .btn-forge.checking { background: var(--warn-fill); color: var(--warn); border-color: var(--warn-line); }
 .btn-forge.waiting { background: var(--info-fill); color: var(--info); border-color: var(--info-line); }
-@keyframes forge-held-pulse { 50% { box-shadow: 0 0 0 3px var(--warn-fill); } }
-@media (prefers-reduced-motion: reduce) { .btn-forge.held { animation: none; } }
+@keyframes forge-held-pulse { 50% { opacity: 1; } }
+@media (prefers-reduced-motion: reduce) { .btn-forge.held::after { animation: none; } }
+:root[data-motion="reduced"] .btn-forge.held::after, :root[data-motion="off"] .btn-forge.held::after { animation: none; }
 .btn-forge.running { background: var(--ok-fill); color: var(--ok); border-color: var(--ok-line); }
 .btn-forge.stopped { background: transparent; color: var(--fg-2); border-color: var(--line-strong); }
 .btn-ghost { height: 24px; padding: 0 8px; display: inline-flex; align-items: center; gap: 6px; border-radius: var(--r-md); border: 1px solid var(--line-strong); color: var(--fg-2); font-weight: 500; font-size: 12px; background: transparent; white-space: nowrap; transition: border-color var(--dur-fast), background var(--dur-fast), transform var(--dur-instant); }
@@ -261,7 +265,9 @@ input[type="checkbox"]:not(.switch) { accent-color: var(--fg-muted); }
 .led { width: 8px; height: 8px; border-radius: 50%; display: inline-block; flex: none; background: var(--idle); transition: background var(--dur-base), box-shadow var(--dur-base); }
 .led.ok { background: var(--ok); }
 .led.err { background: var(--err); }
-.led.warn { background: var(--warn); animation: rf-pulse 1.4s var(--ease-in-out) infinite; }
+/* Long-lived indicators pulse a few times when they appear, then stay still (an endless pulse keeps
+   the compositor drawing frames for as long as it shows). */
+.led.warn { background: var(--warn); animation: rf-pulse 1.4s var(--ease-in-out) 3; }
 .led.idle { background: var(--idle); }
 :root[data-motion="reduced"] .led.warn, :root[data-motion="off"] .led.warn { animation: none; background: transparent; box-shadow: inset 0 0 0 1.5px var(--warn); }
 
@@ -335,18 +341,23 @@ input[type="checkbox"]:not(.switch) { accent-color: var(--fg-muted); }
 .act.on { color: var(--fg); background: var(--bg-active); }
 .act .badge { position: absolute; right: 0; top: 1px; min-width: 15px; height: 15px; padding: 0 4px; border-radius: 8px; background: var(--bg-overlay); border: 1px solid var(--line-strong); color: var(--fg-2); font: 500 9px/13px var(--font-mono); text-align: center; letter-spacing: 0; }
 .act .badge.err { background: var(--err-fill); border-color: var(--err-line); color: var(--err); }
-.act .dot { position: absolute; right: 5px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--lav); animation: rf-pulse 1.8s var(--ease-in-out) infinite; }
+.act .dot { position: absolute; right: 5px; top: 5px; width: 7px; height: 7px; border-radius: 50%; background: var(--lav); animation: rf-pulse 1.8s var(--ease-in-out) 3; }
 .act-spacer { flex: 1; }
 .tip { position: fixed; z-index: 80; pointer-events: none; padding: 4px 8px; border-radius: var(--r-md); background: var(--bg-overlay); box-shadow: var(--sh-2); font-size: 11.5px; color: var(--fg); display: flex; gap: 8px; align-items: center; animation: rf-fade-in var(--dur-fast) var(--ease-out); white-space: nowrap; }
 
 /* panels: floating cards */
 .panel { background: var(--bg-panel); display: flex; flex-direction: column; min-width: 0; min-height: 0; overflow: hidden; }
-.side, .right { border: 1px solid var(--line); border-radius: var(--r-lg); transition: width var(--dur-panel) var(--ease-out), border-color var(--dur-panel), opacity var(--dur-panel); }
+/* Panels open and close in one step (no width / height transition): animating a panel's size
+   re-lays out the whole window, and Monaco (automaticLayout) with it, on every frame. Only the
+   contents fade in (opacity / transform, composited). */
+.side, .right { border: 1px solid var(--line); border-radius: var(--r-lg); }
 .side { width: var(--side-w); flex: none; }
 .right { width: var(--right-w); flex: none; }
 .panel > .panel-inner { display: flex; flex-direction: column; min-height: 0; height: 100%; transition: opacity var(--dur-base) var(--ease-out), transform var(--dur-panel) var(--ease-out); }
 .side .panel-inner { width: calc(var(--side-w) - 2px); }
 .right .panel-inner { width: calc(var(--right-w) - 2px); }
+/* The Assistant body mounts on open (AssistantPanel): fade it in. */
+.right .panel-inner { animation: rf-fade-in var(--dur-base) var(--ease-out); }
 .app.side-off .side { width: 0; border-width: 0; opacity: 0; }
 .app.side-off .side .panel-inner { opacity: 0; transform: translateX(-8px); pointer-events: none; }
 .app.right-off .right { width: 0; border-color: transparent; opacity: 0; }
@@ -430,7 +441,7 @@ button.badge-o:hover:not(:disabled) { border-color: var(--fg-faint); color: var(
 .page-head .actions { margin-left: auto; display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
 
 /* bottom panel (inside the center card) */
-.bottom { height: var(--bottom-h); flex: none; border-top: 1px solid var(--line); transition: height var(--dur-panel) var(--ease-out), border-color var(--dur-panel); }
+.bottom { height: var(--bottom-h); flex: none; border-top: 1px solid var(--line); }
 .app.bottom-off .bottom { height: 0; border-top-color: transparent; }
 .app.bottom-off .bottom .panel-inner { opacity: 0; transform: translateY(6px); pointer-events: none; }
 .bottom .panel-inner { height: var(--bottom-h); }

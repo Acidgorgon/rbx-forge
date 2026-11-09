@@ -8,7 +8,7 @@ import { ANIM_SCRIPT_TEMPLATE } from '@shared/anim/compile'
 import { ANIM_EXAMPLES } from '@shared/anim/examples'
 import { monaco } from '../../monaco'
 import { useAppearance } from '../../theme'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
 import { prefersReducedMotion } from '../vfx/motion'
@@ -16,7 +16,7 @@ import { prefersReducedMotion } from '../vfx/motion'
 const OWNER = 'anim-timeline'
 
 export function AnimScriptPanel({ entry, onPreview }: { entry: AnimEntry; onPreview: (clip: AnimClip) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const appearance = useAppearance()
   const saved = entry.clip.script ?? ''
   const [code, setCode] = useState(saved || ANIM_SCRIPT_TEMPLATE)

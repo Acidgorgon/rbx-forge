@@ -2,7 +2,7 @@
 // the luau-lsp Studio Companion plugin server.
 import { useEffect, useState, type ReactNode } from 'react'
 import type { AutoSaveMode } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { openDoctor } from '../pages/qolc/events'
 import { keyHint } from '../lib/format'
 import { focusSearch } from '../views/searchState'
@@ -56,7 +56,8 @@ function PortInput({ value, disabled, onSave }: { value: number; disabled: boole
 const isMac = typeof navigator !== 'undefined' && /Mac|iPhone|iPad/.test(navigator.platform)
 
 export function EditorSettingsSection() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('appSettings', 'lspCompanion')
   const app = state.appSettings
   const bin = typeof navigator !== 'undefined' && navigator.userAgent.includes('Windows') ? 'Recycle Bin' : 'Trash'
   const s = useEditorAssist()

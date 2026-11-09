@@ -1,9 +1,9 @@
 // Assistant panel (SPEC §7.5) in the terminal style: model / mode pills, usage meter, compact
 // messages (no avatars), group chat, orchestrator task board, and the "> Type a message" composer.
-import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, useSyncExternalStore, type ClipboardEvent, type DragEvent, type KeyboardEvent } from 'react'
 import { useChatDraft, useChatScroll, rememberChatScroll } from '../qol/chatSession'
 import type { BoardView, ChatImage, OrchestrateMode, TaskView } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useStoreSelector, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { Markdown } from '../components/Markdown'
 import { ModelPicker } from '../components/ModelPicker'
@@ -36,7 +36,7 @@ export { Message, MessageList } from './Thread'
 const TASK_ICON: Record<TaskView['state'], string> = { queued: '○', running: '◐', blocked: '◌', done: '●', failed: '×', cancelled: '–' }
 
 function Board({ b }: { b: BoardView }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [open, setOpen] = useState(b.state !== 'done' && b.state !== 'cancelled')
   const live = b.state === 'planning' || b.state === 'running' || b.state === 'integrating'
   const done = b.tasks.filter((t) => t.state === 'done').length
@@ -107,19 +107,45 @@ const MODES: { id: OrchestrateMode; label: string; hint: string }[] = [
 
 let handledInsert = 0
 
+// The panel composer's attachments live outside the component: the panel body unmounts while the
+// panel is closed (so nothing in it renders or ticks), and attached images must still be there when
+// it opens again. (The draft text is kept by useChatDraft, the scroll position by useChatScroll.)
+type ImagesUpdate = ChatImage[] | ((cur: ChatImage[]) => ChatImage[])
+let keptImages: ChatImage[] = []
+const keptListeners = new Set<() => void>()
+function setKeptImages(next: ImagesUpdate): void {
+  const value = typeof next === 'function' ? next(keptImages) : next
+  if (value === keptImages) return
+  keptImages = value
+  for (const l of keptListeners) l()
+}
+const subscribeKept = (l: () => void) => {
+  keptListeners.add(l)
+  return () => void keptListeners.delete(l)
+}
+const getKept = () => keptImages
+const withAttached = (cur: ChatImage[], ref: ChatImage) => (cur.some((i) => i.id === ref.id) || cur.length >= MAX_IMAGES_PER_MESSAGE ? cur : [...cur, ref])
+// Orchestrate mode picked before the first message (no chat id yet), kept across close / open.
+let pendingOrchestrateMode: OrchestrateMode | null = null
+
 // Ticks on its own so the whole Composer does not re-render every second during a turn.
 function TurnTimer({ started }: { started: number }) {
   const now = useTick(true)
   return <span className="cmp-elapsed" title="Time this turn has been working">{elapsed(now - started)}</span>
 }
 
-export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m: OrchestrateMode) => void }) {
-  const { state, actions } = useStore()
+// keep: the Assistant panel's composer (attachments survive the panel closing; the panel itself
+// takes images sent from other pages). Other composers (Group chats page) keep their own.
+export function Composer({ mode, setMode, keep }: { mode: OrchestrateMode; setMode: (m: OrchestrateMode) => void; keep?: boolean }) {
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'activeFile', 'busy', 'composerInsert', 'defaultModel', 'layout', 'messages', 'pendingModel', 'scripts')
   const id = state.activeChatId
   const busy = id ? !!state.busy[id] : false
   const activeChat = useActiveChat()
   const vision = useVision(activeChat ? { provider: activeChat.provider, model: activeChat.model } : state.pendingModel ?? state.defaultModel)
-  const [images, setImages] = useState<ChatImage[]>([])
+  const local = useState<ChatImage[]>([])
+  const kept: [ChatImage[], (next: ImagesUpdate) => void] = [useSyncExternalStore(subscribeKept, getKept), setKeptImages]
+  const [images, setImages]: [ChatImage[], (next: ImagesUpdate) => void] = keep ? kept : local
   const [adding, setAdding] = useState(0)
   const [dragging, setDragging] = useState(false)
   const fileInput = useRef<HTMLInputElement>(null)
@@ -153,15 +179,15 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
     }
   }
 
-  // Images attached from elsewhere (the Art page's "Send to chat").
-  useEffect(
-    () =>
-      onAttachRequest((ref) => {
-        actions.toggleRight(true)
-        setImages((cur) => (cur.some((i) => i.id === ref.id) || cur.length >= MAX_IMAGES_PER_MESSAGE ? cur : [...cur, ref]))
-      }),
-    []
-  )
+  // Images attached from elsewhere (the Art page's "Send to chat"); the panel's composer gets them
+  // through AssistantPanel, which stays mounted while the panel is closed.
+  useEffect(() => {
+    if (keep) return
+    return onAttachRequest((ref) => {
+      actions.toggleRight(true)
+      setImages((cur) => withAttached(cur, ref))
+    })
+  }, [])
 
   const onPaste = (e: ClipboardEvent<HTMLTextAreaElement>) => {
     const files = [...e.clipboardData.items].filter((i) => i.kind === 'file').map((i) => i.getAsFile()).filter((f): f is File => !!f)
@@ -509,7 +535,7 @@ export function Composer({ mode, setMode }: { mode: OrchestrateMode; setMode: (m
 // ---------------------------------------------------------------- panel
 
 function Meter() {
-  const { state } = useStore()
+  const state = useStorePick('usage')
   const chat = useActiveChat()
   const snap = state.usage.chat
   const t = snap?.totals
@@ -541,8 +567,30 @@ function Meter() {
   )
 }
 
+// The panel frame stays mounted; its body only while the panel is open, so a closed panel does not
+// re-render on every chat update or tick its timers.
 export function AssistantPanel() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const open = useStoreSelector((s) => s.layout.rightOpen)
+  // Images attached from elsewhere (the Art page's "Send to chat") open the panel and wait in its composer.
+  useEffect(
+    () =>
+      onAttachRequest((ref) => {
+        actions.toggleRight(true)
+        setKeptImages((cur) => withAttached(cur, ref))
+      }),
+    []
+  )
+  return (
+    <aside className="panel right" aria-label="Assistant" aria-hidden={!open}>
+      {open && <AssistantBody />}
+    </aside>
+  )
+}
+
+function AssistantBody() {
+  const actions = useActions()
+  const state = useStorePick('activeChatId', 'messages', 'busy', 'pendingModel', 'defaultModel', 'boards', 'chats', 'layout', 'providers', 'activeFile')
   const menu = useMenu()
   const chat = useActiveChat()
   const id = state.activeChatId
@@ -550,17 +598,16 @@ export function AssistantPanel() {
   const busy = id ? !!state.busy[id] : false
   const scroller = useRef<HTMLDivElement>(null)
   const stick = useRef(true)
-  const [mode, setModeState] = useState<OrchestrateMode>('auto')
-  const pendingMode = useRef<OrchestrateMode | null>(null)
+  const [mode, setModeState] = useState<OrchestrateMode>(() => (!state.activeChatId && pendingOrchestrateMode) || 'auto')
   const choice = chat ? { provider: chat.provider, model: chat.model } : state.pendingModel ?? state.defaultModel
   const boards = state.boards.filter((b) => (chat?.orchestrations ? chat.orchestrations.includes(b.runId) : false))
   const problems = useProblems()
 
   useEffect(() => {
     if (!id) return
-    if (pendingMode.current) {
-      const m = pendingMode.current
-      pendingMode.current = null
+    if (pendingOrchestrateMode) {
+      const m = pendingOrchestrateMode
+      pendingOrchestrateMode = null
       void window.harness.setOrchestrateMode(id, m).catch(() => undefined)
       return
     }
@@ -570,7 +617,7 @@ export function AssistantPanel() {
   const setMode = (m: OrchestrateMode) => {
     setModeState(m)
     if (id) void window.harness.setOrchestrateMode(id, m).catch((e) => actions.toast({ text: 'Could not change the mode', detail: errorText(e), kind: 'err' }))
-    else pendingMode.current = m
+    else pendingOrchestrateMode = m
   }
 
   useLayoutEffect(() => {
@@ -603,7 +650,7 @@ export function AssistantPanel() {
   const started = state.boards.find((b) => b.state === 'running' || b.state === 'planning')
 
   return (
-    <aside className="panel right" aria-label="Assistant" aria-hidden={!state.layout.rightOpen}>
+    <>
       <div className="panel-inner">
         <div className="as-head">
           <span className="panel-title">{chat?.title && chat.title !== 'New chat' ? chat.title : 'Assistant'}</span>
@@ -661,9 +708,9 @@ export function AssistantPanel() {
           ))}
           <MemoryProposals sessionId={id} />
         </div>
-        <Composer mode={mode} setMode={setMode} />
+        <Composer mode={mode} setMode={setMode} keep />
       </div>
       {menu.node}
-    </aside>
+    </>
   )
 }

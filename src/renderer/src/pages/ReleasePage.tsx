@@ -19,7 +19,7 @@ import type {
   SecretScope,
   VersionType
 } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ago, errorText } from '../lib/format'
 
@@ -34,7 +34,7 @@ const CHECK_BADGE: Record<CheckResult['status'], string> = { pass: 'ok', warn: '
 const NOTIFY_LABEL: Record<keyof NotificationToggles, string> = { release: 'Releases', publish: 'Publishes', sync: 'Syncs', push: 'Pushes', 'test-failure': 'Test failures' }
 
 function SecretRow({ kind, label, set, hint, onChange }: { kind: ReleaseSecretKind; label: string; set: boolean; hint?: string; onChange: (s: ReleaseSecretsStatus) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [value, setValue] = useState('')
   const [scope, setScope] = useState<SecretScope>('project')
   const [editing, setEditing] = useState(false)
@@ -78,7 +78,8 @@ function SecretRow({ kind, label, set, hint, onChange }: { kind: ReleaseSecretKi
 }
 
 export function ReleasePage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const [plan, setPlan] = useState<ReleasePlan | null>(null)
   const [loading, setLoading] = useState(false)

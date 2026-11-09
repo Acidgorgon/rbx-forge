@@ -206,6 +206,10 @@ export interface SyncServiceDeps {
   onStudioTree?: () => void
   // Tests: throttle for onStudioTree (default TREE_THROTTLE_MS).
   treeThrottleMs?: number
+  // refresh() pushes sync:status at most once per this many ms (0, the default: on the next
+  // microtask, as before). The app sets STATUS_DELAY_MS so a polling plugin does not run git status
+  // and an IPC push on every request. status() itself always answers fresh.
+  statusDelayMs?: number
 }
 
 // A Studio window as the bridge sees it (bridge.ts StudioInfo).
@@ -234,6 +238,11 @@ export const WINDOW_ALIVE_MS = 20_000
 export const PLAYTEST_REFUSED = 'Studio is playtesting (Play or Run): Forge Sync only reads the Edit DataModel, never a playtest copy'
 
 const RECENT_MAX = 200
+// How long the app coalesces sync:status pushes (deps.statusDelayMs).
+export const STATUS_DELAY_MS = 750
+// A background status push reuses git status's answer while Forge's written set is unchanged and the
+// answer is younger than this (an external commit shows within this long).
+export const PENDING_CACHE_MS = 5000
 // Game-tab outline: the plugin sends at most this many instances outside the synced roots.
 export const OUTLINE_MAX = 3000
 export const TREE_THROTTLE_MS = 1000
@@ -372,6 +381,12 @@ export class SyncService {
   private legacy: string[] = []
   private warning: string | undefined
   private refreshQueued = false
+  private statusQueued = false
+  private statusTimer: ReturnType<typeof setTimeout> | null = null
+  // Bumped whenever the written set changes: a cached git status answer is only good for one version.
+  private writtenVersion = 0
+  private pendingCache: { version: number; at: number; files: string[] } | null = null
+  private pendingRun: Promise<string[]> | null = null
   private closed = false
   // The plugin's last /sync/config request (refused ones carry the reason).
   private lastConfig: ConfigSeen | null = null
@@ -527,6 +542,8 @@ export class SyncService {
   close(): void {
     this.closed = true
     this.sessions.clear()
+    if (this.statusTimer) clearTimeout(this.statusTimer)
+    this.statusTimer = null
     if (this.expireTimer) clearInterval(this.expireTimer)
     this.expireTimer = null
     if (this.treeTimer) clearTimeout(this.treeTimer)
@@ -1275,13 +1292,14 @@ export class SyncService {
     return free.length === 1 ? free[0].projectFile : undefined
   }
 
-  async status(): Promise<SyncStatus> {
+  // cached: a background push (refresh) may reuse a recent git status answer (PENDING_CACHE_MS).
+  async status(opts: { cached?: boolean } = {}): Promise<SyncStatus> {
     await this.checkLegacyPlugin()
     const status: SyncStatus = {
       engine: this.settings().engine,
       places: this.settings().engine === 'forge' ? this.places() : [],
       recent: this.recent.slice(0, 50),
-      pendingStudioEdits: await this.pendingStudioEdits(),
+      pendingStudioEdits: await this.pendingStudioEdits(opts),
       legacyPluginInstalled: this.legacy.length > 0
     }
     if (this.legacy.length) status.legacyPlugins = this.legacy.map((f) => basename(f))
@@ -1405,14 +1423,39 @@ export class SyncService {
   }
 
   // Files Forge wrote from Studio that git still shows as modified / untracked / deleted.
-  async pendingStudioEdits(): Promise<string[]> {
+  // cached: reuse the last answer while the written set is unchanged and it is recent, and share a
+  // run already in flight, instead of spawning git status for every background status push.
+  async pendingStudioEdits(opts: { cached?: boolean } = {}): Promise<string[]> {
+    if (opts.cached) {
+      await this.loadWritten()
+      const hit = this.pendingCache
+      if (hit && hit.version === this.writtenVersion && this.now() - hit.at < PENDING_CACHE_MS) return [...hit.files]
+      if (this.pendingRun) return [...(await this.pendingRun)]
+    }
+    const run = this.pendingFromGit()
+    this.pendingRun = run
+    try {
+      return [...(await run)]
+    } finally {
+      if (this.pendingRun === run) this.pendingRun = null
+    }
+  }
+
+  private async pendingFromGit(): Promise<string[]> {
     await this.loadWritten()
-    if (!this.written.size) return []
+    if (!this.written.size) {
+      this.pendingCache = { version: this.writtenVersion, at: this.now(), files: [] }
+      return []
+    }
+    const version = this.writtenVersion
     // Judge only the files known before git status ran: a file written while it ran is not in its
     // output yet and must not be forgotten.
     const known = [...this.written]
     const result = await this.deps.git(['--no-optional-locks', '-c', 'core.quotepath=false', 'status', '--porcelain', '-z', '--untracked-files=all'])
-    if (result.code !== 0) return []
+    if (result.code !== 0) {
+      this.pendingCache = null
+      return []
+    }
     const dirty = parsePorcelainZ(result.stdout)
     const pending = new Set<string>()
     const still = new Set<string>()
@@ -1425,26 +1468,48 @@ export class SyncService {
       }
     }
     // Committed (by the user or by Forge) or reverted: forget it.
+    let pruned = false
     if (still.size !== known.length) {
       for (const w of known) if (!still.has(w)) this.written.delete(w)
+      pruned = true
       await this.saveWritten()
     }
-    return [...pending].sort()
+    const files = [...pending].sort()
+    // Only this run's own pruning may have moved the version on; a write meanwhile leaves no cache.
+    if (this.writtenVersion === version + (pruned ? 1 : 0)) this.pendingCache = { version: this.writtenVersion, at: this.now(), files }
+    else this.pendingCache = null
+    return files
   }
 
-  // Coalesces status pushes: gates to the supervisor, status to the renderer.
+  // Coalesces status pushes: gates to the supervisor (next microtask), status to the renderer (next
+  // microtask, or once per deps.statusDelayMs: later calls within the wait join the pending push).
   refresh(): void {
-    if (this.refreshQueued || this.closed) return
-    this.refreshQueued = true
-    queueMicrotask(() => {
-      this.refreshQueued = false
+    if (this.closed) return
+    if (!this.refreshQueued) {
+      this.refreshQueued = true
+      queueMicrotask(() => {
+        this.refreshQueued = false
+        if (!this.closed) this.pushGates()
+      })
+    }
+    if (this.statusQueued) return
+    this.statusQueued = true
+    const push = () => {
+      this.statusTimer = null
+      this.statusQueued = false
       if (this.closed) return
-      this.pushGates()
-      void this.status().then(
-        (status) => this.deps.emit('sync:status', status),
+      void this.status({ cached: true }).then(
+        (status) => {
+          if (!this.closed) this.deps.emit('sync:status', status)
+        },
         () => undefined
       )
-    })
+    }
+    const delay = this.deps.statusDelayMs ?? 0
+    if (delay > 0) {
+      this.statusTimer = setTimeout(push, delay)
+      ;(this.statusTimer as { unref?: () => void }).unref?.()
+    } else queueMicrotask(push)
   }
 
   // Pushes changed per-file gates to the supervisor; true when one changed.
@@ -1660,9 +1725,12 @@ export class SyncService {
     } catch {
       // first run
     }
+    this.writtenVersion++
   }
 
+  // Every change to the written set goes through here (and so invalidates the git status cache).
   private async saveWritten(): Promise<void> {
+    this.writtenVersion++
     const file = join(this.root, WRITTEN_FILE)
     try {
       await mkdir(dirname(file), { recursive: true })

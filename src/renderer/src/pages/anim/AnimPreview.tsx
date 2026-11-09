@@ -8,6 +8,7 @@ import { prefersReducedMotion } from '../vfx/motion'
 import { AnimScene, type AnimView } from './preview/rig'
 import { AnimTimeline } from './AnimTimeline'
 import { webglMessage } from '../../lib/webgl'
+import { frameLoop, type FrameLoop } from '../../lib/frameLoop'
 
 const SPEEDS = [1, 0.5, 0.25]
 
@@ -27,6 +28,7 @@ export function AnimPreview({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<AnimScene | null>(null)
+  const loopRef = useRef<FrameLoop | null>(null)
   const tRef = useRef(0)
   const [playing, setPlaying] = useState(!prefersReducedMotion())
   const [loop, setLoop] = useState(true)
@@ -59,13 +61,11 @@ export function AnimPreview({
       scene.render()
     })
     ro.observe(wrap)
-    let raf = 0
-    let last = performance.now()
+    // Draws only while playing or after a change (seek, clip, orbit, settings); see lib/frameLoop.
+    // The HUD and timeline update about 20 times a second while playing, only when the shown time changed.
     let tick = 0
-    const step = (now: number) => {
-      raf = requestAnimationFrame(step)
-      const dt = Math.min(0.1, (now - last) / 1000)
-      last = now
+    let shownT = -1
+    const frames = frameLoop(wrap, (dt) => {
       const p = playRef.current
       if (p.playing) {
         let next = tRef.current + dt * p.speed
@@ -81,11 +81,20 @@ export function AnimPreview({
       }
       scene.setTime(tRef.current)
       scene.render()
-      if (++tick % 3 === 0) setT(tRef.current)
-    }
-    raf = requestAnimationFrame(step)
+      if (!p.playing || ++tick % 3 === 0) {
+        const t = Math.round(tRef.current * 100)
+        if (t !== shownT) {
+          shownT = t
+          setT(tRef.current)
+        }
+      }
+      return p.playing
+    })
+    loopRef.current = frames
+    scene.onDirty = frames.invalidate
     return () => {
-      cancelAnimationFrame(raf)
+      frames.dispose()
+      loopRef.current = null
       ro.disconnect()
       scene.dispose()
       sceneRef.current = null
@@ -104,18 +113,32 @@ export function AnimPreview({
       onSnapshot(scene.snapshot())
       scene.setTime(tRef.current)
     }
+    loopRef.current?.invalidate()
   }, [clip])
-  useEffect(() => sceneRef.current?.setReference(reference ?? null), [reference])
-  useEffect(() => sceneRef.current?.setView(view), [view])
-  useEffect(() => sceneRef.current?.setOnion(onion), [onion])
+  useEffect(() => {
+    sceneRef.current?.setReference(reference ?? null)
+    loopRef.current?.invalidate()
+  }, [reference])
+  useEffect(() => {
+    sceneRef.current?.setView(view)
+    loopRef.current?.invalidate()
+  }, [view])
+  useEffect(() => {
+    sceneRef.current?.setOnion(onion)
+    loopRef.current?.invalidate()
+  }, [onion])
   useEffect(() => {
     if (sceneRef.current) sceneRef.current.travel = travel
+    loopRef.current?.invalidate()
   }, [travel])
+  // Play / pause, loop and speed: wake the loop (it stops by itself when paused).
+  useEffect(() => loopRef.current?.invalidate(), [playing, loop, speed])
 
   const scrub = (v: number) => {
     setPlaying(false)
     tRef.current = v
     setT(v)
+    loopRef.current?.invalidate()
   }
   const beat = [...(clip.beats ?? [])].filter((b) => b.at <= t + 1e-6).pop()?.label
   const marker = clip.markers.find((m) => Math.abs(m.t - t) < 0.05)

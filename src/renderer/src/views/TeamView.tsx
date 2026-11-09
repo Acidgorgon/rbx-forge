@@ -2,13 +2,14 @@
 // history of the active file, team settings (.forge/project.json) and join-project.
 import { useEffect, useState } from 'react'
 import type { ActivityEntry, FileHistoryEntry, ForgeProjectConfigRead, OpenPullRequests } from '@shared/types'
-import { useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ago, errorText } from '../lib/format'
 import { basename } from '../lib/roblox'
 
 export function TeamView() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('activeFile', 'claims', 'git', 'lint', 'lintAt', 'project')
   const [feed, setFeed] = useState<ActivityEntry[] | null>(null)
   const [who, setWho] = useState('')
   const [prs, setPrs] = useState<OpenPullRequests | null>(null)

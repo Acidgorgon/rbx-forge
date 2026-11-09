@@ -10,6 +10,8 @@ export interface PaneScene {
   render(): void
   resize(width: number, height: number): void
   dispose(): void
+  // Optional: the scene calls it when its picture changed by itself (orbit, a late texture).
+  onDirty?: (() => void) | null
 }
 
 export function ScenePane<S extends PaneScene>({
@@ -44,13 +46,17 @@ export function ScenePane<S extends PaneScene>({
       return
     }
     sceneRef.current = scene
+    if ('onDirty' in scene) scene.onDirty = ctx.invalidate
     // Use the element captured here, not wrapRef: on unmount React clears the ref before this
     // effect's cleanup disconnects the observer, and the observer can still report the removal.
     const wrap = wrapRef.current!
     const ro = new ResizeObserver(() => {
       if (!wrap.isConnected) return
       const r = wrap.getBoundingClientRect()
-      if (r.width && r.height) scene.resize(r.width, r.height)
+      if (!r.width || !r.height) return
+      scene.resize(r.width, r.height)
+      // Resizing clears the canvas: draw again right away (the clock loop may be idle).
+      scene.render()
     })
     ro.observe(wrap)
     setReady((n) => n + 1)
@@ -64,7 +70,10 @@ export function ScenePane<S extends PaneScene>({
   useEffect(() => {
     const scene = sceneRef.current
     if (!scene) return
-    Promise.resolve(load(scene)).catch((e) => setError(String((e as Error)?.message ?? e)))
+    ctx.invalidate()
+    Promise.resolve(load(scene))
+      .then(() => ctx.invalidate())
+      .catch((e) => setError(String((e as Error)?.message ?? e)))
   }, [loadKey, ready])
 
   useCompareTime(ctx, (t) => {

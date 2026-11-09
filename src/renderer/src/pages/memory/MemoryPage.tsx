@@ -3,7 +3,7 @@
 // user -> project; a "learned recently" feed; the reflection and style-profile settings.
 import { useCallback, useEffect, useMemo, useState } from 'react'
 import type { ImportPreview, MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryListing, MemoryScope, MemorySettings, MemoryType, ReflectionMode } from '@shared/types'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Markdown } from '../../components/Markdown'
 import { ago, errorText, plural } from '../../lib/format'
@@ -106,7 +106,7 @@ function Editor({ initial, previous, projectOpen, onSaved, onCancel }: { initial
 }
 
 function Detail({ e, onEdit, onChanged, onDeleted }: { e: MemoryEntry; onEdit: () => void; onChanged: (sel?: string) => void; onDeleted: () => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const run = async (fn: () => Promise<unknown>, ok?: string) => {
     try {
@@ -166,7 +166,8 @@ function Detail({ e, onEdit, onChanged, onDeleted }: { e: MemoryEntry; onEdit: (
 }
 
 export function MemoryPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const [listing, setListing] = useState<MemoryListing | null>(null)
   const [query, setQuery] = useState('')

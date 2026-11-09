@@ -10,6 +10,7 @@ import { displayOffset, partBounds, viewCamera, visibleParts, type Bounds, type 
 import type { ModelPart } from '@shared/model/types'
 import { LinearOutput, Stage, type Background } from '../../vfx/preview/stage'
 import { shapeGeometry, shapeOf, type ShapeKey } from './geometry'
+import { previewPixelRatio } from '../../../lib/frameLoop'
 
 export type { Background }
 
@@ -41,15 +42,22 @@ export class ModelScene {
   private view: ModelView = 'front'
   private disposed = false
   partCount = 0
+  // Set by an on-demand preview: called when the camera moved (orbit), so it can draw a frame.
+  onDirty: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, opts: { interactive?: boolean; background?: Background } = {}) {
     THREE.ColorManagement.enabled = false
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: false })
+    // No canvas MSAA: the scene renders into LinearOutput's multisampled target and the canvas only
+    // gets a full-screen quad. No preserveDrawingBuffer: snapshot() renders right before reading.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: false, alpha: false })
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace
-    this.renderer.setPixelRatio(Math.min(2, globalThis.devicePixelRatio || 1))
+    this.renderer.setPixelRatio(previewPixelRatio())
     this.camera = new THREE.PerspectiveCamera(40, 16 / 9, 0.1, 2000)
     this.controls = opts.interactive === false ? null : new OrbitControls(this.camera, canvas)
-    if (this.controls) this.controls.enableDamping = false
+    if (this.controls) {
+      this.controls.enableDamping = false
+      this.controls.addEventListener('change', () => this.onDirty?.())
+    }
     this.output = new LinearOutput(this.renderer)
     this.stage = new Stage(this.scene, opts.background ?? 'dark')
     this.scene.add(this.group)

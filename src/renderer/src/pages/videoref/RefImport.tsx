@@ -4,7 +4,7 @@
 // library. The vision summary runs in the background after saving when a model is set up.
 import { useEffect, useRef, useState } from "react";
 import type { RefCrop, RefEntry, RefLab } from "@shared/types";
-import { useStore } from "../../store";
+import { useActions } from "../../store";
 import { Icon } from "../../components/Icons";
 import { errorText } from "../../lib/format";
 import {
@@ -38,7 +38,7 @@ export function RefImport({
   onClose: () => void;
   onSaved: (e: RefEntry) => void;
 }) {
-  const { actions } = useStore();
+  const actions = useActions();
   const [file, setFile] = useState<File | null>(initial ?? null);
   const [url, setUrl] = useState<string | null>(null);
   const [probe, setProbe] = useState<Probe | null>(null);

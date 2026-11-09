@@ -28,6 +28,30 @@ export function releasePageUrl(feed: FeedConfig, version?: string): string {
   return version ? `${base}/tag/v${version.replace(/^v/, '')}` : `${base}/latest`
 }
 
+// electron-builder.yml `publish`; used when app-update.yml is missing (development builds).
+export const DEFAULT_FEED: FeedConfig = { owner: 'Acidgorgon', repo: 'rbx-forge' }
+
+// The release a version came from: a quick update runs as <version>-quick.<n>, which has no release
+// (and no installers) of its own.
+export function baseVersion(version: string): string {
+  return version.trim().replace(/^v/, '').replace(/-quick\.\d+$/, '')
+}
+
+export type MacArch = 'arm64' | 'x64'
+
+// Which Mac build to download: Apple Silicon when this process is arm64 or is the Intel build
+// translated by Rosetta (sysctl.proc_translated, Electron's app.runningUnderARM64Translation).
+export function macDownloadArch(arch: string, translated: boolean): MacArch {
+  return arch === 'arm64' || translated ? 'arm64' : 'x64'
+}
+
+// The release's dmg (electron-builder.yml artifactName `RBX-Forge-${version}-${os}-${arch}.${ext}`).
+export function macDmgUrl(feed: FeedConfig | null, version: string, arch: MacArch): string {
+  const f = feed ?? DEFAULT_FEED
+  const v = baseVersion(version)
+  return `https://github.com/${f.owner}/${f.repo}/releases/download/v${v}/RBX-Forge-${v}-mac-${arch}.dmg`
+}
+
 // `codesign -dv --verbose=2 <app>` output (it prints to stderr). Squirrel.Mac validates an update
 // against the running app's designated requirement; an ad-hoc signature's requirement is its own
 // cdhash, so no other build can satisfy it. Only a Developer ID (or Apple-issued) identity works.

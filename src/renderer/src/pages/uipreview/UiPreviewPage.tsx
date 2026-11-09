@@ -11,7 +11,7 @@ import { luauLiteral } from '@shared/uiPreview/protocol'
 import { askAiPrompt } from '@shared/uiPreview/edit'
 import { storyFilesKey } from '@shared/storyTemplates'
 import { describeChange, diffDocs, forgeDoc, forgeSvg, parseForgeDoc, type DocDiff, type PropChange } from '@shared/uiPreview/figma'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { useMenu } from '../../components/Menu'
 import { errorText } from '../../lib/format'
@@ -152,7 +152,8 @@ function FigmaPanel({ diff, busy, onApply, onAsk, onClose }: { diff: DocDiff; bu
 }
 
 export function UiPreviewPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('files', 'project', 'tree')
   const h = window.harness
   const menu = useMenu()
   const session = useSession()

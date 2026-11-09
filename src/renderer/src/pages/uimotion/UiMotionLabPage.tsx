@@ -12,7 +12,7 @@ import { compileMotionModule, labSpecJson } from '@shared/uimotion/compile'
 import { MOTION_PRESETS, EFFECT_LIBRARY, normalizeSpec, presetSpec } from '@shared/uimotion/spec'
 import { uiPrincipleChecks } from '@shared/principles/uiChecks'
 import { principleLabel } from '@shared/principles/catalog'
-import { useStore } from '../../store'
+import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { errorText, ago } from '../../lib/format'
 import { useRestateGate } from '../../components/useRestateGate'
@@ -111,7 +111,8 @@ function Card({ entry, selected, onSelect }: { entry: UiMotionEntry; selected: b
 }
 
 export function UiMotionLabPage() {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('project')
   const h = window.harness
   const weights = usePrincipleWeights()
   const [status, setStatus] = useState<UiMotionStatus | null>(null)

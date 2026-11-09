@@ -7,7 +7,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { ModelBuild, ModelEntry, ModelProgress, ModelStatus, ModelTemplateId } from '@shared/types'
 import { MODEL_TEMPLATE_IDS } from '@shared/model/types'
 import { TEMPLATE_INFO } from '@shared/model/prompt'
-import { useStore } from '../../store'
+import { useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { ago, errorText } from '../../lib/format'
 import { ModelPreview } from './ModelPreview'
@@ -149,7 +149,7 @@ function CriticLog({ entry }: { entry: ModelEntry }) {
 }
 
 function StudioBox({ entry, status, onSaved }: { entry: ModelEntry; status: ModelStatus | null; onSaved: (e: ModelEntry) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [path, setPath] = useState(entry.guard?.path ?? '')
   const [area, setArea] = useState(entry.guard?.areaId ?? '')
   const [busy, setBusy] = useState(false)
@@ -197,7 +197,7 @@ function StudioBox({ entry, status, onSaved }: { entry: ModelEntry; status: Mode
 }
 
 function Detail({ entry, status, progress, onClose, onChanged }: { entry: ModelEntry; status: ModelStatus | null; progress?: ModelProgress; onClose: () => void; onChanged: (e?: ModelEntry) => void }) {
-  const { actions } = useStore()
+  const actions = useActions()
   const [build, setBuild] = useState<ModelBuild | null>(null)
   const [tab, setTab] = useState<'preview' | 'script' | 'critic'>('preview')
   const [loading, setLoading] = useState(true)
@@ -326,7 +326,7 @@ function Detail({ entry, status, progress, onClose, onChanged }: { entry: ModelE
 }
 
 export function ModelLabPage() {
-  const { actions } = useStore()
+  const actions = useActions()
   const h = window.harness
   const [status, setStatus] = useState<ModelStatus | null>(null)
   const [entries, setEntries] = useState<ModelEntry[]>([])

@@ -13,6 +13,7 @@ import { AbilityScene, type AbilityView } from './preview/abilityScene'
 import { applyScreen, type ScreenEls } from './preview/screenFx'
 import { AbilityTimeline } from './AbilityTimeline'
 import { webglMessage } from '../../lib/webgl'
+import { frameLoop, type FrameLoop } from '../../lib/frameLoop'
 
 const SPEEDS = [1, 0.5, 0.25, 0.1]
 
@@ -47,6 +48,7 @@ export function AbilityPreview({
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<AbilityScene | null>(null)
+  const loopRef = useRef<FrameLoop | null>(null)
   const fxRefs = useRef<Partial<ScreenEls>>({})
   const tRef = useRef(0)
   const [playing, setPlaying] = useState(!reduced)
@@ -85,13 +87,11 @@ export function AbilityPreview({
       scene.render()
     })
     ro.observe(wrap)
-    let raf = 0
-    let last = performance.now()
+    // Draws only while playing or after a change (seek, load, orbit, settings); see lib/frameLoop.
+    // The HUD updates about 15 times a second while playing, and only when what it shows changed.
     let tick = 0
-    const step = (now: number) => {
-      raf = requestAnimationFrame(step)
-      const dt = Math.min(0.1, (now - last) / 1000)
-      last = now
+    const shown = { t: -1, particles: -1, scale: -1, shake: -1 }
+    const frames = frameLoop(wrap, (dt) => {
       const p = playRef.current
       if (p.playing) {
         let next = advance(resolvedRef.current, tRef.current, dt * p.speed)
@@ -111,14 +111,28 @@ export function AbilityPreview({
         applyScreen({ canvas, tint: els.tint, bloom: els.bloom, flash: els.flash }, screen)
       }
       scene.render()
-      if (++tick % 4 === 0) {
-        setT(tRef.current)
-        setHud({ particles: f.particles, scale: timeScaleAt(resolvedRef.current, tRef.current), shake: f.shake })
+      if (!p.playing || ++tick % 4 === 0) {
+        const t = Math.round(tRef.current * 100)
+        if (t !== shown.t) {
+          shown.t = t
+          setT(tRef.current)
+        }
+        const scale = timeScaleAt(resolvedRef.current, tRef.current)
+        const shake = Math.round(f.shake * 100)
+        if (f.particles !== shown.particles || scale !== shown.scale || shake !== shown.shake) {
+          shown.particles = f.particles
+          shown.scale = scale
+          shown.shake = shake
+          setHud({ particles: f.particles, scale, shake: f.shake })
+        }
       }
-    }
-    raf = requestAnimationFrame(step)
+      return p.playing
+    })
+    loopRef.current = frames
+    scene.onDirty = frames.invalidate
     return () => {
-      cancelAnimationFrame(raf)
+      frames.dispose()
+      loopRef.current = null
       ro.disconnect()
       scene.dispose()
       sceneRef.current = null
@@ -131,6 +145,7 @@ export function AbilityPreview({
     let live = true
     void scene.load(ability, effects).then(async () => {
       if (!live) return
+      loopRef.current?.invalidate()
       resolvedRef.current = scene.timeline
       setResolved(scene.timeline)
       const n: string[] = []
@@ -146,6 +161,7 @@ export function AbilityPreview({
         scene.setTime(Math.min(ability.duration, (rel?.t ?? ability.duration / 2) + 0.12))
         onSnapshot(scene.snapshot())
         scene.setTime(tRef.current)
+        loopRef.current?.invalidate()
       }
     })
     return () => {
@@ -153,13 +169,22 @@ export function AbilityPreview({
     }
   }, [ability, effects])
 
-  useEffect(() => sceneRef.current?.setBackground(bg), [bg])
-  useEffect(() => sceneRef.current?.setView(view), [view])
+  useEffect(() => {
+    sceneRef.current?.setBackground(bg)
+    loopRef.current?.invalidate()
+  }, [bg])
+  useEffect(() => {
+    sceneRef.current?.setView(view)
+    loopRef.current?.invalidate()
+  }, [view])
+  // Play / pause, loop and speed: wake the loop (it stops by itself when paused).
+  useEffect(() => loopRef.current?.invalidate(), [playing, loop, speed])
 
   const scrub = (v: number) => {
     setPlaying(false)
     tRef.current = v
     setT(v)
+    loopRef.current?.invalidate()
   }
   const marker = [...resolved.markers].filter((m) => m.t <= t + 1e-6).pop()
 
@@ -181,7 +206,7 @@ export function AbilityPreview({
         <button className="btn small ghost" onClick={() => setPlaying((p) => !p)} aria-label={playing ? 'Pause' : 'Play'} title={playing ? 'Pause' : 'Play'}>
           <Icon name={playing ? 'stop' : 'play'} size={11} />
         </button>
-        <button className="btn small ghost" onClick={() => ((tRef.current = 0), setT(0), setPlaying(true))} aria-label="Play from the start" title="Play from the start">
+        <button className="btn small ghost" onClick={() => ((tRef.current = 0), setT(0), setPlaying(true), loopRef.current?.invalidate())} aria-label="Play from the start" title="Play from the start">
           <Icon name="restart" size={11} />
         </button>
         <span className="grow" />

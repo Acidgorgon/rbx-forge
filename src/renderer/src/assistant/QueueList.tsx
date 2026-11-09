@@ -2,7 +2,7 @@
 // one compact row each, labelled Queued, with edit / send now / remove, and a "Resume queue" line
 // when a turn ended with an error, was stopped, or waits for an answer.
 import { useState, type KeyboardEvent } from 'react'
-import { useActions, useStore } from '../store'
+import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { PAUSE_TEXT, type QueuedPrompt } from './queue'
 import './queue.css'
@@ -65,7 +65,8 @@ function Row({ chatId, item, n, busy }: { chatId: string; item: QueuedPrompt; n:
 }
 
 export function QueueList({ chatId }: { chatId: string | null }) {
-  const { state, actions } = useStore()
+  const actions = useActions()
+  const state = useStorePick('busy', 'queuePaused', 'queues')
   const q = chatId ? state.queues[chatId] ?? [] : []
   if (!chatId || !q.length) return null
   const paused = state.queuePaused[chatId]

@@ -41,6 +41,8 @@ export class GitSync {
   // What the last sync skipped because of manual work (GitStatus.note), and the last one logged.
   private note?: string
   private noteLogged?: string
+  // The last status sent to onStatus, serialised: an unchanged status is not sent again.
+  private lastSent?: string
 
   constructor(options: GitSyncOptions) {
     this.options = options
@@ -156,7 +158,11 @@ export class GitSync {
 
   async refresh(fetch = false): Promise<GitStatus> {
     const status = await this.status(fetch)
-    this.options.onStatus?.(status)
+    const json = JSON.stringify(status)
+    if (json !== this.lastSent) {
+      this.lastSent = json
+      this.options.onStatus?.(status)
+    }
     return status
   }
 

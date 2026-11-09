@@ -3,7 +3,7 @@
 // setting or the heuristic skip go straight through.
 import { useRef, useState, type ReactNode } from 'react'
 import type { RestateLab, Restatement } from '@shared/types'
-import { useStore } from '../store'
+import { useActions } from '../store'
 import { RestateCard } from './RestateCard'
 
 // null = cancelled; {} = no card (skipped); { restatement } = confirmed.
@@ -16,7 +16,7 @@ interface Pending {
 }
 
 export function useRestateGate(lab: RestateLab): { gate: (brief: string) => Promise<GateResult>; node: ReactNode; waiting: boolean } {
-  const { actions } = useStore()
+  const actions = useActions()
   const [pending, setPending] = useState<Pending | null>(null)
   const [loading, setLoading] = useState(false)
   const [busy, setBusy] = useState(false)

@@ -404,6 +404,8 @@ function projectChanged(opened: Project, change: ProjectChange): void {
     applyPlace(opened)
     forgeSync.onPlacesChanged()
   }
+  // The project file's $path folders decide what the luau-lsp watcher covers (a no-op when unchanged).
+  if (change.info || change.places) lsp.setWatchDirs(opened.mappedWatchDirs())
   // git status spawns several git processes: coalesce a burst of tree changes into one run.
   gitRefreshDebounce.call()
 }
@@ -477,6 +479,7 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   lsp.setDataModel(opened.tree)
 
   await supervisor.setRoot(full)
+  lsp.setWatchDirs(opened.mappedWatchDirs())
   applyPlace(opened, false)
   await forgeSync.onProjectOpen(full)
   void lsp.setRoot(full).catch((error) => harnessLog(`luau-lsp: ${error}`, 'stderr'))

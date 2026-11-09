@@ -33,8 +33,9 @@
 
 import type { ChildProcess } from 'node:child_process'
 import { existsSync, mkdirSync, renameSync, statSync, watch, writeFileSync, type FSWatcher } from 'node:fs'
+import { stat } from 'node:fs/promises'
 import { basename, join } from 'node:path'
-import { pathToFileURL } from 'node:url'
+import { fileURLToPath, pathToFileURL } from 'node:url'
 import type { LogLine, TreeNode } from '@shared/types'
 import { trailingDebounce, type TrailingDebounce } from '../../shared/debounce.ts'
 import { DataModelSync } from './lspDataModel.ts'
@@ -262,12 +263,15 @@ export class LspBridge {
   private startedAt = 0
   private generation = 0
   private retry: ReturnType<typeof setTimeout> | null = null
-  private watcher: FSWatcher | null = null
+  private watchers: FSWatcher[] = []
+  private sourcemapWatcher: FSWatcher | null = null
+  // Folders to watch recursively (normalizeWatchDirs); null watches the whole root.
+  private watchDirs: string[] | null = null
   private pendingChanges = new Map<string, number>()
   private flushTimer: ReturnType<typeof setTimeout> | null = null
   // sourcemap.json notices wait for a longer trailing debounce than source files.
   private pendingSourcemap = new Map<string, number>()
-  private sourcemapDebounce: TrailingDebounce = trailingDebounce(() => this.flushSourcemap(), SOURCEMAP_DEBOUNCE_MS)
+  private sourcemapDebounce: TrailingDebounce = trailingDebounce(() => void this.flushSourcemap(), SOURCEMAP_DEBOUNCE_MS)
   private versionText: string | null | undefined
   // The last spawn found no luau-lsp binary.
   private missing = false
@@ -294,6 +298,10 @@ export class LspBridge {
     const next = projectFile ? { projectFile, sourcemap: sourcemap ?? 'sourcemap.json' } : null
     if (JSON.stringify(next) === JSON.stringify(this.place)) return
     this.place = next
+    // The new place's sourcemap may sit in another folder.
+    this.sourcemapWatcher?.close()
+    this.sourcemapWatcher = null
+    this.watchSourcemapDir()
     // The server pulls its settings again; the answer goes through patchConfig.
     if (this.handshake.configured) this.sendToServer({ jsonrpc: '2.0', method: 'workspace/didChangeConfiguration', params: { settings: null } })
   }
@@ -531,58 +539,152 @@ export class LspBridge {
 
   // --- workspace/didChangeWatchedFiles on behalf of the client
 
-  private startWatching(): void {
-    if (this.watcher || !this.root) return
-    const root = this.root
-    try {
-      this.watcher = watch(root, { recursive: true }, (event, filename) => {
-        if (!filename) return
-        const rel = filename.toString()
-        const isSourcemap = rel.split(/[\\/]/).join('/') === this.place?.sourcemap
-        if (!isWatched(rel) && !isSourcemap) return
-        const full = join(root, rel)
-        // 1 created, 2 changed, 3 deleted
-        const type = event === 'change' ? 2 : existsSync(full) ? 1 : 3
-        const uri = pathToFileURL(full).href
-        const pending = isSourcemap || basename(rel) === 'sourcemap.json' ? this.pendingSourcemap : this.pendingChanges
-        const previous = pending.get(uri)
-        pending.set(uri, previous === 1 && type === 2 ? 1 : type)
-        if (pending === this.pendingSourcemap) this.sourcemapDebounce.call()
-        else if (!this.flushTimer) this.flushTimer = setTimeout(() => this.flushChanges(), WATCH_DEBOUNCE_MS)
-      })
-      this.watcher.on('error', (error) => {
-        this.logLine('stderr', `file watcher: ${error.message}`)
-        this.stopWatching()
-      })
-    } catch (error) {
-      this.logLine('stderr', `file watcher: ${error}`)
+  // Repo-relative folders the project maps ($path roots, top-most only), or null for "the whole root".
+  // Watching just these keeps .git, node_modules, Packages and art folders out of the event stream.
+  setWatchDirs(dirs: string[] | null): void {
+    const next = dirs ? normalizeWatchDirs(dirs) : null
+    if (JSON.stringify(next) === JSON.stringify(this.watchDirs)) return
+    this.watchDirs = next
+    if (this.watchers.length) {
+      this.closeWatchers()
+      this.startWatching()
     }
   }
 
-  private flushChanges(): void {
+  private startWatching(): void {
+    if (this.watchers.length || !this.root) return
+    const root = this.root
+    const dirs = this.watchDirs
+    // The root itself is mapped, or nothing is known: one recursive watcher on the root (filtered).
+    if (!dirs || dirs.length === 0 || dirs.includes('')) {
+      this.addWatcher(root, '', true)
+      return
+    }
+    // Root files (sourcemap.json, .luaurc, .config.luau) without descending into the tree.
+    let ok = this.addWatcher(root, '', false)
+    const fileParents = new Set<string>()
+    for (const dir of dirs) {
+      if (!ok) break
+      // Vendored folders (Packages...) are ignored anyway: no watcher for them.
+      if (dir.split('/').some((part) => WATCH_SKIP_DIRS.has(part))) continue
+      const info = statSync(join(root, dir), { throwIfNoEntry: false })
+      if (!info) ok = false
+      else if (info.isDirectory()) ok = this.addWatcher(join(root, dir), dir, true)
+      else {
+        // A mapped file ($path: "src/init.luau"): its folder, not recursively.
+        const parent = dir.split('/').slice(0, -1).join('/')
+        if (parent && !fileParents.has(parent)) {
+          fileParents.add(parent)
+          ok = this.addWatcher(join(root, parent), parent, false)
+        }
+      }
+    }
+    if (!ok) {
+      // A mapped folder is missing or unwatchable: back to the whole root, as before.
+      this.closeWatchers()
+      this.addWatcher(root, '', true)
+      return
+    }
+    this.watchSourcemapDir()
+  }
+
+  // The active place's sourcemap may live outside the mapped folders (.studio-sync/<place>.sourcemap.json).
+  private watchSourcemapDir(): void {
+    if (!this.root || this.sourcemapWatcher || !this.watchers.length) return
+    const sourcemap = this.place?.sourcemap
+    const dir = sourcemap ? sourcemap.split('/').slice(0, -1).join('/') : ''
+    if (!dir || !this.watchDirs || this.watchDirs.some((d) => d === '' || dir === d || dir.startsWith(d + '/'))) return
+    const watcher = this.createWatcher(join(this.root, dir), dir, false)
+    if (watcher) this.sourcemapWatcher = watcher
+  }
+
+  private addWatcher(path: string, prefix: string, recursive: boolean): boolean {
+    const watcher = this.createWatcher(path, prefix, recursive)
+    if (watcher) this.watchers.push(watcher)
+    return watcher !== null
+  }
+
+  private createWatcher(path: string, prefix: string, recursive: boolean): FSWatcher | null {
+    const root = this.root
+    if (!root) return null
+    try {
+      const watcher = watch(path, { recursive }, (event, filename) => {
+        if (!filename) return
+        const name = filename.toString()
+        const rel = prefix ? `${prefix}/${name}` : name
+        // The sourcemap's folder (.studio-sync) appeared after the watchers started.
+        if (!prefix && !recursive && !this.sourcemapWatcher && this.place?.sourcemap.startsWith(name + '/')) this.watchSourcemapDir()
+        const isSourcemap = rel.split(/[\\/]/).join('/') === this.place?.sourcemap
+        if (!isSourcemap && !isWatched(rel)) return
+        const uri = pathToFileURL(join(root, rel)).href
+        // 1 created, 2 changed, 3 deleted; 0: renamed, resolved to 1 or 3 with a stat when flushed.
+        const type = event === 'change' ? 2 : 0
+        const pending = isSourcemap || basename(rel) === 'sourcemap.json' ? this.pendingSourcemap : this.pendingChanges
+        const previous = pending.get(uri)
+        pending.set(uri, previous === 0 || type === 0 ? 0 : previous === 1 && type === 2 ? 1 : type)
+        if (pending === this.pendingSourcemap) this.sourcemapDebounce.call()
+        else if (!this.flushTimer) this.flushTimer = setTimeout(() => void this.flushChanges(), WATCH_DEBOUNCE_MS)
+      })
+      watcher.on('error', (error) => {
+        this.logLine('stderr', `file watcher: ${error.message}`)
+        this.stopWatching()
+      })
+      return watcher
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException)?.code !== 'ENOENT') this.logLine('stderr', `file watcher: ${error}`)
+      return null
+    }
+  }
+
+  private async flushChanges(): Promise<void> {
     this.flushTimer = null
-    if (!this.pendingChanges.size) return
-    const changes = [...this.pendingChanges].map(([uri, type]) => ({ uri, type }))
-    this.pendingChanges.clear()
+    await this.sendChanges(this.pendingChanges)
+  }
+
+  private async flushSourcemap(): Promise<void> {
+    await this.sendChanges(this.pendingSourcemap)
+  }
+
+  // Sends one didChangeWatchedFiles for the pending entries; renames become created/deleted by an
+  // async stat here instead of a sync existsSync per watcher event.
+  private async sendChanges(pending: Map<string, number>): Promise<void> {
+    if (!pending.size) return
+    const entries = [...pending]
+    pending.clear()
+    const generation = this.generation
+    const changes = await Promise.all(
+      entries.map(async ([uri, type]) => ({ uri, type: type !== 0 ? type : (await stat(fileURLToPath(uri)).then(() => true, () => false)) ? 1 : 3 }))
+    )
+    // The server these changes were meant for was stopped or replaced meanwhile.
+    if (generation !== this.generation) return
     this.send({ jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles', params: { changes } })
   }
 
-  private flushSourcemap(): void {
-    if (!this.pendingSourcemap.size) return
-    const changes = [...this.pendingSourcemap].map(([uri, type]) => ({ uri, type }))
-    this.pendingSourcemap.clear()
-    this.send({ jsonrpc: '2.0', method: 'workspace/didChangeWatchedFiles', params: { changes } })
+  private closeWatchers(): void {
+    for (const watcher of this.watchers) watcher.close()
+    this.watchers = []
+    this.sourcemapWatcher?.close()
+    this.sourcemapWatcher = null
   }
 
   private stopWatching(): void {
-    this.watcher?.close()
-    this.watcher = null
+    this.closeWatchers()
     if (this.flushTimer) clearTimeout(this.flushTimer)
     this.flushTimer = null
     this.pendingChanges.clear()
     this.sourcemapDebounce.cancel()
     this.pendingSourcemap.clear()
   }
+}
+
+// Mapped folders as watch roots: repo-relative, posix, without "./" or a trailing slash ("" is the
+// root), and only the top-most of nested ones (src covers src/shared).
+export function normalizeWatchDirs(dirs: string[]): string[] {
+  const clean = [...new Set(dirs.map((d) => d.replace(/\\/g, '/').replace(/^(\.\/)+/, '').replace(/\/+$/, '').replace(/^\.$/, '')))].sort()
+  if (clean.includes('')) return ['']
+  const out: string[] = []
+  for (const dir of clean) if (!out.some((d) => dir === d || dir.startsWith(d + '/'))) out.push(dir)
+  return out
 }
 
 export const SKIP_DIRS = new Set(['node_modules', '.git', 'out', 'dist'])

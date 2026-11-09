@@ -616,6 +616,11 @@ export class Project {
     return project
   }
 
+  // Repo-relative $path values of every place (what the folder watchers cover), for the luau-lsp watcher.
+  mappedWatchDirs(): string[] {
+    return [...this.watchDirs]
+  }
+
   // The active place, or null when the root has no project file at all.
   getActivePlace(): PlaceInfo | null {
     return this.places.find((place) => place.file === this.activePlace) ?? null

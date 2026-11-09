@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict'
 import { spawn } from 'node:child_process'
-import { mkdtempSync, rmSync, statSync, utimesSync, writeFileSync, readFileSync } from 'node:fs'
+import { mkdirSync, mkdtempSync, rmSync, statSync, utimesSync, writeFileSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { encodeMessage, isWatched, LspBridge, LspFramer, lspArgs, TypeCache } from '../src/main/services/lspBridge.ts'
+import { encodeMessage, isWatched, LspBridge, LspFramer, lspArgs, normalizeWatchDirs, TypeCache } from '../src/main/services/lspBridge.ts'
 
 const dirs: string[] = []
 function tempDir(): string {
@@ -184,6 +184,64 @@ test('bridge relays messages both ways and restarts a crashed server', async () 
     // A second start() after initialize (window reload) gets a new process.
     assert.equal(await bridge.start(), true)
     assert.equal(spawned, 3)
+  } finally {
+    await bridge.dispose()
+  }
+})
+
+test('watch dirs: top-most mapped folders only, normalized', () => {
+  assert.deepEqual(normalizeWatchDirs(['src/shared', './src', 'src/server/', 'lib', 'lib2']), ['lib', 'lib2', 'src'])
+  assert.deepEqual(normalizeWatchDirs(['src', '.', 'lib']), [''])
+  assert.deepEqual(normalizeWatchDirs(['src\\client', 'src\\client\\ui']), ['src/client'])
+  assert.deepEqual(normalizeWatchDirs([]), [])
+})
+
+test('file watcher covers mapped folders and root config, resolves renames with a stat', async () => {
+  const root = tempDir()
+  const script = join(root, 'server.cjs')
+  writeFileSync(script, FAKE_SERVER)
+  const vcs = '.' + 'git'
+  for (const dir of ['src/shared', vcs, 'node_modules/pkg', 'art']) mkdirSync(join(root, dir), { recursive: true })
+  const received: any[] = []
+  const bridge = new LspBridge({
+    spawn: (args) => spawn(process.execPath, [script, ...args], { cwd: root, stdio: ['pipe', 'pipe', 'pipe'] }),
+    send: (m) => received.push(m),
+    log: () => undefined,
+    cacheDir: root,
+    backoffMs: 20,
+    version: async () => '1.70.1',
+    types: { ensure: async () => ({ definitions: null, docs: null }) }
+  })
+  const changes = () =>
+    received
+      .filter((m) => m.method === 'echo' && m.params.method === 'workspace/didChangeWatchedFiles')
+      .flatMap((m) => m.params.params.changes as { uri: string; type: number }[])
+      .map((c) => ({ path: decodeURIComponent(c.uri).slice(`file://${root}`.length + 1).replace(/^\//, ''), type: c.type }))
+  const waitFor = async (pred: () => boolean) => {
+    for (let i = 0; i < 300 && !pred(); i++) await new Promise((r) => setTimeout(r, 10))
+    assert.ok(pred(), 'timed out; got ' + JSON.stringify(changes()))
+  }
+  try {
+    bridge.setWatchDirs(['src/shared', 'src'])
+    await bridge.start()
+    await bridge.setRoot(root)
+    bridge.send({ jsonrpc: '2.0', id: 1, method: 'initialize', params: {} })
+    await waitFor(() => received.some((m) => m.id === 1))
+    bridge.send({ jsonrpc: '2.0', method: 'initialized', params: {} })
+    await new Promise((r) => setTimeout(r, 100))
+    writeFileSync(join(root, vcs, 'index'), 'x')
+    writeFileSync(join(root, 'node_modules', 'pkg', 'x.lua'), 'x')
+    writeFileSync(join(root, 'art', 'y.luau'), 'x')
+    writeFileSync(join(root, 'src', 'shared', 'A.luau'), 'return 1')
+    writeFileSync(join(root, '.luaurc'), '{}')
+    await waitFor(() => changes().some((c) => c.path === 'src/shared/A.luau') && changes().some((c) => c.path === '.luaurc'))
+    const first = changes()
+    assert.equal(first.find((c) => c.path === 'src/shared/A.luau')?.type, 1)
+    assert.ok(first.every((c) => !c.path.startsWith(vcs) && !c.path.startsWith('node_modules') && !c.path.startsWith('art')), JSON.stringify(first))
+    received.length = 0
+    rmSync(join(root, 'src', 'shared', 'A.luau'))
+    await waitFor(() => changes().some((c) => c.path === 'src/shared/A.luau'))
+    assert.equal(changes().find((c) => c.path === 'src/shared/A.luau')?.type, 3)
   } finally {
     await bridge.dispose()
   }

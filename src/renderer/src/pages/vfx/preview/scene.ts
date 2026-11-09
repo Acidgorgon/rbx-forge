@@ -15,6 +15,7 @@ import { FxLayer, type LayerStats, type MeshInfo } from './fxLayer'
 import { frameView } from './framing'
 import { placeholderTexture, type PlaceholderKind } from './textures'
 import { DUMMY_GREY, LinearOutput, setSrgb, srgbColor, Stage, type Background } from './stage'
+import { previewPixelRatio } from '../../../lib/frameLoop'
 
 export type { Background }
 export { BACKGROUNDS } from './stage'
@@ -37,8 +38,11 @@ export type SceneStats = LayerStats
 export class TextureCache {
   private textures = new Map<string, Promise<THREE.Texture>>()
   private resolver: TextureResolver | null
-  constructor(resolver: TextureResolver | null) {
+  // Called when a texture finishes loading (an on-demand preview draws again).
+  private onReady: (() => void) | null
+  constructor(resolver: TextureResolver | null, onReady: (() => void) | null = null) {
     this.resolver = resolver
+    this.onReady = onReady
   }
 
   get = (ref: string, kind: PlaceholderKind, grid: [number, number]): Promise<THREE.Texture> => {
@@ -62,6 +66,7 @@ export class TextureCache {
         return tex
       })()
       this.textures.set(key, p)
+      if (this.onReady) void p.then(() => this.onReady?.(), () => undefined)
     }
     return p
   }
@@ -130,13 +135,18 @@ export class VfxScene {
   // Where the loaded effect reaches (the camera pulls back when a preset does not show it all).
   private bounds: ReturnType<typeof effectBounds> = null
   private framed = false
+  // Set by an on-demand preview: called when the picture changed outside setTime (orbit, a texture
+  // arriving late), so it can draw a frame.
+  onDirty: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, opts: { resolver?: TextureResolver; interactive?: boolean; background?: Background } = {}) {
     THREE.ColorManagement.enabled = false
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: false })
+    // No canvas MSAA: the scene renders into LinearOutput's multisampled target and the canvas only
+    // gets a full-screen quad. No preserveDrawingBuffer: snapshot() renders right before reading.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: false, alpha: false })
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace
-    this.renderer.setPixelRatio(Math.min(2, globalThis.devicePixelRatio || 1))
-    this.textures = new TextureCache(opts.resolver ?? null)
+    this.renderer.setPixelRatio(previewPixelRatio())
+    this.textures = new TextureCache(opts.resolver ?? null, () => this.onDirty?.())
     // Roblox's default camera field of view is 70 degrees.
     this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, 2000)
     this.camera.position.set(5.5, 5.2, -9.5)
@@ -145,6 +155,7 @@ export class VfxScene {
       this.controls.target.set(0, 3.2, -1)
       this.controls.enableDamping = false
       this.controls.update()
+      this.controls.addEventListener('change', () => this.onDirty?.())
     } else this.camera.lookAt(0, 3.2, -1)
     this.output = new LinearOutput(this.renderer)
     this.stage = new Stage(this.scene, opts.background ?? 'dark')

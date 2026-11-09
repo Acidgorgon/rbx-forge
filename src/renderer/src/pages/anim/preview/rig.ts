@@ -9,6 +9,7 @@ import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import type { AnimClip, RigType } from '@shared/anim/model'
 import { drawPartNames, drawSize, partRole, posedParts, type PartRole } from '@shared/anim/posed'
 import { clipRig } from '@shared/anim/sample'
+import { previewPixelRatio } from '../../../lib/frameLoop'
 
 export type AnimView = 'front' | 'side' | 'wide'
 
@@ -95,14 +96,18 @@ export class AnimScene {
   private onion = 0
   private onionStep = 0.08
   travel = true
+  // Set by an on-demand preview: called when the camera moved (orbit), so it can draw a frame.
+  onDirty: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, opts: { interactive?: boolean; light?: boolean } = {}) {
     THREE.ColorManagement.enabled = false
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: false })
+    // No preserveDrawingBuffer: snapshot() renders right before reading the canvas.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: false, alpha: false })
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace
-    this.renderer.setPixelRatio(Math.min(2, globalThis.devicePixelRatio || 1))
+    this.renderer.setPixelRatio(previewPixelRatio())
     this.camera = new THREE.PerspectiveCamera(50, 1, 0.1, 500)
     this.controls = opts.interactive === false ? null : new OrbitControls(this.camera, canvas)
+    this.controls?.addEventListener('change', () => this.onDirty?.())
     this.setView('front')
     this.setTheme(opts.light ? 'light' : 'dark')
     this.scene.add(new THREE.HemisphereLight(0xe6ecf3, 0x30343a, 1.15))

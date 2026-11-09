@@ -15,6 +15,7 @@ import { FxLayer } from '../../vfx/preview/fxLayer'
 import { TextureCache, type Background, type TextureResolver } from '../../vfx/preview/scene'
 import { LinearOutput, srgbColor, Stage } from '../../vfx/preview/stage'
 import { PoseTrack } from './pose'
+import { previewPixelRatio } from '../../../lib/frameLoop'
 
 export type AbilityView = 'front' | 'side' | 'wide' | 'back'
 
@@ -87,16 +88,24 @@ export class AbilityScene {
   shakeEnabled = true
   private stage: Stage
   private output: LinearOutput
+  // Set by an on-demand preview: called when the picture changed outside setTime (orbit, a texture
+  // arriving late), so it can draw a frame.
+  onDirty: (() => void) | null = null
 
   constructor(canvas: HTMLCanvasElement, opts: { resolver?: TextureResolver; interactive?: boolean; background?: Background } = {}) {
     THREE.ColorManagement.enabled = false
-    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: true, preserveDrawingBuffer: true, alpha: false })
+    // No canvas MSAA: the scene renders into LinearOutput's multisampled target and the canvas only
+    // gets a full-screen quad. No preserveDrawingBuffer: snapshot() renders right before reading.
+    this.renderer = new THREE.WebGLRenderer({ canvas, antialias: false, preserveDrawingBuffer: false, alpha: false })
     this.renderer.outputColorSpace = THREE.LinearSRGBColorSpace
-    this.renderer.setPixelRatio(Math.min(2, globalThis.devicePixelRatio || 1))
-    this.textures = new TextureCache(opts.resolver ?? null)
+    this.renderer.setPixelRatio(previewPixelRatio())
+    this.textures = new TextureCache(opts.resolver ?? null, () => this.onDirty?.())
     this.camera = new THREE.PerspectiveCamera(70, 1, 0.1, 2000)
     this.controls = opts.interactive === false ? null : new OrbitControls(this.camera, canvas)
-    if (this.controls) this.controls.enableDamping = false
+    if (this.controls) {
+      this.controls.enableDamping = false
+      this.controls.addEventListener('change', () => this.onDirty?.())
+    }
     this.setView('front')
     this.output = new LinearOutput(this.renderer)
     this.stage = new Stage(this.scene, opts.background ?? 'dark')

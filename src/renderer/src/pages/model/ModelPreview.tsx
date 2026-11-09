@@ -7,6 +7,7 @@ import { MODEL_VIEWS, visibleParts, type ModelView } from '@shared/model/frame'
 import { PART_BUDGET } from '@shared/model/prompt'
 import { Icon } from '../../components/Icons'
 import { webglMessage } from '../../lib/webgl'
+import { frameLoop, type FrameLoop } from '../../lib/frameLoop'
 import { BACKGROUNDS, type Background } from '../vfx/preview/stage'
 import { ModelScene } from './preview/modelScene'
 
@@ -16,6 +17,7 @@ export function ModelPreview({ build, name, onSnapshot }: { build: ModelBuild; n
   const canvasRef = useRef<HTMLCanvasElement>(null)
   const wrapRef = useRef<HTMLDivElement>(null)
   const sceneRef = useRef<ModelScene | null>(null)
+  const loopRef = useRef<FrameLoop | null>(null)
   const [error, setError] = useState<string | null>(null)
   const [view, setView] = useState<ModelView>('front')
   const [bg, setBg] = useState<Background>('studio')
@@ -40,14 +42,16 @@ export function ModelPreview({ build, name, onSnapshot }: { build: ModelBuild; n
       scene.render()
     })
     ro.observe(wrap)
-    let raf = 0
-    const step = () => {
-      raf = requestAnimationFrame(step)
+    // A static build: draw only after a change (load, orbit, view, background); see lib/frameLoop.
+    const frames = frameLoop(wrap, () => {
       scene.render()
-    }
-    raf = requestAnimationFrame(step)
+      return false
+    })
+    loopRef.current = frames
+    scene.onDirty = frames.invalidate
     return () => {
-      cancelAnimationFrame(raf)
+      frames.dispose()
+      loopRef.current = null
       ro.disconnect()
       scene.dispose()
       sceneRef.current = null
@@ -58,6 +62,7 @@ export function ModelPreview({ build, name, onSnapshot }: { build: ModelBuild; n
     const scene = sceneRef.current
     if (!scene) return
     scene.load(build.parts)
+    loopRef.current?.invalidate()
     if (!snapRef.current || !build.ok || !build.parts.length) return
     let live = true
     void nextFrame().then(() => {
@@ -68,8 +73,14 @@ export function ModelPreview({ build, name, onSnapshot }: { build: ModelBuild; n
     }
   }, [build])
 
-  useEffect(() => sceneRef.current?.setBackground(bg), [bg])
-  useEffect(() => sceneRef.current?.setView(view), [view])
+  useEffect(() => {
+    sceneRef.current?.setBackground(bg)
+    loopRef.current?.invalidate()
+  }, [bg])
+  useEffect(() => {
+    sceneRef.current?.setView(view)
+    loopRef.current?.invalidate()
+  }, [view])
 
   const shown = visibleParts(build.parts).length
   const over = build.parts.length > PART_BUDGET

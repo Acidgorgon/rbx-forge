@@ -8,8 +8,9 @@
 // mode the update downloads in the background and waits: it is installed only when the user picks
 // Restart (the renderer asks first if an agent is running or an editor is dirty) or quits Forge
 // (autoInstallOnAppQuit). Nothing here quits the app on its own.
+import { isRosetta } from '../../../shared/doctor/checks.ts'
 import type { UpdateChannel, UpdateMode, UpdateSettings, UpdateState } from '../../../shared/updateTypes.ts'
-import { classifyUpdateError, clipNotes, notesToText, releasePageUrl, type FeedConfig } from './util.ts'
+import { classifyUpdateError, clipNotes, macDmgUrl, macDownloadArch, notesToText, releasePageUrl, type FeedConfig } from './util.ts'
 
 // The part of electron-updater's AppUpdater this uses.
 export interface UpdaterLike {
@@ -43,6 +44,11 @@ export interface UpdateControllerDeps {
   disabledReason?: string
   // Why mode is manual, shown in Settings.
   modeNote?: string
+  // process.platform / process.arch, and whether the Intel build runs under Rosetta
+  // (app.runningUnderARM64Translation). On macOS manual mode they pick the dmg to download.
+  platform?: string
+  arch?: string
+  translated?: boolean
   settings: { get<T>(key: string, fallback: T): T; set(key: string, value: unknown): void }
   emit: (state: UpdateState) => void
   openExternal: (url: string) => void
@@ -73,7 +79,9 @@ export class UpdateController {
       channel: saved.channel,
       autoCheck: saved.autoCheck,
       feed: deps.feed ? `${deps.feed.owner}/${deps.feed.repo}` : null,
-      note: deps.disabledReason ?? deps.modeNote
+      note: deps.disabledReason ?? deps.modeNote,
+      // The Intel build under Rosetta on Apple Silicon: link the Apple Silicon dmg of this version.
+      ...(isRosetta(deps.platform ?? '', deps.arch ?? '', !!deps.translated) ? { rosettaDownload: macDmgUrl(deps.feed, deps.currentVersion, 'arm64') } : {})
     }
     const u = deps.updater
     // Background download only where the app can install it; a manual (macOS unsigned) build just
@@ -161,9 +169,17 @@ export class UpdateController {
     this.deps.updater.quitAndInstall(true, true)
   }
 
-  openRelease(): void {
+  // An unsigned Mac (manual mode) downloads the offered version's dmg for its chip straight away;
+  // page (or no known version, or Windows) opens the release page instead.
+  openRelease(page = false): void {
     if (!this.deps.feed) return
-    this.deps.openExternal(this.state.offer?.url ?? releasePageUrl(this.deps.feed))
+    this.deps.openExternal((!page && this.macDownloadUrl()) || (this.state.offer?.url ?? releasePageUrl(this.deps.feed)))
+  }
+
+  private macDownloadUrl(): string | null {
+    const version = this.state.offer?.version
+    if (this.deps.platform !== 'darwin' || this.state.mode !== 'manual' || !version) return null
+    return macDmgUrl(this.deps.feed, version, macDownloadArch(this.deps.arch ?? process.arch, !!this.deps.translated))
   }
 
   dispose(): void {

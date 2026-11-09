@@ -6,6 +6,7 @@ import { useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { useRestartForUpdate, useUpdate } from './useUpdate'
+import { useRosettaNotice } from './RosettaNotice'
 import { showSettingsSection } from '../pages/settings/settingsNav'
 import './updates.css'
 
@@ -20,6 +21,7 @@ export function UpdatePill() {
   const restart = useRestartForUpdate()
   const restartQuick = useRestartForUpdate('quick')
   const menu = useMenu()
+  useRosettaNotice()
   // "Later" hides the pill for this version until something changes.
   const [hidden, setHidden] = useState<string | null>(null)
   const quick = update?.quick
@@ -77,7 +79,7 @@ export function UpdatePill() {
     <>
       <button
         className="upd-pill"
-        title={ready ? `RBX Forge ${v} is downloaded. Restart to install it, or it installs when you quit.\nRight-click for more.` : `RBX Forge ${v} is out. This Mac installs it from the release page.\nRight-click for more.`}
+        title={ready ? `RBX Forge ${v} is downloaded. Restart to install it, or it installs when you quit.\nRight-click for more.` : `RBX Forge ${v} is out. Click to download it for this Mac.\nRight-click for more.`}
         onClick={() => (ready ? restart() : void window.harness.updateOpenRelease())}
         onContextMenu={(e) => menu.openAt(e, items, { direction: 'up' })}
       >

@@ -1,6 +1,6 @@
 // App state: one reducer fed by HarnessApi calls and HarnessEvents, plus the workbench layout
 // (panels, tabs, palette) persisted per machine in localStorage.
-import { createContext, useContext, useEffect, useMemo, useReducer, useRef, type ReactNode } from 'react'
+import { createContext, useContext, useEffect, useMemo, useRef, useState, useSyncExternalStore, type ReactNode } from 'react'
 import type { ChatMode } from '@shared/chatModes'
 import type {
   AppSettings,
@@ -638,14 +638,52 @@ export interface Actions {
   runLint(): Promise<void>
 }
 
-const Ctx = createContext<{ state: State; actions: Actions } | null>(null)
+// The state lives outside React (one object per StoreProvider) so components can subscribe to the
+// part they read (useStoreSelector) instead of re-rendering on every dispatch, which a single
+// context value forces on every consumer: a keystroke, a log batch or a click would otherwise
+// re-render the whole workbench.
+interface Store {
+  get(): State
+  subscribe(listener: () => void): () => void
+  dispatch(action: Action): void
+}
+
+function createStore(): Store {
+  let state = initial
+  const listeners = new Set<() => void>()
+  return {
+    get: () => state,
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => {
+        listeners.delete(listener)
+      }
+    },
+    dispatch(action) {
+      const next = reducer(state, action)
+      if (next === state) return
+      state = next
+      for (const l of [...listeners]) l()
+    }
+  }
+}
+
+const StoreCtx = createContext<Store | null>(null)
 // Actions never change identity, so components that only dispatch use this and skip every state update.
 const ActionsCtx = createContext<Actions | null>(null)
 
+function useStoreObject(): Store {
+  const store = useContext(StoreCtx)
+  if (!store) throw new Error('useStore outside StoreProvider')
+  return store
+}
+
+// The whole state: re-renders on every dispatch. Prefer useStoreSelector in anything always mounted.
 export function useStore(): { state: State; actions: Actions } {
-  const v = useContext(Ctx)
-  if (!v) throw new Error('useStore outside StoreProvider')
-  return v
+  const store = useStoreObject()
+  const actions = useActions()
+  const state = useSyncExternalStore(store.subscribe, store.get)
+  return useMemo(() => ({ state, actions }), [state, actions])
 }
 
 export function useActions(): Actions {
@@ -654,15 +692,47 @@ export function useActions(): Actions {
   return v
 }
 
+// Shallow equality of arrays (item by item) and plain objects (key by key), for selectors that
+// build a small tuple or object: `useStoreSelector((s) => [s.a, s.b], shallowEqual)`.
+export function shallowEqual<T>(a: T, b: T): boolean {
+  if (Object.is(a, b)) return true
+  if (typeof a !== 'object' || typeof b !== 'object' || !a || !b) return false
+  if (Array.isArray(a) !== Array.isArray(b)) return false
+  const ka = Object.keys(a)
+  if (ka.length !== Object.keys(b).length) return false
+  for (const k of ka) if (!Object.prototype.hasOwnProperty.call(b, k) || !Object.is((a as Record<string, unknown>)[k], (b as Record<string, unknown>)[k])) return false
+  return true
+}
+
+// Re-renders only when the selected value changes (by isEqual). Select primitives or existing
+// object references; a selector that builds a new object or array needs a comparator such as
+// shallowEqual, or the component re-renders on every dispatch again.
+export function useStoreSelector<T>(select: (s: State) => T, isEqual: (a: T, b: T) => boolean = Object.is): T {
+  const store = useStoreObject()
+  // Last (state, selector) -> value, so one render reads one value and an equal result keeps its reference.
+  const memo = useRef<{ state: State; select: (s: State) => T; value: T } | null>(null)
+  const getSnapshot = (): T => {
+    const state = store.get()
+    const m = memo.current
+    if (m && m.state === state && m.select === select) return m.value
+    const value = select(state)
+    const keep = m !== null && isEqual(m.value, value)
+    memo.current = { state, select, value: keep ? m!.value : value }
+    return memo.current.value
+  }
+  return useSyncExternalStore(store.subscribe, getSnapshot)
+}
+
 export function tabTitle(path: string): string {
   if (/\.(luau?)$/.test(path)) return instanceNameOfFile(path)
   return basename(path)
 }
 
 export function StoreProvider({ children }: { children: ReactNode }) {
-  const [state, dispatch] = useReducer(reducer, initial)
-  const stateRef = useRef(state)
-  stateRef.current = state
+  const [store] = useState(createStore)
+  const dispatch = store.dispatch
+  // Always the latest state (dispatch applies the reducer at once).
+  const stateRef = useMemo(() => ({ get current(): State { return store.get() } }), [store])
   const h = window.harness
 
   const actions = useMemo<Actions>(() => {
@@ -1204,7 +1274,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       }
     }
     return self
-  }, [h])
+  }, [h, dispatch, stateRef])
 
   // Events and the first load.
   useEffect(() => {
@@ -1364,24 +1434,31 @@ export function StoreProvider({ children }: { children: ReactNode }) {
       logBatch.cancel()
       offs.forEach((off) => off())
     }
-  }, [h, actions])
+  }, [h, actions, dispatch, stateRef])
 
   // Layout is saved shortly after it stops changing, and on the way out.
   useEffect(() => {
-    if (state.layout === initial.layout) return
-    const t = setTimeout(() => saveLayout(state.layout), 300)
-    return () => clearTimeout(t)
-  }, [state.layout])
-  useEffect(() => {
-    const flush = () => saveLayout(stateRef.current.layout)
+    let last = store.get().layout
+    let t: ReturnType<typeof setTimeout> | undefined
+    const off = store.subscribe(() => {
+      const l = store.get().layout
+      if (l === last) return
+      last = l
+      clearTimeout(t)
+      t = setTimeout(() => saveLayout(l), 300)
+    })
+    const flush = () => saveLayout(store.get().layout)
     window.addEventListener('pagehide', flush)
-    return () => window.removeEventListener('pagehide', flush)
-  }, [])
+    return () => {
+      off()
+      clearTimeout(t)
+      window.removeEventListener('pagehide', flush)
+    }
+  }, [store])
 
-  const value = useMemo(() => ({ state, actions }), [state, actions])
   return (
-    <ActionsCtx.Provider value={actions}>
-      <Ctx.Provider value={value}>{children}</Ctx.Provider>
-    </ActionsCtx.Provider>
+    <StoreCtx.Provider value={store}>
+      <ActionsCtx.Provider value={actions}>{children}</ActionsCtx.Provider>
+    </StoreCtx.Provider>
   )
 }

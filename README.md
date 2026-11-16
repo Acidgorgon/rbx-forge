@@ -72,7 +72,7 @@ A real terminal (xterm.js on node-pty) in the bottom panel, opened in the projec
 
 ![New project dialog creating a game from the GenTree template](docs/screenshots/41-new-project-progress-dark.png)
 
-- **Toolchain setup.** Forge ships rokit. On first launch it installs rokit and the pinned tools into `~/.rokit/bin` for your user only, with no admin rights: **rojo, wally, blink, lune, luau-lsp, selene, stylua** and wally-package-types. Each project still uses the versions pinned in its own `rokit.toml`. Forge runs `rokit install` for a project whose known tools are missing (the pinned tools above, plus `Acidgorgon/blink-plus`). Re-run it from **Settings > Toolchain**.
+- **Toolchain setup.** Forge ships rokit. On first launch it installs rokit and the pinned tools into `~/.rokit/bin` for your user only, with no admin rights: **rojo, wally, blink, lune, luau-lsp, selene, stylua** and wally-package-types. Each project still uses the versions pinned in its own `rokit.toml`. Forge runs `rokit install` for a project whose known tools are missing (the pinned tools above, plus `Acidgorgon/current`). Re-run it from **Settings > Toolchain**.
 - **New project.** Fetches the GenTree template (or makes an empty Rojo project), removes the template's history, names the project, runs `git init` and the first commit with your team's remote, then installs tools and packages and compiles the Blink events.
 - **Join project.** Clones a teammate's game and runs `rokit install` and `wally install`.
 
@@ -312,22 +312,22 @@ The VFX Lab, Animation Lab and Ability Composer decide cheap things in code, so 
 ![Packages page listing wally.toml dependencies with available updates](docs/screenshots/32-packages-dark.png)
 
 - **Wally.** Search the Wally registry and add a package as *Shared* (`[dependencies]`), *Server* (`[server-dependencies]`) or *Dev* (`[dev-dependencies]`). Forge edits `wally.toml` line by line, so comments and order are kept. It shows installed versions from `wally.lock`, newer releases with one-click updates, and removal. The dev loop (or Forge itself) then runs `wally install`.
-- **Tools.** The project's `rokit.toml` tools, with installed state and newer GitHub releases. You can add from a curated list (luau-lsp, StyLua, selene, Blink, blink-plus, Zap, Lune, darklua, pesde, Rojo, Wally) or any `owner/repo`. Blink and blink-plus share the `blink` alias, so the one that is not pinned shows **Switch**, which rewrites that line of `rokit.toml` and runs `rokit install`.
+- **Tools.** The project's `rokit.toml` tools, with installed state and newer GitHub releases. You can add from a curated list (luau-lsp, StyLua, selene, Blink, Current, Zap, Lune, darklua, pesde, Rojo, Wally) or any `owner/repo`. Blink and Current replace each other, so when one is pinned the other shows **Switch**, which rewrites that line of `rokit.toml` (`blink = "1Axen/blink@0.18.1"` ⇄ `current = "Acidgorgon/current@0.1.0"`) and runs `rokit install`.
 
 ### Blink events
 
 ![Events panel listing Blink events and types next to events.blink](docs/screenshots/24-events-dark.png)
 
-The **Events** panel lists every `event` and `function` in `events.blink` and the files it imports, with direction (Server → Client / Client → Server), Reliable or Unreliable, and the types. Click one to jump to it. **Copy usage** copies the calls Blink generates (`Fire`/`FireAll`/`On`/`Invoke`, and so on), with the `require` path worked out from the project. On every save Forge compiles a copy with the project's `blink` into a temp folder, so your real output files are never touched. Errors show in the panel, as editor squiggles and in the logs. The generated client and server files open read-only.
+The **Events** panel lists every `event` and `function` in `events.blink` and the files it imports, with direction (Server → Client / Client → Server), Reliable or Unreliable, and the types. Click one to jump to it. **Copy usage** copies the calls Blink generates (`Fire`/`FireAll`/`On`/`Invoke`, and so on), with the `require` path worked out from the project. On every save Forge compiles a copy with the project's compiler (`current`, else `blink`) into a temp folder, so your real output files are never touched. Errors show in the panel, as editor squiggles and in the logs. The generated client and server files open read-only.
 
-**Two-way events (blink-plus).** [blink-plus](https://github.com/Acidgorgon/blink-plus) is our fork of Blink. Its schema language is the same, except that an event may say `From: Both`: one event (one remote, one index) that the server and clients can both fire and listen to. The server gets `Fire`/`FireAll`/`FireList`/`FireExcept` and `On`, and the client gets `Fire` and `On`. Forge's editor completes and documents `Both`, the Events panel marks such events **S⇄C**, **Copy usage** gives both halves on each side, the new-event dialog and the assistant's `add_blink_event` can create them, and Packages > Tools installs blink-plus without rokit's trust prompt. New projects still pin upstream `1Axen/blink`. To switch a game, press **Switch** on blink-plus in Packages > Tools, or change one line in its `rokit.toml` and run `rokit install`:
+**Two-way events (Current).** [Current](https://github.com/Acidgorgon/current) is our fork of Blink. Its schema language is the same (`.blink` files, `events.blink` is still the entry), except that an event may say `From: Both`: one event (one remote, one index) that the server and clients can both fire and listen to. The server gets `Fire`/`FireAll`/`FireList`/`FireExcept` and `On`, and the client gets `Fire` and `On`. Its command is `current` (`current events.blink --yes`, same arguments and output files as `blink`). Forge looks for `current` first and falls back to `blink` for the compile check, generating other root `.blink` files, new-project setup and the release preflight; a project whose `rokit.toml` pins only `blink` keeps using `blink`. The Events panel, the Doctor and the release check say **Current** when it compiled. Forge's editor completes and documents `Both`, the Events panel marks such events **S⇄C**, **Copy usage** gives both halves on each side, the new-event dialog and the assistant's `add_blink_event` can create them, and Packages > Tools installs Current without rokit's trust prompt. New projects still pin upstream `1Axen/blink`. To switch a game, press **Switch** on Current in Packages > Tools, or replace the `blink` line in its `rokit.toml` and run `rokit install`:
 
 ```toml
 [tools]
-blink = "Acidgorgon/blink-plus@0.19.0"
+current = "Acidgorgon/current@0.1.0"
 ```
 
-The command is still `blink`, so `./dev` and Forge's compile check need no other change. With upstream Blink, `From: Both` fails with `Unknown option "Both"`, and Forge's error message adds the line above.
+With upstream Blink, `From: Both` fails with `Unknown option "Both"`, and Forge's error message adds the line above. The game's own `./dev` script runs its watcher itself, so it has to look for `current` too (GenTree's `tools/dev.sh` and `tools/dev.ps1` look for `blink` only).
 
 ### Release and publish
 

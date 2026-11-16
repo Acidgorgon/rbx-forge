@@ -20,6 +20,7 @@ import {
   parseWallyManifest,
   replaceRequirement,
   rokitInstalled,
+  rokitReplace,
   rokitSet,
   tagToVersion,
   tomlRemove,
@@ -161,6 +162,20 @@ test('rokit.toml: parse, add and bump keep the comment and order', () => {
   assert.ok(bumped.includes('blink = "1Axen/blink@0.18.9"\nluau-lsp'))
   assert.equal(tomlRemove(added, 'tools', 'luau-lsp'), ROKIT)
   assert.equal(rokitSet('', 'stylua', 'JohnnyMorganz/StyLua', '2.6.0'), '[tools]\nstylua = "JohnnyMorganz/StyLua@2.6.0"\n')
+})
+
+test('rokit.toml: rokitReplace swaps a line, alias included, in place', () => {
+  const text = '[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\n  blink = "1Axen/blink@0.18.1" # networking\nwally = "UpliftGames/wally@0.3.2"\n'
+  assert.equal(
+    rokitReplace(text, 'blink', 'current', 'Acidgorgon/current', '0.1.0'),
+    '[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\n  current = "Acidgorgon/current@0.1.0" # networking\nwally = "UpliftGames/wally@0.3.2"\n'
+  )
+  // A stray line under the new alias is dropped so the alias stays unique.
+  const both = '[tools]\nblink = "1Axen/blink@0.18.1"\ncurrent = "Acidgorgon/current@0.0.9"\n'
+  assert.equal(rokitReplace(both, 'blink', 'current', 'Acidgorgon/current', '0.1.0'), '[tools]\ncurrent = "Acidgorgon/current@0.1.0"\n')
+  // Same alias: a version bump. Missing line: added like rokitSet.
+  assert.equal(rokitReplace(text, 'rojo', 'rojo', 'rojo-rbx/rojo', '7.7.1'), text.replace('7.7.0', '7.7.1'))
+  assert.equal(rokitReplace('[tools]\n', 'blink', 'current', 'Acidgorgon/current', '0.1.0'), '[tools]\ncurrent = "Acidgorgon/current@0.1.0"\n')
 })
 
 test('tomlSet quotes keys that need it', () => {
@@ -320,7 +335,7 @@ test('Packages service: adding a tool without rokit edits rokit.toml and reports
   await assert.rejects(packages.addTool('not a repo'), /owner\/repo/)
 })
 
-test('Packages service: blink-plus switches the blink line in rokit.toml and back, installing without the trust prompt', { skip: process.platform === 'win32' && 'fake rokit is a shell script' }, async () => {
+test('Packages service: Switch replaces the blink line with current and back, installing without the trust prompt', { skip: process.platform === 'win32' && 'fake rokit is a shell script' }, async () => {
   const root = tempProject()
   // A fake rokit that only succeeds; the service logs each command it runs.
   const rokit = join(root, 'fake-rokit')
@@ -331,32 +346,42 @@ test('Packages service: blink-plus switches the blink line in rokit.toml and bac
     devRunning: () => false,
     log: (l) => logs.push(l.text),
     emit: () => undefined,
-    fetch: (async (input: string | URL) => jsonResponse({ tag_name: String(input).includes('blink-plus') ? 'v0.19.0' : 'v0.18.1' })) as unknown as typeof fetch,
+    // Newer releases exist; a switch still pins the vetted versions.
+    fetch: (async (input: string | URL) => jsonResponse({ tag_name: String(input).includes('Acidgorgon/current') ? 'v0.2.0' : 'v0.18.9' })) as unknown as typeof fetch,
     findTool: (name) => (name === 'rokit' ? rokit : null),
     rokitHome: join(root, 'no-rokit')
   })
-  // Fixture pins upstream blink; the curated blink-plus row offers a switch.
+  // Fixture pins upstream blink; the curated Current row offers a switch.
   const curated = await packages.curated()
-  const plus = curated.find((t) => t.repo === 'Acidgorgon/blink-plus')!
-  assert.equal(plus.name, 'blink')
-  assert.equal(plus.inManifest, false)
-  assert.equal(plus.switchFrom, '1Axen/blink')
+  const current = curated.find((t) => t.repo === 'Acidgorgon/current')!
+  assert.equal(current.name, 'current')
+  assert.equal(current.inManifest, false)
+  assert.equal(current.switchFrom, '1Axen/blink')
+  assert.equal(curated.some((t) => /blink-plus/i.test(t.repo)), false)
   assert.equal(curated.find((t) => t.name === 'zap')?.switchFrom, undefined)
+  assert.equal(curated.find((t) => t.repo === '1Axen/blink')?.switchFrom, undefined, 'blink is pinned already')
 
-  await packages.addTool('Acidgorgon/blink-plus')
+  await packages.addTool('Acidgorgon/current')
   const text = readFileSync(join(root, 'rokit.toml'), 'utf8')
-  assert.match(text, /^blink = "Acidgorgon\/blink-plus@0\.19\.0"$/m)
-  assert.doesNotMatch(text, /1Axen/)
-  assert.equal(parseRokitManifest(text).filter((t) => t.name === 'blink').length, 1)
+  assert.equal(text, ROKIT.replace('blink = "1Axen/blink@0.18.1"', 'current = "Acidgorgon/current@0.1.0"'), 'same line, same place')
+  assert.deepEqual(parseRokitManifest(text).map((t) => t.name), ['rojo', 'wally', 'current'])
+  assert.ok(logs.includes('rokit.toml: blink -> current = "Acidgorgon/current@0.1.0"'), logs.join('\n'))
   assert.ok(logs.includes('$ rokit install --no-trust-check'), logs.join('\n'))
 
-  // And back to upstream from the 1Axen/blink row.
-  assert.equal((await packages.curated()).find((t) => t.repo === '1Axen/blink')?.switchFrom, 'Acidgorgon/blink-plus')
-  await packages.addTool('1Axen/blink@0.18.1')
-  assert.match(readFileSync(join(root, 'rokit.toml'), 'utf8'), /^blink = "1Axen\/blink@0\.18\.1"$/m)
+  // And back to upstream from the 1Axen/blink row, at Forge's pin.
+  const again = await packages.curated()
+  assert.equal(again.find((t) => t.repo === '1Axen/blink')?.switchFrom, 'Acidgorgon/current')
+  assert.equal(again.find((t) => t.repo === 'Acidgorgon/current')?.inManifest, true)
+  logs.length = 0
+  await packages.addTool('1Axen/blink')
+  assert.equal(readFileSync(join(root, 'rokit.toml'), 'utf8'), ROKIT)
+  assert.ok(logs.includes('$ rokit install --no-trust-check'), logs.join('\n'))
 
+  // An explicit version wins over the pin.
+  await packages.addTool('Acidgorgon/current@0.1.1')
+  assert.match(readFileSync(join(root, 'rokit.toml'), 'utf8'), /^current = "Acidgorgon\/current@0\.1\.1"$/m)
   // A tool that is not a drop-in still refuses a taken alias.
-  await assert.rejects(packages.addTool('someone/blink@1.0.0'), /already has a tool named blink/)
+  await assert.rejects(packages.addTool('someone/current@1.0.0'), /already has a tool named current/)
 })
 
 test('Packages service: GitHub release checks dedupe, revalidate with the ETag, and log one line per rate-limit pause', async () => {

@@ -619,7 +619,7 @@ function ToolsTab({
         </div>
         <div className="pk-list">
           {available.map((t) => (
-            // Keyed by repo: two curated tools can share an alias (blink and blink-plus).
+            // Keyed by repo; errors and the spinner too (Current and Blink replace each other).
             <div key={t.repo} className="pk-row pk-tool-row">
               <span className="pk-tool-icon"><IconTool size={15} /></span>
               <div className="pk-row-main">
@@ -635,8 +635,8 @@ function ToolsTab({
                 <button
                   className="btn small"
                   disabled={!!busy}
-                  title={t.switchFrom ? `Replaces ${t.switchFrom} as "${t.name}" in rokit.toml` : undefined}
-                  onClick={() => void run(t.repo, () => h.addRokitTool(t.repo), t.switchFrom ? `Switched ${t.name} to ${t.repo}` : `Added ${t.name}${t.latest ? ` ${t.latest}` : ''}`)}
+                  title={t.switchFrom ? `Replaces ${t.switchFrom} in rokit.toml with ${t.repo} (as ${t.name}), then runs rokit install` : undefined}
+                  onClick={() => void run(t.repo, () => h.addRokitTool(t.repo), t.switchFrom ? `Switched ${t.switchFrom} to ${t.repo}` : `Added ${t.name}${t.latest ? ` ${t.latest}` : ''}`)}
                 >
                   {busy === t.repo ? <span className="spinner" /> : null}
                   {t.switchFrom ? 'Switch' : 'Add'}

@@ -10,13 +10,13 @@
 //   function Name { Yield: Coroutine|Future|Promise, Data: T?, Return: T? }
 //   scope Name { ...declarations... }
 //   comments: -- line, --[[ block ]], --[=[ block ]=]
-// `From: Both` is blink-plus (github.com/Acidgorgon/blink-plus, 0.19.0+): a two-way event.
+// `From: Both` is Current only (github.com/Acidgorgon/current, our Blink fork, 0.1.0+): a two-way event.
 
 import type { BlinkEvent, BlinkFrom, BlinkTypeDecl } from '../types'
 
 export const BLINK_ENTRY = 'events.blink'
 
-// Values of an event's `From`. `Both` is blink-plus only; upstream Blink 0.18 rejects it.
+// Values of an event's `From`. `Both` is Current only; upstream Blink 0.18 rejects it.
 export const BLINK_FROMS: readonly BlinkFrom[] = ['Server', 'Client', 'Both']
 
 const DECL_KEYWORDS = new Set(['type', 'map', 'set', 'enum', 'struct', 'event', 'function', 'scope', 'option', 'export', 'import'])
@@ -437,7 +437,7 @@ function memberNames(toks: Token[], open: number, end: number): string[] {
 export interface BlinkEventSpec {
   kind?: 'event' | 'function'
   name: string
-  // Events. 'Both' needs blink-plus.
+  // Events. 'Both' needs Current.
   from?: BlinkFrom
   type?: 'Reliable' | 'Unreliable'
   call?: 'SingleSync' | 'SingleAsync' | 'ManySync' | 'ManyAsync' | 'Polling'

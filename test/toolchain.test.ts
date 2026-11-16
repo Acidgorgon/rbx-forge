@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { test } from 'node:test'
 import {
   aliasPath,
-  BLINK_PLUS,
+  CURRENT,
   checkProjectTools,
   detectGit,
   detectTools,
@@ -19,7 +19,7 @@ import {
   type ToolchainEnv
 } from '../src/main/services/setup/toolchain.ts'
 import type { CommandRunner, RunOptions } from '../src/main/services/setup/runner.ts'
-import { BLINK_PLUS_ROKIT_LINE } from '../src/shared/blink/language.ts'
+import { CURRENT_ROKIT_LINE } from '../src/shared/blink/language.ts'
 import { errorLine } from '../src/main/services/setup/runner.ts'
 import { findBundledRokit, refreshProcessPath } from '../src/main/setup.ts'
 import type { ToolContext } from '../src/main/services/tools.ts'
@@ -306,26 +306,28 @@ test('per-project tools: missing known tools install with --no-trust-check; unkn
   assert.equal((await installProjectTools(m.env, '/games/none')).state, 'none')
 })
 
-test('blink-plus is a known tool: a game that pins it installs without the trust prompt', async () => {
-  assert.ok(KNOWN_TOOL_IDS.has('acidgorgon/blink-plus'))
+test('Current is a known tool: a game that pins it installs without the trust prompt', async () => {
+  assert.ok(KNOWN_TOOL_IDS.has('acidgorgon/current'))
+  assert.ok(!KNOWN_TOOL_IDS.has('acidgorgon/blink-plus'), 'the old name is not vetted')
   assert.ok(KNOWN_TOOL_IDS.has('1axen/blink'), 'upstream stays known')
-  // Forge's own global pin (new projects, first-run setup) stays upstream Blink.
+  // Forge's own global pin (new projects, first-run setup) stays upstream Blink; Current is not global.
   assert.equal(PINNED_TOOLS.find((t) => t.alias === 'blink')?.id, '1Axen/blink')
-  assert.deepEqual(BLINK_PLUS, { alias: 'blink', id: 'Acidgorgon/blink-plus', version: '0.19.0' })
-  assert.equal(BLINK_PLUS_ROKIT_LINE, `${BLINK_PLUS.alias} = "${BLINK_PLUS.id}@${BLINK_PLUS.version}"`)
+  assert.equal(PINNED_TOOLS.some((t) => t.alias === 'current'), false)
+  assert.deepEqual(CURRENT, { alias: 'current', id: 'Acidgorgon/current', version: '0.1.0' })
+  assert.equal(CURRENT_ROKIT_LINE, `${CURRENT.alias} = "${CURRENT.id}@${CURRENT.version}"`)
 
   const m = machine()
   await runSetup(m.env, { mode: 'install' })
-  m.texts.set('/games/plus/rokit.toml', `[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\n${BLINK_PLUS_ROKIT_LINE}\n`)
-  const check = checkProjectTools(m.env, '/games/plus')
-  // rokit stores it under the tool's own name: tool-storage/acidgorgon/blink-plus/0.19.0/blink-plus.
-  assert.equal(storedToolPath(m.ctx, BLINK_PLUS.id, '0.19.0'), '/home/me/.rokit/tool-storage/acidgorgon/blink-plus/0.19.0/blink-plus')
-  assert.deepEqual(check.missing.map((t) => `${t.alias}=${t.id}@${t.version}`), ['blink=Acidgorgon/blink-plus@0.19.0'])
+  m.texts.set('/games/cur/rokit.toml', `[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\n${CURRENT_ROKIT_LINE}\n`)
+  const check = checkProjectTools(m.env, '/games/cur')
+  // rokit stores it under the tool's own name: tool-storage/acidgorgon/current/0.1.0/current.
+  assert.equal(storedToolPath(m.ctx, CURRENT.id, '0.1.0'), '/home/me/.rokit/tool-storage/acidgorgon/current/0.1.0/current')
+  assert.deepEqual(check.missing.map((t) => `${t.alias}=${t.id}@${t.version}`), ['current=Acidgorgon/current@0.1.0'])
   assert.deepEqual(check.untrusted, [])
   m.calls.length = 0
-  const done = await installProjectTools(m.env, '/games/plus')
+  const done = await installProjectTools(m.env, '/games/cur')
   assert.equal(done.state, 'done')
-  assert.deepEqual(m.calls.map((c) => [c.args.join(' '), c.cwd]), [['install --no-trust-check', '/games/plus']])
+  assert.deepEqual(m.calls.map((c) => [c.args.join(' '), c.cwd]), [['install --no-trust-check', '/games/cur']])
 })
 
 test('bundled rokit is found in resources when packaged and in resources/rokit/<os>-<arch> in development', () => {

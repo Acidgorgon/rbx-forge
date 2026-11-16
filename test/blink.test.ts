@@ -18,8 +18,12 @@ import {
   checkBlink,
   dataValues,
   describeEvent,
+  blinkCommandsFor,
+  compilerLabel,
   explainBlinkDiagnostics,
+  findBlinkCompiler,
   formatDeclaration,
+  generateBlink,
   instancePathFor,
   loadBlinkModel,
   parseBlink,
@@ -28,6 +32,7 @@ import {
   tokenize
 } from '../src/main/services/blink.ts'
 import type { BlinkModel } from '../src/shared/types.ts'
+import { blinkCommandOf, blinkCommands, CURRENT_ROKIT_LINE, CURRENT_TOOL } from '../src/shared/blink/compiler.ts'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const fixtures = join(here, 'fixtures', 'blink')
@@ -300,6 +305,7 @@ test('check compiles a temp copy with rewritten outputs and leaves the project u
     assert.equal(s.copy.split('\n').length, (await readFile(join(root, 'events.blink'), 'utf8')).split('\n').length)
     assert.equal(result.ok, false)
     assert.equal(result.version, '0.18.1')
+    assert.equal(result.compiler, 'blink')
     assert.equal(result.diagnostics[0].file, 'events.blink')
     assert.equal(result.diagnostics[0].line, 5)
     assert.deepEqual(await readdir(join(root)), (await readdir(valid)))
@@ -309,7 +315,7 @@ test('check compiles a temp copy with rewritten outputs and leaves the project u
 })
 
 test('check is skipped without a blink binary or an events.blink', async () => {
-  assert.equal((await checkBlink(valid, { binary: null })).skipped, 'blink not found. Run rokit install.')
+  assert.equal((await checkBlink(valid, { binary: null })).skipped, 'Neither current nor blink found. Run rokit install.')
   const empty = await mkdtemp(join(tmpdir(), 'forge-blink-empty-'))
   try {
     assert.equal((await checkBlink(empty, { binary: '/fake/blink' })).skipped, 'No events.blink')
@@ -378,7 +384,7 @@ test('real blink: fixture compiles, broken copy reports a positioned error', { s
   }
 })
 
-// ---------------------------------------------------------------- blink-plus: From: Both
+// ---------------------------------------------------------------- Current: From: Both
 
 const twoWay = `option ClientOutput = "src/shared/events/client.luau"
 option ServerOutput = "src/server/events/server.luau"
@@ -401,7 +407,7 @@ event Up { From: Client, Type: Reliable, Call: SingleAsync, Data: u8 }
 event Odd { From: Sideways, Type: Reliable, Call: SingleAsync }
 `
 
-test('blink-plus: the parser keeps From: Both; Server/Client unchanged, unknown values dropped', () => {
+test('Current: the parser keeps From: Both; Server/Client unchanged, unknown values dropped', () => {
   const parsed = parseBlink(twoWay)
   const by = Object.fromEntries(parsed.events.map((e) => [[...e.scope, e.name].join('.'), e]))
   assert.equal(by.Ping.from, 'Both')
@@ -412,7 +418,7 @@ test('blink-plus: the parser keeps From: Both; Server/Client unchanged, unknown 
   assert.equal(by.Odd.from, undefined)
 })
 
-test('blink-plus: sides and direction for each From', () => {
+test('Current: sides and direction for each From', () => {
   assert.deepEqual(blinkSides('Both'), { serverFires: true, clientFires: true })
   assert.deepEqual(blinkSides('Server'), { serverFires: true, clientFires: false })
   assert.deepEqual(blinkSides('Client'), { serverFires: false, clientFires: true })
@@ -426,7 +432,7 @@ test('blink-plus: sides and direction for each From', () => {
   assert.match(describeEvent(ev.Up), /^event Up: Client->Server,/)
 })
 
-test('blink-plus: usage for a two-way event fires and listens on both sides (blink-plus 5-events.mdx)', () => {
+test('Current: usage for a two-way event fires and listens on both sides (Current 5-events.mdx)', () => {
   const parsed = parseBlink(twoWay)
   const model = { options: parsed.options, requirePaths: { client: 'ReplicatedStorage.Shared.events.client', server: 'ServerScriptService.Server.events.server' } }
   const ev = (name: string) => parsed.events.find((e) => e.name === name)!
@@ -461,7 +467,7 @@ test('blink-plus: usage for a two-way event fires and listens on both sides (bli
   assert.match(snake.client, /\.on\(function/)
 })
 
-test('blink-plus: declarations with From: Both format and append', () => {
+test('Current: declarations with From: Both format and append', () => {
   assert.equal(
     formatDeclaration({ name: 'Ping', from: 'Both', type: 'Reliable', call: 'ManyAsync', data: 'u32' }),
     'event Ping {\n    From: Both,\n    Type: Reliable,\n    Call: ManyAsync,\n    Data: u32\n}\n'
@@ -471,35 +477,133 @@ test('blink-plus: declarations with From: Both format and append', () => {
   assert.equal(parseBlink(added).events[0].from, 'Both')
 })
 
-test('blink-plus: version comes from upstream and blink-plus banners', () => {
-  assert.deepEqual(parseBlinkBanner('\x1b[32mBlink\x1b[0m 0.18.1\n'), { version: '0.18.1', plus: false })
-  assert.deepEqual(parseBlinkBanner('Blink 0.19.0\n'), { version: '0.19.0', plus: false })
-  assert.deepEqual(parseBlinkBanner('\x1b[32mBlink+\x1b[0m 0.19.0\n'), { version: '0.19.0', plus: true })
-  assert.deepEqual(parseBlinkBanner('Blink 0.19.0 (blink-plus)\n'), { version: '0.19.0', plus: true })
-  assert.deepEqual(parseBlinkBanner('blink-plus 0.19.0\n'), { version: '0.19.0', plus: true })
-  assert.deepEqual(parseBlinkBanner('Blink v0.19.1-rc.1\n'), { version: '0.19.1-rc.1', plus: false })
-  assert.deepEqual(parseBlinkBanner('no banner here\n'), { plus: false })
+test('Current: name and version come from the Current and upstream Blink banners', () => {
+  assert.deepEqual(parseBlinkBanner('\x1b[32mCurrent\x1b[0m 0.1.0\n'), { version: '0.1.0', compiler: 'current' })
+  assert.deepEqual(parseBlinkBanner('\x1b[1;35mCurrent\x1b[0m v0.1.0\n'), { version: '0.1.0', compiler: 'current' })
+  assert.deepEqual(parseBlinkBanner('Current 0.1.0\n'), { version: '0.1.0', compiler: 'current' })
+  assert.deepEqual(parseBlinkBanner('\x1b[32mBlink\x1b[0m 0.18.1\n'), { version: '0.18.1', compiler: 'blink' })
+  assert.deepEqual(parseBlinkBanner('Blink 0.18.1\n'), { version: '0.18.1', compiler: 'blink' })
+  assert.deepEqual(parseBlinkBanner('Blink v0.19.1-rc.1\n'), { version: '0.19.1-rc.1', compiler: 'blink' })
+  // A path or file name is not a banner.
+  assert.deepEqual(parseBlinkBanner('wrote /tmp/Current 1.2.3\n'), {})
+  assert.deepEqual(parseBlinkBanner('no banner here\n'), {})
+  assert.deepEqual(parseBlinkBanner('Currently 1.2.3 files\n'), {})
+  assert.equal(compilerLabel('current', '0.1.0'), 'Current 0.1.0')
+  assert.equal(compilerLabel('blink', '0.18.1'), 'blink 0.18.1')
+  assert.equal(compilerLabel('current'), 'Current')
 })
 
-test('blink-plus: checkBlink reports the blink-plus version', async () => {
+test('Current: the compiler is looked up as current first, then blink, unless the project pins only blink', () => {
+  const files: Record<string, string> = {}
+  const readText = (p: string) => files[p.replace(/\\/g, '/')] ?? null
+  const lookup = (onPath: string[]) => {
+    const asked: string[] = []
+    const locate = (name: string) => {
+      asked.push(name)
+      return onPath.includes(name) ? `/bin/${name}` : null
+    }
+    return { asked, options: { locate, readText, globalManifest: '/home/me/.rokit/rokit.toml' } }
+  }
+  assert.deepEqual(blinkCommands(), ['current', 'blink'])
+  assert.deepEqual(blinkCommands(['rojo', 'current']), ['current', 'blink'])
+  assert.deepEqual(blinkCommands(['rojo', 'blink']), ['blink', 'current'])
+  assert.deepEqual(blinkCommands(['blink', 'current']), ['current', 'blink'])
+
+  // No rokit.toml anywhere: current, then blink.
+  let l = lookup(['current', 'blink'])
+  assert.deepEqual(findBlinkCompiler('/g', l.options), { binary: '/bin/current', command: 'current' })
+  assert.deepEqual(l.asked, ['current'])
+  l = lookup(['blink'])
+  assert.deepEqual(findBlinkCompiler('/g', l.options), { binary: '/bin/blink', command: 'blink' })
+  assert.deepEqual(l.asked, ['current', 'blink'])
+  l = lookup([])
+  assert.equal(findBlinkCompiler('/g', l.options), null)
+
+  // The project pins Current: current first.
+  files['/g/rokit.toml'] = `[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\n${CURRENT_ROKIT_LINE}\n`
+  assert.deepEqual(blinkCommandsFor('/g', lookup([]).options), ['current', 'blink'])
+  assert.equal(findBlinkCompiler('/g', lookup(['current', 'blink']).options)?.command, 'current')
+  // ... and falls back to blink when current is not there.
+  assert.equal(findBlinkCompiler('/g', lookup(['blink']).options)?.command, 'blink')
+
+  // The project pins upstream Blink: a `current` shim from another game must not win.
+  files['/g/rokit.toml'] = '[tools]\nblink = "1Axen/blink@0.18.1"\n'
+  l = lookup(['current', 'blink'])
+  assert.deepEqual(findBlinkCompiler('/g', l.options), { binary: '/bin/blink', command: 'blink' })
+  assert.deepEqual(l.asked, ['blink'])
+  assert.equal(findBlinkCompiler('/g', lookup(['current']).options)?.command, 'current', 'still falls back to current')
+
+  // No pin in the project: rokit's global manifest decides (Forge pins upstream blink there).
+  files['/h/rokit.toml'] = '[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\n'
+  files['/home/me/.rokit/rokit.toml'] = '[tools]\nblink = "1Axen/blink@0.18.1"\n'
+  assert.deepEqual(blinkCommandsFor('/h', lookup([]).options), ['blink', 'current'])
+  delete files['/home/me/.rokit/rokit.toml']
+  assert.deepEqual(blinkCommandsFor('/h', lookup([]).options), ['current', 'blink'])
+
+  assert.equal(blinkCommandOf('/home/me/.rokit/bin/current'), 'current')
+  assert.equal(blinkCommandOf('C:\\Users\\me\\.rokit\\bin\\current.exe'), 'current')
+  assert.equal(blinkCommandOf('/usr/bin/blink'), 'blink')
+  assert.equal(blinkCommandOf('/fake/other'), undefined)
+})
+
+test('Current: checkBlink and generateBlink run current with the same arguments and report Current', async () => {
   const root = await tempProject()
   try {
-    const runner = async () => ({ code: 0, stdout: '\x1b[32mBlink+\x1b[0m 0.19.0\n', stderr: '' })
-    const result = await checkBlink(root, { binary: '/fake/blink', runner })
-    assert.deepEqual([result.ok, result.version, result.plus], [true, '0.19.0', true])
+    await writeFile(join(root, 'rokit.toml'), `[tools]\n${CURRENT_ROKIT_LINE}\n`)
+    const calls: { file: string; args: string[] }[] = []
+    const runner = async (file: string, args: string[]) => {
+      calls.push({ file, args })
+      return { code: 0, stdout: '\x1b[32mCurrent\x1b[0m 0.1.0\n', stderr: '' }
+    }
+    const lookup = { locate: (name: string) => `/rokit/bin/${name}` }
+    const result = await checkBlink(root, { runner, lookup })
+    assert.deepEqual([result.ok, result.version, result.compiler], [true, '0.1.0', 'current'])
+    assert.equal(calls[0].file, '/rokit/bin/current')
+    assert.equal(calls[0].args.at(-1), '--yes')
+    const gen = await generateBlink(root, 'events.blink', { runner, lookup })
+    assert.equal(gen.ok, true)
+    assert.deepEqual(calls[1], { file: '/rokit/bin/current', args: ['events.blink', '--yes'] })
+
+    // No banner: the command names the compiler.
+    const quiet = await checkBlink(root, { binary: '/rokit/bin/current', runner: async () => ({ code: 0, stdout: '', stderr: '' }) })
+    assert.equal(quiet.compiler, 'current')
+    // Nothing found: the skip names what rokit.toml pins.
+    const missing = await checkBlink(root, { lookup: { locate: () => null } })
+    assert.deepEqual([missing.skipped, missing.compiler], ['current not found. Run rokit install.', 'current'])
+    assert.equal((await generateBlink(root, 'events.blink', { lookup: { locate: () => null } })).skipped, 'current not found. Run rokit install.')
   } finally {
     await rm(root, { recursive: true, force: true })
   }
 })
 
-test('blink-plus: upstream Blink rejecting From: Both gets a hint with the rokit.toml line', () => {
+test('Current: the watcher labels the checker Current', async () => {
+  const root = await tempProject()
+  const models: BlinkModel[] = []
+  const watcher = new BlinkWatcher({
+    root,
+    log: () => undefined,
+    onChange: (m) => models.push(m),
+    check: async () => ({ ok: true, diagnostics: [], version: '0.1.0', compiler: 'current' })
+  })
+  try {
+    await watcher.start()
+    const last = models.at(-1)!
+    assert.deepEqual([last.checker, last.checkerDetail, last.blinkVersion, last.blinkCompiler], ['blink', 'Current 0.1.0', '0.1.0', 'current'])
+  } finally {
+    watcher.close()
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('Current: upstream Blink rejecting From: Both gets a hint with the rokit.toml line', () => {
   const upstream = { file: 'events.blink', line: 2, column: 11, code: 'E2003', message: 'Unknown option "Both"', detail: 'Expected one of "Client" or "Server"', severity: 'error' as const }
   const [d] = explainBlinkDiagnostics([upstream])
   assert.equal(d.message, 'Unknown option "Both"')
-  assert.equal(d.detail, 'Expected one of "Client" or "Server". From: Both (two-way events) needs blink-plus: set blink = "Acidgorgon/blink-plus@0.19.0" in rokit.toml, then rokit install')
+  assert.equal(d.detail, 'Expected one of "Client" or "Server". From: Both (two-way events) needs Current: replace the blink line in rokit.toml with current = "Acidgorgon/current@0.1.0", then rokit install')
+  assert.equal(CURRENT_ROKIT_LINE, `current = "${CURRENT_TOOL.id}@${CURRENT_TOOL.version}"`)
   // Other errors and a compiler that already knows Both are left alone.
   const other = { ...upstream, message: 'Unknown option "Reliabl"', detail: 'Expected one of "Reliable" or "Unreliable"' }
   assert.deepEqual(explainBlinkDiagnostics([other]), [other])
-  const plusTypo = { ...upstream, detail: 'Expected one of "Client" or "Server" or "Both"' }
-  assert.deepEqual(explainBlinkDiagnostics([plusTypo]), [plusTypo])
+  const currentTypo = { ...upstream, detail: 'Expected one of "Client" or "Server" or "Both"' }
+  assert.deepEqual(explainBlinkDiagnostics([currentTypo]), [currentTypo])
 })

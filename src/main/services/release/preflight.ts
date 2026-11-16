@@ -101,6 +101,9 @@ export interface BlinkRun {
   ok: boolean
   diagnostics: { file: string; line: number; message: string }[]
   skipped?: string
+  version?: string
+  // 'current' when Current (our Blink fork) compiled it.
+  compiler?: 'current' | 'blink'
 }
 
 export function blinkCheck(checkBlink: () => Promise<BlinkRun>): ReleaseCheck {
@@ -111,8 +114,9 @@ export function blinkCheck(checkBlink: () => Promise<BlinkRun>): ReleaseCheck {
     async run() {
       const result = await checkBlink()
       if (result.skipped) return { status: 'skip', summary: result.skipped }
-      if (result.ok) return { status: 'pass', summary: 'events.blink compiles' }
-      return { status: 'fail', summary: `${result.diagnostics.length} Blink error(s)`, details: result.diagnostics.slice(0, 20).map((d) => `${d.file}:${d.line} ${d.message}`) }
+      const by = result.compiler === 'current' ? ` with Current${result.version ? ` ${result.version}` : ''}` : ''
+      if (result.ok) return { status: 'pass', summary: `events.blink compiles${by}` }
+      return { status: 'fail', summary: `${result.diagnostics.length} ${result.compiler === 'current' ? 'Current' : 'Blink'} error(s)`, details: result.diagnostics.slice(0, 20).map((d) => `${d.file}:${d.line} ${d.message}`) }
     }
   }
 }

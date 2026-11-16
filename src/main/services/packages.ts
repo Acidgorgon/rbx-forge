@@ -27,7 +27,7 @@ import type {
   WallyRealm
 } from '../../shared/types.ts'
 import { findTool, toolEnv } from './tools.ts'
-import { KNOWN_TOOL_IDS } from './setup/toolchain.ts'
+import { CURRENT, KNOWN_TOOL_IDS, PINNED_TOOLS } from './setup/toolchain.ts'
 
 export const WALLY_API = 'https://api.wally.run/v1'
 const GITHUB_API = 'https://api.github.com'
@@ -476,10 +476,15 @@ export interface CuratedTool {
   name: string
   repo: string
   description: string
-  // Drop-in alternatives under the same alias: adding this tool when rokit.toml already pins one
-  // of these repos as `name` switches that line to this repo instead of failing.
+  // Drop-in alternatives: adding this tool when rokit.toml already pins one of these repos (under
+  // any alias) replaces that line with `name = "repo@version"` instead of adding a second compiler.
   replaces?: string[]
+  // Version a switch pins when none is given: the one Forge vets (installed without rokit's trust
+  // prompt), not whatever is latest.
+  pin?: string
 }
+
+const UPSTREAM_BLINK = PINNED_TOOLS.find((t) => t.alias === 'blink')!
 
 // Repos checked against github.com/<repo>/releases/latest.
 export const CURATED_TOOLS: CuratedTool[] = [
@@ -488,12 +493,13 @@ export const CURATED_TOOLS: CuratedTool[] = [
   { name: 'wally', repo: 'UpliftGames/wally', description: 'Package manager for Roblox (wally.toml).' },
   { name: 'stylua', repo: 'JohnnyMorganz/StyLua', description: 'Opinionated Luau code formatter.' },
   { name: 'selene', repo: 'Kampfkarren/selene', description: 'Fast Luau linter (selene.toml).' },
-  { name: 'blink', repo: '1Axen/blink', description: 'Networking IDL compiler (events.blink).', replaces: ['Acidgorgon/blink-plus'] },
+  { name: 'blink', repo: UPSTREAM_BLINK.id, description: 'Networking IDL compiler (events.blink).', replaces: [CURRENT.id], pin: UPSTREAM_BLINK.version },
   {
-    name: 'blink',
-    repo: 'Acidgorgon/blink-plus',
-    description: 'Blink fork with two-way events (From: Both). Same blink command; replaces 1Axen/blink in rokit.toml.',
-    replaces: ['1Axen/blink']
+    name: CURRENT.alias,
+    repo: CURRENT.id,
+    description: 'Current: Blink fork with two-way events (From: Both). Same events.blink; command current. Replaces 1Axen/blink in rokit.toml.',
+    replaces: [UPSTREAM_BLINK.id],
+    pin: CURRENT.version
   },
   { name: 'zap', repo: 'red-blox/zap', description: 'Alternative networking IDL compiler.' },
   { name: 'lune', repo: 'lune-org/lune', description: 'Standalone Luau runtime for scripts and tooling.' },
@@ -514,6 +520,20 @@ export function parseRokitManifest(text: string): { name: string; repo: string; 
 export function rokitSet(text: string, name: string, repo: string, version: string): string {
   // rokit.toml always has [tools]; tomlSet adds it when missing.
   return tomlSet(text, 'tools', name, `${repo}@${version}`)
+}
+
+// Replaces the [tools] line of `oldName` with `name = "repo@version"` in place (indentation and a
+// trailing comment kept), dropping any other `name` line so the alias stays unique. Without an
+// `oldName` line it is rokitSet.
+export function rokitReplace(text: string, oldName: string, name: string, repo: string, version: string): string {
+  const entries = tomlEntries(text).filter((e) => e.section === 'tools')
+  const old = entries.find((e) => e.key === oldName)
+  if (!old) return rokitSet(text, name, repo, version)
+  const { lines, eol } = splitLines(text)
+  const m = ENTRY_RE.exec(lines[old.line]) as RegExpExecArray
+  lines[old.line] = `${m[1]}${oldName === name ? m[2] : formatKey(name)}${m[3]}"${repo}@${version}"${m[5]}`
+  const dupes = entries.filter((e) => e.key === name && e.line !== old.line).map((e) => e.line)
+  return lines.filter((_, i) => !dupes.includes(i)).join(eol)
 }
 
 export function rokitHome(): string {
@@ -902,7 +922,7 @@ export class Packages {
       const entry = manifest.find((m) => m.repo.toLowerCase() === c.repo.toLowerCase())
       if (entry) return this.describe(entry.name, entry.repo, entry.version, true)
       const tool = this.describe(c.name, c.repo, '', false)
-      const replaced = manifest.find((m) => m.name === c.name && c.replaces?.some((r) => r.toLowerCase() === m.repo.toLowerCase()))
+      const replaced = manifest.find((m) => c.replaces?.some((r) => r.toLowerCase() === m.repo.toLowerCase()))
       if (replaced) tool.switchFrom = replaced.repo
       return tool
     })
@@ -913,16 +933,22 @@ export class Packages {
     const m = /^\s*([A-Za-z0-9_.-]+)\/([A-Za-z0-9_.-]+)\s*(?:@\s*(\S+))?\s*$/.exec(repo)
     if (!m) throw new PackageError(`Expected owner/repo, got "${repo}"`)
     const fullRepo = `${m[1]}/${m[2]}`
+    const manifest = parseRokitManifest(this.manifestText())
+    const curated = CURATED_TOOLS.find((t) => t.repo.toLowerCase() === fullRepo.toLowerCase())
+    // A drop-in alternative (Current for Blink, or back): replace the line it takes over, alias
+    // included (`blink = "1Axen/blink@…"` <-> `current = "Acidgorgon/current@…"`), at the vetted pin.
+    const replaced = manifest.find((t) => curated?.replaces?.some((r) => r.toLowerCase() === t.repo.toLowerCase()))
+    if (curated && replaced && !manifest.some((t) => t.repo.toLowerCase() === fullRepo.toLowerCase())) {
+      const pinned = version || m[3] || curated.pin || (await this.latestRelease(fullRepo))
+      if (!pinned) throw new PackageError(`Could not find a release for ${fullRepo}. Give a version, e.g. ${fullRepo}@1.0.0.`)
+      return this.switchTool(replaced.name, curated.name, fullRepo, pinned)
+    }
     const target = version || m[3] || (await this.latestRelease(fullRepo))
     if (!target) throw new PackageError(`Could not find a release for ${fullRepo}. Give a version, e.g. ${fullRepo}@1.0.0.`)
-    const manifest = parseRokitManifest(this.manifestText())
     const existing = manifest.find((t) => t.repo.toLowerCase() === fullRepo.toLowerCase())
     if (existing) return this.setToolVersion(existing.name, existing.repo, target)
-    const curated = CURATED_TOOLS.find((t) => t.repo.toLowerCase() === fullRepo.toLowerCase())
     const alias = curated?.name ?? m[2].toLowerCase()
     const taken = manifest.find((t) => t.name === alias)
-    // A drop-in alternative (blink-plus for blink): switch the existing line to the new repo.
-    if (taken && curated?.replaces?.some((r) => r.toLowerCase() === taken.repo.toLowerCase())) return this.setToolVersion(alias, fullRepo, target)
     if (taken) throw new PackageError(`rokit.toml already has a tool named ${alias}.`)
     const rokit = this.tool('rokit')
     this.lastError = undefined
@@ -956,9 +982,14 @@ export class Packages {
   }
 
   private async setToolVersion(name: string, repo: string, version: string): Promise<RokitTool[]> {
+    return this.switchTool(name, name, repo, version)
+  }
+
+  // Writes `name = "repo@version"` over the `from` line of rokit.toml, then runs rokit install.
+  private async switchTool(from: string, name: string, repo: string, version: string): Promise<RokitTool[]> {
     const root = this.root()
-    writeFileSync(join(root, 'rokit.toml'), rokitSet(this.manifestText(), name, repo, version))
-    this.log(`rokit.toml: ${name} = "${repo}@${version}"`)
+    writeFileSync(join(root, 'rokit.toml'), rokitReplace(this.manifestText(), from, name, repo, version))
+    this.log(from === name ? `rokit.toml: ${name} = "${repo}@${version}"` : `rokit.toml: ${from} -> ${name} = "${repo}@${version}"`)
     const rokit = this.tool('rokit')
     this.lastError = undefined
     this.setInstalling('rokit')
@@ -966,7 +997,7 @@ export class Packages {
       if (!rokit) {
         this.lastError = 'rokit is not installed. Install Rokit, then run rokit install.'
       } else {
-        // A tool Forge vets (blink-plus after a switch) installs without rokit's trust prompt,
+        // A tool Forge vets (Current after a switch) installs without rokit's trust prompt,
         // which fails when there is no terminal to answer it.
         const code = await this.stream(rokit, ['install', ...(KNOWN_TOOL_IDS.has(repo.toLowerCase()) ? ['--no-trust-check'] : [])], 'rokit')
         if (code !== 0) this.lastError = `rokit install failed (exit ${code}). See Logs.`

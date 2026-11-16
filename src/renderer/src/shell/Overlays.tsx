@@ -350,7 +350,7 @@ function BlinkEventDialog({ onClose }: { onClose: () => void }) {
             <span>From</span>
             <div className="seg">
               {(['Server', 'Client', 'Both'] as const).map((v) => (
-                <button key={v} className={from === v ? 'on' : ''} onClick={() => setFrom(v)} title={v === 'Both' ? 'Two-way: server and clients both fire and listen (needs blink-plus)' : undefined}>{v}</button>
+                <button key={v} className={from === v ? 'on' : ''} onClick={() => setFrom(v)} title={v === 'Both' ? 'Two-way: server and clients both fire and listen (needs Current)' : undefined}>{v}</button>
               ))}
             </div>
           </div>

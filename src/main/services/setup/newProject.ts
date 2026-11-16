@@ -5,6 +5,7 @@ import { findTool, toolEnv } from '../tools.ts'
 import { errorLine, spawnRunner, type CommandRunner } from './runner.ts'
 import { extractZip } from './unzip.ts'
 import { KNOWN_TOOL_IDS, PINNED_TOOLS, parseRokitToml } from './toolchain.ts'
+import { blinkCommands, blinkCompilerName, type BlinkCommand } from '../../../shared/blink/compiler.ts'
 import { parseRokitManifest, rokitSet } from '../packages.ts'
 
 // "New project": fetch a template (the GenTree template, or a generated empty Rojo project), make it
@@ -397,13 +398,24 @@ export async function createProject(input: NewProjectInput, deps: NewProjectDeps
     if (!existsSync(join(root, 'events.blink'))) {
       finish('blink', 'skipped', undefined)
     } else {
-      const blink = locate('blink')
-      if (!blink) finish('blink', 'skipped', 'blink is not installed; the dev loop compiles events.blink once it is.')
+      // Current (our Blink fork, command `current`) first, then upstream `blink`, unless the
+      // template's rokit.toml pins only blink (the GenTree default). Same arguments for both.
+      let found: { command: BlinkCommand; file: string } | null = null
+      for (const command of blinkCommands(pins.keys())) {
+        const file = locate(command)
+        if (file) {
+          found = { command, file }
+          break
+        }
+      }
+      if (!found) finish('blink', 'skipped', 'blink is not installed; the dev loop compiles events.blink once it is.')
       else {
-        progress({ step: 'blink', state: 'running', message: 'blink events.blink' })
-        const out = await run(blink, ['events.blink', '--yes'], 'blink')
+        const { command } = found
+        const label = blinkCompilerName(command)
+        progress({ step: 'blink', state: 'running', message: `${command} events.blink` })
+        const out = await run(found.file, ['events.blink', '--yes'], 'blink')
         const ok = out.code === 0 && !/\[E\d{4}\]/.test(out.output)
-        finish('blink', ok ? 'done' : 'failed', ok ? undefined : `Blink compile failed: ${errorLine(out.output)}`)
+        finish('blink', ok ? 'done' : 'failed', ok ? (command === 'current' ? 'Compiled with Current' : undefined) : `${label} compile failed: ${errorLine(out.output)}`)
       }
     }
   }

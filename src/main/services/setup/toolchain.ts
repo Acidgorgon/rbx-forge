@@ -2,6 +2,7 @@ import { existsSync, readFileSync } from 'node:fs'
 import path from 'node:path'
 import { defaultContext, envGet, findTool, toolEnv, type ToolContext } from '../tools.ts'
 import { errorLine, spawnRunner, type CommandRunner } from './runner.ts'
+import { CURRENT_TOOL } from '../../../shared/blink/compiler.ts'
 
 // Forge's own toolchain: a rokit binary ships inside the app (build/rokit-binaries.mjs ->
 // resources/rokit/<os>-<arch>, packaged as <resources>/rokit). On first launch the app runs the
@@ -35,14 +36,15 @@ export const PINNED_TOOLS: PinnedTool[] = [
   { alias: 'wally-package-types', id: 'JohnnyMorganz/wally-package-types', version: '1.6.2', purpose: 'Types for Wally packages' }
 ]
 
-// blink-plus (github.com/Acidgorgon/blink-plus): our fork of Blink that adds two-way events
-// (`From: Both`). Same CLI (`blink`), so a game opts in with one rokit.toml line under the same
-// alias. Forge's own global pin stays upstream 1Axen/blink; this is never installed globally.
-// (shared/blink/language.ts BLINK_PLUS_ROKIT_LINE is the same pin, for editor docs and hints.)
-export const BLINK_PLUS: Omit<PinnedTool, 'purpose'> = { alias: 'blink', id: 'Acidgorgon/blink-plus', version: '0.19.0' }
+// Current (github.com/Acidgorgon/current): our fork of Blink that adds two-way events
+// (`From: Both`). Its command is `current` (Forge looks for it before `blink`), so a game opts in by
+// replacing its `blink = ...` line with `current = "Acidgorgon/current@0.1.0"` in rokit.toml.
+// Forge's own global pin stays upstream 1Axen/blink; Current is never installed globally.
+// (Defined in shared/blink/compiler.ts with CURRENT_ROKIT_LINE, for editor docs and hints.)
+export const CURRENT: Omit<PinnedTool, 'purpose'> = { ...CURRENT_TOOL }
 
-// Vetted tools a game may pin instead of a PINNED_TOOLS entry.
-export const EXTRA_KNOWN_TOOL_IDS = [BLINK_PLUS.id]
+// Vetted tools a game may pin besides the PINNED_TOOLS entries.
+export const EXTRA_KNOWN_TOOL_IDS = [CURRENT.id]
 
 // Tool ids Forge installs without rokit's trust prompt in a project's `rokit install`.
 export const KNOWN_TOOL_IDS = new Set([...PINNED_TOOLS.map((t) => t.id), ...EXTRA_KNOWN_TOOL_IDS].map((id) => id.toLowerCase()))

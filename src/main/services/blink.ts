@@ -1,21 +1,23 @@
 // Blink (github.com/1Axen/blink) support: a tolerant parser for events.blink and its imports,
 // a check that runs the real compiler into a throwaway folder, and parsing of Blink's error output.
-// blink-plus (github.com/Acidgorgon/blink-plus, our fork; exe still `blink`) works the same way;
-// its one language extension, `From: Both`, is handled in shared/blink.
+// Current (github.com/Acidgorgon/current, our fork of Blink; command `current`) works the same way
+// (same arguments and outputs) and is looked for first (shared/blink/compiler.ts); its one
+// language extension, `From: Both`, is handled in shared/blink.
 //
 // The parser itself is in shared/blink/parser.ts (grammar notes there).
 //
 // Nothing here imports Electron, so it runs under node --test.
 
-import { watch, type FSWatcher } from 'node:fs'
+import { readFileSync, watch, type FSWatcher } from 'node:fs'
 import { mkdtemp, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
 import type { BlinkDiagnostic, BlinkEvent, BlinkModel, LogLine } from '@shared/types'
-import { findTool, run } from './tools.ts'
+import { defaultContext, findTool, run } from './tools.ts'
+import { parseRokitToml, rokitPaths } from './setup/toolchain.ts'
 import { appendDeclaration, BLINK_ENTRY, formatDeclaration, parseBlink, type BlinkEventSpec } from '../../shared/blink/parser.ts'
 import { blinkDirection } from '../../shared/blink/usage.ts'
-import { BLINK_PLUS_ROKIT_LINE } from '../../shared/blink/language.ts'
+import { blinkCommandOf, blinkCommands, CURRENT_ROKIT_LINE, pinnedBlinkCommand, type BlinkCommand } from '../../shared/blink/compiler.ts'
 
 export { appendDeclaration, BLINK_ENTRY, formatDeclaration, importScopeName, parseBlink, tokenize } from '../../shared/blink/parser.ts'
 export type { BlinkEventSpec, BlinkImport, ParsedBlinkFile } from '../../shared/blink/parser.ts'
@@ -317,13 +319,13 @@ export function parseBlinkErrors(output: string, ctx: ErrorContext): BlinkDiagno
   return []
 }
 
-// `From: Both` is blink-plus only. Upstream Blink reports it as
+// `From: Both` is Current only. Upstream Blink reports it as
 //   [E2003] Unknown option "Both" / Expected one of "Client" or "Server"
 // so say what to change instead of leaving the person to guess.
 export function explainBlinkDiagnostics(diagnostics: BlinkDiagnostic[]): BlinkDiagnostic[] {
   return diagnostics.map((d) => {
     if (!/^Unknown option "Both"$/.test(d.message) || (d.detail && !/"Client"|"Server"/.test(d.detail)) || /"Both"/.test(d.detail ?? '')) return d
-    const hint = `From: Both (two-way events) needs blink-plus: set ${BLINK_PLUS_ROKIT_LINE} in rokit.toml, then rokit install`
+    const hint = `From: Both (two-way events) needs Current: replace the blink line in rokit.toml with ${CURRENT_ROKIT_LINE}, then rokit install`
     return { ...d, detail: d.detail ? `${d.detail}. ${hint}` : hint }
   })
 }
@@ -336,29 +338,103 @@ export interface CheckResult {
   // Missing binary or no entry file: the check did not run.
   skipped?: string
   version?: string
-  // The banner named blink-plus ("Blink+ 0.19.0", "Blink 0.19.0 (blink-plus)").
-  plus?: boolean
+  // Which compiler ran (or, when skipped, which one the project pins): the banner's name, else
+  // the command.
+  compiler?: BlinkCommand
   output?: string
 }
 
-// Version from the compiler's banner. Upstream prints "Blink 0.18.1" (CLI/init.luau, "Blink" in
-// green); blink-plus prints the same today but may say "Blink+ 0.19.0", "Blink 0.19.0
-// (blink-plus)" or "blink-plus 0.19.0".
-export function parseBlinkBanner(output: string): { version?: string; plus: boolean } {
+// Name and version from the compiler's banner. Upstream prints "Blink 0.18.1" and Current prints
+// "Current 0.1.0" (CLI/init.luau, the name wrapped in ANSI colour codes).
+export function parseBlinkBanner(output: string): { version?: string; compiler?: BlinkCommand } {
   const text = output.replace(ANSI, '')
-  const m = /(?:^|[^\w./-])(Blink\S*|blink-plus)\s+v?(\d+\.\d+\.\d+[^\s)]*)([^\n]*)/m.exec(text)
-  if (!m) return { plus: false }
-  return { version: m[2], plus: /\+|plus/i.test(m[1]) || /\bblink[-+ ]?plus\b/i.test(m[3]) }
+  const m = /(?:^|[^\w./-])(Current|Blink)\b\S*\s+v?(\d+\.\d+\.\d+[^\s)]*)/m.exec(text)
+  if (!m) return {}
+  return { version: m[2], compiler: m[1] === 'Current' ? 'current' : 'blink' }
 }
 
-// Same resolution as the supervisor: PATH plus the rokit bin folder (~/.rokit/bin).
-export function findBlink(): string | null {
-  return findTool('blink')
+// "Current 0.1.0", "blink 0.18.1", "Current", "blink": the checker label for logs and the UI.
+export function compilerLabel(compiler: BlinkCommand | undefined, version?: string): string {
+  const name = compiler === 'current' ? 'Current' : 'blink'
+  return version ? `${name} ${version}` : name
+}
+
+export interface BlinkLookupOptions {
+  // For tests: PATH lookup (default findTool, which also searches ~/.rokit/bin) and file reads.
+  locate?: (name: string) => string | null
+  readText?: (path: string) => string | null
+  // rokit's global manifest (~/.rokit/rokit.toml), consulted when the project pins neither.
+  globalManifest?: string
+}
+
+export interface BlinkCompiler {
+  binary: string
+  command: BlinkCommand
+}
+
+function readTextSync(path: string): string | null {
+  try {
+    return readFileSync(path, 'utf8')
+  } catch {
+    return null
+  }
+}
+
+function projectAliases(root: string | undefined, options: BlinkLookupOptions): string[] {
+  const read = options.readText ?? readTextSync
+  return root ? [...parseRokitToml(read(join(root, 'rokit.toml')) ?? '').keys()] : []
+}
+
+// The aliases a project's rokit.toml pins; rokit's global manifest when the project pins neither
+// `current` nor `blink` (that is what rokit's shims fall back to).
+function pinnedAliases(root: string | undefined, options: BlinkLookupOptions): string[] {
+  const project = projectAliases(root, options)
+  if (pinnedBlinkCommand(project)) return project
+  const read = options.readText ?? readTextSync
+  const globalManifest = options.globalManifest ?? rokitPaths(defaultContext()).manifest
+  return [...parseRokitToml(read(globalManifest) ?? '').keys()]
+}
+
+// The commands to try for a project, best first: `current`, then `blink`, unless its rokit.toml
+// pins only `blink` (shared/blink/compiler.ts blinkCommands).
+export function blinkCommandsFor(root?: string, options: BlinkLookupOptions = {}): BlinkCommand[] {
+  return blinkCommands(pinnedAliases(root, options))
+}
+
+// Same resolution as the supervisor: PATH plus the rokit bin folder (~/.rokit/bin), trying
+// `current` and `blink` in blinkCommandsFor order.
+export function findBlinkCompiler(root?: string, options: BlinkLookupOptions = {}): BlinkCompiler | null {
+  const locate = options.locate ?? ((name: string) => findTool(name))
+  for (const command of blinkCommandsFor(root, options)) {
+    const binary = locate(command)
+    if (binary) return { binary, command }
+  }
+  return null
+}
+
+export function findBlink(root?: string, options: BlinkLookupOptions = {}): string | null {
+  return findBlinkCompiler(root, options)?.binary ?? null
+}
+
+// What to say when neither command is there: names the compiler the project's rokit.toml pins.
+function notFound(root: string, options: BlinkLookupOptions): { skipped: string; compiler?: BlinkCommand } {
+  const pinned = pinnedBlinkCommand(projectAliases(root, options))
+  if (!pinned) return { skipped: 'Neither current nor blink found. Run rokit install.' }
+  return { skipped: `${pinned} not found. Run rokit install.`, compiler: pinned }
+}
+
+// An explicit binary (tests, callers that resolved it) or the lookup above.
+function resolveCompiler(root: string, binary: string | null | undefined, lookup: BlinkLookupOptions): BlinkCompiler | null {
+  if (binary === undefined) return findBlinkCompiler(root, lookup)
+  if (!binary) return null
+  return { binary, command: blinkCommandOf(binary) ?? 'blink' }
 }
 
 export interface CheckOptions {
   entry?: string
+  // null: no compiler (the check is skipped). Omitted: findBlinkCompiler(root, lookup).
   binary?: string | null
+  lookup?: BlinkLookupOptions
   fs?: BlinkFs
   runner?: typeof run
   timeoutMs?: number
@@ -371,8 +447,10 @@ export async function checkBlink(root: string, options: CheckOptions = {}): Prom
   const entry = options.entry ?? BLINK_ENTRY
   const fs = options.fs ?? nodeFs
   const runner = options.runner ?? run
-  const binary = options.binary === undefined ? findBlink() : options.binary
-  if (!binary) return { ok: true, diagnostics: [], skipped: 'blink not found. Run rokit install.' }
+  const lookup = options.lookup ?? {}
+  const compiler = resolveCompiler(root, options.binary, lookup)
+  if (!compiler) return { ok: true, diagnostics: [], ...notFound(root, lookup) }
+  const { binary } = compiler
   const loaded = await loadBlinkModel(root, entry, fs)
   if (!loaded.model.file) return { ok: true, diagnostics: [], skipped: `No ${entry}` }
 
@@ -397,13 +475,13 @@ export async function checkBlink(root: string, options: CheckOptions = {}): Prom
     // cwd stays the project root so rokit's shim picks the version pinned in rokit.toml.
     const result = await runner(binary, [mainCopy, '--yes'], root)
     const output = `${result.stderr}\n${result.stdout}`
-    const { version, plus } = parseBlinkBanner(output)
-    const banner = { version, ...(plus ? { plus } : {}) }
+    const parsed = parseBlinkBanner(output)
+    const banner = { version: parsed.version, compiler: parsed.compiler ?? compiler.command }
     if (result.code === 0 && !/\[E\d{4}\]/.test(output)) return { ok: true, diagnostics: [], ...banner, output }
     const ctx: ErrorContext = { entry: loaded.model.file, importLabels: loaded.importLabels }
     let diagnostics = parseBlinkErrors(result.stderr, ctx)
     if (!diagnostics.length) diagnostics = parseBlinkErrors(output, ctx)
-    if (!diagnostics.length) diagnostics = [{ file: loaded.model.file, line: 1, column: 1, message: `blink exited with code ${result.code}`, severity: 'error' }]
+    if (!diagnostics.length) diagnostics = [{ file: loaded.model.file, line: 1, column: 1, message: `${compiler.command} exited with code ${result.code}`, severity: 'error' }]
     return { ok: false, diagnostics: explainBlinkDiagnostics(diagnostics), ...banner, output }
   } finally {
     await rm(temp, { recursive: true, force: true }).catch(() => undefined)
@@ -457,10 +535,12 @@ export interface GenerateResult {
 // The GenTree dev loop only does this for events.blink; other root *.blink files (menu.blink...)
 // are generated by Forge through this. Run only after checkBlink passed (a failed compile writes
 // nothing, but the check gives better diagnostics).
-export async function generateBlink(root: string, entry: string, options: { binary?: string | null; runner?: typeof run } = {}): Promise<GenerateResult> {
-  const binary = options.binary === undefined ? findBlink() : options.binary
-  if (!binary) return { ok: false, skipped: 'blink not found. Run rokit install.' }
-  const result = await (options.runner ?? run)(binary, [entry, '--yes'], root)
+export async function generateBlink(root: string, entry: string, options: { binary?: string | null; runner?: typeof run; lookup?: BlinkLookupOptions } = {}): Promise<GenerateResult> {
+  const lookup = options.lookup ?? {}
+  const compiler = resolveCompiler(root, options.binary, lookup)
+  if (!compiler) return { ok: false, skipped: notFound(root, lookup).skipped }
+  // Same arguments for Current and Blink.
+  const result = await (options.runner ?? run)(compiler.binary, [entry, '--yes'], root)
   const output = `${result.stderr}\n${result.stdout}`.trim()
   return { ok: result.code === 0 && !/\[E\d{4}\]/.test(output), output }
 }
@@ -581,8 +661,9 @@ export class BlinkWatcher {
         checking: false,
         checkedAt: Date.now(),
         checker: result.skipped ? 'missing' : 'blink',
-        checkerDetail: result.skipped ?? (result.version ? `${result.plus ? 'blink-plus' : 'blink'} ${result.version}` : 'blink'),
-        blinkVersion: result.version
+        checkerDetail: result.skipped ?? compilerLabel(result.compiler, result.version),
+        blinkVersion: result.version,
+        ...(result.compiler ? { blinkCompiler: result.compiler } : {})
       }
       this.publish()
       this.report(entry, this.fileModels[k], result)

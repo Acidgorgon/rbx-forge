@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { BLINK_DOCS, BLINK_EVENT_FIELDS, BLINK_LANGUAGE_CONFIGURATION, BLINK_MONARCH, BLINK_OPTIONS, BLINK_PLUS_ROKIT_LINE, BLINK_PRIMITIVES, BLINK_VALUES } from '../src/shared/blink/language.ts'
+import { BLINK_DOCS, BLINK_EVENT_FIELDS, BLINK_LANGUAGE_CONFIGURATION, BLINK_MONARCH, BLINK_OPTIONS, BLINK_PRIMITIVES, CURRENT_ROKIT_LINE, BLINK_VALUES } from '../src/shared/blink/language.ts'
 import { blinkCompletions, blinkContext, blinkDeclarations, blinkHover } from '../src/shared/blink/complete.ts'
 
 // ------------------------------------------------------------------ Monarch interpreter
@@ -338,15 +338,17 @@ test('hover: keywords, fields, values, primitives, options, declared names', () 
   assert.deepEqual([h.start, h.end], [9, 12])
 })
 
-// ------------------------------------------------------------------ blink-plus: From: Both
+// ------------------------------------------------------------------ Current: From: Both
 
-test('blink-plus: From: Both is a known value with docs, completion and highlighting', () => {
+test('Current: From: Both is a known value with docs, completion and highlighting', () => {
   const from = BLINK_EVENT_FIELDS.find((f) => f.key === 'From')!
   assert.deepEqual(from.values, ['Server', 'Client', 'Both'])
   assert.match(from.doc, /Both/)
   assert.ok((BLINK_VALUES as readonly string[]).includes('Both'))
-  assert.match(BLINK_DOCS.Both, /blink-plus/)
-  assert.ok(BLINK_DOCS.Both.includes(BLINK_PLUS_ROKIT_LINE))
+  assert.match(BLINK_DOCS.Both, /needs Current/)
+  assert.ok(BLINK_DOCS.Both.includes(CURRENT_ROKIT_LINE))
+  assert.equal(CURRENT_ROKIT_LINE, 'current = "Acidgorgon/current@0.1.0"')
+  assert.doesNotMatch(from.doc + BLINK_DOCS.Both, /blink-plus/i)
   // Server and Client keep their meaning.
   assert.match(BLINK_DOCS.Server, /Fired by the server/)
   assert.match(BLINK_DOCS.Client, /Fired by a client/)
@@ -355,7 +357,7 @@ test('blink-plus: From: Both is a known value with docs, completion and highligh
   const both = items.find((i) => i.label === 'Both')!
   assert.equal(both.kind, 'value')
   assert.match(both.documentation!, /both fire|fires .* and listens/i)
-  assert.match(hover('event A {\n  From: Bo|th\n}')!.markdown, /\*\*Both\*\* — Two-way event \(blink-plus only\)/)
+  assert.match(hover('event A {\n  From: Bo|th\n}')!.markdown, /\*\*Both\*\* — Two-way event \(needs Current\)/)
   // Highlighted as a constant like Server/Client.
   const toks = tokenize('event Ping {\n  From: Both,\n  Type: Reliable\n}')
   assert.deepEqual(toks.find(([t]) => t === 'Both'), ['Both', 'constant'])

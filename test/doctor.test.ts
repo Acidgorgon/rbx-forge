@@ -256,6 +256,25 @@ test('gatherInputs: gh auth, python for the project engine, ports, project files
   assert.ok(!JSON.stringify(i).includes('secret-key-value'))
 })
 
+test('Doctor: the Blink compiler rokit.toml pins (Current or upstream) gets a project row', async () => {
+  const rokit = (body: string) => fakeProbes({ readText: async (p) => (p.endsWith('rokit.toml') ? `[tools]\nrojo = "rojo-rbx/rojo@7.7.0"\n${body}\n` : p.endsWith('default.project.json') ? '{"name":"Game","tree":{}}' : null) })
+  let i = await gatherInputs(rokit('current = "Acidgorgon/current@0.1.0"'))
+  assert.deepEqual(i.project!.blinkCompiler, { command: 'current', id: 'Acidgorgon/current', version: '0.1.0' })
+  let row = projectChecks(i, NOW).find((c) => c.id === 'blink-compiler')!
+  assert.deepEqual([row.status, row.title], ['ok', 'Blink compiler (Current)'])
+  assert.match(row.detail, /^current 0\.1\.0 \(Acidgorgon\/current\) · From: Both enabled$/)
+  i.project!.projectToolsMissing = ['current 0.1.0']
+  row = projectChecks(i, NOW).find((c) => c.id === 'blink-compiler')!
+  assert.equal(row.status, 'warn')
+  assert.equal(row.fix?.kind === 'action' && row.fix.action, 'installProjectTools')
+
+  i = await gatherInputs(rokit('blink = "1Axen/blink@0.18.1"'))
+  assert.deepEqual(i.project!.blinkCompiler, { command: 'blink', id: '1Axen/blink', version: '0.18.1' })
+  assert.equal(projectChecks(i, NOW).find((c) => c.id === 'blink-compiler')?.title, 'Blink compiler (Blink)')
+  i = await gatherInputs(rokit(''))
+  assert.equal(i.project!.blinkCompiler, undefined)
+})
+
 test('gatherInputs: a throwing or hanging probe degrades, never fails the run', async () => {
   const i = await gatherInputs(
     fakeProbes({

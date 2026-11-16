@@ -185,6 +185,16 @@ export function projectChecks(i: DoctorInputs, now: number): DoctorCheck[] {
   }
   if (p.rokitToml && p.projectToolsMissing.length) out.push({ id: 'project-tools', group: 'Project', title: 'Project tools (rokit.toml)', status: 'warn', detail: `Not installed: ${p.projectToolsMissing.join(', ')}.`, fix: { kind: 'action', action: 'installProjectTools', label: 'rokit install' } })
   else if (p.rokitToml) out.push({ id: 'project-tools', group: 'Project', title: 'Project tools (rokit.toml)', status: 'ok', detail: 'Installed' })
+  const bc = p.blinkCompiler
+  if (bc) {
+    const name = bc.command === 'current' ? 'Current' : 'Blink'
+    const missing = p.projectToolsMissing.some((t) => t.split(' ')[0] === bc.command)
+    out.push(
+      missing
+        ? { id: 'blink-compiler', group: 'Project', title: `Blink compiler (${name})`, status: 'warn', detail: `rokit.toml pins ${bc.id} ${bc.version} but \`${bc.command}\` is not installed: events.blink is not compiled.`, fix: { kind: 'action', action: 'installProjectTools', label: 'rokit install' } }
+        : { id: 'blink-compiler', group: 'Project', title: `Blink compiler (${name})`, status: 'ok', detail: `${bc.command} ${bc.version} (${bc.id})${bc.command === 'current' ? ' · From: Both enabled' : ''}` }
+    )
+  }
   if (p.wallyToml) out.push(p.packagesInstalled ? { id: 'wally', group: 'Project', title: 'Wally packages', status: 'ok', detail: 'Installed' } : { id: 'wally', group: 'Project', title: 'Wally packages', status: 'fail', detail: 'wally.toml exists but Packages/ is missing: requires of packages fail in Studio.', fix: { kind: 'action', action: 'wallyInstall', label: 'wally install' } })
   if (!p.sourcemap.exists) out.push({ id: 'sourcemap', group: 'Project', title: 'sourcemap.json', status: 'warn', detail: 'Missing: luau-lsp cannot resolve requires and instance types.', fix: { kind: 'action', action: 'sourcemap', label: 'Generate' } })
   else if ((p.sourcemap.ageMs ?? 0) > SOURCEMAP_STALE_MS) out.push({ id: 'sourcemap', group: 'Project', title: 'sourcemap.json', status: 'warn', detail: `${Math.round((p.sourcemap.ageMs ?? 0) / 3600_000)} h old; may be stale if rojo is not running.`, fix: { kind: 'action', action: 'sourcemap', label: 'Regenerate' } })

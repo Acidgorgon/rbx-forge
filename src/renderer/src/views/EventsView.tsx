@@ -14,7 +14,7 @@ const fullName = (x: { scope: string[]; name: string }) => [...x.scope, x.name].
 function Dir({ ev }: { ev: BlinkEvent }) {
   if (ev.kind === 'function') return <span className="dir fn" title="Client invokes, server returns">C⇄S</span>
   const sides = blinkSides(ev.from)
-  // From: Both (blink-plus): server and clients both fire and listen.
+  // From: Both (Current): server and clients both fire and listen.
   if (sides.serverFires && sides.clientFires) return <span className="dir both" title="From: Both · server and clients both fire and listen">S⇄C</span>
   const s2c = sides.serverFires
   return <span className={`dir ${s2c ? 's2c' : 'c2s'}`} title={`From: ${ev.from ?? '?'}`}>{s2c ? 'S→C' : 'C→S'}</span>
@@ -55,7 +55,7 @@ function FileGroup({ model, q, collapsed, toggle }: { model: BlinkModel; q: stri
         <span style={{ textTransform: 'none', letterSpacing: 'var(--track)', color: 'var(--fg-2)' }}>{file}</span>
         <span className="count">{model.events.length}</span>
         <span className="grow" />
-        {model.checking ? <span className="spinner" title="Compiling" /> : errors ? <span className="tag err">{errors} error{errors === 1 ? '' : 's'}</span> : model.checker === 'missing' ? <span className="tag warn" title={model.checkerDetail}>no blink</span> : <span className="tag ok" title={model.checkedAt ? `checked ${ago(model.checkedAt)}` : ''}>ok</span>}
+        {model.checking ? <span className="spinner" title="Compiling" /> : errors ? <span className="tag err">{errors} error{errors === 1 ? '' : 's'}</span> : model.checker === 'missing' ? <span className="tag warn" title={model.checkerDetail}>{model.blinkCompiler === 'current' ? 'no current' : 'no blink'}</span> : <span className="tag ok" title={model.checkedAt ? `checked ${ago(model.checkedAt)}` : ''}>ok</span>}
         <button className="icon-btn" style={{ width: 20, height: 20 }} title={`Open ${file}`} onClick={(e) => (e.stopPropagation(), void actions.openFile(file))}>
           <Icon name="external" size={12} />
         </button>
@@ -163,7 +163,7 @@ export function EventsView() {
         ) : (
           models.map((m) => <FileGroup key={m.file ?? 'events.blink'} model={m} q={q} collapsed={collapsed} toggle={toggle} />)
         )}
-        {state.blink?.blinkVersion && <div className="note" style={{ padding: '4px 12px' }}>blink {state.blink.blinkVersion}{state.blink.checkedAt ? ` · checked ${ago(state.blink.checkedAt)}` : ''}</div>}
+        {state.blink?.blinkVersion && <div className="note" style={{ padding: '4px 12px' }}>{state.blink.blinkCompiler === 'current' ? 'Current' : 'blink'} {state.blink.blinkVersion}{state.blink.checkedAt ? ` · checked ${ago(state.blink.checkedAt)}` : ''}</div>}
       </div>
     </>
   )

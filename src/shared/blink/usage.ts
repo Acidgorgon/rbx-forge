@@ -1,7 +1,7 @@
 // Calls for an event/function in the Luau modules Blink generates, for "Copy usage".
 // Shared by main (AI tools) and the renderer (Events tab). Verified against Blink 0.18.1
 // src/Generator/init.luau and docs/pages/language/{5-events,6-functions}.mdx, and for
-// `From: Both` against blink-plus 0.19.0 (same files: CanFire/CanListen are both true).
+// `From: Both` against Current 0.1.0 (same files: CanFire/CanListen are both true).
 import type { BlinkEvent, BlinkFrom, BlinkModel } from '../types'
 
 type Casing = 'Pascal' | 'Camel' | 'Snake'
@@ -79,7 +79,7 @@ export interface BlinkUsage {
   client: string
 }
 
-// Who fires and who listens for an event's `From` (blink-plus Generator/init.luau: CanFire =
+// Who fires and who listens for an event's `From` (Current Generator/init.luau: CanFire =
 // From == Context or From == "Both", CanListen = From ~= Context or From == "Both"). A missing or
 // unknown From reads as Server, as before.
 export interface BlinkSides {
@@ -93,7 +93,7 @@ export function blinkSides(from: BlinkFrom | undefined): BlinkSides {
   return { serverFires: true, clientFires: false }
 }
 
-// "Server->Client", "Client->Server" or "Server<->Client" (two-way, blink-plus).
+// "Server->Client", "Client->Server" or "Server<->Client" (two-way, Current).
 export function blinkDirection(from: BlinkFrom | undefined): string {
   const sides = blinkSides(from)
   if (sides.serverFires && sides.clientFires) return 'Server<->Client'

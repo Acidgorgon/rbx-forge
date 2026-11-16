@@ -79,7 +79,7 @@ export function blinkTools(deps: BlinkToolDeps): { read: ServiceTool[]; write: S
     },
     {
       name: 'blink_check',
-      description: 'Compile a temporary copy of events.blink with the project\'s blink and report errors as file:line [code] message, or "ok". Writes nothing in the project.',
+      description: 'Compile a temporary copy of events.blink with the project\'s compiler (Current\'s `current`, else Blink\'s `blink`) and report errors as file:line [code] message, or "ok". Writes nothing in the project.',
       inputSchema: {},
       handler: async () => {
         const r = await deps.check(root())
@@ -93,7 +93,7 @@ export function blinkTools(deps: BlinkToolDeps): { read: ServiceTool[]; write: S
     {
       name: 'add_blink_event',
       description:
-        'Append an event (default) or function to events.blink, then compile-check it; on a compile error the file is restored and the errors are returned. Events: from Server|Client|Both (Both = two-way: server and clients both fire and listen; needs blink-plus, the compile check fails with upstream blink), type Reliable|Unreliable, call SingleSync|SingleAsync|ManySync|ManyAsync|Polling, data e.g. "(Instance(Player), u8)". Functions: yield Coroutine|Future|Promise, data, return. scope = existing or new scope name. ./dev regenerates the Luau outputs.',
+        'Append an event (default) or function to events.blink, then compile-check it; on a compile error the file is restored and the errors are returned. Events: from Server|Client|Both (Both = two-way: server and clients both fire and listen; needs Current, the compile check fails with upstream Blink), type Reliable|Unreliable, call SingleSync|SingleAsync|ManySync|ManyAsync|Polling, data e.g. "(Instance(Player), u8)". Functions: yield Coroutine|Future|Promise, data, return. scope = existing or new scope name. ./dev regenerates the Luau outputs.',
       inputSchema: {
         name: z.string().min(1),
         kind: z.enum(['event', 'function']).optional(),

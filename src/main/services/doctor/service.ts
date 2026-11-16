@@ -4,6 +4,8 @@
 
 import { runChecks, summarize } from '../../../shared/doctor/checks.ts'
 import type { DoctorAction, DoctorInputs, DoctorReport, PortProbe, ProjectFileProbe } from '../../../shared/doctor/types.ts'
+import { parseRokitToml } from '../setup/toolchain.ts'
+import { pinnedBlinkCommand } from '../../../shared/blink/compiler.ts'
 
 export interface DoctorProbes {
   platform: string
@@ -62,6 +64,14 @@ async function timed<T>(p: Promise<T> | T, fallback: T, ms = PROBE_MS): Promise<
 
 const sep = (root: string) => (root.includes('\\') && !root.includes('/') ? '\\' : '/')
 
+// The Blink compiler a rokit.toml pins (Current wins when both are there).
+export function blinkCompilerOf(rokitToml: string | null): NonNullable<DoctorInputs['project']>['blinkCompiler'] | null {
+  const pins = parseRokitToml(rokitToml ?? '')
+  const command = pinnedBlinkCommand(pins.keys())
+  const spec = command ? pins.get(command) : undefined
+  return command && spec ? { command, id: spec.id, version: spec.version } : null
+}
+
 export async function projectProbe(probes: DoctorProbes, root: string): Promise<NonNullable<DoctorInputs['project']>> {
   const j = (rel: string) => `${root}${sep(root)}${rel}`
   const projectFiles: ProjectFileProbe[] = []
@@ -83,6 +93,7 @@ export async function projectProbe(probes: DoctorProbes, root: string): Promise<
   const [wallyToml, packagesInstalled, rokitToml, smTime] = await Promise.all([timed(probes.exists(j('wally.toml')), false), timed(probes.exists(j('Packages')), false), timed(probes.exists(j('rokit.toml')), false), timed(probes.mtimeMs(j('sourcemap.json')), null)])
   const now = probes.now?.() ?? Date.now()
   const duplicateMappings = probes.duplicateMappings ? await timed(probes.duplicateMappings(root), [] as string[]) : []
+  const blinkCompiler = rokitToml ? blinkCompilerOf(await timed(probes.readText(j('rokit.toml')), null)) : null
   return {
     root,
     ...(duplicateMappings.length ? { duplicateMappings } : {}),
@@ -91,6 +102,7 @@ export async function projectProbe(probes: DoctorProbes, root: string): Promise<
     packagesInstalled,
     rokitToml,
     projectToolsMissing: rokitToml ? probes.projectToolsMissing(root) : [],
+    ...(blinkCompiler ? { blinkCompiler } : {}),
     sourcemap: smTime === null ? { exists: false } : { exists: true, ageMs: Math.max(0, now - smTime) }
   }
 }

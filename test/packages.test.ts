@@ -320,6 +320,45 @@ test('Packages service: adding a tool without rokit edits rokit.toml and reports
   await assert.rejects(packages.addTool('not a repo'), /owner\/repo/)
 })
 
+test('Packages service: blink-plus switches the blink line in rokit.toml and back, installing without the trust prompt', { skip: process.platform === 'win32' && 'fake rokit is a shell script' }, async () => {
+  const root = tempProject()
+  // A fake rokit that only succeeds; the service logs each command it runs.
+  const rokit = join(root, 'fake-rokit')
+  writeFileSync(rokit, '#!/bin/sh\nexit 0\n', { mode: 0o755 })
+  const logs: string[] = []
+  const packages = new Packages({
+    root: () => root,
+    devRunning: () => false,
+    log: (l) => logs.push(l.text),
+    emit: () => undefined,
+    fetch: (async (input: string | URL) => jsonResponse({ tag_name: String(input).includes('blink-plus') ? 'v0.19.0' : 'v0.18.1' })) as unknown as typeof fetch,
+    findTool: (name) => (name === 'rokit' ? rokit : null),
+    rokitHome: join(root, 'no-rokit')
+  })
+  // Fixture pins upstream blink; the curated blink-plus row offers a switch.
+  const curated = await packages.curated()
+  const plus = curated.find((t) => t.repo === 'Acidgorgon/blink-plus')!
+  assert.equal(plus.name, 'blink')
+  assert.equal(plus.inManifest, false)
+  assert.equal(plus.switchFrom, '1Axen/blink')
+  assert.equal(curated.find((t) => t.name === 'zap')?.switchFrom, undefined)
+
+  await packages.addTool('Acidgorgon/blink-plus')
+  const text = readFileSync(join(root, 'rokit.toml'), 'utf8')
+  assert.match(text, /^blink = "Acidgorgon\/blink-plus@0\.19\.0"$/m)
+  assert.doesNotMatch(text, /1Axen/)
+  assert.equal(parseRokitManifest(text).filter((t) => t.name === 'blink').length, 1)
+  assert.ok(logs.includes('$ rokit install --no-trust-check'), logs.join('\n'))
+
+  // And back to upstream from the 1Axen/blink row.
+  assert.equal((await packages.curated()).find((t) => t.repo === '1Axen/blink')?.switchFrom, 'Acidgorgon/blink-plus')
+  await packages.addTool('1Axen/blink@0.18.1')
+  assert.match(readFileSync(join(root, 'rokit.toml'), 'utf8'), /^blink = "1Axen\/blink@0\.18\.1"$/m)
+
+  // A tool that is not a drop-in still refuses a taken alias.
+  await assert.rejects(packages.addTool('someone/blink@1.0.0'), /already has a tool named blink/)
+})
+
 test('Packages service: GitHub release checks dedupe, revalidate with the ETag, and log one line per rate-limit pause', async () => {
   const root = tempProject()
   const logs: string[] = []

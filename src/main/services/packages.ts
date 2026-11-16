@@ -27,6 +27,7 @@ import type {
   WallyRealm
 } from '../../shared/types.ts'
 import { findTool, toolEnv } from './tools.ts'
+import { KNOWN_TOOL_IDS } from './setup/toolchain.ts'
 
 export const WALLY_API = 'https://api.wally.run/v1'
 const GITHUB_API = 'https://api.github.com'
@@ -475,6 +476,9 @@ export interface CuratedTool {
   name: string
   repo: string
   description: string
+  // Drop-in alternatives under the same alias: adding this tool when rokit.toml already pins one
+  // of these repos as `name` switches that line to this repo instead of failing.
+  replaces?: string[]
 }
 
 // Repos checked against github.com/<repo>/releases/latest.
@@ -484,7 +488,13 @@ export const CURATED_TOOLS: CuratedTool[] = [
   { name: 'wally', repo: 'UpliftGames/wally', description: 'Package manager for Roblox (wally.toml).' },
   { name: 'stylua', repo: 'JohnnyMorganz/StyLua', description: 'Opinionated Luau code formatter.' },
   { name: 'selene', repo: 'Kampfkarren/selene', description: 'Fast Luau linter (selene.toml).' },
-  { name: 'blink', repo: '1Axen/blink', description: 'Networking IDL compiler (events.blink).' },
+  { name: 'blink', repo: '1Axen/blink', description: 'Networking IDL compiler (events.blink).', replaces: ['Acidgorgon/blink-plus'] },
+  {
+    name: 'blink',
+    repo: 'Acidgorgon/blink-plus',
+    description: 'Blink fork with two-way events (From: Both). Same blink command; replaces 1Axen/blink in rokit.toml.',
+    replaces: ['1Axen/blink']
+  },
   { name: 'zap', repo: 'red-blox/zap', description: 'Alternative networking IDL compiler.' },
   { name: 'lune', repo: 'lune-org/lune', description: 'Standalone Luau runtime for scripts and tooling.' },
   { name: 'darklua', repo: 'seaofvoices/darklua', description: 'Transforms and bundles Luau code.' },
@@ -890,7 +900,11 @@ export class Packages {
     await mapLimit(CURATED_TOOLS, 4, (t) => this.latestRelease(t.repo))
     return CURATED_TOOLS.map((c) => {
       const entry = manifest.find((m) => m.repo.toLowerCase() === c.repo.toLowerCase())
-      return entry ? this.describe(entry.name, entry.repo, entry.version, true) : this.describe(c.name, c.repo, '', false)
+      if (entry) return this.describe(entry.name, entry.repo, entry.version, true)
+      const tool = this.describe(c.name, c.repo, '', false)
+      const replaced = manifest.find((m) => m.name === c.name && c.replaces?.some((r) => r.toLowerCase() === m.repo.toLowerCase()))
+      if (replaced) tool.switchFrom = replaced.repo
+      return tool
     })
   }
 
@@ -906,7 +920,10 @@ export class Packages {
     if (existing) return this.setToolVersion(existing.name, existing.repo, target)
     const curated = CURATED_TOOLS.find((t) => t.repo.toLowerCase() === fullRepo.toLowerCase())
     const alias = curated?.name ?? m[2].toLowerCase()
-    if (manifest.some((t) => t.name === alias)) throw new PackageError(`rokit.toml already has a tool named ${alias}.`)
+    const taken = manifest.find((t) => t.name === alias)
+    // A drop-in alternative (blink-plus for blink): switch the existing line to the new repo.
+    if (taken && curated?.replaces?.some((r) => r.toLowerCase() === taken.repo.toLowerCase())) return this.setToolVersion(alias, fullRepo, target)
+    if (taken) throw new PackageError(`rokit.toml already has a tool named ${alias}.`)
     const rokit = this.tool('rokit')
     this.lastError = undefined
     this.setInstalling('rokit')
@@ -949,7 +966,9 @@ export class Packages {
       if (!rokit) {
         this.lastError = 'rokit is not installed. Install Rokit, then run rokit install.'
       } else {
-        const code = await this.stream(rokit, ['install'], 'rokit')
+        // A tool Forge vets (blink-plus after a switch) installs without rokit's trust prompt,
+        // which fails when there is no terminal to answer it.
+        const code = await this.stream(rokit, ['install', ...(KNOWN_TOOL_IDS.has(repo.toLowerCase()) ? ['--no-trust-check'] : [])], 'rokit')
         if (code !== 0) this.lastError = `rokit install failed (exit ${code}). See Logs.`
       }
     } finally {

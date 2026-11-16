@@ -35,8 +35,17 @@ export const PINNED_TOOLS: PinnedTool[] = [
   { alias: 'wally-package-types', id: 'JohnnyMorganz/wally-package-types', version: '1.6.2', purpose: 'Types for Wally packages' }
 ]
 
+// blink-plus (github.com/Acidgorgon/blink-plus): our fork of Blink that adds two-way events
+// (`From: Both`). Same CLI (`blink`), so a game opts in with one rokit.toml line under the same
+// alias. Forge's own global pin stays upstream 1Axen/blink; this is never installed globally.
+// (shared/blink/language.ts BLINK_PLUS_ROKIT_LINE is the same pin, for editor docs and hints.)
+export const BLINK_PLUS: Omit<PinnedTool, 'purpose'> = { alias: 'blink', id: 'Acidgorgon/blink-plus', version: '0.19.0' }
+
+// Vetted tools a game may pin instead of a PINNED_TOOLS entry.
+export const EXTRA_KNOWN_TOOL_IDS = [BLINK_PLUS.id]
+
 // Tool ids Forge installs without rokit's trust prompt in a project's `rokit install`.
-export const KNOWN_TOOL_IDS = new Set(PINNED_TOOLS.map((t) => t.id.toLowerCase()))
+export const KNOWN_TOOL_IDS = new Set([...PINNED_TOOLS.map((t) => t.id), ...EXTRA_KNOWN_TOOL_IDS].map((id) => id.toLowerCase()))
 
 // ---------------------------------------------------------------- environment
 

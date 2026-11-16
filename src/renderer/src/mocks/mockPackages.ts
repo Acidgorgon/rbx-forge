@@ -89,13 +89,14 @@ function cmp(a: string, b: string): number {
   return 0
 }
 
-const curatedList: { name: string; repo: string; description: string; latest: string }[] = [
+const curatedList: { name: string; repo: string; description: string; latest: string; replaces?: string[] }[] = [
   { name: 'luau-lsp', repo: 'JohnnyMorganz/luau-lsp', description: 'Luau language server. Forge’s editor uses it for diagnostics, completion and hover.', latest: '1.70.1' },
   { name: 'rojo', repo: 'rojo-rbx/rojo', description: 'Syncs the repo into Studio and builds places.', latest: '7.7.1' },
   { name: 'wally', repo: 'UpliftGames/wally', description: 'Package manager for Roblox (wally.toml).', latest: '0.3.2' },
   { name: 'stylua', repo: 'JohnnyMorganz/StyLua', description: 'Opinionated Luau code formatter.', latest: '2.6.0' },
   { name: 'selene', repo: 'Kampfkarren/selene', description: 'Fast Luau linter (selene.toml).', latest: '0.32.0' },
-  { name: 'blink', repo: '1Axen/blink', description: 'Networking IDL compiler (events.blink).', latest: '0.18.9' },
+  { name: 'blink', repo: '1Axen/blink', description: 'Networking IDL compiler (events.blink).', latest: '0.18.9', replaces: ['Acidgorgon/blink-plus'] },
+  { name: 'blink', repo: 'Acidgorgon/blink-plus', description: 'Blink fork with two-way events (From: Both). Same blink command; replaces 1Axen/blink in rokit.toml.', latest: '0.19.0', replaces: ['1Axen/blink'] },
   { name: 'zap', repo: 'red-blox/zap', description: 'Alternative networking IDL compiler.', latest: '0.6.29' },
   { name: 'lune', repo: 'lune-org/lune', description: 'Standalone Luau runtime for scripts and tooling.', latest: '0.11.0' },
   { name: 'darklua', repo: 'seaofvoices/darklua', description: 'Transforms and bundles Luau code.', latest: '0.19.0' },
@@ -128,7 +129,9 @@ function curated(): RokitTool[] {
   return curatedList.map((c) => {
     const t = tools.find((x) => x.repo === c.repo)
     if (t) return t
+    const replaced = tools.find((x) => x.name === c.name && c.replaces?.includes(x.repo))
     return {
+      ...(replaced ? { switchFrom: replaced.repo } : {}),
       name: c.name,
       repo: c.repo,
       version: '',
@@ -214,7 +217,8 @@ export function packagesMock(emit: Emit, log: (text: string) => void): Pick<
       await delay(900)
       const c = curatedList.find((t) => t.repo.toLowerCase() === repo.toLowerCase())
       const name = c?.name ?? repo.split('/')[1].toLowerCase()
-      tools = [...tools, tool(name, c?.repo ?? repo, version || c?.latest || '1.0.0')]
+      // A drop-in alternative (blink-plus) takes over the alias's line.
+      tools = [...tools.filter((t) => !(t.name === name && c?.replaces?.includes(t.repo))), tool(name, c?.repo ?? repo, version || c?.latest || '1.0.0')]
       log(`rokit add ${repo}@${version || c?.latest}`)
       emit('packages:changed', { installing: null, tools: tools.slice() })
       return tools.slice()

@@ -1,7 +1,8 @@
 // Calls for an event/function in the Luau modules Blink generates, for "Copy usage".
 // Shared by main (AI tools) and the renderer (Events tab). Verified against Blink 0.18.1
-// src/Generator/init.luau and docs/pages/language/{5-events,6-functions}.mdx.
-import type { BlinkEvent, BlinkModel } from '../types'
+// src/Generator/init.luau and docs/pages/language/{5-events,6-functions}.mdx, and for
+// `From: Both` against Current 0.1.0 (same files: CanFire/CanListen are both true).
+import type { BlinkEvent, BlinkFrom, BlinkModel } from '../types'
 
 type Casing = 'Pascal' | 'Camel' | 'Snake'
 const METHOD_CASES: Record<string, [string, string, string]> = {
@@ -78,9 +79,31 @@ export interface BlinkUsage {
   client: string
 }
 
+// Who fires and who listens for an event's `From` (Current Generator/init.luau: CanFire =
+// From == Context or From == "Both", CanListen = From ~= Context or From == "Both"). A missing or
+// unknown From reads as Server, as before.
+export interface BlinkSides {
+  serverFires: boolean
+  clientFires: boolean
+}
+
+export function blinkSides(from: BlinkFrom | undefined): BlinkSides {
+  if (from === 'Both') return { serverFires: true, clientFires: true }
+  if (from === 'Client') return { serverFires: false, clientFires: true }
+  return { serverFires: true, clientFires: false }
+}
+
+// "Server->Client", "Client->Server" or "Server<->Client" (two-way, Current).
+export function blinkDirection(from: BlinkFrom | undefined): string {
+  const sides = blinkSides(from)
+  if (sides.serverFires && sides.clientFires) return 'Server<->Client'
+  return sides.clientFires ? 'Client->Server' : 'Server->Client'
+}
+
 // Calls for an event/function in the modules Blink generates (src/Generator/init.luau):
 // sender side Fire (server: Fire(player, ...), FireAll, FireList, FireExcept), receiver side
-// On(listener) or Iter() for polling; functions: client Invoke(...), server On(function(player, ...) return end).
+// On(listener) or Iter() for polling; a `From: Both` event gets both on each side;
+// functions: client Invoke(...), server On(function(player, ...) return end).
 export function blinkUsage(ev: BlinkEvent, model: Pick<BlinkModel, 'options' | 'requirePaths'>, moduleName = 'Events'): BlinkUsage {
   const casing = model.options.Casing as Casing | undefined
   const access = [moduleName, ...ev.scope, ev.name].join('.')
@@ -109,21 +132,26 @@ export function blinkUsage(ev: BlinkEvent, model: Pick<BlinkModel, 'options' | '
     return { server, client }
   }
   const polling = ev.call === 'Polling' || ev.poll === true || model.options.UsePolling === true
-  const fromServer = ev.from !== 'Client'
+  const sides = blinkSides(ev.from)
   const listen = (withPlayer: boolean) => {
     const args = withPlayer ? ['player', ...params(ev.data, ['player'])] : params(ev.data)
     if (polling) return `for ${['index', ...args].join(', ')} in ${access}.${method('Iter', casing)}() do\n\t-- ...\nend`
     return `${access}.${method('On', casing)}(function(${args.join(', ')})\n\t-- ...\nend)`
   }
-  if (fromServer) {
+  const serverParts: string[] = []
+  const clientParts: string[] = []
+  if (sides.serverFires) {
     const v = params(ev.data, ['player']).join(', ')
     const fire = (m: keyof typeof METHOD_CASES, first?: string) => `${access}.${method(m, casing)}(${[first, v].filter(Boolean).join(', ')})`
-    server = `${header('server')}\n\n${comment('server', 'send to clients')}\n${fire('Fire', 'player')}\n${fire('FireAll')}\n${fire('FireExcept', 'player')}\n${fire('FireList', '{ player }')}`
-    client = `${header('client')}\n\n${comment('client', 'receive')}\n${listen(false)}`
-  } else {
-    const clientValues = params(ev.data)
-    client = `${header('client')}\n\n${comment('client', 'send to the server')}\n${access}.${method('Fire', casing)}(${clientValues.join(', ')})`
-    server = `${header('server')}\n\n${comment('server', 'receive')}\n${listen(true)}`
+    serverParts.push(`${comment('server', 'send to clients')}\n${fire('Fire', 'player')}\n${fire('FireAll')}\n${fire('FireExcept', 'player')}\n${fire('FireList', '{ player }')}`)
+    clientParts.push(`${comment('client', sides.clientFires ? 'receive from the server' : 'receive')}\n${listen(false)}`)
   }
+  if (sides.clientFires) {
+    const clientValues = params(ev.data)
+    clientParts.push(`${comment('client', 'send to the server')}\n${access}.${method('Fire', casing)}(${clientValues.join(', ')})`)
+    serverParts.push(`${comment('server', sides.serverFires ? 'receive from clients' : 'receive')}\n${listen(true)}`)
+  }
+  server = `${header('server')}\n\n${serverParts.join('\n\n')}`
+  client = `${header('client')}\n\n${clientParts.join('\n\n')}`
   return { server, client }
 }

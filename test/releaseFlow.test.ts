@@ -169,6 +169,12 @@ test('runPreflight aggregates pass/warn/fail/skip, downgrades non-blocking, catc
   assert.deepEqual([clean.ok, clean.blockers], [true, []])
 })
 
+test('blinkCheck names Current when it compiled', async () => {
+  assert.equal((await blinkCheck(async () => ({ ok: true, diagnostics: [], compiler: 'current', version: '0.1.0' })).run()).summary, 'events.blink compiles with Current 0.1.0')
+  assert.equal((await blinkCheck(async () => ({ ok: true, diagnostics: [], compiler: 'blink', version: '0.18.1' })).run()).summary, 'events.blink compiles')
+  assert.equal((await blinkCheck(async () => ({ ok: false, diagnostics: [{ file: 'events.blink', line: 1, message: 'x' }], compiler: 'current' })).run()).summary, '1 Current error(s)')
+})
+
 test('gitCheck: dirty, ahead, behind, clean', async () => {
   const { base, remote, me } = setup()
   const check = gitCheck(me)

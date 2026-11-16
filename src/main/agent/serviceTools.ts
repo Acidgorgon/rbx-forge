@@ -65,7 +65,7 @@ export function blinkTools(deps: BlinkToolDeps): { read: ServiceTool[]; write: S
     {
       name: 'blink_events',
       description:
-        'List the Blink networking events and functions declared in events.blink (and its imports): name, direction (Server->Client / Client->Server), Reliable/Unreliable, Call, Data and file:line. Optional filter = substring of the scoped name. Edit events.blink, never the generated src/shared/events files.',
+        'List the Blink networking events and functions declared in events.blink (and its imports): name, direction (Server->Client / Client->Server / Server<->Client for two-way From: Both), Reliable/Unreliable, Call, Data and file:line. Optional filter = substring of the scoped name. Edit events.blink, never the generated src/shared/events files.',
       inputSchema: { filter: z.string().optional() },
       handler: async (args: { filter?: string }) => {
         const events = await deps.listEvents(root())
@@ -79,7 +79,7 @@ export function blinkTools(deps: BlinkToolDeps): { read: ServiceTool[]; write: S
     },
     {
       name: 'blink_check',
-      description: 'Compile a temporary copy of events.blink with the project\'s blink and report errors as file:line [code] message, or "ok". Writes nothing in the project.',
+      description: 'Compile a temporary copy of events.blink with the project\'s compiler (Current\'s `current`, else Blink\'s `blink`) and report errors as file:line [code] message, or "ok". Writes nothing in the project.',
       inputSchema: {},
       handler: async () => {
         const r = await deps.check(root())
@@ -93,11 +93,11 @@ export function blinkTools(deps: BlinkToolDeps): { read: ServiceTool[]; write: S
     {
       name: 'add_blink_event',
       description:
-        'Append an event (default) or function to events.blink, then compile-check it; on a compile error the file is restored and the errors are returned. Events: from Server|Client, type Reliable|Unreliable, call SingleSync|SingleAsync|ManySync|ManyAsync|Polling, data e.g. "(Instance(Player), u8)". Functions: yield Coroutine|Future|Promise, data, return. scope = existing or new scope name. ./dev regenerates the Luau outputs.',
+        'Append an event (default) or function to events.blink, then compile-check it; on a compile error the file is restored and the errors are returned. Events: from Server|Client|Both (Both = two-way: server and clients both fire and listen; needs Current, the compile check fails with upstream Blink), type Reliable|Unreliable, call SingleSync|SingleAsync|ManySync|ManyAsync|Polling, data e.g. "(Instance(Player), u8)". Functions: yield Coroutine|Future|Promise, data, return. scope = existing or new scope name. ./dev regenerates the Luau outputs.',
       inputSchema: {
         name: z.string().min(1),
         kind: z.enum(['event', 'function']).optional(),
-        from: z.enum(['Server', 'Client']).optional(),
+        from: z.enum(['Server', 'Client', 'Both']).optional(),
         type: z.enum(['Reliable', 'Unreliable']).optional(),
         call: z.enum(['SingleSync', 'SingleAsync', 'ManySync', 'ManyAsync', 'Polling']).optional(),
         poll: z.boolean().optional(),

@@ -5,15 +5,19 @@
 //   option Name = value                         ClientOutput, ServerOutput, TypesOutput, Casing, ...
 //   import "./path" [as Name]                   imported declarations live in a scope named Name or the file name
 //   [export] type|map|set|enum|struct Name ...  type declarations (generics: struct Name<T> { ... })
-//   event Name { From: Server|Client, Type: Reliable|Unreliable,
+//   event Name { From: Server|Client|Both, Type: Reliable|Unreliable,
 //                Call: SingleSync|SingleAsync|ManySync|ManyAsync|Polling, Poll: bool?, Data: T? }
 //   function Name { Yield: Coroutine|Future|Promise, Data: T?, Return: T? }
 //   scope Name { ...declarations... }
 //   comments: -- line, --[[ block ]], --[=[ block ]=]
+// `From: Both` is Current only (github.com/Acidgorgon/current, our Blink fork, 0.1.0+): a two-way event.
 
-import type { BlinkEvent, BlinkTypeDecl } from '../types'
+import type { BlinkEvent, BlinkFrom, BlinkTypeDecl } from '../types'
 
 export const BLINK_ENTRY = 'events.blink'
+
+// Values of an event's `From`. `Both` is Current only; upstream Blink 0.18 rejects it.
+export const BLINK_FROMS: readonly BlinkFrom[] = ['Server', 'Client', 'Both']
 
 const DECL_KEYWORDS = new Set(['type', 'map', 'set', 'enum', 'struct', 'event', 'function', 'scope', 'option', 'export', 'import'])
 const TYPE_KEYWORDS = new Set(['type', 'map', 'set', 'enum', 'struct'])
@@ -338,7 +342,7 @@ export function parseBlink(source: string, file = BLINK_ENTRY, scopePrefix: stri
       }
       if (i > 0 && toks[i - 1]) ev.endLine = toks[i - 1].line
       if (keyword === 'event') {
-        if (fields.From === 'Server' || fields.From === 'Client') ev.from = fields.From
+        if (BLINK_FROMS.includes(fields.From as BlinkFrom)) ev.from = fields.From as BlinkFrom
         if (fields.Type === 'Reliable' || fields.Type === 'Unreliable') ev.type = fields.Type
         if (fields.Call) ev.call = fields.Call as BlinkEvent['call']
         if (fields.Poll !== undefined) ev.poll = fields.Poll === 'true'
@@ -433,8 +437,8 @@ function memberNames(toks: Token[], open: number, end: number): string[] {
 export interface BlinkEventSpec {
   kind?: 'event' | 'function'
   name: string
-  // Events
-  from?: 'Server' | 'Client'
+  // Events. 'Both' needs Current.
+  from?: BlinkFrom
   type?: 'Reliable' | 'Unreliable'
   call?: 'SingleSync' | 'SingleAsync' | 'ManySync' | 'ManyAsync' | 'Polling'
   poll?: boolean
@@ -456,7 +460,7 @@ export function formatDeclaration(spec: BlinkEventSpec, indent = ''): string {
     const from = spec.from ?? 'Server'
     const type = spec.type ?? 'Reliable'
     const call = spec.call ?? 'ManyAsync'
-    if (from !== 'Server' && from !== 'Client') throw new Error('From must be Server or Client')
+    if (!BLINK_FROMS.includes(from)) throw new Error('From must be Server, Client or Both')
     if (type !== 'Reliable' && type !== 'Unreliable') throw new Error('Type must be Reliable or Unreliable')
     if (!CALLS.includes(call)) throw new Error(`Call must be one of ${CALLS.join(', ')}`)
     fields.push(`From: ${from}`, `Type: ${type}`, `Call: ${call}`)

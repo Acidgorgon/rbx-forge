@@ -619,6 +619,7 @@ function ToolsTab({
         </div>
         <div className="pk-list">
           {available.map((t) => (
+            // Keyed by repo; errors and the spinner too (Current and Blink replace each other).
             <div key={t.repo} className="pk-row pk-tool-row">
               <span className="pk-tool-icon"><IconTool size={15} /></span>
               <div className="pk-row-main">
@@ -627,13 +628,18 @@ function ToolsTab({
                   <span className="pk-scope mono">{t.repo}</span>
                 </div>
                 <div className="pk-desc">{t.description}</div>
-                {rowErrors[t.name] && <div className="pk-inline-error">{rowErrors[t.name]}</div>}
+                {rowErrors[t.repo] && <div className="pk-inline-error">{rowErrors[t.repo]}</div>}
               </div>
               <span className="pk-version" title={t.latest}>{shortVersion(t.latest)}</span>
               <span className="pk-row-actions">
-                <button className="btn small" disabled={!!busy} onClick={() => void run(t.name, () => h.addRokitTool(t.repo), `Added ${t.name}${t.latest ? ` ${t.latest}` : ''}`)}>
-                  {busy === t.name ? <span className="spinner" /> : null}
-                  Add
+                <button
+                  className="btn small"
+                  disabled={!!busy}
+                  title={t.switchFrom ? `Replaces ${t.switchFrom} in rokit.toml with ${t.repo} (as ${t.name}), then runs rokit install` : undefined}
+                  onClick={() => void run(t.repo, () => h.addRokitTool(t.repo), t.switchFrom ? `Switched ${t.switchFrom} to ${t.repo}` : `Added ${t.name}${t.latest ? ` ${t.latest}` : ''}`)}
+                >
+                  {busy === t.repo ? <span className="spinner" /> : null}
+                  {t.switchFrom ? 'Switch' : 'Add'}
                 </button>
               </span>
             </div>

@@ -124,6 +124,36 @@ test('GenTree project: strips template git, renames, git init + commit + remote,
   assert.deepEqual(result.notes, [])
 })
 
+test('first setup compiles events.blink with current when the template pins Current, blink when it pins upstream', async () => {
+  // GenTree pins upstream blink: a current shim on PATH (from another game) is not used.
+  const dir = parent()
+  const upstream = fakeRunner()
+  await createProject({ name: 'Up', parentDir: dir, template: 'gentree', initGit: false, firstSetup: true }, { fetcher: localFetcher, runner: upstream.runner, findTool: tools(['rokit', 'wally', 'blink', 'current']) })
+  assert.equal(upstream.calls.at(-1), '/bin/blink events.blink --yes')
+
+  // A template that pins Current: current, same arguments, without the trust prompt.
+  const currentFetcher: TemplateFetcher = async (dest, report) => {
+    const via = await localFetcher(dest, report)
+    const toml = join(dest, 'rokit.toml')
+    writeFileSync(toml, readFileSync(toml, 'utf8').replace(/^blink = .*$/m, 'current = "Acidgorgon/current@0.1.0"'))
+    return via
+  }
+  const cur = fakeRunner()
+  const events: NewProjectProgress[] = []
+  const result = await createProject(
+    { name: 'Cur', parentDir: dir, template: 'gentree', initGit: false, firstSetup: true },
+    { fetcher: currentFetcher, runner: cur.runner, findTool: tools(['rokit', 'wally', 'blink', 'current']), onProgress: (p) => events.push(p) }
+  )
+  assert.deepEqual(cur.calls.slice(-3), ['/bin/rokit install --no-trust-check', '/bin/wally install', '/bin/current events.blink --yes'])
+  assert.ok(events.some((e) => e.step === 'blink' && e.state === 'running' && e.message === 'current events.blink'))
+  assert.equal(result.steps.find((s) => s.step === 'blink')?.state, 'done')
+
+  // Only blink installed: falls back to it.
+  const fallback = fakeRunner()
+  await createProject({ name: 'Fb', parentDir: dir, template: 'gentree', initGit: false, firstSetup: true }, { fetcher: currentFetcher, runner: fallback.runner, findTool: tools(['rokit', 'wally', 'blink']) })
+  assert.equal(fallback.calls.at(-1), '/bin/blink events.blink --yes')
+})
+
 test('options off: no git, no first setup', async () => {
   const dir = parent()
   const { calls, runner } = fakeRunner()

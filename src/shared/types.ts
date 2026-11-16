@@ -506,6 +506,9 @@ export interface RokitTool {
   latest?: string
   // Set when `latest` is unknown because GitHub rate limited Forge: when the checks resume (ms).
   latestRetryAt?: number
+  // Curated drop-in alternative (Current for Blink, and back): adding it replaces this repo's line
+  // in rokit.toml (alias included: `blink = ...` becomes `current = ...`).
+  switchFrom?: string
   updateAvailable: boolean
 }
 
@@ -519,13 +522,19 @@ export interface PackagesChanged {
 }
 
 // Blink networking (events.blink, github.com/1Axen/blink), parsed by main/services/blink.ts.
+// `From: Both` is a Current extension (two-way event on one remote/index; Current is our Blink
+// fork, github.com/Acidgorgon/current, command `current`).
+export type BlinkFrom = 'Server' | 'Client' | 'Both'
+
 export interface BlinkEvent {
   kind: 'event' | 'function'
   name: string
   // Enclosing scopes, outermost first. Imported files add a scope named by `as` or the file name.
   scope: string[]
   // Events only. Functions are always invoked by the client and answered by the server.
-  from?: 'Server' | 'Client'
+  // 'Both' (Current only, github.com/Acidgorgon/current): a two-way event that the server and
+  // clients can both fire and listen to.
+  from?: BlinkFrom
   type?: 'Reliable' | 'Unreliable'
   call?: 'SingleSync' | 'SingleAsync' | 'ManySync' | 'ManyAsync' | 'Polling'
   poll?: boolean
@@ -595,10 +604,13 @@ export interface BlinkModel {
   // A compile check is running.
   checking?: boolean
   checkedAt?: number
-  // 'missing' when the blink binary was not found (no diagnostics then).
+  // 'missing' when neither `current` nor `blink` was found (no diagnostics then).
   checker?: 'blink' | 'missing'
   checkerDetail?: string
   blinkVersion?: string
+  // The compiler that checked (or would check) the files: Current (`current`) or upstream Blink
+  // (`blink`). Labels say "Current" for the first.
+  blinkCompiler?: 'current' | 'blink'
 }
 
 export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents, ModelEvents, StudioMcpEvents, SearchEvents {

@@ -3,7 +3,7 @@
 
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { BLINK_LANGUAGE_CONFIGURATION, BLINK_MONARCH, BLINK_OPTIONS, BLINK_PRIMITIVES } from '../src/shared/blink/language.ts'
+import { BLINK_DOCS, BLINK_EVENT_FIELDS, BLINK_LANGUAGE_CONFIGURATION, BLINK_MONARCH, BLINK_OPTIONS, BLINK_PRIMITIVES, CURRENT_ROKIT_LINE, BLINK_VALUES } from '../src/shared/blink/language.ts'
 import { blinkCompletions, blinkContext, blinkDeclarations, blinkHover } from '../src/shared/blink/complete.ts'
 
 // ------------------------------------------------------------------ Monarch interpreter
@@ -242,7 +242,7 @@ test('completions: top level suggests declarations and options', () => {
   for (const k of ['event', 'function', 'struct', 'enum', 'map', 'set', 'type', 'scope', 'import', 'export', 'option']) assert.ok(l.includes(k), k)
   const ev = at('ev|').items.find((i) => i.label === 'event')!
   assert.ok(ev.snippet)
-  assert.match(ev.insertText, /From: \$\{2\|Server,Client\|\}/)
+  assert.match(ev.insertText, /From: \$\{2\|Server,Client,Both\|\}/)
   assert.deepEqual(labels('type A = u8\n|'), labels('|'))
   // Inside a scope: no option/import.
   const scoped = labels('scope S {\n  |')
@@ -263,7 +263,7 @@ test('completions: options and their values', () => {
 test('completions: event and function fields with snippets, minus the ones written', () => {
   const ev = at('event A {\n  |')
   assert.deepEqual(ev.items.map((i) => i.label), ['From', 'Type', 'Call', 'Poll', 'Data'])
-  assert.equal(ev.items[0].insertText, 'From: ${1|Server,Client|}')
+  assert.equal(ev.items[0].insertText, 'From: ${1|Server,Client,Both|}')
   assert.equal(ev.items[2].insertText, 'Call: ${1|SingleSync,SingleAsync,ManySync,ManyAsync,Polling|}')
   assert.deepEqual(labels('event A {\n  From: Server,\n  Type: Reliable,\n  |'), ['Call', 'Poll', 'Data'])
   assert.deepEqual(labels('event A {\n  Call: Polling,\n  |'), ['From', 'Type', 'Data'])
@@ -274,8 +274,8 @@ test('completions: event and function fields with snippets, minus the ones writt
 })
 
 test('completions: field values per field, any casing of the key', () => {
-  assert.deepEqual(labels('event A {\n  From: |'), ['Server', 'Client'])
-  assert.deepEqual(labels('event A {\n  from: Se|'), ['Server', 'Client'])
+  assert.deepEqual(labels('event A {\n  From: |'), ['Server', 'Client', 'Both'])
+  assert.deepEqual(labels('event A {\n  from: Se|'), ['Server', 'Client', 'Both'])
   assert.deepEqual(labels('event A {\n  From: Server,\n  Type: |'), ['Reliable', 'Unreliable'])
   assert.deepEqual(labels('event A { Call: |'), ['SingleSync', 'SingleAsync', 'ManySync', 'ManyAsync', 'Polling'])
   assert.deepEqual(labels('event A { Poll: |'), ['true', 'false'])
@@ -325,7 +325,7 @@ function hover(src: string) {
 
 test('hover: keywords, fields, values, primitives, options, declared names', () => {
   assert.match(hover('ev|ent A {}')!.markdown, /remote event/)
-  assert.match(hover('event A {\n  Fr|om: Server\n}')!.markdown, /\*\*From\*\* — `Server \| Client`/)
+  assert.match(hover('event A {\n  Fr|om: Server\n}')!.markdown, /\*\*From\*\* — `Server \| Client \| Both`/)
   assert.match(hover('event A {\n  fr|om: Server\n}')!.markdown, /\*\*From\*\*/)
   assert.match(hover('event A {\n  Type: Unrel|iable\n}')!.markdown, /1000 bytes/)
   assert.match(hover('event A {\n  Ty|pe: Reliable\n}')!.markdown, /Reliability/)
@@ -336,4 +336,29 @@ test('hover: keywords, fields, values, primitives, options, declared names', () 
   assert.equal(hover('struct S { na|me: u8 }'), null)
   const h = hover('type X = u1|6')!
   assert.deepEqual([h.start, h.end], [9, 12])
+})
+
+// ------------------------------------------------------------------ Current: From: Both
+
+test('Current: From: Both is a known value with docs, completion and highlighting', () => {
+  const from = BLINK_EVENT_FIELDS.find((f) => f.key === 'From')!
+  assert.deepEqual(from.values, ['Server', 'Client', 'Both'])
+  assert.match(from.doc, /Both/)
+  assert.ok((BLINK_VALUES as readonly string[]).includes('Both'))
+  assert.match(BLINK_DOCS.Both, /needs Current/)
+  assert.ok(BLINK_DOCS.Both.includes(CURRENT_ROKIT_LINE))
+  assert.equal(CURRENT_ROKIT_LINE, 'current = "Acidgorgon/current@0.1.0"')
+  assert.doesNotMatch(from.doc + BLINK_DOCS.Both, /blink-plus/i)
+  // Server and Client keep their meaning.
+  assert.match(BLINK_DOCS.Server, /Fired by the server/)
+  assert.match(BLINK_DOCS.Client, /Fired by a client/)
+
+  const items = at('event A {\n  From: |').items
+  const both = items.find((i) => i.label === 'Both')!
+  assert.equal(both.kind, 'value')
+  assert.match(both.documentation!, /both fire|fires .* and listens/i)
+  assert.match(hover('event A {\n  From: Bo|th\n}')!.markdown, /\*\*Both\*\* — Two-way event \(needs Current\)/)
+  // Highlighted as a constant like Server/Client.
+  const toks = tokenize('event Ping {\n  From: Both,\n  Type: Reliable\n}')
+  assert.deepEqual(toks.find(([t]) => t === 'Both'), ['Both', 'constant'])
 })

@@ -119,6 +119,9 @@ export interface DoctorInputs {
     packagesInstalled: boolean
     rokitToml: boolean
     projectToolsMissing: string[]
+    // The Blink compiler rokit.toml pins: Current (`current = "Acidgorgon/current@…"`, our fork)
+    // or upstream Blink (`blink = …`). Forge compiles events.blink with `current` first.
+    blinkCompiler?: { command: 'current' | 'blink'; id: string; version: string }
     sourcemap: { exists: boolean; ageMs?: number }
     // Project nodes Rojo builds twice (an explicit child and a same-name entry of its parent's $path
     // folder), one line each (mapping.ts duplicateMappingText).

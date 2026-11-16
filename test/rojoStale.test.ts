@@ -3,8 +3,9 @@
 // (userData/serve-pids.json); the next run stops the ones still alive and still named rojo, reports a
 // rojo it did not start without touching it (Doctor "Stop stray rojo" frees the port), kills every
 // child on quit and tells the user to click Connect in Rojo when a serve was cut off.
-// The fake rojo is a sh script that execs a copy of sleep named "rojo" (so `ps` reports the name rojo);
-// a "stray" is a real process named rojo that listens (a symlink to node).
+// The fake rojo is a sh script that execs an idle node through a symlink named "rojo" (so `ps` reports the
+// name rojo); a "stray" is the same node symlink, listening. Not sleep: on newer Ubuntu sleep is a
+// multicall coreutils binary that picks its tool from argv[0] and fails when called as "rojo".
 import assert from 'node:assert/strict'
 import { spawn, type ChildProcess } from 'node:child_process'
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
@@ -34,13 +35,11 @@ const runs = process.env.ROJO_RUNS
 
 // Processes whose executable name is "rojo" (sleep, and node for the listening stray) or other.
 if (linux) {
-  mkdirSync(join(named, 'a'))
-  symlinkSync('/usr/bin/sleep', join(named, 'a', 'rojo'))
   mkdirSync(join(named, 'b'))
   symlinkSync(process.execPath, join(named, 'b', 'rojo'))
-  process.env.ROJO_SLEEP = join(named, 'a', 'rojo')
+  process.env.ROJO_SLEEP = join(named, 'b', 'rojo')
 }
-write(bin, 'rojo', '#!/bin/sh\nfor a in "$@"; do last=$a; done\necho "$$ $@" >> "$ROJO_RUNS"\necho "Rojo server listening: Port: $last"\nexec "$ROJO_SLEEP" 60\n')
+write(bin, 'rojo', '#!/bin/sh\nfor a in "$@"; do last=$a; done\necho "$$ $@" >> "$ROJO_RUNS"\necho "Rojo server listening: Port: $last"\nexec "$ROJO_SLEEP" -e "setTimeout(function () {}, 60000)"\n')
 chmodSync(join(bin, 'rojo'), 0o755)
 
 const spawned: ChildProcess[] = []
@@ -82,7 +81,7 @@ function leftover(file: string, args: string[]): ChildProcess {
   return child
 }
 const strayRojo = (port: number) => leftover(join(named, 'b', 'rojo'), ['-e', `require('net').createServer().listen(${port}, '127.0.0.1'); setTimeout(() => {}, 60000)`])
-const oldRojo = () => leftover(join(named, 'a', 'rojo'), ['60'])
+const oldRojo = () => leftover(join(named, 'b', 'rojo'), ['-e', 'setTimeout(() => {}, 60000)'])
 
 async function listening(port: number): Promise<void> {
   const end = Date.now() + 5000

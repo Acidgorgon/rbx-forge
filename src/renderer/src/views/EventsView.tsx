@@ -2,7 +2,7 @@
 // direction, type and data; diagnostics; copy usage; generated outputs read-only; new event form.
 import { useMemo, useState, type MouseEvent } from 'react'
 import type { BlinkEvent, BlinkModel } from '@shared/types'
-import { blinkUsage } from '@shared/blink/usage'
+import { blinkSides, blinkUsage } from '@shared/blink/usage'
 import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
 import { ClassIcon } from '../components/ClassIcon'
@@ -13,7 +13,10 @@ const fullName = (x: { scope: string[]; name: string }) => [...x.scope, x.name].
 
 function Dir({ ev }: { ev: BlinkEvent }) {
   if (ev.kind === 'function') return <span className="dir fn" title="Client invokes, server returns">C⇄S</span>
-  const s2c = ev.from !== 'Client'
+  const sides = blinkSides(ev.from)
+  // From: Both (blink-plus): server and clients both fire and listen.
+  if (sides.serverFires && sides.clientFires) return <span className="dir both" title="From: Both · server and clients both fire and listen">S⇄C</span>
+  const s2c = sides.serverFires
   return <span className={`dir ${s2c ? 's2c' : 'c2s'}`} title={`From: ${ev.from ?? '?'}`}>{s2c ? 'S→C' : 'C→S'}</span>
 }
 

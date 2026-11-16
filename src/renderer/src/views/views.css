@@ -67,6 +67,7 @@ button.fpart:hover { color: var(--fg); border-color: var(--fg-faint); }
 .dir.s2c { color: var(--realm-server); border-color: var(--info-line); background: var(--info-fill); }
 .dir.c2s { color: var(--realm-client); border-color: var(--ok-line); background: var(--ok-fill); }
 .dir.fn { color: var(--realm-shared); border-color: color-mix(in srgb, var(--realm-shared) 35%, transparent); }
+.dir.both { color: var(--realm-shared); border-color: color-mix(in srgb, var(--realm-shared) 35%, transparent); background: color-mix(in srgb, var(--realm-shared) 10%, transparent); }
 .diag { margin: 4px 10px; padding: 8px 10px; border: 1px solid var(--err-line); background: var(--err-fill); border-radius: var(--r-md); font-size: 11.5px; color: var(--err); cursor: pointer; }
 .diag .sub { color: var(--fg-muted); }
 .tres { display: flex; align-items: center; gap: 6px; min-height: 22px; padding: 1px 12px 1px 22px; font-size: 11.5px; color: var(--fg-2); cursor: pointer; }

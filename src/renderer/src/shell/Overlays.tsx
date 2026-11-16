@@ -1,7 +1,7 @@
 // Toasts (bottom-right, 6s, hover pauses) and the app's modal dialogs: confirm, rename feature, rename file,
 // new Blink event, join project, feature branch, pull request.
 import { useEffect, useRef, useState, type ReactNode } from 'react'
-import type { JoinProgress, JoinStepId } from '@shared/types'
+import type { BlinkFrom, JoinProgress, JoinStepId } from '@shared/types'
 import { useStorePick, useActions, useGetState, useStoreSelector, type ToastSpec } from '../store'
 import { Icon } from '../components/Icons'
 import { featuresOf, scriptsFlat } from '../lib/roblox'
@@ -290,7 +290,7 @@ function BlinkEventDialog({ onClose }: { onClose: () => void }) {
   const files = (state.blink?.files?.map((m) => m.file) ?? [state.blink?.file]).filter((x): x is string => !!x)
   const [file, setFile] = useState(files[0] ?? 'events.blink')
   const [name, setName] = useState('')
-  const [from, setFrom] = useState<'Server' | 'Client'>('Server')
+  const [from, setFrom] = useState<BlinkFrom>('Server')
   const [type, setType] = useState<'Reliable' | 'Unreliable'>('Reliable')
   const [call, setCall] = useState('SingleSync')
   const [data, setData] = useState('')
@@ -349,7 +349,9 @@ function BlinkEventDialog({ onClose }: { onClose: () => void }) {
           <div className="field">
             <span>From</span>
             <div className="seg">
-              {(['Server', 'Client'] as const).map((v) => <button key={v} className={from === v ? 'on' : ''} onClick={() => setFrom(v)}>{v}</button>)}
+              {(['Server', 'Client', 'Both'] as const).map((v) => (
+                <button key={v} className={from === v ? 'on' : ''} onClick={() => setFrom(v)} title={v === 'Both' ? 'Two-way: server and clients both fire and listen (needs blink-plus)' : undefined}>{v}</button>
+              ))}
             </div>
           </div>
           <div className="field">

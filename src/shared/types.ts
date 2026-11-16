@@ -506,6 +506,9 @@ export interface RokitTool {
   latest?: string
   // Set when `latest` is unknown because GitHub rate limited Forge: when the checks resume (ms).
   latestRetryAt?: number
+  // Curated drop-in alternative (blink-plus for blink): adding it switches this repo's line in
+  // rokit.toml, which pins it under the same alias.
+  switchFrom?: string
   updateAvailable: boolean
 }
 
@@ -519,13 +522,18 @@ export interface PackagesChanged {
 }
 
 // Blink networking (events.blink, github.com/1Axen/blink), parsed by main/services/blink.ts.
+// `From: Both` is a blink-plus extension (two-way event on one remote/index).
+export type BlinkFrom = 'Server' | 'Client' | 'Both'
+
 export interface BlinkEvent {
   kind: 'event' | 'function'
   name: string
   // Enclosing scopes, outermost first. Imported files add a scope named by `as` or the file name.
   scope: string[]
   // Events only. Functions are always invoked by the client and answered by the server.
-  from?: 'Server' | 'Client'
+  // 'Both' (blink-plus, github.com/Acidgorgon/blink-plus): a two-way event that the server and
+  // clients can both fire and listen to.
+  from?: BlinkFrom
   type?: 'Reliable' | 'Unreliable'
   call?: 'SingleSync' | 'SingleAsync' | 'ManySync' | 'ManyAsync' | 'Polling'
   poll?: boolean

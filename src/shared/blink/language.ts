@@ -9,12 +9,18 @@
 //   src/Parser.luau    options and event/function fields (keys also match all-lowercase:
 //                      `GetOptionFromToken` accepts `string.lower(Key) == Value`)
 //   docs/pages/language/*.mdx  the hover text below is condensed from these pages
+// plus one blink-plus extension (github.com/Acidgorgon/blink-plus, our fork, 0.19.0+): an event's
+// `From` may be `Both`, a two-way event the server and clients can both fire and listen to
+// (blink-plus docs/pages/language/5-events.mdx). Upstream Blink rejects `Both` with E2003.
 // The scopes the docs site grammar (docs/public/syntax/blink.tmLanguage.json, MIT,
 // Copyright (c) 2024 VirtualButFake (Tijn Epema), checkraisefold) colours are all covered:
 // keyword.control, storage.type (primitives), entity.name.type.enum (settings values),
 // variable.other.readwrite (`Key:`), constant.language.boolean, keyword.operator (= : .. ?),
 // numbers, strings, comments. The tokenizer here is written from scratch in Monarch and adds
 // context (event/function bodies versus struct bodies, type references, declared names).
+
+// The rokit.toml line that switches a game to blink-plus (same `blink` alias and CLI).
+export const BLINK_PLUS_ROKIT_LINE = 'blink = "Acidgorgon/blink-plus@0.19.0"'
 
 export const BLINK_KEYWORDS = ['option', 'import', 'as', 'export', 'type', 'struct', 'enum', 'map', 'set', 'event', 'function', 'scope'] as const
 
@@ -37,7 +43,7 @@ export interface BlinkField {
 }
 
 export const BLINK_EVENT_FIELDS: readonly BlinkField[] = [
-  { key: 'From', values: ['Server', 'Client'], doc: 'The side that fires the event: `Server` or `Client`.' },
+  { key: 'From', values: ['Server', 'Client', 'Both'], doc: 'The side that fires the event: `Server`, `Client`, or `Both` (blink-plus: a two-way event; both sides fire and listen).' },
   { key: 'Type', values: ['Reliable', 'Unreliable'], doc: 'Reliability. `Reliable` arrives in order; `Unreliable` may drop or reorder and is capped at 1000 bytes.' },
   { key: 'Call', values: ['SingleSync', 'SingleAsync', 'ManySync', 'ManyAsync', 'Polling'], doc: 'The listening API on the receiving side: one or many listeners, sync (must not yield) or async, or `Polling` (`Event.Iter()`).' },
   { key: 'Poll', values: ['true', 'false'], optional: true, doc: 'Optional. `true` also exposes a polling API (`Event.Iter()`) for this event.' },
@@ -79,7 +85,7 @@ export const BLINK_CASINGS = ['Pascal', 'Camel', 'Snake'] as const
 
 // Every fixed value an event/function field or option can take.
 export const BLINK_VALUES = [
-  'Server', 'Client', 'Reliable', 'Unreliable', 'SingleSync', 'SingleAsync', 'ManySync', 'ManyAsync', 'Polling',
+  'Server', 'Client', 'Both', 'Reliable', 'Unreliable', 'SingleSync', 'SingleAsync', 'ManySync', 'ManyAsync', 'Polling',
   'Coroutine', 'Future', 'Promise', ...BLINK_CASINGS
 ] as const
 
@@ -128,6 +134,7 @@ export const BLINK_DOCS: Record<string, string> = {
   unknown: 'Any value, serialized by Roblox. Use sparingly: it loses Blink\'s size benefits.',
   Server: 'Fired by the server, received by clients.',
   Client: 'Fired by a client, received by the server.',
+  Both: 'Two-way event (blink-plus only): the server fires (`Fire`/`FireAll`/`FireList`/`FireExcept`) and listens, and clients fire (`Fire`) and listen, on one shared remote. Needs `' + BLINK_PLUS_ROKIT_LINE + '` in rokit.toml.',
   Reliable: 'Guaranteed to arrive, in the order sent.',
   Unreliable: 'May be dropped or reordered; at most 1000 bytes.',
   SingleSync: 'One listener that must not yield.',

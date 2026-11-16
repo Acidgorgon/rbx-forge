@@ -1,5 +1,7 @@
 // Blink (github.com/1Axen/blink) support: a tolerant parser for events.blink and its imports,
 // a check that runs the real compiler into a throwaway folder, and parsing of Blink's error output.
+// blink-plus (github.com/Acidgorgon/blink-plus, our fork; exe still `blink`) works the same way;
+// its one language extension, `From: Both`, is handled in shared/blink.
 //
 // The parser itself is in shared/blink/parser.ts (grammar notes there).
 //
@@ -12,6 +14,8 @@ import { dirname, isAbsolute, join, posix, relative, resolve, sep } from 'node:p
 import type { BlinkDiagnostic, BlinkEvent, BlinkModel, LogLine } from '@shared/types'
 import { findTool, run } from './tools.ts'
 import { appendDeclaration, BLINK_ENTRY, formatDeclaration, parseBlink, type BlinkEventSpec } from '../../shared/blink/parser.ts'
+import { blinkDirection } from '../../shared/blink/usage.ts'
+import { BLINK_PLUS_ROKIT_LINE } from '../../shared/blink/language.ts'
 
 export { appendDeclaration, BLINK_ENTRY, formatDeclaration, importScopeName, parseBlink, tokenize } from '../../shared/blink/parser.ts'
 export type { BlinkEventSpec, BlinkImport, ParsedBlinkFile } from '../../shared/blink/parser.ts'
@@ -193,7 +197,7 @@ export async function loadBlinkModels(root: string, fs: BlinkFs = nodeFs): Promi
 }
 
 // Generated-API usage lives in shared/ so the renderer can use it too.
-export { blinkUsage, dataValues, type BlinkUsage } from '../../shared/blink/usage.ts'
+export { blinkDirection, blinkSides, blinkUsage, dataValues, type BlinkSides, type BlinkUsage } from '../../shared/blink/usage.ts'
 
 // ---------------------------------------------------------------- error output
 
@@ -313,6 +317,17 @@ export function parseBlinkErrors(output: string, ctx: ErrorContext): BlinkDiagno
   return []
 }
 
+// `From: Both` is blink-plus only. Upstream Blink reports it as
+//   [E2003] Unknown option "Both" / Expected one of "Client" or "Server"
+// so say what to change instead of leaving the person to guess.
+export function explainBlinkDiagnostics(diagnostics: BlinkDiagnostic[]): BlinkDiagnostic[] {
+  return diagnostics.map((d) => {
+    if (!/^Unknown option "Both"$/.test(d.message) || (d.detail && !/"Client"|"Server"/.test(d.detail)) || /"Both"/.test(d.detail ?? '')) return d
+    const hint = `From: Both (two-way events) needs blink-plus: set ${BLINK_PLUS_ROKIT_LINE} in rokit.toml, then rokit install`
+    return { ...d, detail: d.detail ? `${d.detail}. ${hint}` : hint }
+  })
+}
+
 // ---------------------------------------------------------------- check (real compiler, temp output)
 
 export interface CheckResult {
@@ -321,7 +336,19 @@ export interface CheckResult {
   // Missing binary or no entry file: the check did not run.
   skipped?: string
   version?: string
+  // The banner named blink-plus ("Blink+ 0.19.0", "Blink 0.19.0 (blink-plus)").
+  plus?: boolean
   output?: string
+}
+
+// Version from the compiler's banner. Upstream prints "Blink 0.18.1" (CLI/init.luau, "Blink" in
+// green); blink-plus prints the same today but may say "Blink+ 0.19.0", "Blink 0.19.0
+// (blink-plus)" or "blink-plus 0.19.0".
+export function parseBlinkBanner(output: string): { version?: string; plus: boolean } {
+  const text = output.replace(ANSI, '')
+  const m = /(?:^|[^\w./-])(Blink\S*|blink-plus)\s+v?(\d+\.\d+\.\d+[^\s)]*)([^\n]*)/m.exec(text)
+  if (!m) return { plus: false }
+  return { version: m[2], plus: /\+|plus/i.test(m[1]) || /\bblink[-+ ]?plus\b/i.test(m[3]) }
 }
 
 // Same resolution as the supervisor: PATH plus the rokit bin folder (~/.rokit/bin).
@@ -370,13 +397,14 @@ export async function checkBlink(root: string, options: CheckOptions = {}): Prom
     // cwd stays the project root so rokit's shim picks the version pinned in rokit.toml.
     const result = await runner(binary, [mainCopy, '--yes'], root)
     const output = `${result.stderr}\n${result.stdout}`
-    const version = /Blink\S*\s+(\d+\.\d+\.\d+\S*)/.exec(output.replace(ANSI, ''))?.[1]
-    if (result.code === 0 && !/\[E\d{4}\]/.test(output)) return { ok: true, diagnostics: [], version, output }
+    const { version, plus } = parseBlinkBanner(output)
+    const banner = { version, ...(plus ? { plus } : {}) }
+    if (result.code === 0 && !/\[E\d{4}\]/.test(output)) return { ok: true, diagnostics: [], ...banner, output }
     const ctx: ErrorContext = { entry: loaded.model.file, importLabels: loaded.importLabels }
     let diagnostics = parseBlinkErrors(result.stderr, ctx)
     if (!diagnostics.length) diagnostics = parseBlinkErrors(output, ctx)
     if (!diagnostics.length) diagnostics = [{ file: loaded.model.file, line: 1, column: 1, message: `blink exited with code ${result.code}`, severity: 'error' }]
-    return { ok: false, diagnostics, version, output }
+    return { ok: false, diagnostics: explainBlinkDiagnostics(diagnostics), ...banner, output }
   } finally {
     await rm(temp, { recursive: true, force: true }).catch(() => undefined)
   }
@@ -396,7 +424,7 @@ export async function listEvents(root: string, entry?: string): Promise<BlinkEve
 export function describeEvent(ev: BlinkEvent): string {
   const name = [...ev.scope, ev.name].join('.')
   if (ev.kind === 'function') return `function ${name}: Yield ${ev.yield ?? '?'}, Data ${ev.data ?? '-'}, Return ${ev.return ?? '-'} (${ev.file}:${ev.line})`
-  const dir = ev.from === 'Client' ? 'Client->Server' : 'Server->Client'
+  const dir = blinkDirection(ev.from)
   return `event ${name}: ${dir}, ${ev.type ?? '?'}, ${ev.call ?? '?'}${ev.poll ? ', Poll' : ''}, Data ${ev.data ?? '-'} (${ev.file}:${ev.line})`
 }
 
@@ -553,7 +581,7 @@ export class BlinkWatcher {
         checking: false,
         checkedAt: Date.now(),
         checker: result.skipped ? 'missing' : 'blink',
-        checkerDetail: result.skipped ?? (result.version ? `blink ${result.version}` : 'blink'),
+        checkerDetail: result.skipped ?? (result.version ? `${result.plus ? 'blink-plus' : 'blink'} ${result.version}` : 'blink'),
         blinkVersion: result.version
       }
       this.publish()

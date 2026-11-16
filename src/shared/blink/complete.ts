@@ -346,7 +346,7 @@ function unquote(s: string): string {
 }
 
 const TOP_SNIPPETS: BlinkCompletion[] = [
-  { label: 'event', kind: 'snippet', snippet: true, insertText: 'event ${1:Name} {\n\tFrom: ${2|Server,Client|},\n\tType: ${3|Reliable,Unreliable|},\n\tCall: ${4|SingleAsync,SingleSync,ManyAsync,ManySync,Polling|},\n\tData: ${5:u8}\n}', detail: 'event Name { From, Type, Call, Data }' },
+  { label: 'event', kind: 'snippet', snippet: true, insertText: 'event ${1:Name} {\n\tFrom: ${2|Server,Client,Both|},\n\tType: ${3|Reliable,Unreliable|},\n\tCall: ${4|SingleAsync,SingleSync,ManyAsync,ManySync,Polling|},\n\tData: ${5:u8}\n}', detail: 'event Name { From, Type, Call, Data }' },
   { label: 'function', kind: 'snippet', snippet: true, insertText: 'function ${1:Name} {\n\tYield: ${2|Coroutine,Future,Promise|},\n\tData: ${3:u8},\n\tReturn: ${4:u8}\n}', detail: 'function Name { Yield, Data, Return }' },
   { label: 'struct', kind: 'snippet', snippet: true, insertText: 'struct ${1:Name} {\n\t${2:Key}: ${3:u8},\n}', detail: 'struct Name { Key: Type }' },
   { label: 'enum', kind: 'snippet', snippet: true, insertText: 'enum ${1:Name} = { ${2:A}, ${3:B} }', detail: 'enum Name = { A, B }' },

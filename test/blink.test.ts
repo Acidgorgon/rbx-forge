@@ -11,14 +11,19 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import {
   appendDeclaration,
+  blinkDirection,
+  blinkSides,
   blinkUsage,
   BlinkWatcher,
   checkBlink,
   dataValues,
+  describeEvent,
+  explainBlinkDiagnostics,
   formatDeclaration,
   instancePathFor,
   loadBlinkModel,
   parseBlink,
+  parseBlinkBanner,
   parseBlinkErrors,
   tokenize
 } from '../src/main/services/blink.ts'
@@ -371,4 +376,130 @@ test('real blink: fixture compiles, broken copy reports a positioned error', { s
   } finally {
     await rm(root, { recursive: true, force: true })
   }
+})
+
+// ---------------------------------------------------------------- blink-plus: From: Both
+
+const twoWay = `option ClientOutput = "src/shared/events/client.luau"
+option ServerOutput = "src/server/events/server.luau"
+
+event Ping {
+    From: Both,
+    Type: Reliable,
+    Call: ManyAsync,
+    Data: u32
+}
+
+scope Match {
+    event Score {
+        From: Both, Type: Unreliable, Call: Polling, Data: (Instance(Player), u16)
+    }
+}
+
+event Down { From: Server, Type: Reliable, Call: SingleAsync, Data: u8 }
+event Up { From: Client, Type: Reliable, Call: SingleAsync, Data: u8 }
+event Odd { From: Sideways, Type: Reliable, Call: SingleAsync }
+`
+
+test('blink-plus: the parser keeps From: Both; Server/Client unchanged, unknown values dropped', () => {
+  const parsed = parseBlink(twoWay)
+  const by = Object.fromEntries(parsed.events.map((e) => [[...e.scope, e.name].join('.'), e]))
+  assert.equal(by.Ping.from, 'Both')
+  assert.equal(by['Match.Score'].from, 'Both')
+  assert.equal(by['Match.Score'].call, 'Polling')
+  assert.equal(by.Down.from, 'Server')
+  assert.equal(by.Up.from, 'Client')
+  assert.equal(by.Odd.from, undefined)
+})
+
+test('blink-plus: sides and direction for each From', () => {
+  assert.deepEqual(blinkSides('Both'), { serverFires: true, clientFires: true })
+  assert.deepEqual(blinkSides('Server'), { serverFires: true, clientFires: false })
+  assert.deepEqual(blinkSides('Client'), { serverFires: false, clientFires: true })
+  assert.deepEqual(blinkSides(undefined), { serverFires: true, clientFires: false }, 'missing From reads as Server, as before')
+  assert.equal(blinkDirection('Both'), 'Server<->Client')
+  assert.equal(blinkDirection('Server'), 'Server->Client')
+  assert.equal(blinkDirection('Client'), 'Client->Server')
+  const ev = Object.fromEntries(parseBlink(twoWay).events.map((e) => [e.name, e]))
+  assert.match(describeEvent(ev.Ping), /^event Ping: Server<->Client, Reliable, ManyAsync, Data u32 \(events\.blink:4\)$/)
+  assert.match(describeEvent(ev.Down), /^event Down: Server->Client,/)
+  assert.match(describeEvent(ev.Up), /^event Up: Client->Server,/)
+})
+
+test('blink-plus: usage for a two-way event fires and listens on both sides (blink-plus 5-events.mdx)', () => {
+  const parsed = parseBlink(twoWay)
+  const model = { options: parsed.options, requirePaths: { client: 'ReplicatedStorage.Shared.events.client', server: 'ServerScriptService.Server.events.server' } }
+  const ev = (name: string) => parsed.events.find((e) => e.name === name)!
+  const ping = blinkUsage(ev('Ping'), model)
+  // Server: the full sending API plus a listener that gets the player first.
+  assert.match(ping.server, /-- server: send to clients\nEvents\.Ping\.Fire\(player, data\)\nEvents\.Ping\.FireAll\(data\)\nEvents\.Ping\.FireExcept\(player, data\)\nEvents\.Ping\.FireList\(\{ player \}, data\)/)
+  assert.match(ping.server, /-- server: receive from clients\nEvents\.Ping\.On\(function\(player, data\)\n\t-- \.\.\.\nend\)/)
+  // Client: a listener without the player, and Fire to the server.
+  assert.match(ping.client, /-- client: receive from the server\nEvents\.Ping\.On\(function\(data\)\n\t-- \.\.\.\nend\)/)
+  assert.match(ping.client, /-- client: send to the server\nEvents\.Ping\.Fire\(data\)/)
+  assert.doesNotMatch(ping.client, /FireAll/)
+  assert.equal(ping.server.match(/require\(/g)?.length, 1, 'one require per side')
+
+  // Polling, scoped, type pack: Iter on both sides; the player argument is not duplicated.
+  const score = blinkUsage(ev('Score'), model)
+  assert.match(score.server, /for index, player, otherPlayer, value2 in Events\.Match\.Score\.Iter\(\) do/)
+  assert.match(score.server, /Events\.Match\.Score\.FireAll\(otherPlayer, value2\)/)
+  assert.match(score.client, /for index, player, value2 in Events\.Match\.Score\.Iter\(\) do/)
+  assert.match(score.client, /Events\.Match\.Score\.Fire\(player, value2\)/)
+
+  // One-way events are as before.
+  const down = blinkUsage(ev('Down'), model)
+  assert.match(down.client, /-- client: receive\nEvents\.Down\.On\(function\(data\)/)
+  assert.doesNotMatch(down.client, /Fire\(/)
+  assert.doesNotMatch(down.server, /\.On\(/)
+  const up = blinkUsage(ev('Up'), model)
+  assert.match(up.server, /-- server: receive\nEvents\.Up\.On\(function\(player, data\)/)
+  assert.doesNotMatch(up.server, /Fire/)
+
+  const snake = blinkUsage(ev('Ping'), { options: { Casing: 'Snake' } })
+  assert.match(snake.server, /\.fire_all\(/)
+  assert.match(snake.client, /\.on\(function/)
+})
+
+test('blink-plus: declarations with From: Both format and append', () => {
+  assert.equal(
+    formatDeclaration({ name: 'Ping', from: 'Both', type: 'Reliable', call: 'ManyAsync', data: 'u32' }),
+    'event Ping {\n    From: Both,\n    Type: Reliable,\n    Call: ManyAsync,\n    Data: u32\n}\n'
+  )
+  assert.throws(() => formatDeclaration({ name: 'X', from: 'Everyone' as never }), /Server, Client or Both/)
+  const added = appendDeclaration('option ClientOutput = "c"\n', { name: 'Ping', from: 'Both' })
+  assert.equal(parseBlink(added).events[0].from, 'Both')
+})
+
+test('blink-plus: version comes from upstream and blink-plus banners', () => {
+  assert.deepEqual(parseBlinkBanner('\x1b[32mBlink\x1b[0m 0.18.1\n'), { version: '0.18.1', plus: false })
+  assert.deepEqual(parseBlinkBanner('Blink 0.19.0\n'), { version: '0.19.0', plus: false })
+  assert.deepEqual(parseBlinkBanner('\x1b[32mBlink+\x1b[0m 0.19.0\n'), { version: '0.19.0', plus: true })
+  assert.deepEqual(parseBlinkBanner('Blink 0.19.0 (blink-plus)\n'), { version: '0.19.0', plus: true })
+  assert.deepEqual(parseBlinkBanner('blink-plus 0.19.0\n'), { version: '0.19.0', plus: true })
+  assert.deepEqual(parseBlinkBanner('Blink v0.19.1-rc.1\n'), { version: '0.19.1-rc.1', plus: false })
+  assert.deepEqual(parseBlinkBanner('no banner here\n'), { plus: false })
+})
+
+test('blink-plus: checkBlink reports the blink-plus version', async () => {
+  const root = await tempProject()
+  try {
+    const runner = async () => ({ code: 0, stdout: '\x1b[32mBlink+\x1b[0m 0.19.0\n', stderr: '' })
+    const result = await checkBlink(root, { binary: '/fake/blink', runner })
+    assert.deepEqual([result.ok, result.version, result.plus], [true, '0.19.0', true])
+  } finally {
+    await rm(root, { recursive: true, force: true })
+  }
+})
+
+test('blink-plus: upstream Blink rejecting From: Both gets a hint with the rokit.toml line', () => {
+  const upstream = { file: 'events.blink', line: 2, column: 11, code: 'E2003', message: 'Unknown option "Both"', detail: 'Expected one of "Client" or "Server"', severity: 'error' as const }
+  const [d] = explainBlinkDiagnostics([upstream])
+  assert.equal(d.message, 'Unknown option "Both"')
+  assert.equal(d.detail, 'Expected one of "Client" or "Server". From: Both (two-way events) needs blink-plus: set blink = "Acidgorgon/blink-plus@0.19.0" in rokit.toml, then rokit install')
+  // Other errors and a compiler that already knows Both are left alone.
+  const other = { ...upstream, message: 'Unknown option "Reliabl"', detail: 'Expected one of "Reliable" or "Unreliable"' }
+  assert.deepEqual(explainBlinkDiagnostics([other]), [other])
+  const plusTypo = { ...upstream, detail: 'Expected one of "Client" or "Server" or "Both"' }
+  assert.deepEqual(explainBlinkDiagnostics([plusTypo]), [plusTypo])
 })

@@ -37,6 +37,7 @@ import { doctorMock, spendMock } from './mockQolc'
 import { editorAssistMock } from './mockEditorAssist'
 import { studioMcpMock } from './mockStudioMcp'
 import { vanguardsMock } from './mockVanguards'
+import { harborMock } from './mockHarbor'
 import { scmMock } from './mockScm'
 import { searchMock } from './mockSearch'
 import { providersMock } from './mockProviders'
@@ -968,6 +969,7 @@ const api: HarnessApi = {
   ...editorAssistMock(emit),
   ...studioMcpMock(emit),
   ...vanguardsMock(emit),
+  ...harborMock(emit),
   // Source control panel (mockScm.ts): a fake index over the mock files; ?scm=clean|held|reject.
   ...scmMock(emit, {
     files,

@@ -85,6 +85,7 @@ export function ActivityBar() {
     { icon: 'cube', label: 'Model Lab', page: 'model' },
     { icon: 'monitor', label: 'UI Preview (stories)', page: 'uipreview' },
     { icon: 'tool', label: 'Vanguards (ror, rur, ree)', page: 'vanguards' },
+    { icon: 'bolt', label: 'Harbor Stack (Current, Ripple, Anchor, Tide, Lighthouse)', page: 'harbor' },
     { icon: 'memory', label: 'Memory & skills', page: 'memory' },
     { icon: 'gear', label: 'Settings', keys: 'mod+comma', page: 'settings' }
   ]

@@ -102,7 +102,9 @@ const methods = [
   'vanguardsStatus', 'vanguardsRefresh', 'vanguardsSetSettings',
   'vanguardsRunRor', 'vanguardsRunRur', 'vanguardsRunRee',
   'vanguardsFmEnvbuild', 'vanguardsFmModelpreview', 'vanguardsFmInsertRbxm',
-  'vanguardsStartMcpBridge', 'vanguardsStopMcpBridge'
+  'vanguardsStartMcpBridge', 'vanguardsStopMcpBridge',
+  // Harbor Family Stack (Current, Ripple, Anchor, Tide, Lighthouse)
+  'harborStatus', 'harborRefresh', 'harborToggleLib', 'harborGenerate', 'harborScaffold'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]
 
 // Compile-time check: every HarnessApi method is exposed (tsc names any that is missing).

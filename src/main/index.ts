@@ -47,8 +47,9 @@ import { loadPtyBackend } from './services/terminal/backend.ts'
 import { createSetup } from './setup.ts'
 import { MemoryService } from './agent/memory/service.ts'
 import { memoryHandlers } from './agent/memory/ipc.ts'
-import { memoryTools, withMemoryTools, vanguardsTools, withVanguardsTools } from './agent/serviceTools.ts'
+import { memoryTools, withMemoryTools, vanguardsTools, withVanguardsTools, harborTools, withHarborTools } from './agent/serviceTools.ts'
 import { VanguardsService } from './services/vanguards/service.ts'
+import { HarborService } from './services/harbor/service.ts'
 import { wireBrainSync } from './agent/memory/sync/electron.ts'
 import { wireUpdater } from './services/updater/electron.ts'
 import { netGet, watchBoot } from './services/quick/electron.ts'
@@ -340,6 +341,7 @@ function requireScm(): SourceControl {
 
 async function closeProject(): Promise<void> {
   if (project) await qol.service.onProjectClose()
+  harbor.setProject(null)
   terminal.onProjectClose()
   integrations.onProjectClose()
   project?.close()
@@ -498,6 +500,7 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
   void lsp.setRoot(full).catch((error) => harnessLog(`luau-lsp: ${error}`, 'stderr'))
   void supervisor.startAll().catch((error) => harnessLog(`start services: ${error}`, 'stderr'))
   await integrations.onProjectOpen(full).catch((error) => harnessLog(`integrations: ${error}`, 'stderr'))
+  harbor.setProject(full)
   setup.onProjectOpen(full)
   void memory.onProjectOpen()
   return opened.info
@@ -541,9 +544,12 @@ const ctx: HarnessContext = {
   log: (line) => logs.push(line),
 
   serviceTools: () => ({
-    ...withVanguardsTools(
-      withStudioTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), studio.tools()),
-      vanguardsTools(vanguards)
+    ...withHarborTools(
+      withVanguardsTools(
+        withStudioTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), studio.tools()),
+        vanguardsTools(vanguards)
+      ),
+      harborTools(harbor)
     ),
     chat: terminal.chatTools()
   }),
@@ -818,6 +824,17 @@ const vanguardsHandlers = {
 }
 // Bug reports carry a Forge Doctor section (home folder shown as ~).
 qol.service.setBugReportExtra(async () => doctorMarkdown(await doctor.service.run(), { home: homedir() }))
+const harbor = new HarborService({
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[harbor] ${text}` })
+})
+const harborHandlers = {
+  harborStatus: () => harbor.status(),
+  harborRefresh: () => harbor.refresh(),
+  harborToggleLib: (key: string, enabled: boolean) => harbor.toggleLib(key, enabled),
+  harborGenerate: (lib: Parameters<HarborService['generate']>[0]) => harbor.generate(lib),
+  harborScaffold: (lib: Parameters<HarborService['scaffold']>[0]) => harbor.scaffold(lib)
+}
 // UI Motion Lab (services/uimotion): Figma imports (plugin JSON or a link; the token lives in the
 // encrypted secret store) and effect stacks compiled to client Luau modules.
 const uiMotion = createUiMotionWiring({
@@ -980,7 +997,7 @@ for (const [name, handler] of Object.entries(handlers)) {
 }
 // Long lab / build calls notify when they finish (services/qol).
 const timed = (name: string, handler: (...args: any[]) => unknown) => qol.service.timed(name, handler)
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...studio.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers, ...qolcHandlers, ...vanguardsHandlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...studio.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers, ...qolcHandlers, ...vanguardsHandlers, ...harborHandlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
@@ -1144,6 +1161,7 @@ app.on('before-quit', (event) => {
   void spend.dispose()
   void studio.dispose()
   vanguards.dispose()
+  harbor.dispose()
   lsp.dispose()
   void lspCompanion.dispose()
   void Promise.all([rojoStopped, closeProject().catch(() => undefined)]).finally(() => {
@@ -1163,6 +1181,7 @@ process.on('exit', () => {
   settings.flushSync()
   terminal.dispose()
   vanguards.dispose()
+  harbor.dispose()
   lsp.dispose()
   supervisor.killAllSync()
 })

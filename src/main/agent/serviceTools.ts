@@ -28,7 +28,10 @@ export const SERVICE_WRITE_TOOLS = [
   'roblox_upload_model',
   // services/vanguards/tools.ts: FM build + Studio insert.
   'fm_envbuild',
-  'fm_insert_rbxm'
+  'fm_insert_rbxm',
+  // services/harbor/tools.ts: LibsConfig toggles & schema codegen.
+  'harbor_toggle_lib',
+  'harbor_generate'
 ] as const
 
 // ---------------------------------------------------------------- Blink
@@ -221,3 +224,4 @@ export function withPreviewTools<T extends { read: ServiceTool[] }>(sets: T, too
 }
 
 export { vanguardsTools, withVanguardsTools, VANGUARDS_WRITE_TOOLS } from '../services/vanguards/tools.ts'
+export { harborTools, withHarborTools, HARBOR_WRITE_TOOLS } from '../services/harbor/tools.ts'

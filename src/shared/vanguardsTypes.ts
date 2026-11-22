@@ -11,7 +11,8 @@ export const DEFAULT_VANGUARDS_MCP_PORT = 7655
 export const VANGUARDS_SETTINGS_KEYS = {
   binDir: 'vanguards.binDir',
   fmDir: 'vanguards.fmDir',
-  packsDir: 'vanguards.packsDir'
+  packsDir: 'vanguards.packsDir',
+  autoUpdateRepos: 'vanguards.autoUpdateRepos'
 } as const
 
 export type VanguardsToolId = 'ror' | 'rur' | 'ree' | 'python' | 'lune'
@@ -32,16 +33,85 @@ export interface VanguardsPackInfo {
   files?: number
 }
 
+export type VanguardsRepoId = 'ror' | 'rur' | 'ree'
+
+export interface VanguardsRepoUpdateInfo {
+  id: VanguardsRepoId
+  repoDir: string
+  found: boolean
+  branch?: string
+  localSha?: string
+  remoteSha?: string
+  behind: number
+  dirty: boolean
+  status: 'up-to-date' | 'update-available' | 'updating' | 'updated' | 'error' | 'missing'
+  lastCheckedAt?: number
+  lastError?: string
+}
+
+export interface VanguardsUpdateResult {
+  ok: boolean
+  results: Array<{
+    id: VanguardsRepoId
+    updated: boolean
+    rebuilt: boolean
+    message: string
+    output?: string
+  }>
+  repos: Record<VanguardsRepoId, VanguardsRepoUpdateInfo>
+}
+
+export interface VanguardsImageData {
+  path: string
+  name: string
+  mime: string
+  bytes: number
+  width?: number
+  height?: number
+  dataUrl: string
+}
+
+export interface RurStoryRenderRequest {
+  story: string
+  projectRoot?: string
+  width?: number
+  height?: number
+  scale?: number
+  device?: 'desktop' | 'touch' | 'gamepad'
+  mode?: 'edit' | 'play'
+  time?: number
+  allLayers?: boolean
+  placeholders?: boolean
+  compare?: boolean
+  timeoutMs?: number
+}
+
+export interface RurStoriesResult {
+  ok: boolean
+  stories: string[]
+  error?: string
+}
+
+export interface RorPreviewRequest {
+  modelPath: string
+  views?: string
+  size?: string
+  subcommand?: 'render' | 'cost'
+  timeoutMs?: number
+}
+
 export interface VanguardsSettings {
   binDir: string
   fmDir: string
   packsDir: string
+  autoUpdateRepos?: boolean
 }
 
 export interface VanguardsStatus {
   binDir: string
   fmDir: string
   packsDir: string
+  autoUpdateRepos: boolean
   tools: Record<VanguardsToolId, VanguardsToolInfo>
   fmScripts: Record<FmScriptId, { found: boolean; path?: string }>
   packs: VanguardsPackInfo[]
@@ -51,6 +121,7 @@ export interface VanguardsStatus {
     pid?: number
     lastError?: string
   }
+  repos?: Record<VanguardsRepoId, VanguardsRepoUpdateInfo>
 }
 
 export interface VanguardsRunResult {
@@ -122,6 +193,7 @@ export interface FmInsertRbxmRequest {
 
 export interface VanguardsEvents {
   'vanguards:status': VanguardsStatus
+  'vanguards:updates': Record<VanguardsRepoId, VanguardsRepoUpdateInfo>
   'vanguards:log': { stream: 'stdout' | 'stderr' | 'info'; text: string; at: number }
 }
 
@@ -137,4 +209,11 @@ export interface VanguardsApi {
   vanguardsFmInsertRbxm(req: FmInsertRbxmRequest): Promise<VanguardsRunResult>
   vanguardsStartMcpBridge(port?: number): Promise<VanguardsStatus>
   vanguardsStopMcpBridge(): Promise<VanguardsStatus>
+  vanguardsReadImage(filePath: string): Promise<VanguardsImageData | null>
+  vanguardsListRurStories(projectRoot?: string): Promise<RurStoriesResult>
+  vanguardsRenderRurStory(req: RurStoryRenderRequest): Promise<VanguardsRunResult>
+  vanguardsLaunchRurNative(storyFile?: string): Promise<{ ok: boolean; pid?: number; error?: string }>
+  vanguardsRenderRorPreview(req: RorPreviewRequest): Promise<VanguardsRunResult>
+  vanguardsCheckUpdates(): Promise<Record<VanguardsRepoId, VanguardsRepoUpdateInfo>>
+  vanguardsUpdateTools(target: VanguardsRepoId | 'all'): Promise<VanguardsUpdateResult>
 }

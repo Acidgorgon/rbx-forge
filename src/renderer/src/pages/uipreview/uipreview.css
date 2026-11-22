@@ -140,3 +140,18 @@
 @media (prefers-reduced-motion: reduce) {
   .uip-story { transition: none; }
 }
+
+/* ---- rur pixel-accurate engine mode ---- */
+.uip-rur-img { width: 100%; height: 100%; object-fit: contain; display: block; image-rendering: auto; user-select: none; }
+.uip-rur-busy { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; background: rgba(15, 17, 21, .68); backdrop-filter: blur(2px); color: var(--fg); font-size: 12px; z-index: 15; }
+.uip-rur-empty { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 8px; padding: 20px; text-align: center; color: var(--fg-muted); }
+.uip-rur-thumbs { display: flex; align-items: center; gap: 6px; flex-wrap: wrap; justify-content: center; }
+.uip-rur-thumb { padding: 3px 9px; border-radius: var(--r-pill); border: 1px solid var(--line-strong); background: var(--bg-panel); color: var(--fg-muted); font: 11px var(--font-mono); cursor: pointer; }
+.uip-rur-thumb:hover { color: var(--fg); border-color: var(--fg-faint); }
+.uip-rur-thumb.on { border-color: var(--ember-lo); background: var(--ember-fill); color: var(--ember-text); }
+.uip-rur-panel { display: flex; flex-direction: column; gap: 10px; padding-top: 8px; }
+.uip-rur-card { border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-editor); padding: 10px; display: flex; flex-direction: column; gap: 8px; }
+.uip-rur-card-head { font: 500 10.5px var(--font-ui); text-transform: uppercase; letter-spacing: .08em; color: var(--fg-muted); }
+.uip-rur-check { display: flex; align-items: center; gap: 8px; font-size: 12px; color: var(--fg-2); cursor: pointer; }
+.uip-rur-kv { display: flex; justify-content: space-between; gap: 8px; font-size: 11.5px; color: var(--fg-muted); }
+.uip-rur-kv b { color: var(--fg); font-weight: 500; font-family: var(--font-mono); }

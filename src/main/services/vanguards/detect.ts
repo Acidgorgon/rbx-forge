@@ -9,6 +9,8 @@ import {
   DEFAULT_VANGUARDS_PACKS_DIR,
   type FmScriptId,
   type VanguardsPackInfo,
+  type VanguardsRepoId,
+  type VanguardsRepoUpdateInfo,
   type VanguardsStatus,
   type VanguardsToolId,
   type VanguardsToolInfo
@@ -20,6 +22,8 @@ export interface DetectVanguardsOptions {
   fmDir?: string | null
   packsDir?: string | null
   lunePath?: string | null
+  autoUpdateRepos?: boolean
+  repos?: Record<VanguardsRepoId, VanguardsRepoUpdateInfo>
   toolCtx?: ToolContext
   mcpBridge?: VanguardsStatus['mcpBridge']
 }
@@ -180,9 +184,11 @@ export function detectVanguards(opts: DetectVanguardsOptions = {}): VanguardsSta
     binDir,
     fmDir,
     packsDir,
+    autoUpdateRepos: Boolean(opts.autoUpdateRepos),
     tools,
     fmScripts,
     packs: scanPacksDir(packsDir),
-    mcpBridge: opts.mcpBridge ?? { running: false, port: 7655 }
+    mcpBridge: opts.mcpBridge ?? { running: false, port: 7655 },
+    ...(opts.repos ? { repos: opts.repos } : {})
   }
 }

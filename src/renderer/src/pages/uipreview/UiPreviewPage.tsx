@@ -5,7 +5,7 @@
 // properties in the source (hot reload follows). Export to SVG / Forge JSON and import changes back
 // from the Figma plugin (figma-plugin/).
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from 'react'
-import type { UiControl, UiDevice, UiNode, UiStoryEntry, UiStoryList, UiValue } from '@shared/types'
+import type { UiControl, UiDevice, UiNode, UiStoryEntry, UiStoryList, UiValue, VanguardsImageData, VanguardsStatus } from '@shared/types'
 import type { LayoutResult } from '@shared/uiPreview/layout'
 import { luauLiteral } from '@shared/uiPreview/protocol'
 import { askAiPrompt } from '@shared/uiPreview/edit'
@@ -34,6 +34,9 @@ const ZOOMS = [0.25, 0.5, 0.75, 1, 1.5, 2]
 export const FIDELITY_NOTE =
   'Approximate: substitute fonts (Montserrat for Gotham, Source Sans 3 for Source Sans Pro / Builder Sans, Fredoka for Fredoka One) and browser text metrics, so TextScaled and AutomaticSize around text can be a few pixels off. ViewportFrame 3D, VideoFrame, physics and particles are not drawn. Roblox images come from the public thumbnails API (420px max) or Art concepts; others show a placeholder with the id. Check final layouts in Studio.'
 
+const RUR_FIDELITY_NOTE =
+  'Pixel-accurate offline Roblox UI renderer (rur): uses true Roblox fonts, TextScaled, AutomaticSize, ViewportFrame, UIGradient and layout constraints. Automatically re-renders when story or source Luau files change on disk.'
+
 const read = <T,>(key: string, fallback: T): T => {
   try {
     const v = localStorage.getItem(key)
@@ -52,7 +55,7 @@ const write = (key: string, value: unknown) => {
 
 const storyBase = (file: string) => file.split('/').pop()!.replace(/\.story\.luau?$/, '')
 
-function StoryList({ list, file, onPick, onRefresh }: { list: UiStoryList | null; file: string | null; onPick: (s: UiStoryEntry) => void; onRefresh: () => void }) {
+function StoryList({ list, file, engine, rurAvailable, onPick, onRefresh }: { list: UiStoryList | null; file: string | null; engine: 'lune' | 'rur'; rurAvailable: boolean; onPick: (s: UiStoryEntry) => void; onRefresh: () => void }) {
   const [filter, setFilter] = useState('')
   const q = filter.trim().toLowerCase()
   return (
@@ -101,7 +104,14 @@ function StoryList({ list, file, onPick, onRefresh }: { list: UiStoryList | null
           )
         })}
       </div>
-      {list && !list.luneAvailable && <div className="uip-hint note warn-text">{list.hint ?? 'Lune was not found. Run `rokit install` in the project, or set Settings > Toolchain > Lune path, to run stories.'}</div>}
+      {list && !list.luneAvailable && engine === 'lune' && (
+        <div className="uip-hint note warn-text">
+          {list.hint ?? 'Lune was not found. Run `rokit install` in the project, set Settings > Toolchain > Lune path, or switch to the rur engine above.'}
+        </div>
+      )}
+      {list && !rurAvailable && engine === 'rur' && (
+        <div className="uip-hint note warn-text">rur CLI not detected. Configure paths in the Vanguards tab.</div>
+      )}
     </aside>
   )
 }
@@ -162,6 +172,19 @@ export function UiPreviewPage() {
   const [file, setFile] = useState<string | null>(() => read<string | null>('uip.story', null))
   const [device, setDevice] = useState<UiDevice>(() => read<UiDevice>('uip.device', 'desktop'))
   const [zoom, setZoom] = useState<number | 'fit'>(() => read<number | 'fit'>('uip.zoom', 'fit'))
+  const [engine, setEngine] = useState<'lune' | 'rur'>(() => read<'lune' | 'rur'>('uip.engine', 'lune'))
+  const [vgStatus, setVgStatus] = useState<VanguardsStatus | null>(null)
+  const [rurScale, setRurScale] = useState<1 | 2>(() => read<1 | 2>('uip.rurScale', 1))
+  const [rurMode, setRurMode] = useState<'edit' | 'play'>(() => read<'edit' | 'play'>('uip.rurMode', 'edit'))
+  const [rurAllLayers, setRurAllLayers] = useState<boolean>(() => read<boolean>('uip.rurAllLayers', false))
+  const [rurPlaceholders, setRurPlaceholders] = useState<boolean>(() => read<boolean>('uip.rurPlaceholders', false))
+  const [rurBusy, setRurBusy] = useState(false)
+  const [rurError, setRurError] = useState<string | null>(null)
+  const [rurDurationMs, setRurDurationMs] = useState<number | null>(null)
+  const [rurImages, setRurImages] = useState<VanguardsImageData[]>([])
+  const [rurImageIdx, setRurImageIdx] = useState(0)
+  const [rurLogs, setRurLogs] = useState('')
+  const rurSeqRef = useRef(0)
   const [mode, setMode] = useState<StageMode>('interact')
   const [tab, setTab] = useState<'controls' | 'inspect'>('controls')
   // Narrow editor area (below 720px, e.g. 900px window with the Assistant open): one pane at a time.
@@ -179,15 +202,90 @@ export function UiPreviewPage() {
   const fileInput = useRef<HTMLInputElement>(null)
   const dims = DEVICES[device]
   const scale = zoom === 'fit' ? fit : zoom
+  const rurAvailable = Boolean(vgStatus?.tools.rur.found)
+  const mcpRunning = Boolean(vgStatus?.mcpBridge.running)
+  const rurDevice: 'desktop' | 'touch' | 'gamepad' = device === 'phone' || device === 'tablet' ? 'touch' : device === 'console' ? 'gamepad' : 'desktop'
+
+  useEffect(() => {
+    void h.vanguardsStatus().then(setVgStatus).catch(() => {})
+    return h.on('vanguards:status', setVgStatus)
+  }, [h])
+
+  const renderWithRur = useCallback(
+    async (targetFile: string, compare = false) => {
+      const seq = ++rurSeqRef.current
+      setRurBusy(true)
+      setRurError(null)
+      try {
+        if (compare && !mcpRunning && vgStatus?.fmScripts.mcp_bridge.found) {
+          await h.vanguardsStartMcpBridge(vgStatus.mcpBridge.port).catch(() => {})
+        }
+        const res = await h.vanguardsRenderRurStory({
+          story: targetFile,
+          width: dims.width,
+          height: dims.height,
+          scale: rurScale,
+          device: rurDevice,
+          mode: rurMode,
+          allLayers: rurAllLayers,
+          placeholders: rurPlaceholders,
+          compare
+        })
+        if (seq !== rurSeqRef.current) return
+        setRurDurationMs(res.durationMs)
+        setRurLogs([res.stdout, res.stderr].filter(Boolean).join('\n'))
+        if (res.images?.length) {
+          const loaded = (await Promise.all(res.images.map((p) => h.vanguardsReadImage(p).catch(() => null)))).filter(
+            (x): x is VanguardsImageData => x !== null
+          )
+          if (seq !== rurSeqRef.current) return
+          setRurImages(loaded)
+          setRurImageIdx(0)
+        } else {
+          setRurImages([])
+        }
+        if (!res.ok) {
+          setRurError(res.error || res.stderr || `rur exited with code ${res.code}`)
+        }
+      } catch (e) {
+        if (seq !== rurSeqRef.current) return
+        setRurError(errorText(e))
+      } finally {
+        if (seq === rurSeqRef.current) setRurBusy(false)
+      }
+    },
+    [h, dims.width, dims.height, rurScale, rurDevice, rurMode, rurAllLayers, rurPlaceholders, mcpRunning, vgStatus]
+  )
 
   const refresh = useCallback(async () => {
     try {
-      setList(await h.uiPreviewStories())
+      const base = await h.uiPreviewStories()
+      if (!base.storybooks.length) {
+        const vg = vgStatus ?? (await h.vanguardsStatus().catch(() => null))
+        if (vg?.tools.rur.found) {
+          const rurList = await h.vanguardsListRurStories().catch(() => null)
+          if (rurList?.ok && rurList.stories.length) {
+            setList({
+              storybooks: [
+                {
+                  name: 'rur Stories',
+                  file: 'rur.json',
+                  stories: rurList.stories.map((f) => ({ name: storyBase(f), file: f, path: f.split('/'), projectFile: 'default.project.json' }))
+                }
+              ],
+              luneAvailable: base.luneAvailable,
+              hint: base.hint
+            })
+            return
+          }
+        }
+      }
+      setList(base)
     } catch (e) {
       actions.toast({ text: 'Could not list stories', detail: errorText(e), kind: 'err' })
       setList({ storybooks: [], luneAvailable: false })
     }
-  }, [])
+  }, [vgStatus])
 
   useEffect(() => {
     void refresh()
@@ -208,15 +306,43 @@ export function UiPreviewPage() {
     if (!list) return
     const all = list.storybooks.flatMap((b) => b.stories)
     const target = all.find((s) => s.file === file)?.file ?? all[0]?.file ?? null
-    if (target && target !== view.file) {
-      setFile(target)
+    if (!target) return
+    if (target !== file) setFile(target)
+    if (engine === 'lune' && target !== view.file) {
       void session.open(target, { width: dims.width, height: dims.height, device }).catch((e) => actions.toast({ text: 'Could not start the preview', detail: errorText(e), kind: 'err' }))
     }
-  }, [list, file])
+  }, [list, file, engine])
+
+  useEffect(() => {
+    if (engine !== 'rur' || !file || !rurAvailable) return
+    void renderWithRur(file)
+  }, [engine, file, rurAvailable, renderWithRur])
+
+  // Auto-re-render active rur story whenever Luau files change on disk (edits, git pull, Direct Forge Sync).
+  useEffect(() => {
+    if (engine !== 'rur' || !file || !rurAvailable) return
+    let timer: ReturnType<typeof setTimeout> | null = null
+    const off = h.on('files:changed', (paths) => {
+      if (!paths.some((p) => /\.luau?$/i.test(p))) return
+      if (timer) clearTimeout(timer)
+      timer = setTimeout(() => {
+        void renderWithRur(file)
+      }, 350)
+    })
+    return () => {
+      if (timer) clearTimeout(timer)
+      off()
+    }
+  }, [h, engine, file, rurAvailable, renderWithRur])
 
   useEffect(() => write('uip.story', file), [file])
   useEffect(() => write('uip.device', device), [device])
   useEffect(() => write('uip.zoom', zoom), [zoom])
+  useEffect(() => write('uip.engine', engine), [engine])
+  useEffect(() => write('uip.rurScale', rurScale), [rurScale])
+  useEffect(() => write('uip.rurMode', rurMode), [rurMode])
+  useEffect(() => write('uip.rurAllLayers', rurAllLayers), [rurAllLayers])
+  useEffect(() => write('uip.rurPlaceholders', rurPlaceholders), [rurPlaceholders])
 
   // Fit zoom follows the canvas size.
   useEffect(() => {
@@ -238,6 +364,11 @@ export function UiPreviewPage() {
     setHovered(null)
     setHistory([])
     setFigma(null)
+    if (engine === 'rur') {
+      if (s.file === file) void renderWithRur(s.file)
+      else setFile(s.file)
+      return
+    }
     setFile(s.file)
     void session.open(s.file, { width: dims.width, height: dims.height, device })
   }
@@ -246,7 +377,7 @@ export function UiPreviewPage() {
     const next = DEVICES[d]
     const reopen = (d === 'console') !== (device === 'console')
     setDevice(d)
-    if (!view.file) return
+    if (engine === 'rur' || !view.file) return
     if (reopen) void session.open(view.file, { width: next.width, height: next.height, device: d }, view.values)
     else {
       session.input({ type: 'device', device: d })
@@ -254,7 +385,20 @@ export function UiPreviewPage() {
     }
   }
 
-  const reload = () => view.file && void session.open(view.file, { width: dims.width, height: dims.height, device }, view.values)
+  const reload = () => {
+    if (engine === 'rur') {
+      if (file) void renderWithRur(file)
+      return
+    }
+    if (view.file) void session.open(view.file, { width: dims.width, height: dims.height, device }, view.values)
+  }
+
+  const launchNative = async () => {
+    const target = engine === 'rur' ? file : (view.file ?? file)
+    const res = await h.vanguardsLaunchRurNative(target ?? undefined)
+    if (!res.ok) actions.toast({ text: 'Failed to launch rur native', detail: res.error, kind: 'err' })
+    else actions.toast({ text: 'Launched rur native storybook', detail: res.pid ? `pid ${res.pid}` : undefined, kind: 'ok', ms: 2600 })
+  }
 
   const onControl = (c: UiControl, v: unknown) => session.input({ type: 'control', key: c.key, ...(c.group ? { group: c.group } : {}), value: v })
   const resetControls = () => {
@@ -411,26 +555,67 @@ export function UiPreviewPage() {
   }
 
   const target = mode === 'edit' ? selected : hovered
-  const statusText = view.status === 'starting' ? 'starting Lune…' : view.status === 'reloading' ? 'reloading…' : view.status === 'exited' ? 'stopped' : view.status === 'error' ? 'error' : view.status === 'running' ? (view.kind ?? 'running') : ''
-  const errors = view.console.filter((c) => c.level === 'error').length
-  const storyTitle = view.file ? storyBase(view.file) : 'No story'
+  const activeFile = engine === 'rur' ? file : (view.file ?? file)
+  const rurActiveImg = rurImages[rurImageIdx] ?? rurImages[0] ?? null
+  const statusText =
+    engine === 'rur'
+      ? rurBusy
+        ? 'rendering…'
+        : rurError
+          ? 'rur error'
+          : rurActiveImg
+            ? 'rur rendered'
+            : ''
+      : view.status === 'starting'
+        ? 'starting Lune…'
+        : view.status === 'reloading'
+          ? 'reloading…'
+          : view.status === 'exited'
+            ? 'stopped'
+            : view.status === 'error'
+              ? 'error'
+              : view.status === 'running'
+                ? (view.kind ?? 'running')
+                : ''
+  const statusTone = engine === 'rur' ? (rurBusy ? 'starting' : rurError ? 'error' : rurActiveImg ? 'running' : '') : view.status
+  const errors = engine === 'rur' ? (rurError ? 1 : 0) : view.console.filter((c) => c.level === 'error').length
+  const storyTitle = activeFile ? storyBase(activeFile) : 'No story'
+  const rurLogLines = useMemo(() => (rurLogs ? rurLogs.split(/\r?\n/).filter(Boolean) : []), [rurLogs])
 
   let overlay: ReactNode = null
-  if (view.status === 'error' || view.kind === 'unsupported' || view.kind === 'error') {
+  if (engine === 'lune') {
+    if (view.status === 'error' || view.kind === 'unsupported' || view.kind === 'error') {
+      overlay = (
+        <div className="uip-overlay err">
+          <Icon name="err" size={16} />
+          <div>
+            <b>{view.kind === 'unsupported' ? 'This story type is not supported in Forge yet' : 'The story failed'}</b>
+            <div className="note">{view.message ?? view.console.filter((c) => c.level === 'error').slice(-1)[0]?.text.split('\n')[0] ?? 'See the console.'}</div>
+            <div className="note faint">Vide, function and generic UI Labs stories run here; React/Roact/Fusion/Iris stories need Studio or rur engine.</div>
+          </div>
+        </div>
+      )
+    } else if (view.status === 'starting' && tree.nodes.size === 0) {
+      overlay = (
+        <div className="uip-overlay">
+          <span className="spinner" aria-hidden /> starting Lune…
+        </div>
+      )
+    }
+  } else if (rurBusy) {
+    overlay = (
+      <div className="uip-rur-busy">
+        <span className="spinner" aria-hidden /> Rendering via rur ({dims.width}×{dims.height} @ {rurScale}x)…
+      </div>
+    )
+  } else if (rurError) {
     overlay = (
       <div className="uip-overlay err">
         <Icon name="err" size={16} />
         <div>
-          <b>{view.kind === 'unsupported' ? 'This story type is not supported in Forge yet' : 'The story failed'}</b>
-          <div className="note">{view.message ?? view.console.filter((c) => c.level === 'error').slice(-1)[0]?.text.split('\n')[0] ?? 'See the console.'}</div>
-          <div className="note faint">Vide, function and generic UI Labs stories run here; React/Roact/Fusion/Iris stories need Studio.</div>
+          <b>rur render failed</b>
+          <div className="note">{rurError}</div>
         </div>
-      </div>
-    )
-  } else if (view.status === 'starting' && tree.nodes.size === 0) {
-    overlay = (
-      <div className="uip-overlay">
-        <span className="spinner" aria-hidden /> starting Lune…
       </div>
     )
   }
@@ -443,7 +628,7 @@ export function UiPreviewPage() {
             [
               ['stories', 'Stories'],
               ['stage', 'Preview'],
-              ['panel', tab === 'inspect' ? 'Inspector' : 'Controls']
+              ['panel', engine === 'rur' ? 'rur' : tab === 'inspect' ? 'Inspector' : 'Controls']
             ] as const
           ).map(([id, label]) => (
             <button key={id} role="tab" aria-selected={pane === id} className={pane === id ? 'on' : ''} onClick={() => setPane(id)}>
@@ -451,21 +636,51 @@ export function UiPreviewPage() {
             </button>
           ))}
         </div>
-        <StoryList list={list} file={view.file ?? file} onPick={pick} onRefresh={() => void refresh()} />
+        <StoryList list={list} file={activeFile} engine={engine} rurAvailable={rurAvailable} onPick={pick} onRefresh={() => void refresh()} />
         <section className="uip-main">
           <div className="uip-toolbar">
-            <span className="uip-story-name" title={view.file ?? ''}>
+            <span className="uip-story-name" title={activeFile ?? ''}>
               {storyTitle}
-              {statusText && <span className={`uip-status s-${view.status}`}>{statusText}</span>}
+              {statusText && <span className={`uip-status s-${statusTone}`}>{statusText}</span>}
             </span>
-            <div className="seg" role="group" aria-label="Mode">
-              <button className={mode === 'interact' ? 'on' : ''} onClick={() => (setMode('interact'), setSelected(null))} title="Click, hover and type into the story">
-                Interact
+            <div className="seg" role="group" aria-label="Preview Engine">
+              <button
+                className={engine === 'lune' ? 'on' : ''}
+                onClick={() => setEngine('lune')}
+                title="Interactive DOM stage via Lune"
+              >
+                Lune
               </button>
-              <button className={mode === 'edit' ? 'on' : ''} onClick={() => (setMode('edit'), setTab('inspect'))} title="Select elements and edit their properties">
-                Edit
+              <button
+                className={engine === 'rur' ? 'on' : ''}
+                disabled={!rurAvailable}
+                onClick={() => setEngine('rur')}
+                title={rurAvailable ? 'Pixel-accurate offline Roblox UI renderer (rur)' : 'rur CLI not detected — configure in Vanguards'}
+              >
+                rur
               </button>
             </div>
+            {engine === 'lune' ? (
+              <div className="seg" role="group" aria-label="Mode">
+                <button className={mode === 'interact' ? 'on' : ''} onClick={() => (setMode('interact'), setSelected(null))} title="Click, hover and type into the story">
+                  Interact
+                </button>
+                <button className={mode === 'edit' ? 'on' : ''} onClick={() => (setMode('edit'), setTab('inspect'))} title="Select elements and edit their properties">
+                  Edit
+                </button>
+              </div>
+            ) : (
+              <>
+                <div className="seg" role="group" aria-label="rur Scale">
+                  <button className={rurScale === 1 ? 'on' : ''} onClick={() => setRurScale(1)}>1x</button>
+                  <button className={rurScale === 2 ? 'on' : ''} onClick={() => setRurScale(2)}>2x</button>
+                </div>
+                <div className="seg" role="group" aria-label="rur Mode">
+                  <button className={rurMode === 'edit' ? 'on' : ''} onClick={() => setRurMode('edit')}>Edit</button>
+                  <button className={rurMode === 'play' ? 'on' : ''} onClick={() => setRurMode('play')}>Play</button>
+                </div>
+              </>
+            )}
             <div className="seg" role="group" aria-label="Device">
               {(Object.keys(DEVICES) as UiDevice[]).map((d) => (
                 <button key={d} className={device === d ? 'on' : ''} onClick={() => changeDevice(d)} title={DEVICES[d].note}>
@@ -482,32 +697,51 @@ export function UiPreviewPage() {
               ))}
             </select>
             <span className="grow" />
-            <button className="icon-btn" onClick={reload} disabled={!view.file} title="Reload story (state resets)" aria-label="Reload story">
+            <button className="icon-btn" onClick={reload} disabled={!activeFile || rurBusy} title={engine === 'rur' ? 'Re-render with rur' : 'Reload story (state resets)'} aria-label="Reload story">
               <Icon name="restart" size={14} />
             </button>
-            <button className="icon-btn" onClick={() => void undo()} disabled={!history.length} title={history.length ? `Undo ${history[history.length - 1].label}` : 'Nothing to undo'} aria-label="Undo edit">
-              <Icon name="undo" size={14} />
-            </button>
-            <button
-              className="btn small ghost"
-              disabled={!view.file}
-              onClick={(e) =>
-                menu.openUnder(e.currentTarget, [
-                  { header: 'Export frame' },
-                  { label: 'SVG', sub: 'art/ui-exports/<story>.svg', icon: <Icon name="download" size={12} />, onSelect: () => void exportAs('svg') },
-                  { label: 'Forge JSON (for Figma)', sub: 'art/ui-exports/<story>.forge-ui.json', icon: <Icon name="download" size={12} />, onSelect: () => void exportAs('json') },
-                  { label: 'Copy Forge JSON', icon: <Icon name="copy" size={12} />, onSelect: () => void exportAs('copy') },
-                  'separator',
-                  { label: 'Import from Figma…', sub: 'JSON from the Forge Figma plugin', icon: <Icon name="upload" size={12} />, onSelect: () => fileInput.current?.click() },
-                  { label: 'Paste from Figma', sub: 'Forge JSON on the clipboard', icon: <Icon name="upload" size={12} />, onSelect: () => void navigator.clipboard.readText().then(importText, () => actions.toast({ text: 'Clipboard is not available', kind: 'err' })) }
-                ])
-              }
-            >
-              <Icon name="board" size={12} /> Figma
-            </button>
-            <button className="btn small ghost" onClick={(e) => openStudioMenu(e.currentTarget)} disabled={!view.file}>
-              <Icon name="studio" size={12} /> Open in Studio
-            </button>
+            {engine === 'lune' && (
+              <>
+                <button className="icon-btn" onClick={() => void undo()} disabled={!history.length} title={history.length ? `Undo ${history[history.length - 1].label}` : 'Nothing to undo'} aria-label="Undo edit">
+                  <Icon name="undo" size={14} />
+                </button>
+                <button
+                  className="btn small ghost"
+                  disabled={!view.file}
+                  onClick={(e) =>
+                    menu.openUnder(e.currentTarget, [
+                      { header: 'Export frame' },
+                      { label: 'SVG', sub: 'art/ui-exports/<story>.svg', icon: <Icon name="download" size={12} />, onSelect: () => void exportAs('svg') },
+                      { label: 'Forge JSON (for Figma)', sub: 'art/ui-exports/<story>.forge-ui.json', icon: <Icon name="download" size={12} />, onSelect: () => void exportAs('json') },
+                      { label: 'Copy Forge JSON', icon: <Icon name="copy" size={12} />, onSelect: () => void exportAs('copy') },
+                      'separator',
+                      { label: 'Import from Figma…', sub: 'JSON from the Forge Figma plugin', icon: <Icon name="upload" size={12} />, onSelect: () => fileInput.current?.click() },
+                      { label: 'Paste from Figma', sub: 'Forge JSON on the clipboard', icon: <Icon name="upload" size={12} />, onSelect: () => void navigator.clipboard.readText().then(importText, () => actions.toast({ text: 'Clipboard is not available', kind: 'err' })) }
+                    ])
+                  }
+                >
+                  <Icon name="board" size={12} /> Figma
+                </button>
+                <button className="btn small ghost" onClick={(e) => openStudioMenu(e.currentTarget)} disabled={!view.file}>
+                  <Icon name="studio" size={12} /> Open in Studio
+                </button>
+              </>
+            )}
+            {engine === 'rur' && (
+              <button
+                className="btn small ghost"
+                disabled={!activeFile || rurBusy}
+                onClick={() => activeFile && void renderWithRur(activeFile, true)}
+                title={mcpRunning ? 'Compare offline render with Studio via MCP bridge' : 'Start StudioMCP bridge and compare with Studio'}
+              >
+                <Icon name="diff" size={12} /> Compare Studio
+              </button>
+            )}
+            {rurAvailable && (
+              <button className="btn small ghost" onClick={() => void launchNative()} title="Open interactive rur native wgpu storybook window">
+                <Icon name="external" size={12} /> rur Native
+              </button>
+            )}
             <input ref={fileInput} type="file" accept=".json,application/json" hidden onChange={(e) => {
               const f = e.target.files?.[0]
               e.target.value = ''
@@ -516,32 +750,62 @@ export function UiPreviewPage() {
           </div>
           <div className="uip-canvas" ref={canvasRef}>
             <div className={`uip-device d-${device}`} style={{ width: dims.width * scale, height: dims.height * scale }}>
-              <div className="uip-scaler" style={{ width: dims.width, height: dims.height, transform: `scale(${scale})` }}>
-                <Stage
-                  tree={tree}
-                  version={version}
-                  width={dims.width}
-                  height={dims.height}
-                  images={images}
-                  mode={mode}
-                  selected={mode === 'edit' ? selected : null}
-                  hovered={hovered}
-                  fontsVersion={fontsVersion}
-                  onInput={session.input}
-                  onHover={setHovered}
-                  onSelect={(id) => {
-                    setSelected(id)
-                    setTab('inspect')
-                  }}
-                  onLayout={(l) => (layoutRef.current = l)}
-                />
-                {device === 'phone' && <div className="uip-notch" aria-hidden />}
-                {device === 'console' && <div className="uip-safe" aria-hidden><span>TV safe area</span></div>}
-              </div>
+              {engine === 'lune' ? (
+                <div className="uip-scaler" style={{ width: dims.width, height: dims.height, transform: `scale(${scale})` }}>
+                  <Stage
+                    tree={tree}
+                    version={version}
+                    width={dims.width}
+                    height={dims.height}
+                    images={images}
+                    mode={mode}
+                    selected={mode === 'edit' ? selected : null}
+                    hovered={hovered}
+                    fontsVersion={fontsVersion}
+                    onInput={session.input}
+                    onHover={setHovered}
+                    onSelect={(id) => {
+                      setSelected(id)
+                      setTab('inspect')
+                    }}
+                    onLayout={(l) => (layoutRef.current = l)}
+                  />
+                  {device === 'phone' && <div className="uip-notch" aria-hidden />}
+                  {device === 'console' && <div className="uip-safe" aria-hidden><span>TV safe area</span></div>}
+                </div>
+              ) : (
+                <>
+                  {rurActiveImg ? (
+                    <img className="uip-rur-img" src={rurActiveImg.dataUrl} alt={storyTitle} draggable={false} />
+                  ) : !rurBusy && !rurError ? (
+                    <div className="uip-rur-empty">
+                      <Icon name="image" size={24} />
+                      <div className="note">Pick a story on the left to render via <code>rur</code></div>
+                    </div>
+                  ) : null}
+                  {device === 'phone' && <div className="uip-notch" aria-hidden />}
+                  {device === 'console' && <div className="uip-safe" aria-hidden><span>TV safe area</span></div>}
+                </>
+              )}
               {overlay}
             </div>
+            {engine === 'rur' && rurImages.length > 1 && (
+              <div className="uip-rur-thumbs">
+                {rurImages.map((img, i) => (
+                  <button
+                    key={img.path}
+                    className={`uip-rur-thumb${i === rurImageIdx ? ' on' : ''}`}
+                    onClick={() => setRurImageIdx(i)}
+                  >
+                    {img.name}
+                  </button>
+                ))}
+              </div>
+            )}
             <div className="uip-canvas-meta faint mono">
-              {dims.width}×{dims.height} · {Math.round(scale * 100)}%{view.reloads ? ` · hot reloads ${view.reloads}` : ''}
+              {dims.width}×{dims.height} · {Math.round(scale * 100)}%
+              {engine === 'lune' && view.reloads ? ` · hot reloads ${view.reloads}` : ''}
+              {engine === 'rur' ? ` · rur ${rurScale}x ${rurMode}${rurDurationMs != null ? ` · ${rurDurationMs}ms` : ''}` : ''}
             </div>
           </div>
           <div className={`uip-console${consoleOpen ? ' open' : ''}`}>
@@ -549,61 +813,143 @@ export function UiPreviewPage() {
               <Icon name={consoleOpen ? 'chevDown' : 'chev'} size={11} /> Console
               {errors > 0 && <span className="badge err">{errors}</span>}
               <span className="grow" />
-              <span className="faint">{view.console.length} lines</span>
-              <span className="uip-link" role="button" tabIndex={0} onClick={(e) => (e.stopPropagation(), session.clearConsole())}>
+              <span className="faint">{engine === 'rur' ? rurLogLines.length : view.console.length} lines</span>
+              <span
+                className="uip-link"
+                role="button"
+                tabIndex={0}
+                onClick={(e) => {
+                  e.stopPropagation()
+                  if (engine === 'rur') {
+                    setRurLogs('')
+                    setRurError(null)
+                  } else {
+                    session.clearConsole()
+                  }
+                }}
+              >
                 clear
               </span>
             </button>
             {consoleOpen && (
               <div className="uip-console-body mono">
-                {!view.console.length && <div className="faint">print(), warn() and errors from the story show here, with file:line links.</div>}
-                {view.console.map((c, i) => (
-                  <div key={i} className={`uip-line l-${c.level}`}>
-                    {c.file && (
-                      <button className="uip-loc" onClick={() => void actions.openFileAt(c.file!, c.line ?? 1)}>
-                        {c.file}:{c.line}
-                      </button>
-                    )}
-                    <span className="uip-msg">{c.text}</span>
-                  </div>
-                ))}
+                {engine === 'rur' ? (
+                  !rurLogLines.length ? (
+                    <div className="faint">rur render output and diagnostics show here.</div>
+                  ) : (
+                    rurLogLines.map((line, i) => (
+                      <div key={i} className={`uip-line${/error|failed/i.test(line) ? ' l-error' : ''}`}>
+                        <span className="uip-msg">{line}</span>
+                      </div>
+                    ))
+                  )
+                ) : (
+                  <>
+                    {!view.console.length && <div className="faint">print(), warn() and errors from the story show here, with file:line links.</div>}
+                    {view.console.map((c, i) => (
+                      <div key={i} className={`uip-line l-${c.level}`}>
+                        {c.file && (
+                          <button className="uip-loc" onClick={() => void actions.openFileAt(c.file!, c.line ?? 1)}>
+                            {c.file}:{c.line}
+                          </button>
+                        )}
+                        <span className="uip-msg">{c.text}</span>
+                      </div>
+                    ))}
+                  </>
+                )}
               </div>
             )}
           </div>
         </section>
         <aside className="uip-right" aria-label="Story panel">
-          <div className="seg uip-tabs" role="tablist">
-            <button role="tab" aria-selected={tab === 'controls'} className={tab === 'controls' ? 'on' : ''} onClick={() => setTab('controls')}>
-              Controls{view.controls.length ? ` ${view.controls.length}` : ''}
-            </button>
-            <button role="tab" aria-selected={tab === 'inspect'} className={tab === 'inspect' ? 'on' : ''} onClick={() => setTab('inspect')}>
-              Inspector
-            </button>
-          </div>
-          <div className="uip-right-body">
-            {figma && <FigmaPanel diff={figma.diff} busy={!!busy} onApply={(c) => void applyFigma(c)} onAsk={askFigma} onClose={() => setFigma(null)} />}
-            {tab === 'controls' ? (
-              <ControlsPanel controls={view.controls} values={view.values} onChange={onControl} onReset={resetControls} />
-            ) : (
-              <Inspector
-                tree={tree}
-                id={target}
-                box={target != null ? layoutRef.current?.boxes.get(target) : undefined}
-                pinned={mode === 'edit' && selected != null}
-                editMode={mode === 'edit'}
-                busy={busy}
-                revision={revision}
-                onEdit={(n, p, v) => void editProp(n, p, v)}
-                onJump={(n) => void jump(n)}
-                onAsk={(n) => ask(n)}
-                onSelect={setSelected}
-              />
-            )}
-          </div>
-          <details className="uip-fidelity">
-            <summary>Fidelity</summary>
-            <p className="note">{FIDELITY_NOTE}</p>
-          </details>
+          {engine === 'rur' ? (
+            <>
+              <div className="uip-right-body">
+                <div className="uip-rur-panel">
+                  <div className="uip-rur-card">
+                    <div className="uip-rur-card-head">rur Render Options</div>
+                    <label className="uip-rur-check">
+                      <input type="checkbox" checked={rurAllLayers} onChange={(e) => setRurAllLayers(e.target.checked)} />
+                      <span>All layers (<code>--all-layers</code>)</span>
+                    </label>
+                    <label className="uip-rur-check">
+                      <input type="checkbox" checked={rurPlaceholders} onChange={(e) => setRurPlaceholders(e.target.checked)} />
+                      <span>Show placeholders (<code>--placeholders</code>)</span>
+                    </label>
+                    <button className="btn small primary" disabled={!activeFile || rurBusy} onClick={reload}>
+                      {rurBusy ? <span className="spinner" aria-hidden /> : <Icon name="restart" size={11} />} Re-render Frame
+                    </button>
+                  </div>
+                  <div className="uip-rur-card">
+                    <div className="uip-rur-card-head">Frame Info</div>
+                    <div className="uip-rur-kv"><span>Device</span><b>{rurDevice}</b></div>
+                    <div className="uip-rur-kv"><span>Viewport</span><b>{dims.width}×{dims.height} ({rurScale}x)</b></div>
+                    {rurActiveImg?.width && rurActiveImg?.height && (
+                      <div className="uip-rur-kv"><span>Output PNG</span><b>{rurActiveImg.width}×{rurActiveImg.height}</b></div>
+                    )}
+                    {rurActiveImg && (
+                      <div className="uip-rur-kv"><span>Size</span><b>{(rurActiveImg.bytes / 1024).toFixed(1)} KB</b></div>
+                    )}
+                    {rurDurationMs != null && (
+                      <div className="uip-rur-kv"><span>Render time</span><b>{rurDurationMs} ms</b></div>
+                    )}
+                    <div className="uip-rur-kv">
+                      <span>MCP Bridge</span>
+                      <b style={{ color: mcpRunning ? 'var(--ok)' : 'var(--fg-muted)' }}>{mcpRunning ? `on :${vgStatus?.mcpBridge.port}` : 'off'}</b>
+                    </div>
+                    {rurActiveImg && (
+                      <button className="btn small" onClick={() => void actions.copy(rurActiveImg.path, 'PNG path')}>
+                        <Icon name="copy" size={11} /> Copy PNG Path
+                      </button>
+                    )}
+                    <button className="btn small ghost" onClick={() => actions.openPage('vanguards')}>
+                      <Icon name="tool" size={11} /> Open Vanguards Workstation
+                    </button>
+                  </div>
+                </div>
+              </div>
+              <details className="uip-fidelity" open>
+                <summary>Fidelity (rur)</summary>
+                <p className="note">{RUR_FIDELITY_NOTE}</p>
+              </details>
+            </>
+          ) : (
+            <>
+              <div className="seg uip-tabs" role="tablist">
+                <button role="tab" aria-selected={tab === 'controls'} className={tab === 'controls' ? 'on' : ''} onClick={() => setTab('controls')}>
+                  Controls{view.controls.length ? ` ${view.controls.length}` : ''}
+                </button>
+                <button role="tab" aria-selected={tab === 'inspect'} className={tab === 'inspect' ? 'on' : ''} onClick={() => setTab('inspect')}>
+                  Inspector
+                </button>
+              </div>
+              <div className="uip-right-body">
+                {figma && <FigmaPanel diff={figma.diff} busy={!!busy} onApply={(c) => void applyFigma(c)} onAsk={askFigma} onClose={() => setFigma(null)} />}
+                {tab === 'controls' ? (
+                  <ControlsPanel controls={view.controls} values={view.values} onChange={onControl} onReset={resetControls} />
+                ) : (
+                  <Inspector
+                    tree={tree}
+                    id={target}
+                    box={target != null ? layoutRef.current?.boxes.get(target) : undefined}
+                    pinned={mode === 'edit' && selected != null}
+                    editMode={mode === 'edit'}
+                    busy={busy}
+                    revision={revision}
+                    onEdit={(n, p, v) => void editProp(n, p, v)}
+                    onJump={(n) => void jump(n)}
+                    onAsk={(n) => ask(n)}
+                    onSelect={setSelected}
+                  />
+                )}
+              </div>
+              <details className="uip-fidelity">
+                <summary>Fidelity</summary>
+                <p className="note">{FIDELITY_NOTE}</p>
+              </details>
+            </>
+          )}
         </aside>
         {menu.node}
       </div>

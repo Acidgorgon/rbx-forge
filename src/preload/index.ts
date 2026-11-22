@@ -104,6 +104,9 @@ const methods = [
   'vanguardsRunRor', 'vanguardsRunRur', 'vanguardsRunRee',
   'vanguardsFmEnvbuild', 'vanguardsFmModelpreview', 'vanguardsFmInsertRbxm',
   'vanguardsStartMcpBridge', 'vanguardsStopMcpBridge',
+  'vanguardsReadImage', 'vanguardsListRurStories', 'vanguardsRenderRurStory',
+  'vanguardsLaunchRurNative', 'vanguardsRenderRorPreview',
+  'vanguardsCheckUpdates', 'vanguardsUpdateTools',
   // Harbor Family Stack (Current, Ripple, Anchor, Tide, Lighthouse)
   'harborStatus', 'harborRefresh', 'harborToggleLib', 'harborGenerate', 'harborScaffold',
   // StudioTurnLock

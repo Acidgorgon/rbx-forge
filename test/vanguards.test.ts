@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { execFileSync } from 'node:child_process'
+import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
@@ -245,4 +246,171 @@ console.log('rendered preview');
   )
   assert.equal(insOut.isError, true)
   assert.match(insOut.content[0].text, /125988560196910/)
+})
+
+const SAMPLE_PNG = Buffer.from(
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==',
+  'base64'
+)
+
+test('readImage enforces magic bytes and allowed roots, listRurStories and renderRurStory pass exact CLI flags', async () => {
+  const root = temp()
+  const outside = temp('forge-vg-out-')
+  const binDir = join(root, 'bin')
+  mkdirSync(binDir, { recursive: true })
+  mkdirSync(join(root, 'src', 'Stories'), { recursive: true })
+
+  makeFakeCli(
+    binDir,
+    'rur',
+    `
+import { mkdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const args = process.argv.slice(2);
+if (args[0] === 'stories') {
+  console.log(join(${JSON.stringify(root)}, 'src', 'Stories', 'Button.story.luau'));
+  console.log(join(${JSON.stringify(root)}, 'src', 'Stories', 'Card.story.luau'));
+  process.exit(0);
+}
+const outIdx = args.indexOf('--out');
+const outDir = outIdx >= 0 ? args[outIdx + 1] : '';
+if (outDir) {
+  mkdirSync(outDir, { recursive: true });
+  writeFileSync(join(outDir, 'frame.png'), Buffer.from(${JSON.stringify(SAMPLE_PNG.toString('base64'))}, 'base64'));
+}
+console.log(JSON.stringify({ argv: args }));
+`
+  )
+
+  const svc = new VanguardsService({
+    root: () => root,
+    settings: makeSettings({ [VANGUARDS_SETTINGS_KEYS.binDir]: binDir })
+  })
+  services.push(svc)
+
+  // Magic byte + allowed root checks
+  const validInRoot = join(root, 'valid.png')
+  writeFileSync(validInRoot, SAMPLE_PNG)
+  const loaded = svc.readImage(validInRoot)
+  assert.ok(loaded)
+  assert.equal(loaded.mime, 'image/png')
+  assert.equal(loaded.width, 1)
+  assert.equal(loaded.height, 1)
+  assert.ok(loaded.dataUrl.startsWith('data:image/png;base64,'))
+
+  const fakePng = join(root, 'not-actually-png.png')
+  writeFileSync(fakePng, 'plain text payload', 'utf8')
+  assert.equal(svc.readImage(fakePng), null)
+
+  const outsidePng = join(outside, 'secret.png')
+  writeFileSync(outsidePng, SAMPLE_PNG)
+  assert.equal(svc.readImage(outsidePng), null)
+
+  // listRurStories
+  const listRes = await svc.listRurStories()
+  assert.equal(listRes.ok, true)
+  assert.deepEqual(listRes.stories, ['src/Stories/Button.story.luau', 'src/Stories/Card.story.luau'])
+
+  // renderRurStory
+  const renderRes = await svc.renderRurStory({
+    story: 'src/Stories/Button.story.luau',
+    width: 844,
+    height: 390,
+    scale: 2,
+    device: 'touch',
+    mode: 'play',
+    allLayers: true,
+    placeholders: true
+  })
+  assert.equal(renderRes.ok, true, renderRes.stderr || renderRes.error)
+  const rParsed = JSON.parse(renderRes.stdout.trim())
+  assert.equal(rParsed.argv[0], 'render')
+  assert.ok(rParsed.argv.includes('--viewport'))
+  assert.ok(rParsed.argv.includes('844x390'))
+  assert.ok(rParsed.argv.includes('--scale'))
+  assert.ok(rParsed.argv.includes('2'))
+  assert.ok(rParsed.argv.includes('--device'))
+  assert.ok(rParsed.argv.includes('touch'))
+  assert.ok(rParsed.argv.includes('--mode'))
+  assert.ok(rParsed.argv.includes('play'))
+  assert.ok(rParsed.argv.includes('--all-layers'))
+  assert.ok(rParsed.argv.includes('--placeholders'))
+  assert.ok(rParsed.argv.includes('--json'))
+  assert.ok(renderRes.images?.some((p) => p.endsWith('frame.png')))
+
+  const renderedLoaded = svc.readImage(renderRes.images![0])
+  assert.ok(renderedLoaded)
+  assert.equal(renderedLoaded.width, 1)
+
+  // compare mode
+  const cmpRes = await svc.renderRurStory({
+    story: 'src/Stories/Button.story.luau',
+    width: 1920,
+    height: 1080,
+    compare: true
+  })
+  assert.equal(cmpRes.ok, true)
+  const cParsed = JSON.parse(cmpRes.stdout.trim())
+  assert.equal(cParsed.argv[0], 'compare')
+})
+
+test('checkRepoUpdates detects upstream pushes and updateTools fast-forward pulls clean repos', async () => {
+  const vgHome = temp('forge-vg-git-')
+  const binDir = join(vgHome, 'bin')
+  const remoteDir = join(vgHome, 'remote.git')
+  const authorDir = join(vgHome, 'author')
+  const rurRepo = join(vgHome, 'roblox-ui-renderer')
+  mkdirSync(binDir, { recursive: true })
+  makeFakeCli(binDir, 'rur', 'console.log("ok")')
+
+  const git = (cwd: string, args: string[]) => execFileSync('git', args, { cwd, stdio: 'pipe' }).toString('utf8').trim()
+
+  mkdirSync(remoteDir, { recursive: true })
+  git(remoteDir, ['init', '--bare'])
+  git(vgHome, ['clone', remoteDir, authorDir])
+  git(authorDir, ['config', 'user.name', 'Test'])
+  git(authorDir, ['config', 'user.email', 'test@example.com'])
+  git(authorDir, ['checkout', '-B', 'main'])
+  writeFileSync(join(authorDir, 'README.md'), 'v1\n', 'utf8')
+  git(authorDir, ['add', '.'])
+  git(authorDir, ['commit', '-m', 'init'])
+  git(authorDir, ['push', '-u', 'origin', 'main'])
+  git(remoteDir, ['symbolic-ref', 'HEAD', 'refs/heads/main'])
+
+  git(vgHome, ['clone', remoteDir, rurRepo])
+
+  const svc = new VanguardsService({
+    root: () => vgHome,
+    settings: makeSettings({ [VANGUARDS_SETTINGS_KEYS.binDir]: binDir })
+  })
+  services.push(svc)
+
+  const check1 = await svc.checkRepoUpdates()
+  assert.equal(check1.rur.found, true)
+  assert.equal(check1.rur.behind, 0)
+  assert.equal(check1.rur.status, 'up-to-date')
+
+  // Push a new upstream commit from author
+  writeFileSync(join(authorDir, 'README.md'), 'v2\n', 'utf8')
+  git(authorDir, ['add', '.'])
+  git(authorDir, ['commit', '-m', 'upstream push'])
+  git(authorDir, ['push'])
+
+  const check2 = await svc.checkRepoUpdates()
+  assert.equal(check2.rur.behind, 1)
+  assert.equal(check2.rur.status, 'update-available')
+
+  // Dirty check should refuse without pulling
+  writeFileSync(join(rurRepo, 'dirty.txt'), 'uncommitted\n', 'utf8')
+  const dirtyUp = await svc.updateTools('rur')
+  assert.equal(dirtyUp.ok, false)
+  assert.match(dirtyUp.results[0].message, /uncommitted/i)
+
+  // Clean dirty file -> fast-forward pull succeeds
+  rmSync(join(rurRepo, 'dirty.txt'))
+  const cleanUp = await svc.updateTools('rur')
+  assert.equal(cleanUp.ok, true, cleanUp.results[0].message)
+  assert.equal(cleanUp.results[0].updated, true)
+  assert.equal(cleanUp.repos.rur.behind, 0)
+  assert.equal(readFileSync(join(rurRepo, 'README.md'), 'utf8'), 'v2\n')
 })

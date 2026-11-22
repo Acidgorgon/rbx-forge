@@ -1,21 +1,26 @@
-// Harbor Family Stack view: Current, Ripple, Anchor, Tide, Lighthouse detection,
-// LibsConfig.luau live lossless boolean toggles, schema watcher status, and codegen triggers.
+// Harbor Family Stack view: Current, Ripple, Anchor, Tide, Lighthouse card grid,
+// LibsConfig.luau lossless pill toggle switches, clickable schema chips, and codegen triggers.
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { HARBOR_LIB_IDS } from '@shared/harborTypes'
 import type { HarborLibId, HarborStatus } from '@shared/types'
 import { Icon } from '../components/Icons'
 import { errorText } from '../lib/format'
+import { useActions } from '../store'
+import './harbor.css'
 
 const LIB_ROLES: Record<HarborLibId, string> = {
   current: 'Networking schema compiler (current-schema.luau / *.blink, From: Both)',
-  ripple: 'State & sync schemas (**/*.ripple + Ripple Client/Server)',
-  anchor: 'Spatial / placement & world persistence utilities',
-  tide: 'Reactive flow / scheduling primitives',
-  lighthouse: 'Diagnostics, telemetry & runtime health checks'
+  ripple: 'Reactive state & replication schemas (**/*.ripple + Client/Server sync)',
+  anchor: 'Spatial persistence, placement & world data helpers',
+  tide: 'Reactive flow, lifecycle & scheduling primitives',
+  lighthouse: 'Runtime diagnostics, telemetry & health instrumentation'
 }
 
+const FILE_EXT_RE = /\.(luau?|blink|ripple|json|toml)$/i
+
 export function HarborView() {
+  const actions = useActions()
   const h = window.harness
   const [status, setStatus] = useState<HarborStatus | null>(null)
   const [busy, setBusy] = useState<string | null>(null)
@@ -84,22 +89,18 @@ export function HarborView() {
     }
   }
 
+  const detectedCount = useMemo(
+    () => (status ? HARBOR_LIB_IDS.filter((id) => status.libs[id].detected).length : 0),
+    [status]
+  )
+
   return (
     <div className="page">
-      <div className="page-inner">
+      <div className="page-inner hb-page">
         <div className="page-head">
           <div>
             <h1>Harbor Family Stack</h1>
-            <div className="sub">
-              {status?.projectRoot ? (
-                <>
-                  <code>{status.libsConfigPath ?? 'LibsConfig.luau not found'}</code> · Schema watcher:{' '}
-                  <strong>{status.watcherActive ? 'active' : 'off'}</strong>
-                </>
-              ) : (
-                'Open a project to inspect Harbor libraries and LibsConfig toggles'
-              )}
-            </div>
+            <div className="sub">Current, Ripple, Anchor, Tide &amp; Lighthouse detection, schema watch &amp; LibsConfig toggles</div>
           </div>
           <div className="actions">
             <button className="mini-btn" onClick={() => void refresh()} disabled={busy !== null}>
@@ -108,95 +109,194 @@ export function HarborView() {
           </div>
         </div>
 
+        {/* Summary Strip */}
+        <div className="hb-summary">
+          <div className="hb-summary-left">
+            <span className={`badge-o ${detectedCount > 0 ? 'ok' : ''}`}>
+              {detectedCount} / {HARBOR_LIB_IDS.length} libraries detected
+            </span>
+            {status?.libsConfigPath ? (
+              <button
+                type="button"
+                className="hb-chip"
+                onClick={() => void actions.openFile(status.libsConfigPath!)}
+                title="Open LibsConfig in editor"
+              >
+                <Icon name="file" size={11} /> {status.libsConfigPath}
+              </button>
+            ) : (
+              <span className="note">{status?.projectRoot ? 'LibsConfig.luau not found' : 'Open a project to inspect Harbor stack'}</span>
+            )}
+          </div>
+          <div className="hb-summary-right">
+            <span className={`badge-o ${status?.watcherActive ? 'ok' : ''}`} style={{ display: 'inline-flex', alignItems: 'center', gap: 6 }}>
+              <span className={`hb-dot ${status?.watcherActive ? 'ok' : ''}`} />
+              Schema watcher: {status?.watcherActive ? 'active' : 'off'}
+            </span>
+          </div>
+        </div>
+
         {error && <div className="callout err">{error}</div>}
         {note && !error && <div className="callout info">{note}</div>}
 
-        <div className="set-sec">
-          <h2>Libraries</h2>
-          {status ? (
-            HARBOR_LIB_IDS.map((id) => {
+        {/* 5-Card Responsive Grid */}
+        {status ? (
+          <div className="hb-grid">
+            {HARBOR_LIB_IDS.map((id) => {
               const lib = status.libs[id]
               const toggleKey = lib.configKey
               return (
-                <div className="set-row" key={id}>
-                  <div className="set-text">
-                    <div className="set-title">
-                      <strong>{lib.name}</strong>{' '}
-                      {lib.version && <code style={{ fontSize: 11 }}>v{lib.version}</code>}{' '}
-                      <span className={`badge-o ${lib.detected ? 'ok' : ''}`}>
-                        {lib.detected ? 'detected' : 'not present'}
-                      </span>
+                <section key={id} className={`hb-card${lib.detected ? ' detected' : ''}`}>
+                  <div className="hb-card-head">
+                    <span className={`hb-dot ${lib.detected ? 'ok' : ''}`} />
+                    <div className="hb-card-title">
+                      <span className="ellipsis">{lib.name}</span>
+                      {lib.version && <span className="hb-ver">v{lib.version}</span>}
                     </div>
-                    <div className="note">{LIB_ROLES[id]}</div>
-                    {lib.sourcePaths.length > 0 && (
-                      <div className="note">Sources: {lib.sourcePaths.map((p) => <code key={p} style={{ marginRight: 6 }}>{p}</code>)}</div>
-                    )}
-                    {lib.schemaFiles.length > 0 && (
-                      <div className="note">Schemas: {lib.schemaFiles.map((p) => <code key={p} style={{ marginRight: 6 }}>{p}</code>)}</div>
-                    )}
-                  </div>
-                  <div className="set-ctl">
-                    {toggleKey && (
+                    <span className="grow" />
+                    {toggleKey ? (
                       <button
-                        className="mini-btn"
+                        type="button"
+                        role="switch"
+                        aria-checked={Boolean(lib.enabled)}
+                        aria-label={`Toggle ${toggleKey}`}
+                        className={`hb-switch${lib.enabled ? ' on' : ''}`}
                         disabled={busy !== null}
                         onClick={() => void onToggle(toggleKey, !lib.enabled)}
-                        title={`Toggle ${toggleKey} in ${status.libsConfigPath ?? 'LibsConfig.luau'}`}
+                        title={`${toggleKey}: ${lib.enabled ? 'true' : 'false'} (in ${status.libsConfigPath ?? 'LibsConfig.luau'})`}
                       >
-                        {toggleKey}: {lib.enabled ? 'ON' : 'OFF'}
+                        <span className="hb-switch-thumb" />
                       </button>
+                    ) : (
+                      <span className={`badge-o ${lib.detected ? 'ok' : ''}`}>{lib.detected ? 'active' : 'missing'}</span>
                     )}
+                  </div>
+
+                  <div className="hb-role">{LIB_ROLES[id]}</div>
+
+                  {lib.schemaFiles.length > 0 && (
+                    <div>
+                      <div className="hb-section-label">Schemas</div>
+                      <div className="hb-chips">
+                        {lib.schemaFiles.map((p) => (
+                          <button
+                            key={p}
+                            type="button"
+                            className="hb-chip"
+                            onClick={() => void actions.openFile(p)}
+                            title={`Open ${p}`}
+                          >
+                            <Icon name="bolt" size={10} /> {p}
+                          </button>
+                        ))}
+                      </div>
+                    </div>
+                  )}
+
+                  {lib.sourcePaths.length > 0 && (
+                    <div>
+                      <div className="hb-section-label">Sources</div>
+                      <div className="hb-chips">
+                        {lib.sourcePaths.map((p) =>
+                          FILE_EXT_RE.test(p) ? (
+                            <button
+                              key={p}
+                              type="button"
+                              className="hb-chip"
+                              onClick={() => void actions.openFile(p)}
+                              title={`Open ${p}`}
+                            >
+                              <Icon name="file" size={10} /> {p}
+                            </button>
+                          ) : (
+                            <button
+                              key={p}
+                              type="button"
+                              className="hb-chip static"
+                              onClick={() => void actions.copy(p, 'Folder path')}
+                              title={`Copy ${p}`}
+                            >
+                              <Icon name="folder" size={10} /> {p}
+                            </button>
+                          )
+                        )}
+                      </div>
+                    </div>
+                  )}
+
+                  <div className="hb-card-foot">
                     <button
-                      className="mini-btn"
+                      className="btn small primary"
                       disabled={busy !== null || !status.projectRoot}
                       onClick={() => void onGenerate(id)}
                     >
-                      Generate
+                      <Icon name="play" size={10} /> Generate
                     </button>
                     {!lib.detected && status.projectRoot && (
                       <button
-                        className="mini-btn"
+                        className="btn small"
                         disabled={busy !== null}
                         onClick={() => void onScaffold(id)}
                       >
                         Scaffold
                       </button>
                     )}
+                    {toggleKey && (
+                      <>
+                        <span className="grow" />
+                        <code style={{ fontSize: 10.5, color: 'var(--fg-muted)' }}>
+                          {toggleKey}: {String(Boolean(lib.enabled))}
+                        </code>
+                      </>
+                    )}
                   </div>
-                </div>
+                </section>
               )
-            })
-          ) : (
-            <div className="note">Scanning Harbor stack…</div>
-          )}
-        </div>
+            })}
+          </div>
+        ) : (
+          <div className="note">Scanning Harbor stack…</div>
+        )}
 
+        {/* LibsConfig Toggles Panel */}
         {status?.toggles && status.toggles.length > 0 && (
           <div className="set-sec">
             <h2>
               <span>LibsConfig Boolean Toggles</span>
               <span className="grow" />
-              {status.libsConfigPath && <code style={{ fontSize: 11 }}>{status.libsConfigPath}</code>}
+              {status.libsConfigPath && (
+                <button
+                  type="button"
+                  className="hb-chip"
+                  onClick={() => void actions.openFile(status.libsConfigPath!)}
+                >
+                  {status.libsConfigPath}
+                </button>
+              )}
             </h2>
-            {status.toggles.map((t) => (
-              <div className="set-row" key={`${t.line}:${t.key}`}>
-                <div className="set-text">
-                  <div className="set-title">
-                    <code>{t.key}</code> <span className="note">line {t.line}{t.libId ? ` · ${t.libId}` : ''}</span>
+            <div className="hb-toggles-grid">
+              {status.toggles.map((t) => (
+                <div key={`${t.line}:${t.key}`} className="hb-toggle-row">
+                  <div className="hb-toggle-meta">
+                    <code className="ellipsis" style={{ fontSize: 12 }}>{t.key}</code>
+                    <span className="note" style={{ fontSize: 10.5 }}>
+                      line {t.line}{t.libId ? ` · ${t.libId}` : ''}
+                    </span>
                   </div>
-                </div>
-                <div className="set-ctl">
                   <button
-                    className={`mini-btn`}
+                    type="button"
+                    role="switch"
+                    aria-checked={t.value}
+                    aria-label={`Toggle ${t.key}`}
+                    className={`hb-switch${t.value ? ' on' : ''}`}
                     disabled={busy !== null}
                     onClick={() => void onToggle(t.key, !t.value)}
                   >
-                    <span className={`badge-o ${t.value ? 'ok' : ''}`}>{t.value ? 'true' : 'false'}</span>
-                    Toggle
+                    <span className="hb-switch-thumb" />
                   </button>
                 </div>
-              </div>
-            ))}
+              ))}
+            </div>
           </div>
         )}
       </div>

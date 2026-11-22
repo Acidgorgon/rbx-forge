@@ -1,7 +1,8 @@
-// Forge tab: the project dashboard. Quick create actions, service health with restart and logs,
-// features, recent files and the project's state at a glance. Without a project: open or join.
-import { useMemo } from 'react'
-import type { ServiceStatus } from '@shared/types'
+// Forge tab: workflow status hub (Direct Forge Sync, Vanguards, Harbor Stack, StudioTurnLock),
+// quick actions, service health with restart and logs, features, recent files, and project state.
+import { useEffect, useMemo, useState } from 'react'
+import { HARBOR_LIB_IDS } from '@shared/harborTypes'
+import type { ForgeSyncSettings, HarborStatus, ServiceStatus, StudioLockStatus, SyncStatus, VanguardsStatus } from '@shared/types'
 import { useStorePick, useActions, type CreateKind } from '../store'
 import { Icon, type IconName } from '../components/Icons'
 import { AnvilMark } from '../components/Brand'
@@ -19,7 +20,7 @@ function Welcome() {
       <div className="page-inner welcome">
         <div className="welcome-mark"><AnvilMark size={40} /></div>
         <h1>RBX Forge</h1>
-        <p className="note">An editor for Roblox games built with Rojo. Start a new game, open a project folder, or join your team's game from a git URL.</p>
+        <p className="note">Roblox development workstation with Direct Forge Sync, Vanguards (<code>ror</code> / <code>rur</code> / <code>ree</code>) and the Harbor Stack.</p>
         <div className="row" style={{ justifyContent: 'center' }}>
           <button className="btn primary" onClick={() => actions.openDialog({ kind: 'newProject' })}><Icon name="folderPlus" size={13} /> New project...</button>
           <button className="btn" onClick={() => void actions.openProject()}><Icon name="folder" size={13} /> Open folder...</button>
@@ -39,8 +40,36 @@ export function ForgePage() {
   const actions = useActions()
   const state = useStorePick('activePlace', 'claims', 'git', 'places', 'project', 'recent', 'scripts', 'services', 'studioConflicts', 'tests')
   const problems = useProblems()
+  const h = window.harness
   const scripts = useMemo(() => scriptsFlat(state.scripts), [state.scripts])
   const features = useMemo(() => featuresOf(scripts), [scripts])
+
+  const [vg, setVg] = useState<VanguardsStatus | null>(null)
+  const [hb, setHb] = useState<HarborStatus | null>(null)
+  const [syncSet, setSyncSet] = useState<ForgeSyncSettings | null>(null)
+  const [syncSt, setSyncSt] = useState<SyncStatus | null>(null)
+  const [lockSt, setLockSt] = useState<StudioLockStatus | null>(null)
+
+  useEffect(() => {
+    if (!state.project) return
+    void h.vanguardsStatus().then(setVg).catch(() => {})
+    void h.harborStatus().then(setHb).catch(() => {})
+    void h.forgeSyncSettings().then(setSyncSet).catch(() => {})
+    void h.syncStatus().then(setSyncSt).catch(() => {})
+    void h.studioLockStatus().then(setLockSt).catch(() => {})
+
+    const offVg = h.on('vanguards:status', setVg)
+    const offHb = h.on('harbor:status', setHb)
+    const offSync = h.on('sync:status', setSyncSt)
+    const offLock = h.on('studioLock:status', setLockSt)
+    return () => {
+      offVg()
+      offHb()
+      offSync()
+      offLock()
+    }
+  }, [h, state.project?.root])
+
   if (!state.project) return <Welcome />
 
   const place = state.places.find((p) => p.file === state.activePlace)
@@ -50,16 +79,28 @@ export function ForgePage() {
     actions.showSide('explorer')
     actions.requestCreate(kind)
   }
+
+  const syncEngine = syncSt?.engine ?? syncSet?.engine ?? 'forge-direct'
+  const syncLabel =
+    syncEngine === 'forge-direct' ? 'Direct 2-way' : syncEngine === 'forge' ? 'Rojo Gated' : syncEngine === 'project' ? 'Project Sync' : 'Off'
+  const connectedPlaces = syncSt?.places.filter((p) => p.connected).length ?? 0
+
+  const detectedLibs = hb ? HARBOR_LIB_IDS.filter((id) => hb.libs[id].detected) : []
+  const updatesBehind = vg?.repos ? Object.values(vg.repos).filter((r) => r.behind > 0).length : 0
+
   const QUICK: { label: string; icon: IconName; hint?: string; run: () => void }[] = [
     { label: 'New feature', icon: 'trio', hint: 'shared + Service + Controller', run: () => create('Feature') },
-    { label: 'New ModuleScript', icon: 'filePlus', run: () => create('ModuleScript') },
+    { label: 'UI Preview (rur)', icon: 'monitor', hint: 'Lune + pixel-accurate rur renderer', run: () => actions.openPage('uipreview') },
+    { label: 'Vanguards', icon: 'tool', hint: 'ror DX12, rur UI, ree, FM pipeline', run: () => actions.openPage('vanguards') },
+    { label: 'Harbor Stack', icon: 'bolt', hint: 'Current, Ripple, Anchor, Tide, Lighthouse', run: () => actions.openPage('harbor') },
+    { label: 'Model Lab', icon: 'cube', run: () => actions.openPage('model') },
+    { label: 'UI Motion Lab', icon: 'tap', run: () => actions.openPage('uimotion') },
     { label: 'New Script', icon: 'script', hint: 'server', run: () => create('Script') },
-    { label: 'New LocalScript', icon: 'script', hint: 'client', run: () => create('LocalScript') },
-    { label: 'New Blink event', icon: 'bolt', run: () => actions.openDialog({ kind: 'blinkEvent' }) },
+    { label: 'New ModuleScript', icon: 'filePlus', run: () => create('ModuleScript') },
     { label: 'Run tests', icon: 'flask', run: () => (actions.showSide('tests'), void actions.runTests({ scope: { kind: 'all' } })) },
+    { label: 'Memory & .md', icon: 'memory', run: () => actions.openPage('memory') },
     { label: 'Packages', icon: 'package', run: () => actions.openPage('packages') },
-    { label: 'Release', icon: 'rocket', run: () => actions.openPage('release') },
-    { label: 'Analytics', icon: 'chart', run: () => actions.openPage('analytics') }
+    { label: 'Release', icon: 'rocket', run: () => actions.openPage('release') }
   ]
 
   return (
@@ -77,9 +118,109 @@ export function ForgePage() {
           </div>
         </div>
 
+        {/* Workflow Status Strip */}
+        <div className="wf-strip">
+          <div
+            className="wf-card"
+            role="button"
+            tabIndex={0}
+            onClick={() => actions.showSide('sync')}
+            onKeyDown={(e) => e.key === 'Enter' && actions.showSide('sync')}
+          >
+            <div className="wf-head">
+              <Icon name="sync" size={12} />
+              <span>Forge Sync</span>
+              <span className="grow" />
+              <span className={`wf-dot ${syncEngine !== 'off' ? 'ok' : ''}`} />
+            </div>
+            <div className="wf-main">{syncLabel}</div>
+            <div className="wf-sub">
+              <span>{connectedPlaces > 0 ? `${connectedPlaces} Studio live` : 'No Studio linked'}</span>
+              {syncSt?.pendingStudioEdits.length ? <span>· {syncSt.pendingStudioEdits.length} studio edits</span> : null}
+            </div>
+          </div>
+
+          <div
+            className="wf-card"
+            role="button"
+            tabIndex={0}
+            onClick={() => actions.openPage('vanguards')}
+            onKeyDown={(e) => e.key === 'Enter' && actions.openPage('vanguards')}
+          >
+            <div className="wf-head">
+              <Icon name="tool" size={12} />
+              <span>Vanguards</span>
+              <span className="grow" />
+              {updatesBehind > 0 && (
+                <span className="badge-o" style={{ borderColor: 'var(--ember-lo)', color: 'var(--ember-text)' }}>
+                  ↓{updatesBehind}
+                </span>
+              )}
+            </div>
+            <div className="wf-main">
+              <div className="wf-dots">
+                {(['ror', 'rur', 'ree'] as const).map((id) => (
+                  <span key={id} className="wf-pill-dot">
+                    <span className={`wf-dot ${vg?.tools[id].found ? 'ok' : ''}`} />
+                    {id}
+                  </span>
+                ))}
+              </div>
+            </div>
+            <div className="wf-sub">
+              <span>MCP Bridge: {vg?.mcpBridge.running ? `on :${vg.mcpBridge.port}` : 'off'}</span>
+              {vg?.autoUpdateRepos ? <span>· auto-update</span> : null}
+            </div>
+          </div>
+
+          <div
+            className="wf-card"
+            role="button"
+            tabIndex={0}
+            onClick={() => actions.openPage('harbor')}
+            onKeyDown={(e) => e.key === 'Enter' && actions.openPage('harbor')}
+          >
+            <div className="wf-head">
+              <Icon name="bolt" size={12} />
+              <span>Harbor Stack</span>
+              <span className="grow" />
+              <span className={`wf-dot ${hb?.watcherActive ? 'ok' : ''}`} />
+            </div>
+            <div className="wf-main">{detectedLibs.length} / {HARBOR_LIB_IDS.length} active</div>
+            <div className="wf-sub">
+              <span className="ellipsis">
+                {detectedLibs.length ? detectedLibs.map((id) => hb!.libs[id].name).join(' · ') : 'Open to configure'}
+              </span>
+            </div>
+          </div>
+
+          <div className="wf-card static">
+            <div className="wf-head">
+              <Icon name="lock" size={12} />
+              <span>Studio Turn Lock</span>
+              <span className="grow" />
+              <span className={`wf-dot ${lockSt?.holder ? 'warn' : 'ok'}`} />
+            </div>
+            <div className="wf-main">
+              <span className="ellipsis">{lockSt?.holder ? `Held · ${lockSt.holder.owner}` : 'Idle (unlocked)'}</span>
+              {lockSt?.holder && (
+                <button
+                  className="mini-btn"
+                  onClick={() => void h.studioLockForceRelease('Released from dashboard').then(() => h.studioLockStatus().then(setLockSt))}
+                >
+                  Release
+                </button>
+              )}
+            </div>
+            <div className="wf-sub">
+              <span>Queue: {lockSt?.queue.length ?? 0} waiting</span>
+            </div>
+          </div>
+        </div>
+
         <div className="dash">
           <section className="dcard quick">
-            <h2>Create</h2>
+            <h2>Workstation &amp; Create</h2>
             <div className="quick-grid">
               {QUICK.map((q) => (
                 <button key={q.label} className="qbtn" onClick={q.run} title={q.hint}>

@@ -1,0 +1,203 @@
+/* Harbor Family Stack: tactile 5-card grid + switch controls + clickable schema chips */
+
+.hb-page { padding-bottom: 28px; }
+
+.hb-summary {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  flex-wrap: wrap;
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-panel);
+  padding: 10px 14px;
+  margin-bottom: 12px;
+}
+
+.hb-summary-left, .hb-summary-right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.hb-dot {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+  flex: none;
+}
+
+.hb-dot.ok { background: var(--ok); }
+.hb-dot.warn { background: var(--warn); }
+
+.hb-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(290px, 1fr));
+  gap: 10px;
+  margin-bottom: 14px;
+}
+
+.hb-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-panel);
+  padding: 13px 14px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  min-width: 0;
+  transition: border-color var(--dur-fast);
+}
+
+.hb-card.detected {
+  border-color: var(--line-strong);
+}
+
+.hb-card-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+}
+
+.hb-card-title {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font: 600 13.5px var(--font-ui);
+  color: var(--fg);
+  min-width: 0;
+}
+
+.hb-ver {
+  padding: 1px 6px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-editor);
+  font: 10.5px var(--font-mono);
+  color: var(--fg-2);
+}
+
+.hb-role {
+  font-size: 11.5px;
+  line-height: 1.45;
+  color: var(--fg-muted);
+}
+
+.hb-section-label {
+  font: 500 10px var(--font-ui);
+  letter-spacing: .08em;
+  text-transform: uppercase;
+  color: var(--fg-faint);
+  margin-bottom: 4px;
+}
+
+.hb-chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 5px;
+}
+
+.hb-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  max-width: 100%;
+  padding: 3px 8px;
+  border-radius: var(--r-sm);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-editor);
+  color: var(--info);
+  font: 11px var(--font-mono);
+  cursor: pointer;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.hb-chip:hover {
+  border-color: var(--fg-faint);
+  color: var(--fg);
+}
+
+.hb-chip.static {
+  color: var(--fg-2);
+}
+
+.hb-card-foot {
+  margin-top: auto;
+  padding-top: 8px;
+  border-top: 1px solid var(--line);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+/* Tactile pill toggle switch */
+.hb-switch {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: 34px;
+  height: 19px;
+  padding: 2px;
+  border-radius: var(--r-pill);
+  border: 1px solid var(--line-strong);
+  background: var(--bg-editor);
+  cursor: pointer;
+  flex: none;
+  transition: background var(--dur-fast), border-color var(--dur-fast);
+}
+
+.hb-switch:disabled {
+  opacity: .5;
+  cursor: not-allowed;
+}
+
+.hb-switch.on {
+  background: var(--ok-fill);
+  border-color: var(--ok-line);
+}
+
+.hb-switch-thumb {
+  width: 13px;
+  height: 13px;
+  border-radius: 50%;
+  background: var(--fg-muted);
+  transform: translateX(0);
+  transition: transform var(--dur-fast) var(--ease-out), background var(--dur-fast);
+}
+
+.hb-switch.on .hb-switch-thumb {
+  background: var(--ok);
+  transform: translateX(15px);
+}
+
+.hb-toggles-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(260px, 1fr));
+  gap: 8px;
+}
+
+.hb-toggle-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  border: 1px solid var(--line);
+  border-radius: var(--r-md);
+  background: var(--bg-editor);
+  padding: 8px 10px;
+  min-width: 0;
+}
+
+.hb-toggle-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+}

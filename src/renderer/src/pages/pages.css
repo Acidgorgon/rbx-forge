@@ -100,6 +100,103 @@
 .qbtn:first-child:hover { border-color: var(--ember); }
 @media (max-width: 1100px) { .dash { grid-template-columns: minmax(0, 1fr); } }
 
+/* Workflow Hub status strip on Forge dashboard */
+.wf-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 8px;
+  margin-bottom: 12px;
+}
+
+@media (max-width: 1050px) {
+  .wf-strip { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+@media (max-width: 560px) {
+  .wf-strip { grid-template-columns: minmax(0, 1fr); }
+}
+
+.wf-card {
+  border: 1px solid var(--line);
+  border-radius: var(--r-lg);
+  background: var(--bg-panel);
+  padding: 10px 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+  cursor: pointer;
+  transition: border-color var(--dur-fast), background var(--dur-fast);
+}
+
+.wf-card:hover {
+  border-color: var(--line-strong);
+  background: var(--bg-raised);
+}
+
+.wf-card.static {
+  cursor: default;
+}
+
+.wf-card.static:hover {
+  border-color: var(--line);
+  background: var(--bg-panel);
+}
+
+.wf-head {
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  font: 500 10.5px var(--font-ui);
+  letter-spacing: .09em;
+  text-transform: uppercase;
+  color: var(--fg-muted);
+}
+
+.wf-main {
+  font: 500 12.5px var(--font-ui);
+  color: var(--fg);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.wf-sub {
+  font: 11px var(--font-mono);
+  color: var(--fg-muted);
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
+
+.wf-dots {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+
+.wf-pill-dot {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font: 11px var(--font-mono);
+  color: var(--fg-2);
+}
+
+.wf-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--fg-faint);
+}
+
+.wf-dot.ok { background: var(--ok); }
+.wf-dot.warn { background: var(--warn); }
+.wf-dot.ember { background: var(--ember); }
+
 /* ---------------------------------------------------------------- Settings */
 .pv-list { display: flex; flex-direction: column; gap: 8px; }
 .pv-card { border: 1px solid var(--line); border-radius: var(--r-md); padding: 10px 12px; background: var(--bg-editor); }

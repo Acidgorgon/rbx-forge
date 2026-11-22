@@ -840,7 +840,14 @@ const vanguardsHandlers = {
   vanguardsFmModelpreview: (req: Parameters<VanguardsService['fmModelpreview']>[0]) => vanguards.fmModelpreview(req),
   vanguardsFmInsertRbxm: (req: Parameters<VanguardsService['fmInsertRbxm']>[0]) => vanguards.fmInsertRbxm(req),
   vanguardsStartMcpBridge: (port?: number) => vanguards.startMcpBridge(port),
-  vanguardsStopMcpBridge: () => vanguards.stopMcpBridge()
+  vanguardsStopMcpBridge: () => vanguards.stopMcpBridge(),
+  vanguardsReadImage: (filePath: string) => vanguards.readImage(filePath),
+  vanguardsListRurStories: (projectRoot?: string) => vanguards.listRurStories(projectRoot),
+  vanguardsRenderRurStory: (req: Parameters<VanguardsService['renderRurStory']>[0]) => vanguards.renderRurStory(req),
+  vanguardsLaunchRurNative: (storyFile?: string) => vanguards.launchRurNative(storyFile),
+  vanguardsRenderRorPreview: (req: Parameters<VanguardsService['renderRorPreview']>[0]) => vanguards.renderRorPreview(req),
+  vanguardsCheckUpdates: () => vanguards.checkRepoUpdates(),
+  vanguardsUpdateTools: (target: Parameters<VanguardsService['updateTools']>[0]) => vanguards.updateTools(target)
 }
 // Bug reports carry a Forge Doctor section (home folder shown as ~).
 qol.service.setBugReportExtra(async () => doctorMarkdown(await doctor.service.run(), { home: homedir() }))

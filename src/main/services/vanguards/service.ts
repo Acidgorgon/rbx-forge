@@ -2,9 +2,11 @@
 // Strict GPL boundary: invokes external CLIs/scripts only; zero GPL source in RBX Forge. No electron imports.
 
 import { execFileSync, type ChildProcess } from 'node:child_process'
-import { existsSync, readdirSync, statSync } from 'node:fs'
-import { isAbsolute, join, resolve } from 'node:path'
+import { existsSync, mkdirSync, readdirSync, readFileSync, statSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { basename, dirname, isAbsolute, join, relative, resolve } from 'node:path'
 import {
+  DEFAULT_VANGUARDS_BIN_DIR,
   DEFAULT_VANGUARDS_MCP_PORT,
   FORBIDDEN_FCM_PLACE_ID,
   VANGUARDS_SETTINGS_KEYS,
@@ -12,19 +14,27 @@ import {
   type FmInsertRbxmRequest,
   type FmModelpreviewRequest,
   type ReeRunRequest,
+  type RorPreviewRequest,
   type RorRunRequest,
   type RurRunRequest,
+  type RurStoriesResult,
+  type RurStoryRenderRequest,
+  type VanguardsImageData,
+  type VanguardsRepoId,
+  type VanguardsRepoUpdateInfo,
   type VanguardsRunResult,
   type VanguardsSettings,
-  type VanguardsStatus
+  type VanguardsStatus,
+  type VanguardsUpdateResult
 } from '../../../shared/vanguardsTypes.ts'
-import { defaultContext, findPythonCommand, spawnTool, toolEnv, type ToolContext } from '../tools.ts'
+import { MAX_IMAGE_BYTES, imageSize, sniffMime } from '../../agent/chatImages.ts'
+import { defaultContext, findPythonCommand, findTool, spawnTool, toolEnv, type ToolContext } from '../tools.ts'
 import { detectVanguards } from './detect.ts'
 
 export interface VanguardsServiceDeps {
   root?: () => string | null
   settings?: { get<T>(key: string, fallback: T): T; set(key: string, value: unknown): void }
-  emit?: (event: 'vanguards:status' | 'vanguards:log', payload: unknown) => void
+  emit?: (event: 'vanguards:status' | 'vanguards:updates' | 'vanguards:log', payload: unknown) => void
   log?: (text: string, stream?: 'stdout' | 'stderr' | 'info') => void
   toolCtx?: ToolContext
   defaultMcpPort?: number
@@ -34,9 +44,24 @@ export interface VanguardsServiceDeps {
   withStudioLock?: <T>(owner: string, reason: string, fn: () => Promise<T>) => Promise<T>
 }
 
-const IMAGE_EXT_RE = /\.(png|jpe?g|webp)$/i
+const IMAGE_EXT_RE = /\.(png|jpe?g|webp|gif)$/i
 const MAX_OUTPUT_CHARS = 128_000
 const DEFAULT_RUN_TIMEOUT_MS = 120_000
+const PREVIEW_ROOT_DIR = join(tmpdir(), 'rbx-forge-vanguards-previews')
+const AUTO_UPDATE_INTERVAL_MS = 15 * 60 * 1000
+const REPO_DIRS: Record<VanguardsRepoId, string> = {
+  ror: 'roblox-object-renderer',
+  rur: 'roblox-ui-renderer',
+  ree: 'roblox-engine-emulator'
+}
+
+function isInsideDir(targetAbs: string, rootDir: string | null | undefined): boolean {
+  if (!rootDir) return false
+  const a = process.platform === 'win32' ? resolve(targetAbs).toLowerCase() : resolve(targetAbs)
+  const b = process.platform === 'win32' ? resolve(rootDir).toLowerCase() : resolve(rootDir)
+  const rel = relative(b, a)
+  return rel === '' || (!rel.startsWith('..') && !isAbsolute(rel))
+}
 
 function trimOutput(s: string): string {
   if (s.length <= MAX_OUTPUT_CHARS) return s
@@ -51,18 +76,24 @@ function safeMtimeMs(file: string): number {
   }
 }
 
-function listImagesInDir(dir: string | undefined): Map<string, number> {
+function listImagesInDir(dir: string | undefined, maxDepth = 2): Map<string, number> {
   const map = new Map<string, number>()
   if (!dir) return map
-  try {
-    for (const entry of readdirSync(dir, { withFileTypes: true })) {
-      if (!entry.isFile() || !IMAGE_EXT_RE.test(entry.name)) continue
-      const full = join(dir, entry.name)
-      map.set(full, safeMtimeMs(full))
+  const walk = (cur: string, depth: number) => {
+    try {
+      for (const entry of readdirSync(cur, { withFileTypes: true })) {
+        const full = join(cur, entry.name)
+        if (entry.isFile() && IMAGE_EXT_RE.test(entry.name)) {
+          map.set(full, safeMtimeMs(full))
+        } else if (entry.isDirectory() && depth < maxDepth) {
+          walk(full, depth + 1)
+        }
+      }
+    } catch {
+      // directory may not exist yet
     }
-  } catch {
-    // directory may not exist yet
   }
+  walk(dir, 0)
   return map
 }
 
@@ -109,10 +140,15 @@ export class VanguardsService {
   private bridgePort: number
   private bridgeError: string | undefined
   private disposed = false
+  private allowedImagePaths = new Set<string>()
+  private repoStatus: Record<VanguardsRepoId, VanguardsRepoUpdateInfo> | undefined
+  private updateTimer: ReturnType<typeof setInterval> | null = null
+  private initialUpdateTimer: ReturnType<typeof setTimeout> | null = null
 
   constructor(deps: VanguardsServiceDeps = {}) {
     this.deps = deps
     this.bridgePort = deps.defaultMcpPort ?? DEFAULT_VANGUARDS_MCP_PORT
+    this.syncAutoUpdateTimer()
   }
 
   private ctx(): ToolContext {
@@ -123,21 +159,31 @@ export class VanguardsService {
     return cwd?.trim() || this.deps.root?.() || process.cwd()
   }
 
-  private getConfiguredDirs(): { binDir?: string | null; fmDir?: string | null; packsDir?: string | null; lunePath?: string | null } {
+  private getConfiguredDirs(): {
+    binDir?: string | null
+    fmDir?: string | null
+    packsDir?: string | null
+    lunePath?: string | null
+    autoUpdateRepos?: boolean
+  } {
     const s = this.deps.settings
     return {
       binDir: s?.get<string | null>(VANGUARDS_SETTINGS_KEYS.binDir, null),
       fmDir: s?.get<string | null>(VANGUARDS_SETTINGS_KEYS.fmDir, null),
       packsDir: s?.get<string | null>(VANGUARDS_SETTINGS_KEYS.packsDir, null),
-      lunePath: s?.get<string | null>('tests.lunePath', null)
+      lunePath: s?.get<string | null>('tests.lunePath', null),
+      autoUpdateRepos: Boolean(s?.get<boolean>(VANGUARDS_SETTINGS_KEYS.autoUpdateRepos, false))
     }
   }
 
   status(): VanguardsStatus {
     const cfg = this.getConfiguredDirs()
+    const effectiveBinDir = cfg.binDir?.trim() || DEFAULT_VANGUARDS_BIN_DIR
+    const base = basename(effectiveBinDir).toLowerCase() === 'bin' ? dirname(effectiveBinDir) : effectiveBinDir
     return detectVanguards({
       ...cfg,
       toolCtx: this.ctx(),
+      repos: this.repoStatus ?? this.emptyRepoMap(base),
       mcpBridge: {
         running: Boolean(this.bridgeProc && this.bridgeProc.exitCode === null),
         port: this.bridgePort,
@@ -159,8 +205,21 @@ export class VanguardsService {
       if (typeof patch.binDir === 'string') s.set(VANGUARDS_SETTINGS_KEYS.binDir, patch.binDir.trim() || null)
       if (typeof patch.fmDir === 'string') s.set(VANGUARDS_SETTINGS_KEYS.fmDir, patch.fmDir.trim() || null)
       if (typeof patch.packsDir === 'string') s.set(VANGUARDS_SETTINGS_KEYS.packsDir, patch.packsDir.trim() || null)
+      if (typeof patch.autoUpdateRepos === 'boolean') s.set(VANGUARDS_SETTINGS_KEYS.autoUpdateRepos, patch.autoUpdateRepos)
     }
+    this.syncAutoUpdateTimer()
     return this.refresh()
+  }
+
+  private rememberImages(paths: Iterable<string>): void {
+    for (const p of paths) {
+      const abs = resolve(p)
+      this.allowedImagePaths.add(abs)
+      if (this.allowedImagePaths.size > 500) {
+        const oldest = this.allowedImagePaths.values().next().value
+        if (oldest) this.allowedImagePaths.delete(oldest)
+      }
+    }
   }
 
   private buildEnv(extra: Record<string, string | undefined>, st: VanguardsStatus): NodeJS.ProcessEnv {
@@ -261,6 +320,7 @@ export class VanguardsService {
         if (resolvedOut && existsSync(join(resolvedOut, 'final.rbxm'))) {
           outputPath = join(resolvedOut, 'final.rbxm')
         }
+        if (images.size) this.rememberImages(images)
 
         const finalStderr = timedOut ? `${stderr}\nTimed out after ${timeoutMs} ms`.trim() : stderr
         resolveRun({
@@ -476,8 +536,406 @@ export class VanguardsService {
     return this.refresh()
   }
 
+  private previewOutDir(prefix: string): string {
+    const dir = join(PREVIEW_ROOT_DIR, `${prefix}-${Date.now()}-${Math.random().toString(36).slice(2, 7)}`)
+    mkdirSync(dir, { recursive: true })
+    return dir
+  }
+
+  private resolveRurProjectArg(root: string): string {
+    if (existsSync(join(root, 'rur.json'))) return root
+    const rojoProj = join(root, 'default.project.json')
+    if (existsSync(rojoProj)) return rojoProj
+    return root
+  }
+
+  readImage(filePath: string): VanguardsImageData | null {
+    const raw = filePath?.trim()
+    if (!raw) return null
+    const abs = resolve(raw)
+    const st = this.status()
+    const allowed =
+      this.allowedImagePaths.has(abs) ||
+      isInsideDir(abs, PREVIEW_ROOT_DIR) ||
+      isInsideDir(abs, this.deps.root?.()) ||
+      isInsideDir(abs, st.packsDir) ||
+      isInsideDir(abs, st.fmDir)
+    if (!allowed) return null
+
+    try {
+      const info = statSync(abs)
+      if (!info.isFile() || info.size <= 0 || info.size > MAX_IMAGE_BYTES) return null
+      const buf = readFileSync(abs)
+      const mime = sniffMime(buf)
+      if (!mime) return null
+      const dims = imageSize(buf)
+      return {
+        path: abs,
+        name: basename(abs),
+        mime,
+        bytes: buf.byteLength,
+        ...(dims ? { width: dims.width, height: dims.height } : {}),
+        dataUrl: `data:${mime};base64,${buf.toString('base64')}`
+      }
+    } catch {
+      return null
+    }
+  }
+
+  async listRurStories(projectRoot?: string): Promise<RurStoriesResult> {
+    const root = projectRoot?.trim() || this.workingDir()
+    const projArg = this.resolveRurProjectArg(root)
+    const res = await this.runRur({
+      args: ['stories', '--project', projArg],
+      cwd: root,
+      timeoutMs: 30_000
+    })
+    if (!res.ok) {
+      return { ok: false, stories: [], error: res.error || res.stderr || 'Failed to list rur stories' }
+    }
+    const seen = new Set<string>()
+    const stories: string[] = []
+    for (const line of res.stdout.split(/\r?\n/)) {
+      const trimmed = line.trim().replace(/^["']|["']$/g, '')
+      if (!trimmed || !/\.story\.luau?$/i.test(trimmed)) continue
+      const abs = isAbsolute(trimmed) ? resolve(trimmed) : resolve(root, trimmed)
+      const out = isInsideDir(abs, root) ? relative(root, abs).replace(/\\/g, '/') : trimmed.replace(/\\/g, '/')
+      if (!seen.has(out)) {
+        seen.add(out)
+        stories.push(out)
+      }
+    }
+    return { ok: true, stories }
+  }
+
+  async renderRurStory(req: RurStoryRenderRequest): Promise<VanguardsRunResult> {
+    const root = req.projectRoot?.trim() || this.workingDir()
+    const storyAbs = isAbsolute(req.story) ? req.story : resolve(root, req.story)
+    const outDir = this.previewOutDir(req.compare ? 'rur-cmp' : 'rur')
+    const projArg = this.resolveRurProjectArg(root)
+
+    const args: string[] = [
+      req.compare ? 'compare' : 'render',
+      '--story',
+      storyAbs,
+      '--project',
+      projArg,
+      '--out',
+      outDir
+    ]
+    if (req.width && req.height) {
+      args.push('--viewport', `${Math.round(req.width)}x${Math.round(req.height)}`)
+    }
+    if (req.compare) {
+      if (req.time !== undefined) args.push('--time', String(req.time))
+    } else {
+      if (req.scale !== undefined) args.push('--scale', String(req.scale))
+      if (req.device) args.push('--device', req.device)
+      if (req.mode) args.push('--mode', req.mode)
+      if (req.time !== undefined) args.push('--time', String(req.time))
+      if (req.allLayers) args.push('--all-layers')
+      if (req.placeholders) args.push('--placeholders')
+      args.push('--json')
+    }
+    return this.runRur({ args, cwd: root, outDir, timeoutMs: req.timeoutMs ?? 60_000 })
+  }
+
+  async launchRurNative(storyFile?: string): Promise<{ ok: boolean; pid?: number; error?: string }> {
+    const st = this.status()
+    const tool = st.tools.rur
+    if (!tool.found || !tool.path) {
+      return { ok: false, error: `rur executable not found in ${st.binDir} or PATH` }
+    }
+    const root = this.workingDir()
+    const projArg = this.resolveRurProjectArg(root)
+    const args = ['native', '--project', projArg]
+    if (storyFile?.trim()) {
+      const storyAbs = isAbsolute(storyFile.trim()) ? storyFile.trim() : resolve(root, storyFile.trim())
+      args.push('--story', storyAbs)
+    }
+    try {
+      const child = spawnTool(tool.path, args, {
+        cwd: root,
+        env: this.buildEnv({}, st),
+        stdio: 'ignore',
+        detached: true
+      })
+      child.unref()
+      return { ok: true, pid: child.pid }
+    } catch (e) {
+      return { ok: false, error: (e as Error).message }
+    }
+  }
+
+  async renderRorPreview(req: RorPreviewRequest): Promise<VanguardsRunResult> {
+    const cwd = this.workingDir()
+    const modelAbs = isAbsolute(req.modelPath) ? req.modelPath : resolve(cwd, req.modelPath)
+    const outDir = this.previewOutDir(req.subcommand === 'cost' ? 'ror-cost' : 'ror')
+    const subcommand = req.subcommand ?? 'render'
+    const args: string[] = [subcommand, modelAbs, '--out', outDir]
+    if (req.size?.trim()) args.push('--size', req.size.trim())
+    if (req.views?.trim()) args.push('--views', req.views.trim())
+    return this.runRor({ args, cwd, outDir, timeoutMs: req.timeoutMs ?? DEFAULT_RUN_TIMEOUT_MS })
+  }
+
+  private vgBaseDir(st: VanguardsStatus): string {
+    return basename(st.binDir).toLowerCase() === 'bin' ? dirname(st.binDir) : st.binDir
+  }
+
+  private async execTool(file: string, args: string[], cwd: string, timeoutMs: number): Promise<VanguardsRunResult> {
+    const st = this.status()
+    const env = this.buildEnv({}, st)
+    return this.spawnAndCollect(file, args, cwd, env, timeoutMs)
+  }
+
+  private gitCmd(): string {
+    return findTool('git', this.ctx()) ?? 'git'
+  }
+
+  private async inspectSingleRepo(id: VanguardsRepoId, repoDir: string, fetchRemote: boolean): Promise<VanguardsRepoUpdateInfo> {
+    const now = Date.now()
+    if (!existsSync(join(repoDir, '.git'))) {
+      return { id, repoDir, found: false, behind: 0, dirty: false, status: 'missing', lastCheckedAt: now }
+    }
+    const git = this.gitCmd()
+    let lastError: string | undefined
+    if (fetchRemote) {
+      const f = await this.execTool(git, ['fetch', '--quiet'], repoDir, 30_000)
+      if (!f.ok) lastError = f.stderr.trim() || f.error || 'git fetch failed'
+    }
+    const brRes = await this.execTool(git, ['rev-parse', '--abbrev-ref', 'HEAD'], repoDir, 10_000)
+    const shaRes = await this.execTool(git, ['rev-parse', '--short', 'HEAD'], repoDir, 10_000)
+    const upShaRes = await this.execTool(git, ['rev-parse', '--short', '@{u}'], repoDir, 10_000)
+    const cntRes = await this.execTool(git, ['rev-list', '--count', 'HEAD..@{u}'], repoDir, 10_000)
+    const stRes = await this.execTool(git, ['status', '--porcelain'], repoDir, 10_000)
+
+    const behind = cntRes.ok ? Math.max(0, parseInt(cntRes.stdout.trim(), 10) || 0) : 0
+    const dirty = stRes.ok && stRes.stdout.trim().length > 0
+    const status: VanguardsRepoUpdateInfo['status'] = lastError && !upShaRes.ok
+      ? 'error'
+      : behind > 0
+        ? 'update-available'
+        : lastError
+          ? 'error'
+          : 'up-to-date'
+
+    return {
+      id,
+      repoDir,
+      found: true,
+      ...(brRes.ok ? { branch: brRes.stdout.trim() } : {}),
+      ...(shaRes.ok ? { localSha: shaRes.stdout.trim() } : {}),
+      ...(upShaRes.ok ? { remoteSha: upShaRes.stdout.trim() } : {}),
+      behind,
+      dirty,
+      status,
+      lastCheckedAt: now,
+      ...(lastError ? { lastError } : {})
+    }
+  }
+
+  private emptyRepoMap(base: string): Record<VanguardsRepoId, VanguardsRepoUpdateInfo> {
+    const fallback = (id: VanguardsRepoId): VanguardsRepoUpdateInfo => {
+      if (this.repoStatus?.[id]) return this.repoStatus[id]
+      const repoDir = join(base, REPO_DIRS[id])
+      const found = existsSync(join(repoDir, '.git'))
+      return { id, repoDir, found, behind: 0, dirty: false, status: found ? 'up-to-date' : 'missing' }
+    }
+    return {
+      ror: fallback('ror'),
+      rur: fallback('rur'),
+      ree: fallback('ree')
+    }
+  }
+
+  async checkRepoUpdates(): Promise<Record<VanguardsRepoId, VanguardsRepoUpdateInfo>> {
+    const st = this.status()
+    const base = this.vgBaseDir(st)
+    const ids: VanguardsRepoId[] = ['ror', 'rur', 'ree']
+    const next = this.emptyRepoMap(base)
+    await Promise.all(
+      ids.map(async (id) => {
+        next[id] = await this.inspectSingleRepo(id, join(base, REPO_DIRS[id]), true)
+      })
+    )
+    this.repoStatus = next
+    this.deps.emit?.('vanguards:updates', next)
+    this.refresh()
+    return next
+  }
+
+  async updateTools(target: VanguardsRepoId | 'all'): Promise<VanguardsUpdateResult> {
+    const st = this.status()
+    const base = this.vgBaseDir(st)
+    const ids: VanguardsRepoId[] = target === 'all' ? ['ror', 'rur', 'ree'] : [target]
+    const repos = this.emptyRepoMap(base)
+    const git = this.gitCmd()
+    const results: VanguardsUpdateResult['results'] = []
+    let allOk = true
+
+    for (const id of ids) {
+      const repoDir = join(base, REPO_DIRS[id])
+      if (!existsSync(join(repoDir, '.git'))) {
+        repos[id] = { id, repoDir, found: false, behind: 0, dirty: false, status: 'missing', lastCheckedAt: Date.now() }
+        results.push({ id, updated: false, rebuilt: false, message: 'Repository not found' })
+        continue
+      }
+
+      const dirtyRes = await this.execTool(git, ['status', '--porcelain'], repoDir, 10_000)
+      if (dirtyRes.stdout.trim().length > 0) {
+        allOk = false
+        repos[id] = await this.inspectSingleRepo(id, repoDir, false)
+        results.push({ id, updated: false, rebuilt: false, message: 'Skipped: local uncommitted changes in repo' })
+        continue
+      }
+
+      const beforeRes = await this.execTool(git, ['rev-parse', 'HEAD'], repoDir, 10_000)
+      const beforeSha = beforeRes.stdout.trim()
+
+      repos[id] = { ...(repos[id] ?? { id, repoDir, found: true, behind: 0, dirty: false }), status: 'updating' }
+      this.repoStatus = { ...repos }
+      this.deps.emit?.('vanguards:updates', this.repoStatus)
+
+      const pullRes = await this.execTool(git, ['pull', '--ff-only'], repoDir, 90_000)
+      if (!pullRes.ok) {
+        allOk = false
+        repos[id] = { ...(await this.inspectSingleRepo(id, repoDir, false)), status: 'error', lastError: pullRes.stderr.trim() || pullRes.error || 'git pull failed' }
+        results.push({ id, updated: false, rebuilt: false, message: pullRes.stderr.trim() || 'git pull --ff-only failed', output: pullRes.stdout })
+        continue
+      }
+
+      const afterRes = await this.execTool(git, ['rev-parse', 'HEAD'], repoDir, 10_000)
+      const afterSha = afterRes.stdout.trim()
+
+      if (!beforeSha || beforeSha === afterSha) {
+        repos[id] = await this.inspectSingleRepo(id, repoDir, false)
+        results.push({ id, updated: false, rebuilt: false, message: 'Already up to date' })
+        continue
+      }
+
+      const diffRes = await this.execTool(git, ['diff', '--name-only', beforeSha, afterSha], repoDir, 10_000)
+      const changedFiles = diffRes.stdout.split(/\r?\n/).map((s) => s.trim()).filter(Boolean)
+
+      let rebuilt = false
+      let buildOutput = pullRes.stdout
+      let buildFailed = false
+
+      if (id === 'ror' || id === 'ree') {
+        if (existsSync(join(repoDir, 'Cargo.toml'))) {
+          const cargo = findTool('cargo', this.ctx())
+          if (cargo) {
+            this.logLine('info', `Rebuilding ${id} release binary via cargo build --release…`)
+            const b = await this.execTool(cargo, ['build', '--release'], repoDir, 600_000)
+            buildOutput = [buildOutput, b.stdout, b.stderr].filter(Boolean).join('\n')
+            if (b.ok) rebuilt = true
+            else {
+              buildFailed = true
+              allOk = false
+            }
+          }
+        }
+      } else if (id === 'rur') {
+        if (changedFiles.some((f) => f === 'package.json' || f === 'package-lock.json') && existsSync(join(repoDir, 'package.json'))) {
+          const npm = findTool('npm', this.ctx())
+          if (npm) {
+            const b = await this.execTool(npm, ['install'], repoDir, 180_000)
+            buildOutput = [buildOutput, b.stdout, b.stderr].filter(Boolean).join('\n')
+            if (b.ok) rebuilt = true
+            else {
+              buildFailed = true
+              allOk = false
+            }
+          }
+        }
+        if (changedFiles.some((f) => f.startsWith('native/')) && existsSync(join(repoDir, 'native', 'Cargo.toml')) && existsSync(join(repoDir, 'native', 'target'))) {
+          const cargo = findTool('cargo', this.ctx())
+          if (cargo) {
+            const b = await this.execTool(cargo, ['build', '--release'], join(repoDir, 'native'), 600_000)
+            buildOutput = [buildOutput, b.stdout, b.stderr].filter(Boolean).join('\n')
+            if (b.ok) rebuilt = true
+            else {
+              buildFailed = true
+              allOk = false
+            }
+          }
+        }
+      }
+
+      const inspected = await this.inspectSingleRepo(id, repoDir, false)
+      repos[id] = {
+        ...inspected,
+        status: buildFailed ? 'error' : 'updated',
+        ...(buildFailed ? { lastError: 'Rebuild failed after pull' } : {})
+      }
+      results.push({
+        id,
+        updated: true,
+        rebuilt,
+        message: buildFailed
+          ? `Pulled ${afterSha.slice(0, 7)} but rebuild failed`
+          : rebuilt
+            ? `Updated to ${afterSha.slice(0, 7)} & rebuilt`
+            : `Updated to ${afterSha.slice(0, 7)}`,
+        output: buildOutput
+      })
+    }
+
+    this.repoStatus = { ...this.emptyRepoMap(base), ...repos }
+    this.deps.emit?.('vanguards:updates', this.repoStatus)
+    this.refresh()
+    return { ok: allOk, results, repos: this.repoStatus }
+  }
+
+  private syncAutoUpdateTimer(): void {
+    const enabled = Boolean(this.deps.settings?.get<boolean>(VANGUARDS_SETTINGS_KEYS.autoUpdateRepos, false))
+    if (!enabled) {
+      if (this.updateTimer) {
+        clearInterval(this.updateTimer)
+        this.updateTimer = null
+      }
+      if (this.initialUpdateTimer) {
+        clearTimeout(this.initialUpdateTimer)
+        this.initialUpdateTimer = null
+      }
+      return
+    }
+    if (this.disposed || this.updateTimer) return
+
+    const runCycle = async () => {
+      if (this.disposed) return
+      try {
+        const repos = await this.checkRepoUpdates()
+        const needsUpdate = (['ror', 'rur', 'ree'] as const).filter((id) => repos[id]?.found && !repos[id].dirty && repos[id].behind > 0)
+        for (const id of needsUpdate) {
+          await this.updateTools(id)
+        }
+      } catch {
+        // background auto-update check should never throw unhandled rejections
+      }
+    }
+
+    this.initialUpdateTimer = setTimeout(() => {
+      this.initialUpdateTimer = null
+      void runCycle()
+    }, 5_000)
+    ;(this.initialUpdateTimer as { unref?: () => void }).unref?.()
+
+    this.updateTimer = setInterval(() => {
+      void runCycle()
+    }, AUTO_UPDATE_INTERVAL_MS)
+    ;(this.updateTimer as { unref?: () => void }).unref?.()
+  }
+
   dispose(): void {
     this.disposed = true
+    if (this.updateTimer) {
+      clearInterval(this.updateTimer)
+      this.updateTimer = null
+    }
+    if (this.initialUpdateTimer) {
+      clearTimeout(this.initialUpdateTimer)
+      this.initialUpdateTimer = null
+    }
     const proc = this.bridgeProc
     this.bridgeProc = null
     if (proc && proc.exitCode === null) {

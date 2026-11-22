@@ -28,12 +28,14 @@ import type {
   UnlinkedPlace,
   WaitReason
 } from '../../../shared/sync/types.ts'
-import { DRIFT_FILES_MAX, STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
-import type { SyncPollHint, SyncPollInfo } from '../../../shared/sync/protocol.ts'
+import { DRIFT_FILES_MAX, isForgeSyncEngine, STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
+import type { SyncPollHint, SyncPollInfo, SyncPushAck, SyncPushBatch } from '../../../shared/sync/protocol.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import { PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
 import { isLinkedKey, linkKey, matchPlace, PlaceLinks } from './links.ts'
+import { DirectPushEngine } from './push.ts'
+import { SourcemapWatcher } from './sourcemap.ts'
 import { BaseStore } from './store.ts'
 import { findHeldDeletions } from '../gitSync.ts'
 const LIVE_FOLDER = 'ForgeLivePreview'
@@ -162,6 +164,8 @@ export interface SyncHandler {
   changes(body: ChangesBody): Promise<SyncAnswer>
   outline?(body: OutlineBody): Promise<SyncAnswer>
   pollHint?(info: SyncPollInfo): SyncPollHint | null
+  pullPush?(session: string): Promise<{ batch?: SyncPushBatch }>
+  pushAck?(ack: SyncPushAck): Promise<SyncAnswer>
 }
 
 export interface GitRun {
@@ -290,6 +294,7 @@ interface PlaceState {
   refs: SyncRef[]
   refsTotal: number
   snapshotRefs?: SyncRef[]
+  snapshotNodes?: StudioNode[]
   // Game-tab outline from the plugin (v5) and its signature, so an unchanged resend is a no-op.
   outline?: { nodes: StudioOutlineNode[]; truncated: boolean; sig: string }
   // Engine tree version last pushed to the Game tab (null: no tree).
@@ -325,9 +330,9 @@ export function placeKeyOf(place: SyncPlace, projectFile?: string): string {
 }
 
 export function engineSetting(settings: { get<T>(key: string, fallback: T): T }): ForgeSyncSettings {
-  const engine = settings.get<string>(SYNC_ENGINE_SETTING, 'forge')
+  const engine = settings.get<string>(SYNC_ENGINE_SETTING, 'forge-direct')
   return {
-    engine: engine === 'project' || engine === 'off' ? engine : 'forge',
+    engine: engine === 'forge' || engine === 'project' || engine === 'off' ? engine : 'forge-direct',
     gateRojo: settings.get<boolean>(SYNC_GATE_SETTING, true) !== false
   }
 }
@@ -419,6 +424,8 @@ export class SyncService {
   private refusedNoted = new Set<string>()
   // Duplicate-mapping lines already logged.
   private dupNoted = new Set<string>()
+  private sourcemapWatcher: SourcemapWatcher | null = null
+  private pushEngine: DirectPushEngine | null = null
 
   constructor(deps: SyncServiceDeps) {
     this.deps = deps
@@ -435,9 +442,64 @@ export class SyncService {
     return engineSetting(this.deps.settings)
   }
 
-  // Forge Sync answers the plugin only with the setting on 'forge' and an engine wired in.
+  private directMode(): boolean {
+    return this.settings().engine === 'forge-direct'
+  }
+
+  // Forge Sync answers the plugin with 'forge-direct' or 'forge' and an engine wired in.
   active(): boolean {
-    return !!this.deps.engine && !!this.deps.mapping && this.settings().engine === 'forge'
+    return !!this.deps.engine && !!this.deps.mapping && isForgeSyncEngine(this.settings().engine)
+  }
+
+  private async ensureDirectEngines(): Promise<void> {
+    if (this.closed || !this.directMode() || !this.deps.engine) {
+      this.sourcemapWatcher?.close()
+      this.sourcemapWatcher = null
+      this.pushEngine?.close()
+      this.pushEngine = null
+      return
+    }
+    let startedSourcemap = false
+    if (!this.sourcemapWatcher) {
+      this.sourcemapWatcher = new SourcemapWatcher({
+        root: this.root,
+        onBuilt: () => this.refresh(),
+        onError: () => undefined
+      })
+      startedSourcemap = true
+    }
+    if (!this.pushEngine) {
+      this.pushEngine = new DirectPushEngine({
+        root: this.root,
+        now: this.now,
+        canPushPlace: (pk) => this.directMode() && this.liveSession(pk) && this.gate(pk) === 'clear',
+        isFileConflicted: (pk, file) => this.conflictsFor(pk).some((c) => c.file === file),
+        onEntries: (pk, entries) => void this.recordDirectPush(pk, entries),
+        onChange: () => this.refresh()
+      })
+    }
+    this.pushEngine.setPlaces(this.maps)
+    if (startedSourcemap) {
+      await this.sourcemapWatcher.start().catch(() => undefined)
+    } else {
+      await this.sourcemapWatcher.rebuildNow().catch(() => undefined)
+    }
+  }
+
+  async onSettingsChanged(): Promise<void> {
+    await this.ensureDirectEngines()
+    this.refresh()
+  }
+
+  private async recordDirectPush(placeKey: string, entries: SyncEntry[]): Promise<void> {
+    const state = this.placeStates.get(placeKey)
+    if (!entries.length) return
+    for (const entry of entries) {
+      if (state) state.counts[entry.action] = (state.counts[entry.action] ?? 0) + 1
+    }
+    this.recent = [...entries.slice().reverse(), ...this.recent].slice(0, RECENT_MAX)
+    this.deps.emit('sync:entry', entries)
+    this.refresh()
   }
 
   async start(): Promise<void> {
@@ -506,12 +568,14 @@ export class SyncService {
       if (match && match.projectFile === state.projectFile) continue
       this.dropSession(state.placeKey, 'no longer linked to this project')
     }
+    await this.ensureDirectEngines()
     this.refresh()
   }
 
   private dropSession(placeKey: string, why: string): void {
     for (const [token, s] of this.sessions) if (s.placeKey === placeKey) this.sessions.delete(token)
     this.placeStates.delete(placeKey)
+    this.pushEngine?.unbindPlace(placeKey)
     this.deps.log?.(`sync: stopped syncing ${placeKey}: ${why}`)
     void this.serial(async () => this.deps.engine?.endSession?.(placeKey))
   }
@@ -529,6 +593,7 @@ export class SyncService {
       if (live) continue
       if (![...this.sessions.values()].some((x) => x.placeKey === state.placeKey)) continue
       for (const [token, s] of this.sessions) if (s.placeKey === state.placeKey) this.sessions.delete(token)
+      this.pushEngine?.unbindPlace(state.placeKey)
       this.deps.log?.(`sync: Studio session for ${state.projectFile} (${state.placeKey}) ended: no word from Studio for ${Math.round(SESSION_EXPIRE_MS / 1000)} s`)
       void this.serial(async () => this.deps.engine?.endSession?.(state.placeKey))
       changed = true
@@ -542,12 +607,18 @@ export class SyncService {
   close(): void {
     this.closed = true
     this.sessions.clear()
+    this.sourcemapWatcher?.close()
+    this.sourcemapWatcher = null
+    this.pushEngine?.close()
+    this.pushEngine = null
     if (this.statusTimer) clearTimeout(this.statusTimer)
     this.statusTimer = null
     if (this.expireTimer) clearInterval(this.expireTimer)
     this.expireTimer = null
     if (this.treeTimer) clearTimeout(this.treeTimer)
     this.treeTimer = null
+    for (const timer of this.snapshotTimers.values()) clearTimeout(timer)
+    this.snapshotTimers.clear()
   }
 
   // ---- Bridge handler ----
@@ -557,7 +628,38 @@ export class SyncService {
     snapshot: (body) => this.snapshot(body),
     changes: (body) => this.changes(body),
     outline: (body) => this.outline(body),
-    pollHint: (info) => this.pollHint(info)
+    pollHint: (info) => this.pollHint(info),
+    pullPush: (session) => this.pullPush(session),
+    pushAck: (ack) => this.pushAck(ack)
+  }
+
+  private async pullPush(sessionToken: string): Promise<{ batch?: SyncPushBatch }> {
+    if (this.closed || !this.active() || !this.directMode() || !this.pushEngine) return {}
+    const session = this.sessions.get(sessionToken)
+    if (!session || !session.ready) return {}
+    const state = this.placeStates.get(session.placeKey)
+    if (state) state.lastSeen = this.now()
+    const batch = this.pushEngine.pullNextBatch(session.placeKey)
+    return batch ? { batch } : {}
+  }
+
+  private async pushAck(ack: SyncPushAck): Promise<SyncAnswer> {
+    if (this.closed || !this.active() || !this.directMode() || !this.pushEngine) return { ok: false, error: 'Forge Direct Sync is off' }
+    const session = this.sessions.get(ack.session)
+    if (!session) return { ok: false, error: 'unknown session', resend: true }
+    const state = this.placeStates.get(session.placeKey)
+    if (state) state.lastSeen = this.now()
+    this.pushEngine.ackBatch(session.placeKey, ack)
+    return { ok: true }
+  }
+
+  private async syncDirectPush(placeKey: string, projectFile?: string): Promise<void> {
+    if (!this.directMode() || !this.pushEngine || this.gate(placeKey) !== 'clear') return
+    const pf = projectFile ?? this.placeStates.get(placeKey)?.projectFile
+    if (!pf) return
+    const map = this.maps.find((m) => m.projectFile === pf)
+    if (!map) return
+    await this.pushEngine.syncPlace(placeKey, map)
   }
 
   // One Studio window: its plugin run (v12) or its place.
@@ -595,7 +697,10 @@ export class SyncService {
       this.deps.log?.(`sync: re-checking ${match.projectFile}: asked Studio${info.place ? ` ("${info.place}")` : ''} for a fresh sync check`)
       return { resync: true }
     }
-    if (info.session && this.sessions.has(info.session)) return null
+    if (info.session && this.sessions.has(info.session)) {
+      if (this.directMode() && this.pushEngine?.hasPending(match.placeKey)) return { pushPending: true }
+      return null
+    }
     if (now - (this.configSeen.get(key) ?? 0) < RESYNC_QUIET_MS) return null
     if (now - (this.resyncAt.get(key) ?? 0) < RESYNC_EVERY_MS) return null
     this.resyncAt.set(key, now)
@@ -641,7 +746,7 @@ export class SyncService {
       this.refresh()
       return { enabled: false, sessionToken: '', roots: [], skip: [], reason }
     }
-    if (!this.active()) return off(this.settings().engine === 'forge' ? 'Forge Sync is not available in this build' : `Studio sync is set to "${this.settings().engine}"`)
+    if (!this.active()) return off(isForgeSyncEngine(this.settings().engine) ? 'Forge Sync is not available in this build' : `Studio sync is set to "${this.settings().engine}"`)
     // Rule: never sync from a Play / Run DataModel (plugin v13 says which one it runs in).
     if (q.mode && q.mode !== 'edit') return off(PLAYTEST_REFUSED)
     if (q.probe) this.windowSeen.set(q.probe, seen.at)
@@ -745,6 +850,7 @@ export class SyncService {
           this.noCheck.delete(state.projectFile)
           state.counts = {}
           state.snapshotRefs = []
+          state.snapshotNodes = this.directMode() ? [] : undefined
           await engine.beginSnapshot(session.placeKey, state.place, state.projectFile)
           this.refresh()
         }
@@ -755,6 +861,7 @@ export class SyncService {
         }
         const nodes = Array.isArray(body.nodes) ? body.nodes : []
         await engine.addSnapshot(session.placeKey, nodes)
+        if (state.snapshotNodes) state.snapshotNodes.push(...nodes)
         const rootKeys = new Set(this.rootsOf(state.projectFile).map((r) => r.join('\u0000')))
         for (const n of nodes) {
           const k = n.path.join('\u0000')
@@ -774,9 +881,16 @@ export class SyncService {
           if (session.soft && state.missingRoots.length < missingBefore) this.deps.rojoConnected?.(state.projectFile)
           this.setRefs(state, state.snapshotRefs ?? [], body.refsTotal)
           state.snapshotRefs = undefined
+          const collectedNodes = state.snapshotNodes
+          state.snapshotNodes = undefined
           await this.record(session.placeKey, entries)
+          if (this.directMode() && this.pushEngine) {
+            const map = this.maps.find((m) => m.projectFile === state.projectFile)
+            if (map && collectedNodes) this.pushEngine.recordStudioSnapshot(session.placeKey, map, collectedNodes)
+          }
           const conflicts = engine.conflicts().filter((c) => c.placeKey === session.placeKey).length
           const after = this.gate(session.placeKey)
+          if (this.directMode() && after === 'clear') await this.syncDirectPush(session.placeKey, state.projectFile)
           const held = after === 'blocked' && session.soft ? '; rojo serve stops: the re-check found something to hold' : this.forced.has(state.projectFile) && engine.gate(session.placeKey) === 'blocked' ? '; rojo keeps serving (Serve anyway is on: Hold again in Forge Sync to hold it)' : ''
           this.deps.log?.(`sync: ${state.projectFile} reconciled, ${entries.length} files, ${conflicts} conflict${conflicts === 1 ? '' : 's'}${held}`)
         }
@@ -848,7 +962,13 @@ export class SyncService {
     const engine = this.requireEngine()
     if (take === 'merged' && typeof text !== 'string') throw new Error('A merged resolution needs the merged text')
     await this.serial(() => engine.resolve(placeKey, file, take, text))
-    if (take !== 'disk') await this.markWritten([file])
+    if (take !== 'disk') {
+      await this.markWritten([file])
+      await this.suppressPushEcho(placeKey, file)
+    }
+    if (take === 'disk' || take === 'merged') {
+      if (this.directMode() && this.gate(placeKey) === 'clear') await this.syncDirectPush(placeKey)
+    }
     this.refresh()
     return this.status()
   }
@@ -857,7 +977,12 @@ export class SyncService {
     const engine = this.requireEngine()
     const files = engine.conflicts().filter((c) => c.placeKey === placeKey && (!reason || c.reason === reason)).map((c) => c.file)
     await this.serial(async () => engine.resolveAll(placeKey, take, reason))
-    if (take === 'studio') await this.markWritten(files)
+    if (take === 'studio') {
+      await this.markWritten(files)
+      for (const f of files) await this.suppressPushEcho(placeKey, f)
+    } else if (this.directMode() && this.gate(placeKey) === 'clear') {
+      await this.syncDirectPush(placeKey)
+    }
     this.refresh()
     return this.status()
   }
@@ -1039,7 +1164,7 @@ export class SyncService {
   // ---- Status ----
 
   conflicts(): SyncConflictInfo[] {
-    return this.deps.engine && this.settings().engine === 'forge' ? this.deps.engine.conflicts() : []
+    return this.deps.engine && isForgeSyncEngine(this.settings().engine) ? this.deps.engine.conflicts() : []
   }
 
   private conflictsFor(placeKey: string): SyncConflictInfo[] {
@@ -1138,6 +1263,8 @@ export class SyncService {
     for (const state of this.placeStates.values()) {
       const viaBridge = (!!studio?.connected && this.isStudioPlace(studio, state.place)) || this.windowsFor(state.projectFile).some((w) => this.isStudioPlace(w, state.place))
       const pluginVersion = this.pluginVersionOf(state.place)
+      const pushStats = this.directMode() ? this.pushEngine?.stats(state.placeKey) : undefined
+      const sourcemap = this.directMode() ? this.sourcemapWatcher?.lastStats(state.projectFile) : undefined
       out.push({
         placeKey: state.placeKey,
         projectFile: state.projectFile,
@@ -1152,7 +1279,9 @@ export class SyncService {
         conflicts: this.conflictsFor(state.placeKey).length,
         ...this.studioOnlyLine(state),
         ...this.leftLine(state),
-        ...(state.lastSnapshot && state.missingRoots.length ? { missingRoots: state.missingRoots.map((r) => r.join('.')) } : {})
+        ...(state.lastSnapshot && state.missingRoots.length ? { missingRoots: state.missingRoots.map((r) => r.join('.')) } : {}),
+        ...(pushStats ? { pushStats } : {}),
+        ...(sourcemap ? { sourcemap } : {})
       })
     }
     // Places no Studio session has opened yet ('waiting' for one with Forge Sync gating rojo).
@@ -1161,7 +1290,17 @@ export class SyncService {
       // The open window's place when one is open (a place file may list several PlaceIds).
       const open = this.windowsFor(map.projectFile).find((w) => (w.placeId ?? 0) > 0)
       const placeId = open?.placeId ?? map.placeIds[0] ?? 0
-      out.push({ placeKey: placeKeyOf({ placeId }, map.projectFile), projectFile: map.projectFile, ...this.openAndRojo(map.projectFile), ...shown('idle', map.projectFile), connected: false, counts: {}, conflicts: 0 })
+      const sourcemap = this.directMode() ? this.sourcemapWatcher?.lastStats(map.projectFile) : undefined
+      out.push({
+        placeKey: placeKeyOf({ placeId }, map.projectFile),
+        projectFile: map.projectFile,
+        ...this.openAndRojo(map.projectFile),
+        ...shown('idle', map.projectFile),
+        connected: false,
+        counts: {},
+        conflicts: 0,
+        ...(sourcemap ? { sourcemap } : {})
+      })
     }
     return out.sort((a, b) => a.projectFile.localeCompare(b.projectFile))
   }
@@ -1196,6 +1335,8 @@ export class SyncService {
     if (!live) {
       cause = 'not-syncing'
       fix = windows.some((w) => w.syncSession !== undefined) ? 'recheck' : 'restart-studio'
+    } else if (this.directMode()) {
+      return undefined
     } else if (p.rojo === 'stopped') {
       cause = 'rojo-stopped'
       fix = 'start-rojo'
@@ -1295,9 +1436,10 @@ export class SyncService {
   // cached: a background push (refresh) may reuse a recent git status answer (PENDING_CACHE_MS).
   async status(opts: { cached?: boolean } = {}): Promise<SyncStatus> {
     await this.checkLegacyPlugin()
+    const engine = this.settings().engine
     const status: SyncStatus = {
-      engine: this.settings().engine,
-      places: this.settings().engine === 'forge' ? this.places() : [],
+      engine,
+      places: isForgeSyncEngine(engine) ? this.places() : [],
       recent: this.recent.slice(0, 50),
       pendingStudioEdits: await this.pendingStudioEdits(opts),
       legacyPluginInstalled: this.legacy.length > 0
@@ -1309,7 +1451,7 @@ export class SyncService {
       status.unsyncedRefsTotal = refs.total
     }
     if (this.warning && status.pendingStudioEdits.length) status.warning = this.warning
-    if (status.engine === 'forge') {
+    if (isForgeSyncEngine(status.engine)) {
       const unlinked: UnlinkedPlace[] = []
       for (const { probe: _probe, ...u } of this.shownUnlinked()) {
         const suggest = u.canLink ? this.suggestFor(u) : undefined
@@ -1324,7 +1466,7 @@ export class SyncService {
         if (drift) p.drift = drift
       }
     }
-    if (status.engine === 'forge') {
+    if (isForgeSyncEngine(status.engine)) {
       const notice = await this.notice(status.places)
       if (notice) status.notice = notice
     }
@@ -1379,6 +1521,15 @@ export class SyncService {
     if (state.lastSnapshot && state.missingRoots.length) {
       const list = state.missingRoots.map((r) => r.join('.')).join(', ')
       const all = state.missingRoots.length >= roots.length
+      if (this.directMode()) {
+        return {
+          level: 'info',
+          text: all
+            ? `Studio connected, ${name} missing mapped folders (${list}). Direct Sync pushes them on the next sync cycle.`
+            : `Studio connected; ${list} not in ${name} yet (Direct Sync pushes missing folders automatically).`,
+          ...(v < PLUGIN_VERSION ? { action: 'restart-studio' as const } : {})
+        }
+      }
       const later = v >= PLUGIN_VERSION ? 'Forge picks them up as soon as they appear.' : `Restart Studio to load plugin v${PLUGIN_VERSION}, which picks them up when they appear (v${v} does not).`
       return {
         level: 'warn',
@@ -1702,12 +1853,26 @@ export class SyncService {
       if (WRITES.includes(entry.action)) {
         writes.push(entry.file)
         if (entry.from) writes.push(entry.from)
+        if (this.pushEngine) {
+          if (entry.action === 'trashed') {
+            this.pushEngine.markDeletedFromStudio(entry.file, placeKey)
+          } else if (entry.action === 'pulled' || entry.action === 'created' || entry.action === 'renamed') {
+            if (entry.from) this.pushEngine.markDeletedFromStudio(entry.from, placeKey)
+            await this.suppressPushEcho(placeKey, entry.file)
+          }
+        }
       }
     }
     if (writes.length) await this.markWritten(writes)
     if (!shown.length) return
     this.recent = [...shown.slice().reverse(), ...this.recent].slice(0, RECENT_MAX)
     this.deps.emit('sync:entry', shown)
+  }
+
+  private async suppressPushEcho(placeKey: string, relFile: string): Promise<void> {
+    if (!this.pushEngine) return
+    const text = await readFile(join(this.root, relFile), 'utf8').catch(() => null)
+    if (text !== null) this.pushEngine.markFromStudio(relFile, text, placeKey)
   }
 
   private async markWritten(files: string[]): Promise<void> {

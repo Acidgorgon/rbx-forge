@@ -123,7 +123,7 @@ export function syncChecks(i: DoctorInputs): DoctorCheck[] {
   const out: DoctorCheck[] = []
   const s = i.sync
   if (s.engine === 'off') out.push({ id: 'sync-engine', group: 'Sync', title: 'Forge Sync', status: 'warn', detail: 'Off: Studio edits are not written back to the repo, and rojo serve can overwrite them.', fix: { kind: 'open', target: 'settings:set-sync', label: 'Sync settings' } })
-  else out.push({ id: 'sync-engine', group: 'Sync', title: 'Forge Sync', status: 'ok', detail: s.engine === 'forge' ? 'Forge engine' : "Project's own engine" })
+  else out.push({ id: 'sync-engine', group: 'Sync', title: 'Forge Sync', status: 'ok', detail: s.engine === 'forge-direct' ? 'Forge Direct (2-way)' : s.engine === 'forge' ? 'Forge engine' : "Project's own engine" })
   const conflicts = s.places.reduce((n, p) => n + p.conflicts, 0)
   const blocked = s.places.filter((p) => p.gate === 'blocked')
   const heldFor = blocked.length ? `rojo is held for ${blocked.map((p) => p.projectFile).join(', ')}` : ''

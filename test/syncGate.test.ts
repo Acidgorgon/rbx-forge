@@ -43,7 +43,7 @@ async function waitFor(check: () => boolean, ms = 5000): Promise<void> {
 }
 const serves = () => (existsSync(runs) ? readFileSync(runs, 'utf8').split('\n').filter((l) => l.startsWith('serve')) : [])
 
-function make(settings: Record<string, unknown> = {}) {
+function make(settings: Record<string, unknown> = { 'sync.engine': 'forge' }) {
   const root = makeProject()
   roots.push(root)
   let statuses: ServiceStatus[] = []
@@ -66,9 +66,10 @@ test('gate states that hold rojo serve, and the engine setting', () => {
   assert.equal(gateHolds('clear'), false)
   assert.equal(gateHolds('idle'), false)
   assert.equal(gateHolds(undefined), false)
-  assert.equal(syncEngineOf((_k, fb) => fb), 'forge')
+  assert.equal(syncEngineOf((_k, fb) => fb), 'forge-direct')
+  assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'forge' as T), 'forge')
   assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'project' as T), 'project')
-  assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'nonsense' as T), 'forge')
+  assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'nonsense' as T), 'forge-direct')
 })
 
 test('rojo serve waits while the place is checking or blocked, stops for a new Studio session, restarts when clear', shOnly, async () => {
@@ -148,7 +149,7 @@ test('no gate with the project engine or with the gate setting off; turning it o
 })
 
 test('dev loop gets FORGE_SYNC=1 with Forge Sync; the old studioSync service is not needed', async () => {
-  for (const [engine, expected] of [['forge', '1'], ['project', '']] as const) {
+  for (const [engine, expected] of [['forge-direct', '1'], ['forge', '1'], ['project', '']] as const) {
     const { root, supervisor, sync } = make({ 'sync.engine': engine })
     write(root, 'dev', '#!/usr/bin/env bash\necho "FORGE_SYNC=${FORGE_SYNC:-}" > forge-sync.env\nexec sleep 60\n')
     write(root, 'Packages/Janitor.lua', '')
@@ -156,7 +157,7 @@ test('dev loop gets FORGE_SYNC=1 with Forge Sync; the old studioSync service is 
     await supervisor.start('dev')
     await waitFor(() => existsSync(join(root, 'forge-sync.env')))
     assert.equal(readFileSync(join(root, 'forge-sync.env'), 'utf8').trim(), `FORGE_SYNC=${expected}`)
-    if (engine === 'forge') {
+    if (engine === 'forge' || engine === 'forge-direct') {
       await supervisor.start('studioSync')
       supervisor.setSyncSummary('running', 'Forge Sync: 1 Studio session')
       assert.deepEqual([sync()?.state, sync()?.detail], ['running', 'Forge Sync: 1 Studio session'])
@@ -166,6 +167,15 @@ test('dev loop gets FORGE_SYNC=1 with Forge Sync; the old studioSync service is 
     }
     await supervisor.stopAll()
   }
+})
+
+test('forge-direct default skips rojo startup in startAll and reports Direct Forge Sync active', async () => {
+  const { root, supervisor, rojo } = make({})
+  await supervisor.setRoot(root)
+  await supervisor.startAll()
+  assert.equal(rojo()?.state, 'stopped')
+  assert.equal(rojo()?.detail, 'Direct Forge Sync active (Rojo disabled)')
+  await supervisor.stopAll()
 })
 
 test('a waiting place file holds rojo serve with its reason; Serve without Studio check (idle) lets it serve', shOnly, async () => {

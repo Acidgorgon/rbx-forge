@@ -5,10 +5,10 @@ import type { SyncConflictInfo, SyncEntry, SyncStatus } from './types.ts'
 export type SyncEngineChoice = SyncStatus['engine']
 
 export interface ForgeSyncSettings {
-  // 'forge' (recommended): Forge pulls Studio first and gates rojo serve. 'project': the project's own
-  // tools/studio-sync.py (started by ./dev). 'off': no Studio -> disk sync.
+  // 'forge-direct' (default): 2-way direct sync via Forge Bridge + native sourcemap (no Rojo needed).
+  // 'forge': Forge pulls Studio first and gates rojo serve. 'project': tools/studio-sync.py. 'off': off.
   engine: SyncEngineChoice
-  // Hold rojo serve for a place until its Studio snapshot is reconciled.
+  // Hold rojo serve for a place until its Studio snapshot is reconciled ('forge' mode only).
   gateRojo: boolean
 }
 

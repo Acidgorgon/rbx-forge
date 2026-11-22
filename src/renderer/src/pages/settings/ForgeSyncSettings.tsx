@@ -6,12 +6,14 @@ import { useActions } from '../../store'
 import { errorText } from '../../lib/format'
 
 const ENGINES: [SyncEngineChoice, string][] = [
-  ['forge', 'Forge (recommended)'],
+  ['forge-direct', 'Forge Direct (recommended)'],
+  ['forge', 'Forge + Rojo'],
   ['project', 'Project script'],
   ['off', 'Off']
 ]
 
 const ENGINE_NOTE: Record<SyncEngineChoice, string> = {
+  'forge-direct': 'Direct 2-way Studio <-> disk sync via Forge Bridge v15 plus native sourcemap.json generation (including Packages/). No rojo serve or rojo sourcemap process required.',
   forge: 'Forge reads Studio first through the Forge Bridge plugin, writes teammate edits to disk (new folders and non-script instances too), and only then lets Rojo serve. Every place, every Rojo project.',
   project: "The project's tools/studio-sync.py and its Studio plugin, started by ./dev. Rojo is not held back.",
   off: 'No Studio -> disk sync. Edits made in Studio stay in Studio until someone saves them to files.'

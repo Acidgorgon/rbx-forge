@@ -236,7 +236,7 @@ function service(w: World): SyncService {
     root: w.root,
     engine: new SyncEngine({ root: w.root }),
     mapping: { loadPlaces, placeFor },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? ('forge' as T) : fb) },
     git: async () => ({ code: 1, stdout: '', stderr: '' }),
     pluginsDir: () => null,
     emit: () => undefined,

@@ -96,6 +96,7 @@ export interface MappedFile {
 export type SyncAction =
   | 'same' // Studio == disk
   | 'pulled' // Studio changed, disk did not: Studio written to disk
+  | 'pushed' // disk changed, Studio did not: pushed directly from Forge to Studio
   | 'merged' // both changed: the merged text the user picked (resolve 'merged'), written to disk
   | 'disk-ahead' // disk changed, Studio did not: Rojo will push it
   | 'created' // new in Studio: file/folder created
@@ -149,6 +150,19 @@ export type GateState =
 // ('plugin': restart Studio to load the new one).
 export type WaitReason = 'studio' | 'unlinked' | 'plugin'
 
+export interface PlacePushStats {
+  pushed: number
+  pending: number
+  lastPushAt?: number
+  lastError?: string
+}
+
+export interface SourcemapStats {
+  path: string
+  updatedAt: number
+  nodes: number
+}
+
 export interface PlaceSyncStatus {
   placeKey: string // `${placeId}` (published) or `local:<linkId>` (unpublished, linked in Forge)
   projectFile: string // e.g. default.project.json
@@ -185,6 +199,9 @@ export interface PlaceSyncStatus {
   // it connects. `holds`: rojo serve is held for them (found by a snapshot or a resolve) until they
   // are pulled to disk or the user serves anyway. Items capped at STUDIO_ONLY_MAX; count is not.
   studioOnly?: { count: number; pullable: number; holds: boolean; items: StudioOnlyScript[] }
+  // Forge Direct Sync metrics and native sourcemap output (populated when engine is 'forge-direct').
+  pushStats?: PlacePushStats
+  sourcemap?: SourcemapStats
 }
 
 export const STUDIO_ONLY_MAX = 50
@@ -249,7 +266,7 @@ export interface SyncNotice {
 }
 
 export interface SyncStatus {
-  engine: 'forge' | 'project' | 'off'
+  engine: 'forge-direct' | 'forge' | 'project' | 'off'
   places: PlaceSyncStatus[]
   recent: SyncEntry[]
   // Files Forge wrote from Studio that git still shows as modified/untracked (uncommitted teammate edits).
@@ -299,5 +316,9 @@ export interface UnlinkedPlace {
 export const UNSYNCED_REFS_MAX = 100
 
 // Settings keys.
-export const SYNC_ENGINE_SETTING = 'sync.engine' // 'forge' (default) | 'project' | 'off'
+export const SYNC_ENGINE_SETTING = 'sync.engine' // 'forge-direct' (default) | 'forge' | 'project' | 'off'
 export const SYNC_GATE_SETTING = 'sync.gateRojo' // default true
+
+export function isForgeSyncEngine(e: unknown): e is 'forge-direct' | 'forge' {
+  return e === 'forge-direct' || e === 'forge'
+}

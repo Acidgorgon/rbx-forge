@@ -626,6 +626,9 @@ local sync = {
 	waitingForForge = false, -- Forge was unreachable: the poll loop restarts us when it answers again
 	offReason = nil :: string?, -- the last reason Forge gave for not syncing this window (printed once)
 	paused = false, -- v13: this DataModel is running (Run mode): no sync until it stops
+	applyingPush = false, -- v15: true while Forge Direct Sync writes pushed edits into Studio (blocks echo)
+	pushPending = false, -- v15: true when Forge reported queued disk->Studio push batches
+	lastPushPoll = 0,
 	session = nil :: string?,
 	generation = 0,
 	roots = {} :: { Instance },
@@ -948,7 +951,7 @@ local function nodeBytes(node: any): number
 end
 
 local function touch(inst: Instance, flag: string?)
-	if not sync.session then
+	if not sync.session or sync.applyingPush then
 		return
 	end
 	local flags = sync.touched[inst]
@@ -1338,6 +1341,8 @@ local function startSync(): string
 		end))
 	end
 	local count = sendSnapshot(gen)
+	sync.pushPending = true
+	sync.lastPushPoll = 0
 	print(("[Forge Bridge] Forge Sync: sent %d instances from %d roots"):format(count, #sync.roots))
 	if #sync.missing > 0 then
 		local names = {}
@@ -1585,7 +1590,7 @@ end
 if scriptEditor then
 	pcall(function()
 		scriptEditor.TextDocumentDidChange:Connect(function(doc)
-			if game.PlaceId ~= 0 or not sync.session then
+			if game.PlaceId ~= 0 or not sync.session or sync.applyingPush then
 				return
 			end
 			local ok, inst = pcall(function()
@@ -1596,6 +1601,294 @@ if scriptEditor then
 			end
 		end)
 	end)
+end
+
+-- ------------------------------------------------------------ Direct 2-Way Push (v15)
+
+local collectionService = nil :: any
+pcall(function()
+	collectionService = game:GetService("CollectionService")
+end)
+
+local function decodeRojoValue(v: any): any
+	local t = type(v)
+	if t == "string" or t == "boolean" or t == "number" then
+		return v
+	end
+	if t ~= "table" then
+		return nil
+	end
+	if v.Vector3 then
+		return Vector3.new(v.Vector3[1], v.Vector3[2], v.Vector3[3])
+	elseif v.Vector2 then
+		return Vector2.new(v.Vector2[1], v.Vector2[2])
+	elseif v.Color3 then
+		return Color3.new(v.Color3[1], v.Color3[2], v.Color3[3])
+	elseif v.BrickColor ~= nil then
+		return BrickColor.new(v.BrickColor)
+	elseif v.NumberRange then
+		return NumberRange.new(v.NumberRange[1], v.NumberRange[2])
+	elseif v.UDim then
+		return UDim.new(v.UDim[1], v.UDim[2])
+	elseif v.UDim2 then
+		return UDim2.new(v.UDim2[1][1], v.UDim2[1][2], v.UDim2[2][1], v.UDim2[2][2])
+	elseif v.CFrame then
+		local p = v.CFrame.position
+		local o = v.CFrame.orientation
+		return CFrame.new(p[1], p[2], p[3], o[1][1], o[1][2], o[1][3], o[2][1], o[2][2], o[2][3], o[3][1], o[3][2], o[3][3])
+	elseif v.ColorSequence and type(v.ColorSequence.keypoints) == "table" then
+		local pts = {}
+		for _, kp in v.ColorSequence.keypoints do
+			table.insert(pts, ColorSequenceKeypoint.new(kp.time, Color3.new(kp.color[1], kp.color[2], kp.color[3])))
+		end
+		return ColorSequence.new(pts)
+	elseif v.NumberSequence and type(v.NumberSequence.keypoints) == "table" then
+		local pts = {}
+		for _, kp in v.NumberSequence.keypoints do
+			table.insert(pts, NumberSequenceKeypoint.new(kp.time, kp.value, kp.envelope or 0))
+		end
+		return NumberSequence.new(pts)
+	elseif v.Enum ~= nil then
+		return v.Enum
+	end
+	return nil
+end
+
+local function findServiceOrChild(name: string): Instance?
+	local existing = game:FindFirstChild(name)
+	if existing then
+		return existing
+	end
+	local ok, svc = pcall(function()
+		return game:GetService(name)
+	end)
+	return if ok then svc else nil
+end
+
+local function ensureParentOf(path: { string }): Instance?
+	if #path < 2 then
+		return nil
+	end
+	local node = findServiceOrChild(path[1])
+	if not node then
+		return nil
+	end
+	for i = 2, #path - 1 do
+		local name = path[i]
+		local child = node:FindFirstChild(name)
+		if not child then
+			child = Instance.new("Folder")
+			child.Name = name
+			child.Parent = node
+			local sp = syncPath(child)
+			if sp then
+				register(child, sp)
+			end
+		end
+		node = child
+	end
+	return node
+end
+
+local function applySinglePushOp(op: any): (boolean, string?, string?)
+	local kind = op.kind
+	local path = op.path
+	if type(path) ~= "table" or #path < 2 then
+		return false, "skipped", "invalid path"
+	end
+	if kind == "delete" then
+		local target = resolve(path)
+		if not target then
+			return true, nil, nil
+		end
+		if not insideSyncRoot(target) then
+			return false, "skipped", "outside synced root"
+		end
+		unregister(target)
+		target.Parent = nil
+		return true, nil, nil
+	end
+
+	local parent = ensureParentOf(path)
+	if not parent then
+		return false, "error", "parent service not found"
+	end
+	local name = path[#path]
+	local existing = parent:FindFirstChild(name)
+
+	if kind == "upsert-folder" then
+		if not existing then
+			local folder = Instance.new("Folder")
+			folder.Name = name
+			folder.Parent = parent
+			local sp = syncPath(folder)
+			if sp then
+				register(folder, sp)
+			end
+		end
+		return true, nil, nil
+	end
+
+	local targetClass = if type(op.className) == "string" and op.className ~= "" then op.className else "Folder"
+	if existing and existing.ClassName ~= targetClass then
+		unregister(existing)
+		existing.Parent = nil
+		existing = nil
+	end
+
+	local inst = existing
+	if not inst then
+		inst = Instance.new(targetClass)
+		inst.Name = name
+	end
+
+	if kind == "upsert-script" then
+		local src = tostring(op.source or "")
+		local updated = false
+		if inst.Parent and scriptEditor and (scriptEditor :: any).UpdateSourceAsync then
+			local okEdit = pcall(function()
+				(scriptEditor :: any):UpdateSourceAsync(inst, function()
+					return src
+				end)
+			end)
+			if okEdit then
+				updated = true
+			end
+		end
+		if not updated then
+			(inst :: any).Source = src
+		end
+		if type(op.runContext) == "string" and op.runContext ~= "" then
+			pcall(function()
+				(inst :: any).RunContext = (Enum.RunContext :: any)[op.runContext]
+			end)
+		end
+	elseif kind == "upsert-instance" then
+		if type(op.properties) == "table" then
+			for propName, rawVal in op.properties do
+				local val = decodeRojoValue(rawVal)
+				if val ~= nil then
+					pcall(function()
+						(inst :: any)[propName] = val
+					end)
+				end
+			end
+		end
+		if type(op.attributes) == "table" then
+			for attrName, rawVal in op.attributes do
+				local val = decodeRojoValue(rawVal)
+				pcall(function()
+					inst:SetAttribute(attrName, val)
+				end)
+			end
+		end
+		if collectionService and type(op.tags) == "table" then
+			pcall(function()
+				for _, oldTag in collectionService:GetTags(inst) do
+					collectionService:RemoveTag(inst, oldTag)
+				end
+				for _, tag in op.tags do
+					collectionService:AddTag(inst, tostring(tag))
+				end
+			end)
+		end
+	else
+		return false, "skipped", "unknown push op"
+	end
+
+	if not inst.Parent then
+		inst.Parent = parent
+	end
+	local sp = syncPath(inst)
+	if sp then
+		register(inst, sp)
+		updateRefs(inst)
+	end
+	return true, nil, nil
+end
+
+local function applyPushBatch(batch: any)
+	if type(batch) ~= "table" or type(batch.batchId) ~= "string" or type(batch.ops) ~= "table" then
+		return
+	end
+	local applied: { string } = {}
+	local skipped = {}
+	local errors = {}
+
+	local recording = nil
+	if ChangeHistoryService then
+		local okRec, id = pcall(function()
+			return ChangeHistoryService:TryBeginRecording("Forge Direct Sync", "Apply disk changes from RBX Forge")
+		end)
+		if okRec then
+			recording = id
+		end
+	end
+
+	sync.applyingPush = true
+	local okRun, runErr = pcall(function()
+		for _, op in batch.ops do
+			local okOp, okSuccess, failKind, reason = pcall(applySinglePushOp, op)
+			if not okOp then
+				table.insert(errors, { path = if type(op.path) == "table" then op.path else { "unknown" }, message = tostring(okSuccess) })
+			elseif okSuccess then
+				if type(op.file) == "string" and op.file ~= "" then
+					table.insert(applied, op.file)
+				end
+			elseif failKind == "skipped" then
+				table.insert(skipped, { path = op.path, reason = tostring(reason or "skipped") })
+			else
+				table.insert(errors, { path = op.path, message = tostring(reason or "error") })
+			end
+		end
+	end)
+	sync.applyingPush = false
+
+	if recording and ChangeHistoryService then
+		pcall(function()
+			ChangeHistoryService:FinishRecording(
+				recording,
+				if okRun and #errors == 0 then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
+			)
+		end)
+	end
+
+	if not okRun then
+		table.insert(errors, { path = { "batch" }, message = tostring(runErr) })
+	end
+
+	if sync.session then
+		local ackBody: any = {
+			session = sync.session,
+			batchId = batch.batchId,
+			applied = applied,
+		}
+		if #skipped > 0 then
+			ackBody.skipped = skipped
+		end
+		if #errors > 0 then
+			ackBody.errors = errors
+		end
+		pcall(syncPost, "push-ack", ackBody)
+	end
+end
+
+local function drainPushQueue()
+	if not sync.session or not isEditMode() then
+		return
+	end
+	sync.pushPending = false
+	sync.lastPushPoll = os.clock()
+	for _ = 1, 32 do
+		if not sync.session or not isEditMode() then
+			return
+		end
+		local ok, answer = request("GET", "/sync/push?session=" .. HttpService:UrlEncode(sync.session))
+		if not ok or type(answer) ~= "table" or type(answer.batch) ~= "table" then
+			return
+		end
+		applyPushBatch(answer.batch)
+	end
 end
 
 local function syncLoop()
@@ -1680,6 +1973,9 @@ local function syncLoop()
 				sync.outlineDirty = false
 				sync.outlineScan = os.clock()
 			end
+		end
+		if sync.session and (sync.pushPending or now - sync.lastPushPoll >= 2) then
+			pcall(drainPushQueue)
 		end
 		if sync.wanted and not sync.session then
 			task.wait(0.5)
@@ -2336,6 +2632,9 @@ task.spawn(function()
 			sync.waitingForForge = false
 			sync.wanted = true
 			sync.retryAt = 0
+		end
+		if type(answer) == "table" and answer.pushPending == true then
+			sync.pushPending = true
 		end
 		if type(answer) == "table" and answer.job then
 			if answer.job.kind == "delete" then

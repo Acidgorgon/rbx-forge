@@ -5,6 +5,7 @@
 // drift: the match place's Studio is open but Forge has no sync session with it, 5 files behind disk,
 // and two same-name EmperorsShot modules held as a duplicate conflict on the menu place.
 import type { ForgeSyncSettings, HarnessEvents, StudioConflict, StudioOnlyScript, SyncApi, SyncConflictInfo, SyncEntry, SyncStatus, PlaceSyncStatus } from '@shared/types'
+import { isForgeSyncEngine } from '@shared/sync/types'
 import { collapseInstancePaths } from '@shared/explorerSelection'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
@@ -164,17 +165,17 @@ export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
 
   const status = (): SyncStatus => ({
     engine: settings.engine,
-    places: settings.engine === 'forge' ? places() : [],
-    recent: settings.engine === 'forge' ? recent : [],
-    pendingStudioEdits: settings.engine === 'forge' ? pending : [],
+    places: isForgeSyncEngine(settings.engine) ? places() : [],
+    recent: isForgeSyncEngine(settings.engine) ? recent : [],
+    pendingStudioEdits: isForgeSyncEngine(settings.engine) ? pending : [],
     legacyPluginInstalled: legacy,
     ...(legacy ? { legacyPlugins: ['FSFStudioSync.lua'] } : {}),
-    ...(settings.engine === 'forge' && mode !== 'checking' ? { unsyncedRefs: MOCK_REFS, unsyncedRefsTotal: MOCK_REFS.length } : {}),
-    ...(settings.engine === 'forge' ? { unlinked: [{ id: 'probe:mock', name: 'DoubleFireSlashVFX', label: 'DoubleFireSlashVFX', placeId: 0, lastSeen: t, canLink: true, why: 'Unpublished place, not linked to this project', fingerprint: 'Workspace: Dummy, VFXStage · 12 scripts', canIdentify: true }] } : {})
+    ...(isForgeSyncEngine(settings.engine) && mode !== 'checking' ? { unsyncedRefs: MOCK_REFS, unsyncedRefsTotal: MOCK_REFS.length } : {}),
+    ...(isForgeSyncEngine(settings.engine) ? { unlinked: [{ id: 'probe:mock', name: 'DoubleFireSlashVFX', label: 'DoubleFireSlashVFX', placeId: 0, lastSeen: t, canLink: true, why: 'Unpublished place, not linked to this project', fingerprint: 'Workspace: Dummy, VFXStage · 12 scripts', canIdentify: true }] } : {})
   })
 
   const studioConflicts = (): StudioConflict[] | null =>
-    settings.engine !== 'forge'
+    !isForgeSyncEngine(settings.engine)
       ? null
       : conflicts.map((c) => ({ path: c.file, repoSource: c.disk, studioSource: c.studio, base: c.base, placeKey: c.placeKey, instancePath: c.instancePath, reason: c.reason, ...(c.note ? { note: c.note } : {}) }))
 

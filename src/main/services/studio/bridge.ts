@@ -7,7 +7,7 @@ import { createServer, type IncomingMessage, type Server, type ServerResponse } 
 import { CONNECTED_MS, parseEvent, POLL_HOLD_MS, type BridgeEvent, type BridgeJob } from '../../../shared/studio/protocol.ts'
 import { isScriptInjectionError, SCRIPT_INJECTION_MESSAGE } from '../../../shared/studio/errors.ts'
 import { matchesTarget, placeLabel, targetKey, type StudioTarget } from '../../../shared/studio/target.ts'
-import { parseChangesBody, parseConfigQuery, parseOutlineBody, parsePollSync, parseSnapshotBody, sanitizeConfig, SYNC_LIMITS, SyncProtocolError, type SyncHandler } from '../../../shared/sync/protocol.ts'
+import { parseChangesBody, parseConfigQuery, parseOutlineBody, parsePollSync, parsePushAck, parseSnapshotBody, sanitizeConfig, SYNC_LIMITS, SyncProtocolError, type SyncHandler } from '../../../shared/sync/protocol.ts'
 
 export class BridgeError extends Error {
   // 'script-injection': Studio refused the plugin's ModuleScript.Source writes (its Script Injection
@@ -330,10 +330,12 @@ export class StudioBridge {
           this.log?.(`studio bridge: sync poll hint failed: ${(e as Error).message}`, 'stderr')
         }
         if (hint?.resync) return send(200, { idle: true, resync: true })
+        const pendingJob = this.active && !this.active.delivered && (!this.active.target || matchesTarget(this.active.target, this.info!))
+        if (hint?.pushPending && !pendingJob) return send(200, { idle: true, pushPending: true })
         const job = await this.nextJob(req, this.info!)
         if (job) {
           this.log?.(`studio bridge: job ${job.id} (${job.kind} ${job.name}) sent to Studio`)
-          return send(200, { job })
+          return send(200, { job, ...(hint?.pushPending ? { pushPending: true } : {}) })
         }
         return send(200, { idle: true })
       }
@@ -391,7 +393,18 @@ export class StudioBridge {
         return send(200, { enabled: false, error: (e as Error).message })
       }
     }
-    if (req.method !== 'POST' || (route !== 'snapshot' && route !== 'changes' && route !== 'outline')) return send(404, { ok: false, error: 'not found' })
+    if (req.method === 'GET' && route === 'push') {
+      const session = url.searchParams.get('session') ?? ''
+      if (!session || session.length > SYNC_LIMITS.maxSession) return send(400, { error: 'invalid session' })
+      if (!this.sync?.pullPush) return send(200, {})
+      try {
+        return send(200, await this.sync.pullPush(session))
+      } catch (e) {
+        this.log?.(`studio bridge: sync push pull failed: ${(e as Error).message}`, 'stderr')
+        return send(200, { error: (e as Error).message })
+      }
+    }
+    if (req.method !== 'POST' || (route !== 'snapshot' && route !== 'changes' && route !== 'outline' && route !== 'push-ack')) return send(404, { ok: false, error: 'not found' })
     let raw: string
     try {
       raw = await readBody(req, SYNC_LIMITS.maxBody)
@@ -401,7 +414,14 @@ export class StudioBridge {
     let parsed
     try {
       const json: unknown = JSON.parse(raw)
-      parsed = route === 'snapshot' ? { snapshot: parseSnapshotBody(json) } : route === 'outline' ? { outline: parseOutlineBody(json) } : { changes: parseChangesBody(json) }
+      parsed =
+        route === 'snapshot'
+          ? { snapshot: parseSnapshotBody(json) }
+          : route === 'outline'
+            ? { outline: parseOutlineBody(json) }
+            : route === 'push-ack'
+              ? { pushAck: parsePushAck(json) }
+              : { changes: parseChangesBody(json) }
     } catch (e) {
       const error = e instanceof SyncProtocolError ? e.message : 'bad JSON'
       this.log?.(`studio bridge: sync ${route} refused: ${error}`, 'stderr')
@@ -415,7 +435,11 @@ export class StudioBridge {
           ? this.sync.outline
             ? await this.sync.outline(parsed.outline)
             : { ok: false as const, error: 'outline not supported' }
-          : await this.sync.changes(parsed.changes!)
+          : parsed.pushAck
+            ? this.sync.pushAck
+              ? await this.sync.pushAck(parsed.pushAck)
+              : { ok: true as const }
+            : await this.sync.changes(parsed.changes!)
       return send(200, reply)
     } catch (e) {
       this.log?.(`studio bridge: sync ${route} failed: ${(e as Error).message}`, 'stderr')

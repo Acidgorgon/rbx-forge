@@ -4,6 +4,7 @@
 // model is shared/explorerSelection.ts): delete, open and copy act on the whole selection.
 import { memo, useEffect, useMemo, useRef, useState, type KeyboardEvent as RKeyboardEvent, type MouseEvent, type ReactNode } from 'react'
 import type { ScriptEntry, TreeNode } from '@shared/types'
+import { isForgeSyncEngine } from '@shared/sync/types'
 import { robloxPaths } from '@shared/robloxPath'
 import { useActions, useGetState, useStorePick } from '../store'
 import { Icon } from '../components/Icons'
@@ -860,7 +861,7 @@ export function ExplorerView() {
   // Why Studio-only instances may be missing from the Game view: Forge only reads linked places.
   const [syncStatus] = useForgeSync()
   const studioHint = useMemo(() => {
-    if (!syncStatus || syncStatus.engine !== 'forge') return null
+    if (!syncStatus || !isForgeSyncEngine(syncStatus.engine)) return null
     const unlinked = syncStatus.unlinked?.[0]
     if (unlinked) return `Studio has "${unlinked.name}" open, but it isn't linked to this project: Forge never reads an unlinked place, so instances that exist only in Studio are not shown here. Link it in Studio sync to see them.`
     if (!studioCount && !syncStatus.places.some((p) => p.connected)) return 'Instances that exist only in Studio show here once Studio is connected with the Forge Bridge plugin and its place is checked.'

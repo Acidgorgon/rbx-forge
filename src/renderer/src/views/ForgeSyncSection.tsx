@@ -9,6 +9,7 @@
 // the fix (Link, Check now, Start Rojo).
 import { useEffect, useState } from 'react'
 import type { GateState, PlaceDrift, PlaceInfo, PlaceSyncStatus, SyncAction, SyncEntry, SyncRef, SyncStatus, UnlinkedPlace } from '@shared/types'
+import { isForgeSyncEngine } from '@shared/sync/types'
 import { collisionLabels } from '@shared/sync/labels'
 import { useStorePick, useActions } from '../store'
 import { Icon } from '../components/Icons'
@@ -40,6 +41,7 @@ const GATE: Record<GateState, { cls: string; label: string; hint: string }> = {
 
 const ACTION: Partial<Record<SyncAction, { letter: string; cls: string; label: string }>> = {
   pulled: { letter: 'P', cls: 'ok', label: 'pulled from Studio' },
+  pushed: { letter: '↑', cls: 'ok', label: 'pushed to Studio' },
   merged: { letter: 'M', cls: 'ok', label: 'merged (both changed)' },
   created: { letter: 'A', cls: 'ok', label: 'new in Studio' },
   renamed: { letter: 'R', cls: 'info', label: 'renamed in Studio' },
@@ -49,7 +51,7 @@ const ACTION: Partial<Record<SyncAction, { letter: string; cls: string; label: s
   unmapped: { letter: 'S', cls: '', label: 'stays in Studio' }
 }
 
-const COUNT_ORDER: SyncAction[] = ['same', 'pulled', 'merged', 'created', 'renamed', 'trashed', 'disk-ahead', 'conflict']
+const COUNT_ORDER: SyncAction[] = ['same', 'pulled', 'pushed', 'merged', 'created', 'renamed', 'trashed', 'disk-ahead', 'conflict']
 
 // What kind of reference each property is, for the one-line summary.
 const REF_KIND: Record<string, string> = { Value: 'ObjectValue', Part0: 'welds', Part1: 'welds', Attachment0: 'attachments', Attachment1: 'attachments', PrimaryPart: 'PrimaryPart' }
@@ -75,7 +77,8 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
   // The open "link to which place file" picker: the unlinked place, where it opened, the chosen file.
   const [picking, setPicking] = useState<{ id: string; at: 'callout' | 'row'; file: string } | null>(null)
 
-  if (!status || status.engine !== 'forge') return null
+  if (!status || !isForgeSyncEngine(status.engine)) return null
+  const directMode = status.engine === 'forge-direct'
   const conflicts = state.studioConflicts.filter((c) => c.placeKey)
   const fileName = (file: string) => state.places.find((x) => x.file === file)?.name || file.replace(/\.project\.json$/, '')
   const placeName = (p: PlaceSyncStatus) => p.place?.name || fileName(p.projectFile)
@@ -173,7 +176,7 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
         <span className="grow" />
         <button className="link-btn" onClick={() => actions.openPage('settings')} title="Settings > Sync">settings</button>
       </div>
-      {multi && state.appSettings && !state.appSettings.serveAllPlaces && (
+      {!directMode && multi && state.appSettings && !state.appSettings.serveAllPlaces && (
         <div className="fs-sub note fs-hint">
           <button className="link-btn" title="Rojo serves every *.project.json, each on its own servePort (same switch as the place pill in the title bar)" onClick={() => void actions.setAppSettings({ serveAllPlaces: true })}>
             Serve all places
@@ -318,14 +321,25 @@ export function ForgeSyncSection({ status, setStatus }: { status: SyncStatus | n
               <span className="grow ellipsis">{rowLabel(p)}</span>
               <span className={`tag ${p.forced ? 'warn' : g.cls}`}>{p.gate === 'blocked' ? (p.conflicts || !p.studioOnly?.holds ? `${p.conflicts} held` : `${p.studioOnly.count} not on disk`) : p.forced ? 'serving anyway' : g.label}</span>
             </div>
-            <div className="fs-sub note">{countsText(p)}{p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}{p.rojo === 'stopped' ? ' · rojo not serving it' : ''}</div>
-            {(() => {
+            <div className="fs-sub note">
+              {countsText(p)}
+              {p.lastSnapshot ? ` · checked ${ago(p.lastSnapshot)}` : ''}
+              {!directMode && p.rojo === 'stopped' ? ' · rojo not serving it' : ''}
+              {directMode && p.pushStats ? ` · pushed ${p.pushStats.pushed}${p.pushStats.pending ? ` (${p.pushStats.pending} queued)` : ''}` : ''}
+              {directMode && p.sourcemap ? ` · ${p.sourcemap.path} (${p.sourcemap.nodes})` : ''}
+            </div>
+            {!directMode && (() => {
               const serve = rojoPlaces.find((x) => x.file === p.projectFile)
               return serve?.error && serve.state !== 'serving' ? <div className="fs-sub note" style={{ color: 'var(--warn)' }} title={serve.error}>rojo {serve.state === 'gave-up' ? 'gave up' : serve.state}: {serve.error}</div> : null
             })()}
+            {directMode && p.pushStats?.lastError && (
+              <div className="fs-sub note" style={{ color: 'var(--warn)' }} title={p.pushStats.lastError}>
+                direct push error: {p.pushStats.lastError}
+              </div>
+            )}
             {p.drift && <div className="fs-sub note" style={{ color: 'var(--warn)' }} title={p.drift.files.join('\n')}>{p.drift.cause === 'rojo-disconnected' ? 'Rojo disconnected: connect it again in Studio' : `${p.drift.behind} file${p.drift.behind === 1 ? '' : 's'} behind disk`}</div>}
             {p.fingerprint && rowLabel(p) !== placeName(p) && <div className="fs-sub note ellipsis" title={p.fingerprint}>{p.fingerprint}</div>}
-            {p.gate === 'waiting' && !blockedWait && (
+            {!directMode && p.gate === 'waiting' && !blockedWait && (
               <div className="fs-sub note fs-waiting" title={p.gateDetail}>
                 Rojo waits for Studio's first sync check.{' '}
                 <button className="link-btn" disabled={!!busy} title="Rojo serves this place now without a Studio check: its connect dialog may offer to delete scripts that exist only in Studio" onClick={() => void serveUnchecked(p.projectFile)}>

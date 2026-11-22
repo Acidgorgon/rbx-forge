@@ -102,8 +102,55 @@ export interface SyncPollInfo {
   pluginVersion?: number
 }
 
+export type SyncPushOp =
+  | {
+      kind: 'upsert-script'
+      path: string[]
+      className: 'Script' | 'LocalScript' | 'ModuleScript'
+      source: string
+      runContext?: 'Legacy' | 'Server' | 'Client'
+      sha256: string
+      file: string
+    }
+  | {
+      kind: 'upsert-folder'
+      path: string[]
+      file?: string
+    }
+  | {
+      kind: 'upsert-instance'
+      path: string[]
+      className: string
+      properties?: Record<string, SyncValue>
+      attributes?: Record<string, SyncValue>
+      tags?: string[]
+      file: string
+      sha256: string
+    }
+  | {
+      kind: 'delete'
+      path: string[]
+      file: string
+    }
+
+export interface SyncPushBatch {
+  batchId: string
+  placeKey: string
+  seq: number
+  ops: SyncPushOp[]
+}
+
+export interface SyncPushAck {
+  session: string
+  batchId: string
+  applied: string[]
+  skipped?: { path: string[]; reason: string }[]
+  errors?: { path: string[]; message: string }[]
+}
+
 export interface SyncPollHint {
   resync?: true
+  pushPending?: true
 }
 
 export interface SyncHandler {
@@ -113,6 +160,8 @@ export interface SyncHandler {
   // Plugin v12 polls (see the header): whether that window should start its sync check again.
   pollHint?(info: SyncPollInfo): SyncPollHint | null
   outline?(body: OutlineBody): Promise<SyncReply>
+  pullPush?(session: string): Promise<{ batch?: SyncPushBatch }>
+  pushAck?(ack: SyncPushAck): Promise<SyncReply>
 }
 
 // ---- bounds ----
@@ -463,6 +512,30 @@ export function sanitizeConfig(c: SyncConfig): SyncConfig {
   if (c.outline?.length) {
     out.outline = paths(c.outline)
     out.outlineMax = Math.max(1, Math.min(SYNC_LIMITS.maxOutline, Math.floor(Number(c.outlineMax) || SYNC_LIMITS.maxOutline)))
+  }
+  return out
+}
+
+export function parsePushAck(v: unknown): SyncPushAck {
+  if (!isObj(v)) return fail('body must be an object')
+  const session = str(v.session, 'session', SYNC_LIMITS.maxSession)
+  const batchId = str(v.batchId, 'batchId', SYNC_LIMITS.maxId)
+  if (!Array.isArray(v.applied) || v.applied.length > SYNC_LIMITS.maxChanges) fail(`applied must be an array of up to ${SYNC_LIMITS.maxChanges}`)
+  const applied = (v.applied as unknown[]).map((f, i) => str(f, `applied[${i}]`, 1024))
+  const out: SyncPushAck = { session, batchId, applied }
+  if (v.skipped !== undefined) {
+    if (!Array.isArray(v.skipped) || v.skipped.length > SYNC_LIMITS.maxChanges) fail('skipped must be an array')
+    out.skipped = (v.skipped as unknown[]).map((s, i) => {
+      if (!isObj(s)) return fail(`skipped[${i}] must be an object`)
+      return { path: parsePath(s.path, `skipped[${i}].path`), reason: str(s.reason, `skipped[${i}].reason`, 512) }
+    })
+  }
+  if (v.errors !== undefined) {
+    if (!Array.isArray(v.errors) || v.errors.length > SYNC_LIMITS.maxChanges) fail('errors must be an array')
+    out.errors = (v.errors as unknown[]).map((e, i) => {
+      if (!isObj(e)) return fail(`errors[${i}] must be an object`)
+      return { path: parsePath(e.path, `errors[${i}].path`), message: str(e.message, `errors[${i}].message`, 1024) }
+    })
   }
   return out
 }

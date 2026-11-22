@@ -1,6 +1,7 @@
 // Source control & Sync: Source control on top (stage, commit with your message, pull / push; see
 // SourceControlSection), then Forge Sync, team sync (Sync now), incoming changes (grouped by feature),
 // local changes, Studio conflicts (open as diff tabs), pre-sync check, feature branch / PR, settings.
+import { isForgeSyncEngine } from '@shared/sync/types'
 import { useEffect, useState } from 'react'
 import type { IncomingChanges, PreSyncReport, SyncSettings } from '@shared/types'
 import { useStorePick, useActions } from '../store'
@@ -133,7 +134,7 @@ export function SyncView() {
               </div>
             </div>
 
-            {forgeSync?.engine !== 'forge' && <section className="vsec">
+            {(!forgeSync || !isForgeSyncEngine(forgeSync.engine)) && <section className="vsec">
               <div className="vsec-head">Studio conflicts <span className="count">{state.studioConflicts.length}</span></div>
               {state.studioConflicts.length === 0 ? (
                 <div className="note" style={{ padding: '0 12px' }}>Nothing held. Scripts edited in Studio flow into the repo.</div>

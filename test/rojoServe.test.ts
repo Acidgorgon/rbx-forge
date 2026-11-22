@@ -84,7 +84,7 @@ function makeSupervisor(extra: { rojoRestart?: { backoffMs: number[]; maxQuickFa
   temps.push(root)
   let statuses: ServiceStatus[] = []
   const logs: Omit<LogLine, 'at'>[] = []
-  const settings: Record<string, unknown> = { serveAllPlaces: true }
+  const settings: Record<string, unknown> = { serveAllPlaces: true, 'sync.engine': 'forge' }
   const supervisor = new Supervisor({
     log: (line) => logs.push(line),
     onStatus: (s) => (statuses = s),
@@ -265,7 +265,7 @@ function makeSync(supervisor: Supervisor, root: string) {
     root,
     engine,
     mapping: { loadPlaces: async () => MAPS, placeFor: (maps, id) => maps.find((m) => m.placeIds.includes(id)) ?? null },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? ('forge' as T) : fb) },
     git: (args) => run('git', args, root),
     pluginsDir: () => null,
     rojo: (file) => supervisor.rojoState(file),

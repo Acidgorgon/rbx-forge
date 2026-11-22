@@ -6,7 +6,7 @@
 import { cleanTarget } from '../../../shared/studio/target.ts'
 import type { StudioConflict } from '../../../shared/types.ts'
 import type { SyncStatus, GateState, RojoServeState, WaitReason } from '../../../shared/sync/types.ts'
-import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING } from '../../../shared/sync/types.ts'
+import { isForgeSyncEngine, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING } from '../../../shared/sync/types.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import type { ServiceState } from '../../../shared/types.ts'
 import { findTool, run, toolEnv } from '../tools.ts'
@@ -21,6 +21,7 @@ export interface SyncWireDeps {
     setGate(file: string, gate: GateState, detail?: string, reason?: WaitReason): void
     applyGates(): void
     setSyncSummary(state: ServiceState, detail: string): void
+    stopRojo?(): Promise<void> | void
   }
   pluginsDir: () => string | null
   studio?: () => { placeId?: number; place?: string; pluginVersion?: number; connected: boolean } | null
@@ -76,25 +77,32 @@ function defaultGit(root: string, args: string[]) {
 }
 
 export function syncSummary(status: SyncStatus): { state: ServiceState; detail: string } {
-  if (status.engine !== 'forge') return { state: 'stopped', detail: status.engine === 'off' ? 'off' : 'project script' }
+  if (!isForgeSyncEngine(status.engine)) return { state: 'stopped', detail: status.engine === 'off' ? 'off' : 'project script' }
+  const label = status.engine === 'forge-direct' ? 'Forge Direct Sync' : 'Forge Sync'
   const live = status.places.filter((p) => p.connected)
   const blocked = status.places.filter((p) => p.gate === 'blocked')
   const checking = status.places.filter((p) => p.gate === 'checking')
-  if (checking.length) return { state: 'starting', detail: `Forge Sync: checking ${checking.map((p) => p.projectFile.replace(/\.project\.json$/, '')).join(', ')}` }
+  if (checking.length) return { state: 'starting', detail: `${label}: checking ${checking.map((p) => p.projectFile.replace(/\.project\.json$/, '')).join(', ')}` }
   if (blocked.length) {
     const n = blocked.reduce((sum, p) => sum + p.conflicts, 0)
     const only = blocked.reduce((sum, p) => sum + (p.studioOnly?.holds ? p.studioOnly.count : 0), 0)
     const parts = [...(n || !only ? [`${n} conflict${n === 1 ? '' : 's'} held`] : []), ...(only ? [`${only} Studio-only script${only === 1 ? '' : 's'} not on disk`] : [])]
-    return { state: 'running', detail: `Forge Sync: ${parts.join(', ')}` }
+    return { state: 'running', detail: `${label}: ${parts.join(', ')}` }
   }
   // An open Studio place is behind disk (not linked, not syncing, its rojo not serving or not connected).
   const drift = [...status.places.map((p) => p.drift), ...(status.unlinked ?? []).map((u) => u.drift)].filter((d) => !!d)
-  if (drift.length) return { state: 'starting', detail: `Forge Sync: ${drift[0]!.text}${drift.length > 1 ? ` (+${drift.length - 1} more)` : ''}` }
+  if (drift.length) return { state: 'starting', detail: `${label}: ${drift[0]!.text}${drift.length > 1 ? ` (+${drift.length - 1} more)` : ''}` }
   // Studio edits are not reaching disk (no plugin, place refused, mapped folders missing ...): not green.
   if (status.notice?.level === 'warn') return { state: 'starting', detail: status.notice.text }
   const waiting = status.places.filter((p) => p.gate === 'waiting')
-  if (waiting.length) return { state: 'starting', detail: `Forge Sync: rojo serve waits for Studio's first sync check (${waiting.map((p) => p.projectFile.replace(/\.project\.json$/, '')).join(', ')})` }
-  return { state: 'running', detail: live.length ? `Forge Sync: ${live.length} Studio session${live.length === 1 ? '' : 's'}` : 'Forge Sync: waiting for Studio' }
+  if (waiting.length) {
+    const waitDetail =
+      status.engine === 'forge-direct'
+        ? `${label}: waiting for Studio's first sync check`
+        : `${label}: rojo serve waits for Studio's first sync check`
+    return { state: 'starting', detail: `${waitDetail} (${waiting.map((p) => p.projectFile.replace(/\.project\.json$/, '')).join(', ')})` }
+  }
+  return { state: 'running', detail: live.length ? `${label}: ${live.length} Studio session${live.length === 1 ? '' : 's'}` : `${label}: waiting for Studio` }
 }
 
 // An instance path from the renderer: 1-64 non-empty names.
@@ -125,7 +133,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
       const summary = syncSummary(status)
       deps.supervisor.setSyncSummary(summary.state, summary.detail)
     }
-    if (status.engine === 'forge') {
+    if (isForgeSyncEngine(status.engine)) {
       const conflicts = wiring.studioConflicts() ?? []
       const conflictsJson = JSON.stringify(conflicts)
       if (conflictsJson === lastConflicts) return
@@ -149,7 +157,9 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     snapshot: async (body) => (current ? current.handler.snapshot(body) : offAnswer),
     changes: async (body) => (current ? current.handler.changes(body) : offAnswer),
     outline: async (body) => (current?.handler.outline ? current.handler.outline(body) : offAnswer),
-    pollHint: (info) => current?.handler.pollHint?.(info) ?? null
+    pollHint: (info) => current?.handler.pollHint?.(info) ?? null,
+    pullPush: async (session) => (current?.handler.pullPush ? current.handler.pullPush(session) : {}),
+    pushAck: async (ack) => (current?.handler.pushAck ? current.handler.pushAck(ack) : offAnswer)
   }
 
   const deleteDeps = () => {
@@ -207,8 +217,12 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
     },
     forgeSyncSettings: () => settings(),
     setForgeSyncSettings: async (patch: Partial<ForgeSyncSettings>) => {
-      if (patch.engine === 'forge' || patch.engine === 'project' || patch.engine === 'off') deps.settings.set(SYNC_ENGINE_SETTING, patch.engine)
+      if (patch.engine === 'forge-direct' || patch.engine === 'forge' || patch.engine === 'project' || patch.engine === 'off') {
+        deps.settings.set(SYNC_ENGINE_SETTING, patch.engine)
+      }
       if (typeof patch.gateRojo === 'boolean') deps.settings.set(SYNC_GATE_SETTING, patch.gateRojo)
+      if (patch.engine === 'forge-direct') await deps.supervisor.stopRojo?.()
+      await current?.onSettingsChanged?.()
       // Gate off / engine changed: release (or re-check) held rojo serves.
       deps.supervisor.applyGates()
       current?.refresh()
@@ -258,7 +272,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
       void current?.reload()
     },
     studioConflicts() {
-      if (settings().engine !== 'forge') return null
+      if (!isForgeSyncEngine(settings().engine)) return null
       return (current?.conflicts() ?? []).map((c) => ({
         path: c.file,
         repoSource: c.disk,
@@ -284,7 +298,7 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
           const op: unknown = Reflect.get(target, prop, receiver)
           if (typeof op !== 'function') return op
           return async () => {
-            if (current && settings().engine === 'forge') {
+            if (current && isForgeSyncEngine(settings().engine)) {
               const guard = await Promise.resolve(autoCommit()).then((on) => current!.guardGitOp('pull', { autoCommit: on })).catch(() => null)
               if (guard?.committed?.length) deps.log?.(`sync: committed ${guard.committed.length} Studio edit(s) before pulling`)
             }

@@ -67,6 +67,7 @@ import { SyncEngine } from './services/sync/engine.ts'
 import { duplicateMappings, duplicateMappingText, loadPlaces, type PlaceMap, placeFor } from './services/sync/mapping.ts'
 import { createSync } from './services/sync/wire.ts'
 import { engineSetting, STATUS_DELAY_MS } from './services/sync/service.ts'
+import { isForgeSyncEngine } from '../shared/sync/types.ts'
 import { pluginsDir } from '../shared/studio/plugin.ts'
 import { homedir } from 'node:os'
 import { studioElectronDeps } from './services/studio/electron.ts'
@@ -480,7 +481,7 @@ async function openProject(root?: string): Promise<ProjectInfo | null> {
       if (forgeSync.studioConflicts() === null) emit('studio:conflicts', list)
     },
     undefined,
-    () => engineSetting(settings).engine !== 'forge'
+    () => !isForgeSyncEngine(engineSetting(settings).engine)
   )
 
   emit('project:changed', opened.info)

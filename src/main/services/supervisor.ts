@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { LogLine, PlaceInfo, RojoPlaceStatus, ServiceId, ServiceState, ServiceStatus } from '@shared/types'
-import { SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState, type RojoServeState, type WaitReason } from '../../shared/sync/types.ts'
+import { isForgeSyncEngine, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState, type RojoServeState, type WaitReason } from '../../shared/sync/types.ts'
 import { findBash, findPowerShell, findTool, run, spawnTool, toolEnv } from './tools.ts'
 import { gateAction, isRojoPanic, RestartPolicy, ROJO_STABLE_MS, secondsText, type RestartPolicyOptions } from './rojoRestart.ts'
 import { isRojoProcess, systemProcessTools, type ProcessTools } from './portOwner.ts'
@@ -132,9 +132,9 @@ export function gateHolds(gate: GateState | undefined): boolean {
 const WAITING_DETAIL = "Waiting for Studio's first sync check"
 
 
-export function syncEngineOf(getSetting: <T>(key: string, fallback: T) => T): 'forge' | 'project' | 'off' {
-  const engine = getSetting<string>(SYNC_ENGINE_SETTING, 'forge')
-  return engine === 'project' || engine === 'off' ? engine : 'forge'
+export function syncEngineOf(getSetting: <T>(key: string, fallback: T) => T): 'forge-direct' | 'forge' | 'project' | 'off' {
+  const engine = getSetting<string>(SYNC_ENGINE_SETTING, 'forge-direct')
+  return engine === 'forge' || engine === 'project' || engine === 'off' ? engine : 'forge-direct'
 }
 
 export function isTemplateOrigin(url: string): boolean {
@@ -257,7 +257,11 @@ export class Supervisor {
 
   async startAll(): Promise<void> {
     await this.start('dev')
-    await this.start('rojo')
+    if (this.syncEngine() === 'forge-direct') {
+      this.update('rojo', { state: 'stopped', pid: undefined, detail: 'Direct Forge Sync active (Rojo disabled)' })
+    } else {
+      await this.start('rojo')
+    }
     await this.start('lsp')
     this.startProbe()
   }
@@ -387,6 +391,11 @@ export class Supervisor {
     this.placesChanged()
   }
 
+  async stopRojo(): Promise<void> {
+    await this.stop('rojo', 'Direct Forge Sync is active')
+    this.update('rojo', { state: 'stopped', pid: undefined, detail: 'Direct Forge Sync active (Rojo disabled)' })
+  }
+
   async restart(id: ServiceId, why = 'a restart was asked for'): Promise<void> {
     if (id === 'studioSync' && this.syncEngine() !== 'project') return
     if (id === 'studioSync') {
@@ -457,7 +466,7 @@ export class Supervisor {
     records.update((entries) => entries.filter((e) => e.session !== this.session || this.tools.isAlive(e.pid)))
   }
 
-  private syncEngine(): 'forge' | 'project' | 'off' {
+  private syncEngine(): 'forge-direct' | 'forge' | 'project' | 'off' {
     return syncEngineOf(this.options.getSetting)
   }
 
@@ -603,7 +612,7 @@ export class Supervisor {
 
   // Forge Sync's own summary on the "Studio sync" service row (the old studio-sync.py is not run).
   setSyncSummary(state: ServiceState, detail: string): void {
-    if (this.syncEngine() !== 'forge') return
+    if (!isForgeSyncEngine(this.syncEngine())) return
     this.update('studioSync', { state, detail })
   }
 
@@ -710,7 +719,7 @@ export class Supervisor {
       child = spawnTool(command.file, command.args, {
         cwd: this.root as string,
         // FORGE_SYNC=1 tells the project's dev script to skip studio-sync.py and its plugin copy.
-        env: key === 'dev' && this.syncEngine() === 'forge' ? { ...toolEnv(), FORGE_SYNC: '1' } : toolEnv(),
+        env: key === 'dev' && isForgeSyncEngine(this.syncEngine()) ? { ...toolEnv(), FORGE_SYNC: '1' } : toolEnv(),
         // Own process group on mac/linux so killTree can stop everything ./dev started.
         detached: !isWindows,
         stdio: ['ignore', 'pipe', 'pipe']
@@ -1050,8 +1059,10 @@ export class Supervisor {
       return
     }
     // Forge Sync reports through setSyncSummary; studio-sync.py is not needed.
-    if (engine === 'forge') {
-      if (this.status.studioSync.state === 'stopped' && !this.status.studioSync.detail) this.update('studioSync', { state: 'running', detail: 'Forge Sync (built in)' })
+    if (isForgeSyncEngine(engine)) {
+      if (this.status.studioSync.state === 'stopped' && !this.status.studioSync.detail) {
+        this.update('studioSync', { state: 'running', detail: engine === 'forge-direct' ? 'Forge Direct Sync (built in)' : 'Forge Sync (built in)' })
+      }
       return
     }
     const port = this.studioSyncPort()

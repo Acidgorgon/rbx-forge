@@ -12,7 +12,10 @@ import { disableLegacyPlugins, findLegacyPlugins, isLegacyPlugin } from '../src/
 import { run } from '../src/main/services/tools.ts'
 
 const dirs: string[] = []
+const services: SyncService[] = []
 after(() => {
+  for (const s of services) s.close()
+  services.length = 0
   for (const d of dirs) rmSync(d, { recursive: true, force: true })
 })
 function temp(prefix = 'forge-sync-'): string {
@@ -136,6 +139,7 @@ function setup(opts: { settings?: Record<string, unknown>; root?: string; staleM
     emit: (event, payload) => events.push([event, payload]),
     staleMs: opts.staleMs
   })
+  services.push(service)
   return { root, engine, service, gates, events, values, pluginDir }
 }
 
@@ -381,7 +385,7 @@ test('createSync: bridge handler per project, studio-conflict shape, guarded git
   await tick()
   assert.deepEqual(wiring.studioConflicts(), [{ path: 'src/skills/Uppercut.luau', repoSource: 'D\n', studioSource: 'S\n', base: 'return 1\n', placeKey: '111', instancePath: ['ReplicatedStorage', 'Skills', 'Uppercut'], reason: 'both-changed' }])
   assert.ok(emitted.some(([e, p]) => e === 'studio:conflicts' && (p as unknown[]).length === 1))
-  assert.equal(summaries.at(-1), 'Forge Sync: 1 conflict held')
+  assert.equal(summaries.at(-1), 'Forge Direct Sync: 1 conflict held')
   await wiring.resolveStudioConflict('src/skills/Uppercut.luau', 'studio')
   assert.equal(readFileSync(join(root, 'src/skills/Uppercut.luau'), 'utf8'), 'S\n')
 
@@ -405,6 +409,8 @@ test('syncSummary', () => {
   assert.equal(syncSummary({ ...base, engine: 'off', places: [] }).detail, 'off')
   assert.deepEqual(syncSummary({ ...base, engine: 'forge', places: [{ placeKey: '1', projectFile: 'menu.project.json', gate: 'checking', connected: true, counts: {}, conflicts: 0 }] }), { state: 'starting', detail: 'Forge Sync: checking menu' })
   assert.equal(syncSummary({ ...base, engine: 'forge', places: [] }).detail, 'Forge Sync: waiting for Studio')
+  assert.deepEqual(syncSummary({ ...base, engine: 'forge-direct', places: [{ placeKey: '1', projectFile: 'menu.project.json', gate: 'checking', connected: true, counts: {}, conflicts: 0 }] }), { state: 'starting', detail: 'Forge Direct Sync: checking menu' })
+  assert.equal(syncSummary({ ...base, engine: 'forge-direct', places: [] }).detail, 'Forge Direct Sync: waiting for Studio')
 })
 
 test('unsynced references: collected over a chunked snapshot, replaced by changes, capped in status', async () => {

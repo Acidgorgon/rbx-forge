@@ -108,7 +108,10 @@ export function ForgePage() {
       <div className="page-inner forge">
         <div className="page-head">
           <div className="grow" style={{ minWidth: 0 }}>
-            <h1 className="ellipsis"><span className="ast">*</span> {state.project.name}</h1>
+            <h1 className="ellipsis">
+              <AnvilMark size={20} />
+              <span className="ellipsis">{state.project.name}</span>
+            </h1>
             <div className="sub ellipsis mono" title={state.project.root}>{state.project.root}</div>
           </div>
           <div className="actions">

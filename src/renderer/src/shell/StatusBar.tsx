@@ -2,6 +2,7 @@
 import { useEffect, useRef, useState } from 'react'
 import type { LspCompanionStatus, ServiceStatus } from '@shared/types'
 import { useStorePick, useActions } from '../store'
+import { AnvilMark } from '../components/Brand'
 import { Icon } from '../components/Icons'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { useCursor } from '../lib/cursor'
@@ -94,12 +95,13 @@ function SyncDriftPill() {
 export function StatusBar() {
   const actions = useActions()
   const state = useStorePick('activeFile', 'activePlace', 'git', 'lsp', 'lspCompanion', 'notifications', 'places', 'project', 'services', 'usage')
+  const [forgeSync] = useForgeSync()
   const cursor = useCursor()
   const problems = useProblems()
   const menu = useMenu()
   const git = state.git
   const place = state.places.find((p) => p.file === state.activePlace)
-  const services = state.services.filter((s) => s.id !== 'lsp')
+  const services = state.services.filter((s) => s.id !== 'lsp' && !(forgeSync?.engine === 'forge-direct' && s.id === 'rojo'))
   const lspService = state.services.find((s) => s.id === 'lsp')
   const errors = problems.filter((p) => p.severity === 'error').length
   const warnings = problems.filter((p) => p.severity === 'warning').length
@@ -124,7 +126,7 @@ export function StatusBar() {
   return (
     <footer className="status">
       <span className="sb home" onClick={() => actions.openPage('forge')} title="Open the Forge tab">
-        <Icon name="hammer" size={12} />
+        <AnvilMark size={13} />
         {state.project?.name ?? 'RBX Forge'}
       </span>
       {git?.isRepo && (

@@ -1041,12 +1041,12 @@ ipcMain.on('forge:titlebarTheme', (event, theme: unknown) => {
   const win = BrowserWindow.fromWebContents(event.sender)
   const light = theme === 'light'
   try {
-    win?.setTitleBarOverlay?.({ color: light ? '#e4e7eb' : '#0c0e11', symbolColor: light ? '#3c434d' : '#b0b7c2', height: 38 })
+    win?.setTitleBarOverlay?.({ color: light ? '#eef1f6' : '#0a0c10', symbolColor: light ? '#334155' : '#94a3b8', height: 40 })
   } catch {
     // "Titlebar overlay is not enabled" (Linux without window-controls overlay, e.g. no compositor):
     // nothing to recolour, and an uncaught throw here would surface as a main-process error.
   }
-  win?.setBackgroundColor(light ? '#e4e7eb' : '#0c0e11')
+  win?.setBackgroundColor(light ? '#eef1f6' : '#0a0c10')
 })
 const agentIpc = registerAgentIpc(ctx, ipcMain, { memory, userDataDir: app.getPath('userData'), gating: async () => (await gating.service.view()).costs })
 // Editor assist (services/editorAssist): StyLua format on save / Format Document, autosave settings,
@@ -1102,14 +1102,14 @@ function createWindow(): BrowserWindow {
     minWidth: 1024,
     minHeight: 640,
     show: false,
-    backgroundColor: '#0c0e11',
+    backgroundColor: '#0a0c10',
     title: 'RBX Forge',
     // Windows/Linux window and taskbar icon; macOS uses the app bundle's icon.
     ...(process.platform === 'darwin' ? {} : { icon: iconPath }),
-    // The renderer draws its own 38px titlebar: macOS keeps the traffic lights inset, Windows/Linux
+    // The renderer draws its own 40px titlebar: macOS keeps the traffic lights inset, Windows/Linux
     // get the native caption buttons as an overlay (the titlebar leaves room via titlebar-area env()).
     titleBarStyle: process.platform === 'darwin' ? 'hiddenInset' : 'hidden',
-    ...(process.platform === 'darwin' ? {} : { titleBarOverlay: { color: '#0c0e11', symbolColor: '#b0b7c2', height: 38 } }),
+    ...(process.platform === 'darwin' ? {} : { titleBarOverlay: { color: '#0a0c10', symbolColor: '#94a3b8', height: 40 } }),
     webPreferences: {
       preload: preloadPath(),
       sandbox: false,

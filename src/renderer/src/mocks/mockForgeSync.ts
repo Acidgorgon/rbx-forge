@@ -44,8 +44,16 @@ const MOCK_REFS = [
 ]
 
 export function forgeSyncMock(emit: Emit, log: (text: string) => void) {
-  const mode = new URLSearchParams(location.search).get('forgesync') ?? 'blocked'
-  let settings: ForgeSyncSettings = { engine: mode === 'project' ? 'project' : mode === 'off' ? 'off' : 'forge', gateRojo: true }
+  const mode = new URLSearchParams(location.search).get('forgesync') ?? 'direct'
+  const engine: ForgeSyncSettings['engine'] =
+    mode === 'project'
+      ? 'project'
+      : mode === 'off'
+        ? 'off'
+        : mode === 'direct'
+          ? 'forge-direct'
+          : 'forge'
+  let settings: ForgeSyncSettings = { engine, gateRojo: true }
   let legacy = mode !== 'clear'
   const t = Date.now()
   const MATCH = '4815162342'

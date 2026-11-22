@@ -52,8 +52,16 @@
   transition: border-color var(--dur-fast);
 }
 
+.hb-card:hover {
+  border-color: var(--fg-faint);
+}
+
 .hb-card.detected {
   border-color: var(--line-strong);
+}
+
+.hb-card.detected:hover {
+  border-color: var(--ember-lo);
 }
 
 .hb-card-head {

@@ -156,8 +156,8 @@
   display: flex;
   align-items: center;
   gap: 8px;
-  font: 500 11px var(--font-ui);
-  letter-spacing: .09em;
+  font: 600 11px var(--font-ui);
+  letter-spacing: .08em;
   text-transform: uppercase;
   color: var(--fg-muted);
 }

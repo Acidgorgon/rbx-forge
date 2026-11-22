@@ -10,6 +10,7 @@ import { setThemeMode, useAppearance } from '../theme'
 import { requestBugReport } from '../qol/QolRoot'
 import { helpMenuItems } from './helpMenu'
 import { placeServeText, serveNotice, serveView } from '@shared/rojoView'
+import { useForgeSync } from '../views/ForgeSyncSection'
 
 function parentDir(root: string): string {
   const parts = root.split(/[\\/]/).filter(Boolean)
@@ -24,6 +25,9 @@ export function Titlebar() {
   const [syncing, setSyncing] = useState(false)
   const serveRef = useRef<HTMLButtonElement>(null)
   const git = state.git
+  const [forgeSync] = useForgeSync()
+  const directSync = forgeSync?.engine === 'forge-direct'
+  const directConnected = Boolean(forgeSync?.places.some((p) => p.connected))
   const rojo = state.services.find((s) => s.id === 'rojo')
   const place = state.places.find((p) => p.file === state.activePlace)
   const port = place?.servePort ?? 34872
@@ -229,30 +233,41 @@ export function Titlebar() {
         </button>
       )}
       <button className="omni" onClick={() => actions.openPalette('')} title={`Go to file (${keyHint('mod+p')}) · Commands (${keyHint('mod+k')})`}>
-        <span className="omni-gt">&gt;</span>
-        <span className="omni-text">search scripts, instances, commands</span>
+        <span className="omni-gt"><Icon name="search" size={13} /></span>
+        <span className="omni-text">Search files, instances, commands…</span>
         <kbd>{keyHint('mod+k')}</kbd>
       </button>
       <div className="tb-right">
         <button className="pill sync-btn" onClick={(e) => void sync(e.currentTarget)} title={git?.isRepo ? `Sync with collaborators (${keyHint('mod+shift+s')})` : 'Set up git'} disabled={syncing}>
           <Icon name="sync" size={14} className={syncing ? 'spin' : undefined} />
-          <span className="tb-label">Sync</span>
+          <span className="tb-label">Git</span>
           {!!git?.behind && <span className="behind">↓{git.behind}</span>}
           {!!git?.ahead && <span className="ahead">↑{git.ahead}</span>}
           {!!state.studioConflicts.length && <span className="count-dot" title="Studio conflicts" style={{ background: 'var(--warn)' }}>{state.studioConflicts.length}</span>}
         </button>
-        <button
-          ref={serveRef}
-          className={`btn-forge ${serveState}`}
-          onClick={() => void serve()}
-          title={serveState === 'running' ? `${view.title} (${keyHint('mod+shift+r')})` : view.title}
-          disabled={serveState === 'starting'}
-          aria-haspopup={serveState === 'held' || serveState === 'checking' || serveState === 'waiting' ? 'menu' : undefined}
-        >
-          {serveState === 'starting' || serveState === 'checking' ? <span className="spinner" /> : serveState === 'held' || serveState === 'waiting' ? <Icon name="warn" size={12} /> : serveState === 'crashed' || serveState === 'failed' ? <Icon name="restart" size={12} /> : serveState === 'running' ? (view.attention ? <span className="led warn" /> : <span className="led ok" />) : <Icon name="play" size={12} />}
-          {view.label}
-          <span className="serve-port" style={{ opacity: 0.7, fontSize: 11 }}>:{port}</span>
-        </button>
+        {directSync ? (
+          <button
+            className={`btn-forge ${directConnected ? 'running' : 'stopped'}`}
+            onClick={() => actions.showSide('sync')}
+            title={directConnected ? 'Direct 2-way Forge Sync connected to Studio' : 'Direct 2-way Forge Sync enabled (click to inspect)'}
+          >
+            <span className={`led ${directConnected ? 'ok' : 'idle'}`} />
+            Direct Sync
+          </button>
+        ) : (
+          <button
+            ref={serveRef}
+            className={`btn-forge ${serveState}`}
+            onClick={() => void serve()}
+            title={serveState === 'running' ? `${view.title} (${keyHint('mod+shift+r')})` : view.title}
+            disabled={serveState === 'starting'}
+            aria-haspopup={serveState === 'held' || serveState === 'checking' || serveState === 'waiting' ? 'menu' : undefined}
+          >
+            {serveState === 'starting' || serveState === 'checking' ? <span className="spinner" /> : serveState === 'held' || serveState === 'waiting' ? <Icon name="warn" size={12} /> : serveState === 'crashed' || serveState === 'failed' ? <Icon name="restart" size={12} /> : serveState === 'running' ? (view.attention ? <span className="led warn" /> : <span className="led ok" />) : <Icon name="play" size={12} />}
+            {view.label}
+            <span className="serve-port" style={{ opacity: 0.7, fontSize: 11 }}>:{port}</span>
+          </button>
+        )}
         <span className="tb-sep" />
         <button className={`tb-btn${l.sideOpen ? ' on' : ''}`} onClick={() => actions.toggleSide()} title={`Toggle side panel (${keyHint('mod+b')})`} aria-pressed={l.sideOpen}>
           <Icon name="panelL" />

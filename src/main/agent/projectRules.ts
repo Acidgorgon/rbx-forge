@@ -8,7 +8,7 @@
 
 import type { HarnessContext } from '../context.ts'
 
-export const RULES_CAP = 2000
+export const RULES_CAP = 6000
 export const PROJECT_CONFIG_FILE = '.forge/project.json'
 export const AGENTS_FILE = 'AGENTS.md'
 // Notes written by the chat's /init (agent/commands/notes.ts).

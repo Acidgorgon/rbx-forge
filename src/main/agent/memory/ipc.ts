@@ -1,6 +1,7 @@
 // IPC handlers for the Memory page and the chat proposals card (MemoryApi in shared/memoryTypes.ts).
 // main/index.ts registers them with INVOKE_PREFIX like the other handler maps.
 
+import { inspectHarnessGuide, syncHarnessGuide, type HarnessGuideOptions } from '../harnessGuide.ts'
 import { commitMarkdownImport, previewMarkdownImport, type MarkdownImportItem, type MarkdownImportRequest } from './claudeImport.ts'
 import type { MemoryService } from './service.ts'
 import type { MemoryInput, MemoryKind, MemoryScope, MemorySettings } from './types.ts'
@@ -38,12 +39,18 @@ export function memoryHandlers(memory: MemoryService): Record<string, (...args: 
     memoryDismissProposal: (id: unknown) => memory.dismiss(String(id ?? '')),
     memoryAnalyzeStyle: () => memory.analyzeStyle(),
     memoryPreviewMarkdownImport: (req: unknown) => previewMarkdownImport((req && typeof req === 'object' ? req : { content: '' }) as MarkdownImportRequest),
-    memoryCommitMarkdownImport: (s: unknown, items: unknown) => commitMarkdownImport(memory, scope(s), Array.isArray(items) ? (items as MarkdownImportItem[]) : [])
+    memoryCommitMarkdownImport: (s: unknown, items: unknown) => commitMarkdownImport(memory, scope(s), Array.isArray(items) ? (items as MarkdownImportItem[]) : []),
+    memoryHarnessGuideStatus: () => inspectHarnessGuide(memory.projectRoot()),
+    memorySyncHarnessGuide: (opts?: unknown) => {
+      const root = memory.projectRoot()
+      if (!root) throw new Error('Open a project first to write workspace instructions.')
+      return syncHarnessGuide(root, opts && typeof opts === 'object' ? (opts as Partial<HarnessGuideOptions>) : undefined)
+    }
   }
 }
 
 export const MEMORY_METHODS = [
   'memoryList', 'memorySearch', 'memorySave', 'memoryDelete', 'memoryPin', 'memoryPromote', 'memoryFeed',
   'memoryGetSettings', 'memorySetSettings', 'memoryProposals', 'memoryAcceptProposal', 'memoryDismissProposal', 'memoryAnalyzeStyle',
-  'memoryPreviewMarkdownImport', 'memoryCommitMarkdownImport'
+  'memoryPreviewMarkdownImport', 'memoryCommitMarkdownImport', 'memoryHarnessGuideStatus', 'memorySyncHarnessGuide'
 ] as const

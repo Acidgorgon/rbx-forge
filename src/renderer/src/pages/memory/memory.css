@@ -69,3 +69,19 @@
 @keyframes mem-in { from { opacity: 0; transform: translateY(3px); } to { opacity: 1; transform: none; } }
 @media (prefers-reduced-motion: reduce) { .mem-prop { animation: none; } }
 :root[data-motion="reduced"] .mem-prop, :root[data-motion="off"] .mem-prop { animation: none; }
+
+
+/* Cross-harness project instructions card */
+.hg-card { display: flex; flex-direction: column; gap: 10px; }
+.hg-card h2 { display: flex; align-items: center; gap: 8px; }
+.hg-files { display: flex; flex-direction: column; gap: 6px; border: 1px solid var(--line); border-radius: var(--r-md); padding: 8px 10px; }
+.hg-file-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; font-size: 12px; }
+.hg-check { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--fg-2); cursor: pointer; }
+.hg-file-btn { padding: 2px 7px; font-size: 11.5px; }
+.hg-harnesses { font-size: 11.5px; flex: 1; min-width: 140px; }
+.hg-rules { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr)); gap: 6px 12px; }
+.hg-custom { display: flex; flex-direction: column; gap: 5px; }
+.hg-custom-label { font-size: 11.5px; color: var(--fg-muted); }
+.hg-textarea { width: 100%; resize: vertical; min-height: 60px; font-size: 12px; line-height: 1.45; }
+.hg-foot { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+.hg-preview { margin: 0; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-md); background: var(--bg-overlay); color: var(--fg-2); font-size: 11px; line-height: 1.45; max-height: 240px; overflow: auto; white-space: pre-wrap; }

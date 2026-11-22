@@ -16,8 +16,16 @@ export type {
   StyleProfile
 } from '../main/agent/memory/types.ts'
 export type { MarkdownImportItem, MarkdownImportRequest, MarkdownImportResult } from '../main/agent/memory/claudeImport.ts'
+export type {
+  HarnessGuideFileState,
+  HarnessGuideOptions,
+  HarnessGuideStatus,
+  HarnessGuideSyncResult,
+  HarnessTargetId
+} from '../main/agent/harnessGuide.ts'
 import type { MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryListing, MemoryProposal, MemoryScope, MemorySettings, SaveResult, StyleProfile } from '../main/agent/memory/types.ts'
 import type { MarkdownImportItem, MarkdownImportRequest, MarkdownImportResult } from '../main/agent/memory/claudeImport.ts'
+import type { HarnessGuideOptions, HarnessGuideStatus, HarnessGuideSyncResult } from '../main/agent/harnessGuide.ts'
 
 export interface MemoryApi {
   memoryList(): Promise<MemoryListing>
@@ -38,6 +46,8 @@ export interface MemoryApi {
   memoryAnalyzeStyle(): Promise<{ profile: StyleProfile; result: SaveResult | null }>
   memoryPreviewMarkdownImport(req: MarkdownImportRequest): Promise<MarkdownImportItem[]>
   memoryCommitMarkdownImport(scope: MemoryScope, items: MarkdownImportItem[]): Promise<MarkdownImportResult>
+  memoryHarnessGuideStatus(): Promise<HarnessGuideStatus>
+  memorySyncHarnessGuide(opts?: Partial<HarnessGuideOptions>): Promise<HarnessGuideSyncResult>
 }
 
 export interface MemoryEvents {

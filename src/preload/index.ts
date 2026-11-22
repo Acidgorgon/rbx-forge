@@ -56,7 +56,7 @@ const methods = [
   // Memory and skills
   'memoryList', 'memorySearch', 'memorySave', 'memoryDelete', 'memoryPin', 'memoryPromote', 'memoryFeed',
   'memoryGetSettings', 'memorySetSettings', 'memoryProposals', 'memoryAcceptProposal', 'memoryDismissProposal', 'memoryAnalyzeStyle',
-  'memoryPreviewMarkdownImport', 'memoryCommitMarkdownImport',
+  'memoryPreviewMarkdownImport', 'memoryCommitMarkdownImport', 'memoryHarnessGuideStatus', 'memorySyncHarnessGuide',
   // Memory export/import (.forgepack) and device sync
   'packCandidates', 'packExport', 'packOpen', 'packImport',
   'brainSyncStatus', 'brainSyncGetSettings', 'brainSyncSetSettings', 'brainSyncNow', 'brainSyncChooseFolder',

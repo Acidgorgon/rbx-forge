@@ -5,14 +5,14 @@
 
 export const NOTES_FILE = '.forge/AGENTS.md'
 
-export const INIT_PROMPT = `Write project notes for this GenTree (Roblox, Rojo, Luau) project, like a CLAUDE.md: what a new coding assistant needs to know to work here.
-Investigate with the read-only tools first (project_map, blink_events, search_code, read_script on the key modules).
+export const INIT_PROMPT = `Write project notes for this Roblox project in RBX Forge: what any coding assistant (RBX Forge, Claude, Codex, Antigravity) needs to know to work here.
+Investigate with the read-only tools first (project_map, harbor_status, blink_events, search_code, read_script on the key modules).
 Cover, as short markdown sections with bullets:
 ## Overview  (what the game is, the main features)
-## Layout  (where things live; features, services, controllers)
-## Conventions  (naming, module patterns, networking, data saving)
-## Commands  (dev, tests, lint, sync)
-## Gotchas  (generated files, things not to edit)
+## Layout  (where things live; src/shared, src/server, src/client, Features, Packages/, Harbor libraries Current/Ripple/Anchor/Tide/Lighthouse)
+## Conventions  (naming, module patterns, comments policy, networking, LibsConfig toggles, data saving)
+## Sync & Verification  (RBX Forge Direct Sync, Vanguards rur/ror/ree offline checks, tests, lint)
+## Gotchas  (generated files, Packages/ boundaries, Studio safety)
 Do not repeat rules that are already in the project's AGENTS.md (they are in your instructions); add what is missing.
 Reply with ONLY the notes, starting with "# Project notes".`
 

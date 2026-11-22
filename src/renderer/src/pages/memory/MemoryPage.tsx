@@ -2,7 +2,7 @@
 // .forge/memory, shared with the team) and skills with search; view, edit, delete, pin and promote
 // user -> project; a "learned recently" feed; the reflection and style-profile settings.
 import { useCallback, useEffect, useMemo, useState } from 'react'
-import type { ImportPreview, MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryListing, MemoryScope, MemorySettings, MemoryType, ReflectionMode } from '@shared/types'
+import type { HarnessGuideOptions, HarnessGuideStatus, HarnessTargetId, ImportPreview, MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryListing, MemoryScope, MemorySettings, MemoryType, ReflectionMode } from '@shared/types'
 import { useStorePick, useActions } from '../../store'
 import { Icon } from '../../components/Icons'
 import { Markdown } from '../../components/Markdown'
@@ -163,6 +163,177 @@ function Detail({ e, onEdit, onChanged, onDeleted }: { e: MemoryEntry; onEdit: (
       </div>
       <div className="mem-body"><Markdown text={e.body} /></div>
     </div>
+  )
+}
+
+type GuideBoolKey = 'enforceDirectSyncAndGit' | 'enforceHarborAndPackages' | 'enforceProjectStructure' | 'enforceOfflineVanguards' | 'noComments'
+
+const DEFAULT_GUIDE_OPTS: HarnessGuideOptions = {
+  targets: ['agents', 'claude', 'antigravity'],
+  noComments: true,
+  enforceHarborAndPackages: true,
+  enforceDirectSyncAndGit: true,
+  enforceOfflineVanguards: true,
+  enforceProjectStructure: true,
+  customRules: ''
+}
+
+const GUIDE_RULE_TOGGLES: Array<{ key: GuideBoolKey; label: string }> = [
+  { key: 'enforceDirectSyncAndGit', label: 'RBX Forge Direct Sync, Inbox import & Git' },
+  { key: 'enforceHarborAndPackages', label: 'Packages guard & Harbor Stack (Current, Ripple, Anchor, Tide, Lighthouse)' },
+  { key: 'enforceProjectStructure', label: 'Project structure (src/shared, src/server, src/client, *.story.luau)' },
+  { key: 'enforceOfflineVanguards', label: 'Offline Vanguards verification (rur, ror, ree, fm/)' },
+  { key: 'noComments', label: 'No comments in Luau / TypeScript unless requested' }
+]
+
+function sameGuideOptions(a: HarnessGuideOptions, b: HarnessGuideOptions): boolean {
+  if (a.targets.length !== b.targets.length || a.targets.some((t, i) => t !== b.targets[i])) return false
+  return (
+    a.noComments === b.noComments &&
+    a.enforceHarborAndPackages === b.enforceHarborAndPackages &&
+    a.enforceDirectSyncAndGit === b.enforceDirectSyncAndGit &&
+    a.enforceOfflineVanguards === b.enforceOfflineVanguards &&
+    a.enforceProjectStructure === b.enforceProjectStructure &&
+    (a.customRules ?? '') === (b.customRules ?? '')
+  )
+}
+
+function HarnessGuideCard({ projectOpen, projectRoot }: { projectOpen: boolean; projectRoot?: string | null }) {
+  const actions = useActions()
+  const h = window.harness
+  const [status, setStatus] = useState<HarnessGuideStatus | null>(null)
+  const [opts, setOpts] = useState<HarnessGuideOptions>(DEFAULT_GUIDE_OPTS)
+  const [syncing, setSyncing] = useState(false)
+  const [showPreview, setShowPreview] = useState(false)
+
+  useEffect(() => {
+    let active = true
+    void h
+      .memoryHarnessGuideStatus()
+      .then((s) => {
+        if (!active) return
+        setStatus(s)
+        setOpts(s.options)
+      })
+      .catch(() => undefined)
+    return () => {
+      active = false
+    }
+  }, [projectRoot, projectOpen])
+
+  const toggleTarget = (id: HarnessTargetId, on: boolean) => {
+    setOpts((prev) => {
+      const next = on ? [...new Set([...prev.targets, id])] : prev.targets.filter((t) => t !== id)
+      return { ...prev, targets: next }
+    })
+  }
+
+  const syncNow = async () => {
+    setSyncing(true)
+    try {
+      const res = await h.memorySyncHarnessGuide(opts)
+      setStatus(res.status)
+      setOpts(res.status.options)
+      actions.toast({
+        text: res.written.length ? 'Synced project instructions' : 'Project instructions already up to date',
+        detail: res.written.length ? res.written.join(', ') : undefined,
+        kind: 'ok'
+      })
+    } catch (e) {
+      actions.toast({ text: 'Could not sync project instructions', detail: errorText(e), kind: 'err' })
+    } finally {
+      setSyncing(false)
+    }
+  }
+
+  const dirty = !!status && !sameGuideOptions(opts, status.options)
+  const files = status?.files ?? []
+  const selectedFiles = files.filter((f) => opts.targets.includes(f.id))
+  const allSynced = projectOpen && !dirty && selectedFiles.length > 0 && selectedFiles.every((f) => f.exists && f.upToDate)
+
+  const headerTag = !projectOpen
+    ? <span className="tag">open a project</span>
+    : dirty
+      ? <span className="tag info">unsaved changes</span>
+      : allSynced
+        ? <span className="tag ok">synced</span>
+        : <span className="tag warn">needs sync</span>
+
+  return (
+    <section className="set-sec hg-card" aria-label="Cross-harness project instructions">
+      <h2>
+        Cross-harness project instructions {headerTag}
+        <span className="grow" />
+        <button className="btn small" disabled={!projectOpen || syncing || !opts.targets.length} onClick={() => void syncNow()}>
+          <Icon name="sync" size={12} /> {syncing ? 'Syncing…' : 'Sync Project Instructions'}
+        </button>
+      </h2>
+      <div className="note">
+        Write marker-scoped workflow instructions so Claude Code, Antigravity, Codex, and RBX Forge share one workflow for Direct Sync, Inbox asset import, Harbor packages, project structure, offline Vanguards checks, and Git. Existing notes outside <span className="mono">&lt;!-- rbx-forge:guide:start/end --&gt;</span> are preserved.
+      </div>
+      <div className="hg-files">
+        {files.map((f) => {
+          const enabled = opts.targets.includes(f.id)
+          const badge = !enabled
+            ? <span className="tag">off</span>
+            : !f.exists
+              ? <span className="tag">missing</span>
+              : f.upToDate && !dirty
+                ? <span className="tag ok">up to date</span>
+                : <span className="tag warn">needs sync</span>
+          return (
+            <div key={f.id} className="hg-file-row">
+              <label className="hg-check">
+                <input type="checkbox" checked={enabled} disabled={!projectOpen} onChange={(e) => toggleTarget(f.id, e.target.checked)} />
+              </label>
+              <button
+                type="button"
+                className="mini-btn mono hg-file-btn"
+                disabled={!projectOpen || !f.exists}
+                title={f.exists ? `Open ${f.file}` : `${f.file} has not been created yet`}
+                onClick={() => void actions.openFile(f.file)}
+              >
+                {f.label}
+              </button>
+              <span className="faint hg-harnesses">{f.harnesses}</span>
+              {badge}
+            </div>
+          )
+        })}
+      </div>
+      <div className="hg-rules">
+        {GUIDE_RULE_TOGGLES.map((r) => (
+          <label key={r.key} className="hg-check">
+            <input
+              type="checkbox"
+              checked={opts[r.key]}
+              disabled={!projectOpen}
+              onChange={(e) => setOpts((prev) => ({ ...prev, [r.key]: e.target.checked }))}
+            />
+            <span>{r.label}</span>
+          </label>
+        ))}
+      </div>
+      <div className="hg-custom">
+        <label className="hg-custom-label" htmlFor="hg-custom-rules">Custom rules (optional, appended inside managed block)</label>
+        <textarea
+          id="hg-custom-rules"
+          className="input hg-textarea"
+          rows={3}
+          disabled={!projectOpen}
+          value={opts.customRules ?? ''}
+          placeholder="e.g. Always keep combat hitboxes in src/shared/Combat/..."
+          onChange={(e) => setOpts((prev) => ({ ...prev, customRules: e.target.value }))}
+        />
+      </div>
+      <div className="hg-foot">
+        <button type="button" className="mini-btn" onClick={() => setShowPreview((v) => !v)}>
+          {showPreview ? 'Hide preview' : 'Show generated markdown'}
+        </button>
+        {dirty && showPreview && <span className="faint">Click Sync Project Instructions to update preview and write files.</span>}
+      </div>
+      {showPreview && <pre className="hg-preview mono">{status?.preview ?? ''}</pre>}
+    </section>
   )
 }
 
@@ -423,6 +594,7 @@ export function MemoryPage() {
           </section>
         </div>
 
+        <HarnessGuideCard projectOpen={projectOpen} projectRoot={state.project?.root} />
         <SyncCard />
       </div>
       {exporting && <ExportDialog onClose={() => setExporting(false)} />}

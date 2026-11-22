@@ -60,6 +60,10 @@ export class MemoryService {
 
   // ------------------------------------------------------------ stores
 
+  projectRoot(): string | null {
+    return this.deps.projectRoot()
+  }
+
   project(): MemoryStore | null {
     const root = this.deps.projectRoot()
     if (!root) return null

@@ -1,7 +1,7 @@
 // Browser-preview mock of the memory + skills layer (MemoryApi). In-memory stores seeded with a few
 // memories and skills, a feed, and one reflection proposal on chat-3. mock.ts spreads it into its
 // api object. window.__forgeMemoryPropose("chat-id") fakes a new reflection card for design work.
-import type { HarnessEvents, MarkdownImportItem, MarkdownImportRequest, MemoryApi, MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryProposal, MemoryScope, MemorySettings } from '@shared/types'
+import type { HarnessEvents, HarnessGuideFileState, HarnessGuideOptions, HarnessGuideStatus, HarnessGuideSyncResult, MarkdownImportItem, MarkdownImportRequest, MemoryApi, MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryProposal, MemoryScope, MemorySettings } from '@shared/types'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 
@@ -74,6 +74,50 @@ export function memoryMock(emit: Emit): MemoryApi {
       ...proposals
     ]
     emit('memory:proposals', { sessionId, proposals: proposals.filter((p) => p.sessionId === sessionId) })
+  }
+
+  let harnessGuideOpts: HarnessGuideOptions = {
+    targets: ['agents', 'claude', 'antigravity'],
+    noComments: true,
+    enforceHarborAndPackages: true,
+    enforceDirectSyncAndGit: true,
+    enforceOfflineVanguards: true,
+    enforceProjectStructure: true,
+    customRules: ''
+  }
+  const harnessGuideMeta = [
+    { id: 'agents' as const, file: 'AGENTS.md', label: 'AGENTS.md', harnesses: 'Codex, Antigravity, RBX Forge, Cursor' },
+    { id: 'claude' as const, file: 'CLAUDE.md', label: 'CLAUDE.md', harnesses: 'Claude Code' },
+    { id: 'antigravity' as const, file: '.agents/rules/rbx-forge.md', label: '.agents/rules/rbx-forge.md', harnesses: 'Antigravity workspace rules' }
+  ]
+  let syncedTargets = new Set<string>(['agents'])
+  const mockGuideStatus = (): HarnessGuideStatus => {
+    const files: HarnessGuideFileState[] = harnessGuideMeta.map((m) => ({
+      ...m,
+      exists: syncedTargets.has(m.id),
+      hasManagedBlock: syncedTargets.has(m.id),
+      upToDate: syncedTargets.has(m.id)
+    }))
+    const preview = [
+      '<!-- rbx-forge:guide:start -->',
+      '# RBX Forge Workspace Instructions',
+      '',
+      harnessGuideOpts.enforceDirectSyncAndGit ? '- **Syncing (RBX Forge Direct Sync)**, **Importing Assets**, **Version Control**' : null,
+      harnessGuideOpts.enforceHarborAndPackages ? '- **Packages & Harbor Stack** (`Current`, `Ripple`, `Anchor`, `Tide`, `Lighthouse`)' : null,
+      harnessGuideOpts.enforceProjectStructure ? '- **Project Structure** (`src/shared`, `src/server`, `src/client`, `*.story.luau`)' : null,
+      harnessGuideOpts.enforceOfflineVanguards ? '- **Offline Verification** (`rur`, `ror`, `ree`, `fm/`)' : null,
+      harnessGuideOpts.noComments ? '- **No Comments**: Do not write code comments unless explicitly requested.' : null,
+      harnessGuideOpts.customRules?.trim() ? `\n## Custom Rules\n${harnessGuideOpts.customRules.trim()}` : null,
+      '<!-- rbx-forge:guide:end -->'
+    ]
+      .filter((x): x is string => x !== null)
+      .join('\n')
+    return {
+      projectRoot: 'E:/MockProject',
+      options: { ...harnessGuideOpts, targets: [...harnessGuideOpts.targets] },
+      files,
+      preview
+    }
   }
 
   return {
@@ -186,6 +230,26 @@ export function memoryMock(emit: Emit): MemoryApi {
       }
       changed()
       return { imported, updated, skipped }
+    },
+    async memoryHarnessGuideStatus() {
+      return mockGuideStatus()
+    },
+    async memorySyncHarnessGuide(opts) {
+      if (opts) {
+        harnessGuideOpts = {
+          ...harnessGuideOpts,
+          ...opts,
+          targets: opts.targets?.length ? [...opts.targets] : harnessGuideOpts.targets
+        }
+      }
+      const written: string[] = []
+      for (const id of harnessGuideOpts.targets) {
+        syncedTargets.add(id)
+        const meta = harnessGuideMeta.find((m) => m.id === id)
+        if (meta) written.push(meta.file)
+      }
+      const result: HarnessGuideSyncResult = { written, status: mockGuideStatus() }
+      return result
     }
   }
 }

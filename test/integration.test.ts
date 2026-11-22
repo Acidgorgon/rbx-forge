@@ -137,7 +137,7 @@ test('orchestrator OpenAI adapter picks the Responses loop and normalizes raw us
 
 test('rules block: aiRules first, capped with a truncation note', () => {
   assert.equal(buildRulesBlock({}), '')
-  const block = buildRulesBlock({ aiRules: 'Never change prices.', agentsMd: 'x'.repeat(5000) })
+  const block = buildRulesBlock({ aiRules: 'Never change prices.', agentsMd: 'x'.repeat(RULES_CAP + 2000) })
   assert.ok(block.length <= RULES_CAP)
   assert.match(block, /Team rules \(\.forge\/project\.json aiRules\)\nNever change prices\./)
   assert.match(block, /truncated; read AGENTS\.md/)

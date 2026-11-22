@@ -5,7 +5,8 @@
 
 import assert from 'node:assert/strict'
 import { execFile } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, resolve } from 'node:path'
 import { after, test } from 'node:test'
@@ -22,8 +23,8 @@ import type { SyncStatus } from '../src/shared/sync/types.ts'
 const lune = process.env.LUNE_PATH || findLune()
 const skip = lune ? false : 'Lune not installed (set LUNE_PATH)'
 const dirs: string[] = []
-after(() => {
-  for (const d of dirs) rmSync(d, { recursive: true, force: true })
+after(async () => {
+  for (const d of dirs) await rm(d, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 
 // The GenTree template's layout (default.project.json, tools/studio-sync.json, the empty client script).
@@ -93,20 +94,26 @@ async function runStudio(scenario: string, during?: (env: During) => Promise<voi
       return answer
     }
   })
+  const children: ReturnType<typeof execFile>[] = []
   try {
     const dir = mkdtempSync(join(tmpdir(), 'forge-plugin-run-'))
     dirs.push(dir)
     const template = readFileSync(resolve(import.meta.dirname, '..', 'resources', 'studio', 'ForgeBridge.luau'), 'utf8')
     writeFileSync(join(dir, 'ForgeBridge.luau'), pluginSource(template, { port: bridge.port }))
     const harness = resolve(import.meta.dirname, 'fixtures', 'forgeBridgeStudio.luau')
-    const run = new Promise<string>((res, rej) =>
-      execFile(lune!, ['run', harness, join(dir, 'ForgeBridge.luau'), scenario, linked ? LINK : ''], { cwd: dir, timeout: 60_000 }, (err, stdout, stderr) => (err ? rej(new Error(`${err.message}\n${stdout}\n${stderr}`)) : res(stdout + stderr)))
-    )
+    const run = new Promise<string>((res, rej) => {
+      children.push(execFile(lune!, ['run', harness, join(dir, 'ForgeBridge.luau'), scenario, linked ? LINK : ''], { cwd: dir, timeout: 60_000 }, (err, stdout, stderr) => (err ? rej(new Error(`${err.message}\n${stdout}\n${stderr}`)) : res(stdout + stderr))))
+    })
     const mark = (name: string) => writeFileSync(join(dir, name), '')
     const [out] = await Promise.all([run, during?.({ bridge, service, trees, mark })])
     assert.match(out, /SCENARIO DONE/, out)
     return { root, out, status: await service.status(), trees, final: paths() }
   } finally {
+    for (const c of children) {
+      try {
+        c.kill()
+      } catch {}
+    }
     await bridge.stop()
     service.close()
   }

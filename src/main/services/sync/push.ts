@@ -188,8 +188,17 @@ export class DirectPushEngine {
       this.knownStudioHashes.set(placeKey, hashes)
     }
     hashes.clear()
+    const parentKeys = new Set<string>()
     for (const node of nodes) {
-      const mapped = toDisk(map, { path: node.path, className: node.className, runContext: node.runContext })
+      if (node.path.length > 1) parentKeys.add(node.path.slice(0, -1).join('\u0000'))
+    }
+    for (const node of nodes) {
+      const mapped = toDisk(map, {
+        path: node.path,
+        className: node.className,
+        runContext: node.runContext,
+        hasChildren: parentKeys.has(node.path.join('\u0000'))
+      })
       if (!mapped || mapped.kind === 'folder') continue
       if (node.className === 'ModuleScript' || node.className === 'Script' || node.className === 'LocalScript') {
         if (typeof node.source === 'string') {
@@ -287,12 +296,20 @@ export class DirectPushEngine {
       if (folderPath.length >= 2) neededFolders.add(folderPath.join('\u0000'))
     }
 
+    const diskInstanceKeys = new Set<string>()
+    for (const op of snap.opsByFile.values()) diskInstanceKeys.add(op.path.join('\u0000'))
+    for (const folderPath of snap.folders.values()) diskInstanceKeys.add(folderPath.join('\u0000'))
+
     // Detect deletions (previously known on Studio, now gone from disk under this map)
     for (const [rel] of prevHashes) {
       if (snap.hashes.has(rel)) continue
       if (this.opts.isFileConflicted(placeKey, rel)) continue
       const instPath = instancePathForPush(map, rel)
       if (!instPath || instPath.length < 2) continue
+      if (diskInstanceKeys.has(instPath.join('\u0000'))) {
+        prevHashes.delete(rel)
+        continue
+      }
       ops.push({ kind: 'delete', path: instPath, file: rel })
     }
 

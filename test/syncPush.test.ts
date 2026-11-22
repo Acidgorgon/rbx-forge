@@ -6,7 +6,7 @@ import { after, test } from 'node:test'
 import { StudioBridge } from '../src/main/services/studio/bridge.ts'
 import { SyncEngine } from '../src/main/services/sync/engine.ts'
 import { loadPlaces, placeFor } from '../src/main/services/sync/mapping.ts'
-import { DirectPushEngine } from '../src/main/services/sync/push.ts'
+import { DirectPushEngine, sha256Text } from '../src/main/services/sync/push.ts'
 import { SyncService } from '../src/main/services/sync/service.ts'
 
 const dirs: string[] = []
@@ -209,5 +209,57 @@ test('HTTP bridge roundtrip: default forge-direct serves sourcemap + /sync/push 
   } finally {
     service.close()
     await bridge.stop()
+  }
+})
+
+test('DirectPushEngine: preserves parent scripts mapped to init.luau and file->folder transitions', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-push-init-'))
+  dirs.push(root)
+
+  put(
+    root,
+    'default.project.json',
+    JSON.stringify({
+      name: 'InitTest',
+      tree: {
+        $className: 'DataModel',
+        ReplicatedStorage: {
+          Shared: { $path: 'src/shared' }
+        }
+      }
+    })
+  )
+  put(root, 'src/shared/Onboarding/init.luau', 'return {}\n')
+  put(root, 'src/shared/Onboarding/Child.luau', 'return 1\n')
+  put(root, 'src/shared/Foo/init.luau', 'return "foo"\n')
+  put(root, 'src/shared/Foo/Sub.luau', 'return "sub"\n')
+
+  const maps = await loadPlaces(root)
+  const map = maps[0]
+  const push = new DirectPushEngine({
+    root,
+    canPushPlace: () => true,
+    isFileConflicted: () => false
+  })
+  try {
+    push.recordStudioSnapshot('place:1', map, [
+      { id: 'r1', path: ['ReplicatedStorage', 'Shared'], className: 'Folder' },
+      { id: 'r2', path: ['ReplicatedStorage', 'Shared', 'Onboarding'], className: 'ModuleScript', source: 'return {}\n' },
+      { id: 'r3', path: ['ReplicatedStorage', 'Shared', 'Onboarding', 'Child'], className: 'ModuleScript', source: 'return 1\n' }
+    ])
+    // Simulate a prior Studio record keyed under the single-file alias before Foo became Foo/init.luau.
+    push.seedKnownHashes('place:1', {
+      'src/shared/Foo.luau': sha256Text('return "foo"\n')
+    })
+
+    const ops = await push.syncPlace('place:1', map)
+    assert.deepEqual(
+      ops.filter((o) => o.kind === 'delete'),
+      []
+    )
+    assert.equal(ops.some((o) => 'file' in o && o.file === 'src/shared/Onboarding/init.luau'), false)
+    assert.equal(ops.some((o) => 'file' in o && o.file === 'src/shared/Foo/Sub.luau'), true)
+  } finally {
+    push.close()
   }
 })

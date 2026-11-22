@@ -5,7 +5,8 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { existsSync, rmSync } from 'node:fs'
+import { existsSync } from 'node:fs'
+import { rm } from 'node:fs/promises'
 import { after, test } from 'node:test'
 import { StudioBridge } from '../src/main/services/studio/bridge.ts'
 import { SyncEngine } from '../src/main/services/sync/engine.ts'
@@ -16,8 +17,8 @@ import type { GateState, StudioNode } from '../src/shared/sync/types.ts'
 import { edit, get, makeFsfProject, MATCH_PLACE, MENU_PLACE, put, studioFromDisk } from './syncFixture.ts'
 
 const roots: string[] = []
-after(() => {
-  for (const r of roots) rmSync(r, { recursive: true, force: true })
+after(async () => {
+  for (const r of roots) await rm(r, { recursive: true, force: true, maxRetries: 10, retryDelay: 50 })
 })
 
 async function setup() {

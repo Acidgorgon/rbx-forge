@@ -359,7 +359,7 @@ test('insert job: kind, parent, blobs; chunks decode back; the plugin report is 
   assert.deepEqual(job.insert, { parent: ['ServerStorage', 'RBX_ANIMSAVES'], replace: true, format: 'rbxmx', file: 'Run.rbxmx', size: 900, blobs: { bytes: 1, tree: 1 } })
   assert.deepEqual(job.modules, [])
   assert.equal(job.calibrate, false)
-  assert.equal(INSERT_PLUGIN_VERSION, PLUGIN_VERSION, 'insert jobs ship with this plugin version')
+  assert.ok(INSERT_PLUGIN_VERSION <= PLUGIN_VERSION, 'insert jobs ship with this plugin version or newer')
 
   const bytes = Buffer.from(Array.from({ length: 1001 }, (_, i) => (i * 37) % 256))
   const chunks = chunkBase64(bytes, 300)

@@ -627,6 +627,7 @@ local sync = {
 	offReason = nil :: string?, -- the last reason Forge gave for not syncing this window (printed once)
 	paused = false, -- v13: this DataModel is running (Run mode): no sync until it stops
 	applyingPush = false, -- v15: true while Forge Direct Sync writes pushed edits into Studio (blocks echo)
+	starting = false, -- v15: true while startSync() is fetching config/snapshot
 	pushPending = false, -- v15: true when Forge reported queued disk->Studio push batches
 	lastPushPoll = 0,
 	session = nil :: string?,
@@ -1933,7 +1934,9 @@ local function syncLoop()
 		end
 		if sync.wanted and not sync.waitingForForge and now >= sync.retryAt then
 			sync.wanted = false
+			sync.starting = true
 			local ok, result = pcall(startSync)
+			sync.starting = false
 			if not ok then
 				warn("[Forge Bridge] Forge Sync: " .. tostring(result))
 				stopSync()
@@ -2593,7 +2596,8 @@ task.spawn(function()
 		end
 		local query = "/poll?v=" .. VERSION .. "&place=" .. HttpService:UrlEncode(game.Name) .. "&placeId=" .. tostring(game.PlaceId)
 		-- v12: this window's sync state, so Forge can ask for a fresh check (see the header).
-		query ..= "&sync=" .. HttpService:UrlEncode(sync.session or "") .. "&probe=" .. SYNC_PROBE
+		local sentSession = sync.session or ""
+		query ..= "&sync=" .. HttpService:UrlEncode(sentSession) .. "&probe=" .. SYNC_PROBE
 		if game.PlaceId == 0 then
 			local link = nil
 			pcall(function()
@@ -2627,11 +2631,13 @@ task.spawn(function()
 			sync.retryAt = 0
 		end
 		if type(answer) == "table" and answer.resync == true then
-			-- Forge has no live sync session for this (linked) place: check again now.
-			print("[Forge Bridge] Forge Sync: RBX Forge asked for a fresh check of this place")
-			sync.waitingForForge = false
-			sync.wanted = true
-			sync.retryAt = 0
+			-- Ignore a stale resync asked for an empty session when startSync is already running or finished.
+			if (sync.session or "") == sentSession and not (sentSession == "" and sync.starting) then
+				print("[Forge Bridge] Forge Sync: RBX Forge asked for a fresh check of this place")
+				sync.waitingForForge = false
+				sync.wanted = true
+				sync.retryAt = 0
+			end
 		end
 		if type(answer) == "table" and answer.pushPending == true then
 			sync.pushPending = true

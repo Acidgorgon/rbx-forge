@@ -50,7 +50,7 @@ import { createPendingEdits } from './lib/pendingEdits'
 
 export type SideView = 'explorer' | 'search' | 'scripts' | 'events' | 'sync' | 'tests' | 'team'
 export type BottomTab = 'output' | 'problems' | 'terminal' | 'shell'
-export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics' | 'memory' | 'groups' | 'uipreview' | 'uimotion' | 'model'
+export type PageKind = 'forge' | 'settings' | 'packages' | 'release' | 'analytics' | 'memory' | 'groups' | 'uipreview' | 'uimotion' | 'model' | 'vanguards'
 export type TabKind = PageKind | 'file' | 'conflict' | 'transcript' | 'gitdiff'
 
 export interface Tab {
@@ -954,7 +954,7 @@ export function StoreProvider({ children }: { children: ReactNode }) {
         await self.openFile(path)
       },
       openPage(kind) {
-        const titles: Record<PageKind, string> = { forge: 'Forge', settings: 'Settings', packages: 'Packages', release: 'Release', analytics: 'Analytics', memory: 'Memory', groups: 'Group chats', uipreview: 'UI Preview', uimotion: 'UI Motion Lab', model: 'Model Lab' }
+        const titles: Record<PageKind, string> = { forge: 'Forge', settings: 'Settings', packages: 'Packages', release: 'Release', analytics: 'Analytics', memory: 'Memory', groups: 'Group chats', uipreview: 'UI Preview', uimotion: 'UI Motion Lab', model: 'Model Lab', vanguards: 'Vanguards' }
         dispatch({ type: 'openTab', tab: { id: kind, kind, title: titles[kind] } })
       },
       openConflict(path) {

@@ -25,13 +25,14 @@ import { AnalyticsPage } from '../pages/AnalyticsPage'
 import { UiMotionLabPage } from '../pages/uimotion/UiMotionLabPage'
 import { ModelLabPage } from '../pages/model/ModelLabPage'
 import { UiPreviewPage } from '../pages/uipreview/UiPreviewPage'
+import { VanguardsPage } from '../pages/vanguards/VanguardsPage'
 import { MemoryPage } from '../pages/memory/MemoryPage'
 import { GroupChatsPage } from '../assistant/GroupChatsPage'
 import { ConflictPage } from '../pages/ConflictPage'
 import { GitDiffPage } from '../pages/GitDiffPage'
 import { TranscriptPage } from '../pages/TranscriptPage'
 
-const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', uimotion: 'tap', model: 'cube', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', gitdiff: 'diff', transcript: 'bot' }
+const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', uimotion: 'tap', model: 'cube', uipreview: 'monitor', vanguards: 'tool', memory: 'memory', groups: 'round', conflict: 'diff', gitdiff: 'diff', transcript: 'bot' }
 
 function TabGlyph({ tab }: { tab: Tab }) {
   if (tab.kind === 'file' && tab.path) {
@@ -459,6 +460,8 @@ function pageFor(tab: Tab): ReactNode {
       return <ModelLabPage />
     case 'uipreview':
       return <UiPreviewPage />
+    case 'vanguards':
+      return <VanguardsPage />
     case 'memory':
       return <MemoryPage />
     case 'groups':

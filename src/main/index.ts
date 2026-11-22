@@ -47,7 +47,8 @@ import { loadPtyBackend } from './services/terminal/backend.ts'
 import { createSetup } from './setup.ts'
 import { MemoryService } from './agent/memory/service.ts'
 import { memoryHandlers } from './agent/memory/ipc.ts'
-import { memoryTools, withMemoryTools } from './agent/serviceTools.ts'
+import { memoryTools, withMemoryTools, vanguardsTools, withVanguardsTools } from './agent/serviceTools.ts'
+import { VanguardsService } from './services/vanguards/service.ts'
 import { wireBrainSync } from './agent/memory/sync/electron.ts'
 import { wireUpdater } from './services/updater/electron.ts'
 import { netGet, watchBoot } from './services/quick/electron.ts'
@@ -539,7 +540,13 @@ const ctx: HarnessContext = {
   emit,
   log: (line) => logs.push(line),
 
-  serviceTools: () => ({ ...withStudioTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), studio.tools()), chat: terminal.chatTools() }),
+  serviceTools: () => ({
+    ...withVanguardsTools(
+      withStudioTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), studio.tools()),
+      vanguardsTools(vanguards)
+    ),
+    chat: terminal.chatTools()
+  }),
   notifyTestFailure: (event) => integrations.notifyTestFailure(event)
 }
 
@@ -789,6 +796,26 @@ const doctor = createDoctorWiring({
   emit: (report) => emit('doctor:report', report)
 })
 const qolcHandlers = { ...doctor.handlers, ...spend.handlers }
+// Vanguards external CLIs (ror, rur, ree) and FM offline build pipeline.
+const vanguards = new VanguardsService({
+  root: () => project?.info.root ?? null,
+  settings,
+  emit: (event, payload) => emit(event, payload as never),
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[vanguards] ${text}` })
+})
+const vanguardsHandlers = {
+  vanguardsStatus: () => vanguards.status(),
+  vanguardsRefresh: () => vanguards.refresh(),
+  vanguardsSetSettings: (patch: Parameters<VanguardsService['setSettings']>[0]) => vanguards.setSettings(patch ?? {}),
+  vanguardsRunRor: (req: Parameters<VanguardsService['runRor']>[0]) => vanguards.runRor(req),
+  vanguardsRunRur: (req: Parameters<VanguardsService['runRur']>[0]) => vanguards.runRur(req),
+  vanguardsRunRee: (req: Parameters<VanguardsService['runRee']>[0]) => vanguards.runRee(req),
+  vanguardsFmEnvbuild: (req: Parameters<VanguardsService['fmEnvbuild']>[0]) => vanguards.fmEnvbuild(req),
+  vanguardsFmModelpreview: (req: Parameters<VanguardsService['fmModelpreview']>[0]) => vanguards.fmModelpreview(req),
+  vanguardsFmInsertRbxm: (req: Parameters<VanguardsService['fmInsertRbxm']>[0]) => vanguards.fmInsertRbxm(req),
+  vanguardsStartMcpBridge: (port?: number) => vanguards.startMcpBridge(port),
+  vanguardsStopMcpBridge: () => vanguards.stopMcpBridge()
+}
 // Bug reports carry a Forge Doctor section (home folder shown as ~).
 qol.service.setBugReportExtra(async () => doctorMarkdown(await doctor.service.run(), { home: homedir() }))
 // UI Motion Lab (services/uimotion): Figma imports (plugin JSON or a link; the token lives in the
@@ -953,7 +980,7 @@ for (const [name, handler] of Object.entries(handlers)) {
 }
 // Long lab / build calls notify when they finish (services/qol).
 const timed = (name: string, handler: (...args: any[]) => unknown) => qol.service.timed(name, handler)
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...studio.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers, ...qolcHandlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...studio.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers, ...qolcHandlers, ...vanguardsHandlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
@@ -1116,6 +1143,7 @@ app.on('before-quit', (event) => {
   updater.dispose()
   void spend.dispose()
   void studio.dispose()
+  vanguards.dispose()
   lsp.dispose()
   void lspCompanion.dispose()
   void Promise.all([rojoStopped, closeProject().catch(() => undefined)]).finally(() => {
@@ -1134,11 +1162,13 @@ app.on('will-quit', () => {
 process.on('exit', () => {
   settings.flushSync()
   terminal.dispose()
+  vanguards.dispose()
   lsp.dispose()
   supervisor.killAllSync()
 })
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(signal, () => {
+    vanguards.dispose()
     supervisor.killAllSync()
     process.exit(0)
   })

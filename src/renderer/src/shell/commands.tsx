@@ -148,6 +148,7 @@ export function buildCommands(state: State, actions: Actions): Command[] {
   add('Navigate', 'uimotion', 'Open UI Motion Lab', () => actions.openPage('uimotion'), { icon: <Icon name="tap" />, detail: 'Figma import · hover / press springs, shine, glow, ripple · compiled to Luau' })
   add('Navigate', 'model', 'Open Model Lab', () => actions.openPage('model'), { icon: <Icon name="cube" />, detail: 'Blocky plated creatures, guards and eggs · BlockyKit script · preview · Build in Studio' })
   add('Navigate', 'uipreview', 'Open UI Preview (UI Labs stories)', () => actions.openPage('uipreview'), { icon: <Icon name="monitor" /> })
+  add('Navigate', 'vanguards', 'Open Vanguards (ror, rur, ree)', () => actions.openPage('vanguards'), { icon: <Icon name="tool" />, detail: 'ror DX12 · rur stories/UI · ree headless · FM build pipeline' })
   add('Navigate', 'memory', 'Open Memory & skills', () => actions.openPage('memory'), { icon: <Icon name="memory" /> })
   // Memory export/import and device sync (pages/memory/MemoryPack.tsx).
   add('Memory', 'memory.export', 'Export memory and skills…', () => (actions.openPage('memory'), requestPack('export')), { icon: <Icon name="download" />, detail: '.forgepack for another device' })

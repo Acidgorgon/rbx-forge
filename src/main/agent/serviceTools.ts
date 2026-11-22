@@ -25,7 +25,10 @@ export const SERVICE_WRITE_TOOLS = [
   'add_wally_package',
   'rename_feature',
   // services/inbox/modelInbox.ts: uploads an FBX to Roblox as a Model asset.
-  'roblox_upload_model'
+  'roblox_upload_model',
+  // services/vanguards/tools.ts: FM build + Studio insert.
+  'fm_envbuild',
+  'fm_insert_rbxm'
 ] as const
 
 // ---------------------------------------------------------------- Blink
@@ -216,3 +219,5 @@ export const PREVIEW_READ_TOOLS = ['preview_ui'] as const
 export function withPreviewTools<T extends { read: ServiceTool[] }>(sets: T, tools: ServiceTool[]): T {
   return { ...sets, read: [...sets.read, ...tools] }
 }
+
+export { vanguardsTools, withVanguardsTools, VANGUARDS_WRITE_TOOLS } from '../services/vanguards/tools.ts'

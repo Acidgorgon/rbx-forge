@@ -4,7 +4,7 @@ import type { Actions, PageKind } from '../store'
 import { setLabValue } from './sessionStore'
 
 // Page kinds this build can open.
-export const KNOWN_PAGES: ReadonlySet<string> = new Set<PageKind>(['forge', 'settings', 'packages', 'release', 'analytics', 'memory', 'groups', 'uipreview', 'uimotion', 'model'])
+export const KNOWN_PAGES: ReadonlySet<string> = new Set<PageKind>(['forge', 'settings', 'packages', 'release', 'analytics', 'memory', 'groups', 'uipreview', 'uimotion', 'model', 'vanguards'])
 
 export function navigate(target: QolTarget, actions: Actions): void {
   switch (target.kind) {

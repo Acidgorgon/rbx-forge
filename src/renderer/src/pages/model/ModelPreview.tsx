@@ -8,7 +8,7 @@ import { PART_BUDGET } from '@shared/model/prompt'
 import { Icon } from '../../components/Icons'
 import { webglMessage } from '../../lib/webgl'
 import { frameLoop, type FrameLoop } from '../../lib/frameLoop'
-import { BACKGROUNDS, type Background } from '../vfx/preview/stage'
+import { BACKGROUNDS, type Background } from './preview/stage'
 import { ModelScene } from './preview/modelScene'
 
 const nextFrame = () => new Promise<void>((r) => requestAnimationFrame(() => requestAnimationFrame(() => r())))

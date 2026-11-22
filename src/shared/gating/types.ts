@@ -1,11 +1,11 @@
 // Lab gating: cheap decisions made in code (and, once they have earned it, by small learned decision
-// models) before a big-model call in the VFX Lab, Animation Lab and Ability Composer; a log of every
-// decision, shadow mode, and the cost per kept result. Shared by main (services/gating), the renderer
+// models) before a big-model call in the UI Motion Lab and Model Lab; a log of every decision,
+// shadow mode, and the cost per kept result. Shared by main (services/gating), the renderer
 // (Decisions list, Settings > Labs) and the tests. No node or electron imports.
 
-export type LabId = 'vfx' | 'anim' | 'ability' | 'thumbs' | 'uimotion' | 'model'
-export const LAB_IDS: readonly LabId[] = ['vfx', 'anim', 'ability', 'thumbs', 'uimotion', 'model']
-export const LAB_NAMES: Record<LabId, string> = { vfx: 'VFX Lab', anim: 'Animation Lab', ability: 'Ability Composer', thumbs: 'Thumbnail Lab', uimotion: 'UI Motion Lab', model: 'Model Lab' }
+export type LabId = 'uimotion' | 'model'
+export const LAB_IDS: readonly LabId[] = ['uimotion', 'model']
+export const LAB_NAMES: Record<LabId, string> = { uimotion: 'UI Motion Lab', model: 'Model Lab' }
 
 // Decision gates: shadow = decide and log, never act (the default for one release); on = act;
 // off = do not evaluate (the old behaviour, nothing logged). Principle-weight updates follow the

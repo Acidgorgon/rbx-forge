@@ -16,30 +16,6 @@ async function boot(): Promise<void> {
     createRoot(document.getElementById('root')!).render(<CaptureView />)
     return
   }
-  // Offscreen capture window for vfx_render and the VFX refine loop: only the 3D preview.
-  if (new URLSearchParams(location.search).has('vfx-capture')) {
-    const { VfxCapture } = await import('./pages/vfx/VfxCapture')
-    createRoot(document.getElementById('root')!).render(<VfxCapture />)
-    return
-  }
-  // Offscreen capture window for the Animation Lab critic: only the R15 preview.
-  if (new URLSearchParams(location.search).has('anim-capture')) {
-    const { AnimCapture } = await import('./pages/anim/AnimCapture')
-    createRoot(document.getElementById('root')!).render(<AnimCapture />)
-    return
-  }
-  // Offscreen decoder for ref_import: decodes and analyses a video reference (no UI).
-  if (new URLSearchParams(location.search).has('ref-decode')) {
-    const { RefDecode } = await import('./pages/videoref/RefDecode')
-    createRoot(document.getElementById('root')!).render(<RefDecode />)
-    return
-  }
-  // Offscreen capture window for the Ability Composer critic: only the ability preview.
-  if (new URLSearchParams(location.search).has('ability-capture')) {
-    const { AbilityCapture } = await import('./pages/ability/AbilityCapture')
-    createRoot(document.getElementById('root')!).render(<AbilityCapture />)
-    return
-  }
   // Offscreen capture window for the Model Lab critic: only the block-model preview.
   if (new URLSearchParams(location.search).has('model-capture')) {
     const { ModelCapture } = await import('./pages/model/ModelCapture')

@@ -258,28 +258,3 @@ async function forgeSyncFlow({ page, root, note, rojo }: { page: import('../lib/
   await page.locator('aside.side .fs-commit button', { hasText: /Commit teammate edits \(0\)/ }).waitFor({ timeout: 10_000 })
   note(`gate ${await gateText(page)}; commit "${log.split('\n')[0]}"; Studio-only cutscene pulled to disk`)
 }
-
-// Runs after the labs (needs the VFX preset the vfx-lab flow opened).
-export const studioFlows: Flow[] = [
-  {
-    name: 'studio-check',
-    title: 'Studio check with no Studio: clear "not connected" state',
-    async run({ page, note }) {
-      await openPage(page, 'VFX Lab')
-      const detail = page.locator(`${CENTER} .vfx-detail`).first()
-      if (!(await detail.count())) {
-        const card = page.locator(`${CENTER} .vfx-card`).first()
-        check(await card.count(), 'no VFX entry in the library (run vfx-lab first)')
-        await card.click()
-        await detail.waitFor({ state: 'visible', timeout: 10_000 })
-      }
-      await detail.locator('[role="tab"]', { hasText: /^studio$/ }).click()
-      await page.waitForTimeout(500)
-      const text = (await detail.innerText()).replace(/\s+/g, ' ')
-      const hit = /(not connected|no studio|open roblox studio|install the forge bridge|connect studio|studio is not)[^.]*/i.exec(text)
-      check(hit, `Studio tab shows no clear no-Studio state: ${text.slice(0, 300)}`)
-      note(hit![0].slice(0, 140))
-      await detail.locator('[role="tab"]', { hasText: /^params$/ }).click()
-    }
-  }
-]

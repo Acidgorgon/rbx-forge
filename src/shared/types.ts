@@ -2,14 +2,15 @@
 // Every IPC channel the renderer can call is listed in HarnessApi.
 
 import type { PathChange, TrashBatchResult } from './fileOps.ts'
-import type { LabModelInfo } from './labModels.ts'
+import type { LabModelInfo, LabModels } from './labModels.ts'
 import type { IntegrationApi, IntegrationEvents, OrchestrateMode, UsageSummary } from './integrationTypes.ts'
 import type { AccountsApi, AccountsEvents } from './accountTypes.ts'
+export type * from './accountTypes.ts'
 import type { TerminalApi, TerminalEvents } from './terminalTypes.ts'
-import type { ArtApi, ArtEvents } from './artTypes.ts'
+import type { InboxApi, InboxEvents } from './inboxTypes.ts'
+export type * from './inboxTypes.ts'
 import type { UiPreviewApi, UiPreviewEvents } from './uiPreviewTypes.ts'
 export type * from './uiPreviewTypes.ts'
-export type * from './artTypes.ts'
 import type { SetupApi, SetupEvents } from './setupTypes.ts'
 import type { ChatExtrasApi, ChatImage, EffortChoice, ModelMeta, NewChatOptions } from './chatTypes.ts'
 import type { BoardItem, ConclusionData, GroupApi, PatchProposal, ReviewData } from './group/types.ts'
@@ -25,22 +26,12 @@ import type { UpdateApi, UpdateEvents } from './updateTypes.ts'
 export type * from './updateTypes.ts'
 import type { BrainSyncApi, BrainSyncEvents } from './brainSyncTypes.ts'
 export type * from './brainSyncTypes.ts'
-import type { VfxApi, VfxEvents } from './vfxTypes.ts'
-export type * from './vfxTypes.ts'
-import type { VfxTextureApi, VfxTextureEvents } from './vfxTextureTypes.ts'
-export type * from './vfxTextureTypes.ts'
-import type { AnimApi, AnimEvents } from './animTypes.ts'
-export type * from './animTypes.ts'
-import type { AbilityApi, AbilityEvents } from './ability/api.ts'
-export type * from './ability/api.ts'
 import type { UiMotionApi, UiMotionEvents } from './uiMotionTypes.ts'
 export type * from './uiMotionTypes.ts'
 import type { ModelApi, ModelEvents } from './model/types.ts'
 export type * from './model/types.ts'
 import type { StudioApi, StudioEvents } from './studio/types.ts'
 export type * from './studio/types.ts'
-import type { RefApi, RefEvents } from './videoref/api.ts'
-export type * from './videoref/api.ts'
 import type { PrincipleApi, PrincipleEvents } from './principles/api.ts'
 export type * from './principles/api.ts'
 import type { SyncApi, SyncEvents } from './sync/api.ts'
@@ -52,11 +43,9 @@ import type { RestateApi, RestateCard } from './restate/api.ts'
 import type { ChatModesApi } from './chatModesApi.ts'
 import type { ChatMode, ChatTodo, DiffCardData, PlanCardData } from './chatModes.ts'
 export type * from './restate/api.ts'
-import type { ThumbsApi, ThumbsEvents } from './thumbs/types.ts'
-export type * from './thumbs/types.ts'
 import type { QolApi, QolEvents } from './qol/types.ts'
 export type * from './qol/types.ts'
-// qol-c: Forge Doctor, spending cap, Add to game.
+// qol-c: Forge Doctor, spending cap.
 import type { DoctorApi, DoctorEvents } from './doctor/types.ts'
 export type * from './doctor/types.ts'
 import type { SpendApi, SpendEvents } from './spend/types.ts'
@@ -64,8 +53,6 @@ export type * from './spend/types.ts'
 // Editor assist: StyLua format on save, autosave, AI inline completions.
 import type { EditorAssistApi, EditorAssistEvents } from './editorAssist/types.ts'
 export type * from './editorAssist/types.ts'
-import type { AddToGameApi } from './addToGame/types.ts'
-export type * from './addToGame/types.ts'
 // Roblox Studio's MCP server (live Studio tools for the Assistant).
 import type { StudioMcpApi, StudioMcpEvents } from './studioMcp.ts'
 export type * from './studioMcp.ts'
@@ -613,7 +600,7 @@ export interface BlinkModel {
   blinkCompiler?: 'current' | 'blink'
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, ArtEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, VfxEvents, VfxTextureEvents, AnimEvents, AbilityEvents, StudioEvents, RefEvents, PrincipleEvents, SyncEvents, GatingEvents, ThumbsEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents, ModelEvents, StudioMcpEvents, SearchEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, InboxEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, StudioEvents, PrincipleEvents, SyncEvents, GatingEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents, ModelEvents, StudioMcpEvents, SearchEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   // Batched log lines (main sends these; one message per ~100 ms).
@@ -645,7 +632,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, ArtApi, UpdateApi, BrainSyncApi, UiPreviewApi, VfxApi, VfxTextureApi, AnimApi, AbilityApi, StudioApi, RefApi, PrincipleApi, SyncApi, GatingApi, RestateApi, ThumbsApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, AddToGameApi, UiMotionApi, AccountsApi, EditorAssistApi, ModelApi, StudioMcpApi, ScmApi, SearchApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, InboxApi, UpdateApi, BrainSyncApi, UiPreviewApi, StudioApi, PrincipleApi, SyncApi, GatingApi, RestateApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, UiMotionApi, AccountsApi, EditorAssistApi, ModelApi, StudioMcpApi, ScmApi, SearchApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>
@@ -716,6 +703,8 @@ export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatE
   setDefaultModel(provider: ProviderId, model: string): Promise<void>
   // Settings > Labs model dropdowns: auto per tier, tier pairs, recent rejections (shared/labModels.ts).
   getLabModelInfo(): Promise<LabModelInfo>
+  getLabModels(): Promise<LabModels>
+  setLabModels(models: LabModels): Promise<LabModels>
 
   // Test agents
   getAgents(): Promise<TestAgent[]>

@@ -6,9 +6,6 @@
 // "signed in with Claude, no API key" credentials state.
 import assert from 'node:assert/strict'
 import { test } from 'node:test'
-import { mkdtemp } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { fakeContext } from './agentFake.ts'
 import { Credentials } from '../src/main/agent/credentials.ts'
 import { createAgentLayer, labModelInfo, lastChatModel, resetLabModelFailures, shotAttempts } from '../src/main/agent/index.ts'
@@ -16,11 +13,6 @@ import type { QueryFn } from '../src/main/agent/sdk.ts'
 import { LAST_CHAT_MODEL_SETTING, resolveLabModel } from '../src/shared/labModels.ts'
 import { TIER_DEFAULTS } from '../src/main/agent/budget/budget.ts'
 import { PROVIDERS } from '../src/main/agent/providers.ts'
-import { VfxService, draftedWithout, visionFailed, scriptName } from '../src/main/services/vfx/service.ts'
-import { shortTitle } from '../src/shared/vfx/spec.ts'
-import { draftSpec } from '../src/shared/vfx/draft.ts'
-import { heuristicCritique } from '../src/shared/vfx/critique.ts'
-import { findLune, findRuntimeDir } from '../src/main/services/tests/lune.ts'
 import { AUTH_PROBE_SYSTEM } from '../src/main/accounts/authHealth.ts'
 
 const PLAN_REJECTS = 'API Error: 403 {"type":"error","error":{"type":"permission_error","message":"claude-opus-5-5 is not available on this account"}}'
@@ -164,68 +156,6 @@ test('a signed-in Codex default with a broken Codex falls back to the Claude cha
   } finally {
     layer.dispose()
     setCodexService(before)
-    resetLabModelFailures()
-  }
-})
-
-test('fallback names are a short title, not the CamelCased prompt', () => {
-  const p = 'quick dash forward with a wind streak trail and a burst of sparks at the start'
-  assert.equal(shortTitle(p), 'DashForward')
-  assert.equal(scriptName('return function(fx) end', p), 'DashForward')
-  assert.equal(draftSpec(p).name, 'DashForward')
-  assert.equal(shortTitle('make a blue fireball effect'), 'BlueFireball')
-  assert.equal(shortTitle('a fireball that charges, flies forward and explodes'), 'Fireball')
-  assert.equal(shortTitle('!!!'), 'Effect')
-  assert.ok(shortTitle('supercalifragilistic expialidocious lightning tornado').length <= 24)
-})
-
-test('a numbers-only critique after a failed vision call names the error', () => {
-  const c = visionFailed(heuristicCritique(draftSpecEffect(), null, []), 'claude-opus-5-5: API Error: 403')
-  assert.match(c.summary, /^Numbers-only check \(the vision model call failed: claude-opus-5-5: API Error: 403/)
-  assert.doesNotMatch(c.summary, /no vision model/)
-  assert.equal(draftedWithout('boom\n  bang'), 'Drafted without a model because: boom bang')
-})
-
-function draftSpecEffect() {
-  return { name: 'X', roots: [], cues: [], duration: 1 } as never
-}
-
-const lune = process.env.LUNE_PATH || findLune()
-const runtime = findRuntimeDir()
-
-test('VFX Lab compose with a subscription that rejects the flagship: the model writes it; when every model fails, the entry says why', { skip: !lune || !runtime ? 'Lune not installed (set LUNE_PATH)' : false }, async () => {
-  resetLabModelFailures()
-  const script = '```lua\n-- Name: Wind Dash\nreturn function(fx)\n\tfx:stage("dash")\n\tfx:spawn("orb", { name = "Core", color = Color3.new(0.8, 1, 1) })\n\tfx:wait(0.3)\n\tfx:stage("trail")\n\tfx:wait(0.3)\nend\n```'
-  const { fake, credentials } = signedInWithClaude()
-  let works: (m: string) => boolean = (m) => m === 'claude-haiku-5-5'
-  const sdk = subscriptionSdk((m) => works(m), () => script)
-  const layer = createAgentLayer(fake.ctx, { queryFn: sdk.queryFn, credentials, meterSaveDelayMs: 0 })
-  const make = async () =>
-    new VfxService({
-      userDir: await mkdtemp(join(tmpdir(), 'forge-labfix-user-')),
-      projectRoot: () => null,
-      lune: async () => ({ path: lune! }),
-      runtimeDir: () => runtime,
-      // As main/index.ts wires it (labModel): the agent layer's visionShot with the Labs tier.
-      vision: (tier) => (system, prompt, images) => layer.visionShot(system, prompt, images, { tier: tier ?? 'default' })
-    })
-  try {
-    fake.settings.set(LAST_CHAT_MODEL_SETTING, { provider: 'anthropic', model: 'claude-haiku-5-5' })
-    const prompt = 'quick dash forward with a wind streak trail and a burst of sparks at the start'
-    const r = await (await make()).compose(prompt, { refine: false })
-    assert.equal(r.source, 'model')
-    assert.equal(r.entry!.name, 'WindDash')
-    assert.equal(r.entry!.modelNote, undefined)
-    // Every model fails: the built-in draft, with the actual error on the entry and the result.
-    resetLabModelFailures()
-    works = () => false
-    const d = await (await make()).compose(prompt, { refine: false })
-    assert.equal(d.source, 'draft')
-    assert.equal(d.entry!.name, 'DashForward')
-    assert.match(d.modelError!, /claude-haiku-5-5: API Error: 403/)
-    assert.match(d.entry!.modelNote!, /^Drafted without a model because: no model answered \(claude-opus-5-5: API Error: 403/)
-  } finally {
-    layer.dispose()
     resetLabModelFailures()
   }
 })

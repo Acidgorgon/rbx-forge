@@ -1,4 +1,4 @@
-// Per-task model tiers for the Labs (VFX Lab, Animation Lab, Ability Composer). Stored in the
+// Per-task model tiers for the Labs (UI Motion Lab, Model Lab). Stored in the
 // settings store under LAB_MODELS_SETTING; an empty value means automatic:
 //   cheap   -> the provider's cheap tier (budget.ts TIER_DEFAULTS / modelTiers): tagging, import
 //              summaries, reflection after ratings, retrieval and ranking text.
@@ -50,8 +50,7 @@ export function resolveLabModel(tier: LabTier, labs: LabModels | null | undefine
 }
 
 // Small / fast model ids (Haiku, mini, nano, flash-lite, small open models): fine for tagging and
-// summaries, but they write sparse effects (two or three layers) and "simplify" rich ones when they
-// draft or critique. The Labs settings and the VFX Lab say so; nothing switches models on its own.
+// summaries, but they write sparse output and over-simplify when they draft or critique.
 export function isSmallModel(id: string | null | undefined): boolean {
   const m = String(id ?? '').toLowerCase()
   if (!m) return false
@@ -62,7 +61,7 @@ export function isSmallModel(id: string | null | undefined): boolean {
 export function smallModelHint(tier: LabTier, model: string | null | undefined): string | null {
   if (tier === 'cheap' || !isSmallModel(model)) return null
   return tier === 'default'
-    ? `Drafting on a small model (${model}): it tends to write sparse effects and hide layers of your library copies. Pick a larger model here for richer effects.`
+    ? `Drafting on a small model (${model}): it tends to write sparse output and omit detail. Pick a larger model here for richer results.`
     : `Critiquing on a small model (${model}): it tends to prefer the sparsest variation. Pick a larger model here for a better critic.`
 }
 

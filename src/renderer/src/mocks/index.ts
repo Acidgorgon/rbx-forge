@@ -24,23 +24,16 @@ import { integrationsMock } from './mockIntegrations'
 import { terminalMock } from './mockTerminal'
 import { setupMock } from './mockSetup'
 import { memoryMock } from './mockMemory'
-import { artMock } from './mockArt'
 import { updatesMock } from './mockUpdates'
 import { brainSyncMock } from './mockBrainSync'
 import { uiPreviewMock, uiPreviewMockSources } from './mockUiPreview'
-import { vfxMock } from './mockVfx'
-import { vfxTexturesMock } from './mockVfxTextures'
-import { animMock } from './mockAnim'
-import { refMock } from './mockRef'
-import { abilityMock } from './mockAbility'
 import { uiMotionMock } from './mockUiMotion'
 import { modelMock } from './mockModel'
 import { studioMock } from './mockStudio'
 import { forgeSyncMock } from './mockForgeSync'
 import { principlesMock } from './mockPrinciples'
 import { gatingMock } from './mockGating'
-import { thumbsMock } from './mockThumbs'
-import { addToGameMock, doctorMock, spendMock } from './mockQolc'
+import { doctorMock, spendMock } from './mockQolc'
 import { editorAssistMock } from './mockEditorAssist'
 import { studioMcpMock } from './mockStudioMcp'
 import { scmMock } from './mockScm'
@@ -939,20 +932,23 @@ const api: HarnessApi = {
   ...terminalMock(emit),
   ...setupMock(emit, (text) => log('harness', text, 'info')),
   ...memoryMock(emit),
-  // Art concepts (mockArt.ts): placeholder SVG images.
-  ...artMock(emit),
+  // Labs model tiers mock
+  getLabModels: async () => ({}),
+  setLabModels: async (models) => models,
+  // Inbox & Open Cloud settings mock
+  inboxCloudStatus: async () => ({ robloxKey: false }),
+  inboxSetRobloxKey: async () => ({ robloxKey: true, robloxKeySource: 'inbox' }),
+  inboxClearRobloxKey: async () => ({ robloxKey: false }),
+  inboxSetCreator: async (c) => ({ robloxKey: false, ...(c.userId ? { creatorUserId: c.userId } : {}), ...(c.groupId ? { creatorGroupId: c.groupId } : {}) }),
+  fbxInboxStatus: async () => ({ enabled: false, dir: '~/Documents/ForgeModels/_upload_inbox', defaultDir: '~/Documents/ForgeModels/_upload_inbox', modelsDir: '~/Documents/ForgeModels', robloxKey: false, creator: false, watching: false, insertEnabled: false, recent: [] }),
+  fbxInboxSetSettings: async () => ({ enabled: false, dir: '~/Documents/ForgeModels/_upload_inbox', defaultDir: '~/Documents/ForgeModels/_upload_inbox', modelsDir: '~/Documents/ForgeModels', robloxKey: false, creator: false, watching: false, insertEnabled: false, recent: [] }),
+  fbxInboxChooseFolder: async () => ({ enabled: false, dir: '~/Documents/ForgeModels/_upload_inbox', defaultDir: '~/Documents/ForgeModels/_upload_inbox', modelsDir: '~/Documents/ForgeModels', robloxKey: false, creator: false, watching: false, insertEnabled: false, recent: [] }),
   // Self-update (mockUpdates.ts); ?update=ready|downloading|available|private|disabled.
   ...updatesMock(emit, (text) => log('harness', text, 'info')),
   // Memory export/import and device sync (mockBrainSync.ts); ?brainsync=git|folder|auth|syncing.
   ...brainSyncMock(emit),
   // UI Preview (mockUiPreview.ts): Lune recordings of the fixture stories.
   ...uiPreviewMock(emit, (text) => log('harness', text, 'info')),
-  // VFX Lab (mockVfx.ts): a small effect library built with the shared VFX code.
-  ...vfxTexturesMock(emit),
-  // Animation Lab (mockAnim.ts): built-in examples and imported-looking clips from the shared code.
-  // Video references (mockRef.ts) layer over both lab mocks.
-  ...refMock(emit, vfxMock(emit), animMock(emit)),
-  ...abilityMock(emit),
   ...uiMotionMock(emit),
   // Model Lab (mockModel.ts): procedural block models (no Lune in the browser); ?model=empty|nolune.
   ...modelMock(emit),
@@ -963,11 +959,9 @@ const api: HarnessApi = {
   ...forgeSync.api,
   // Lab gating (mockGating.ts): seeded decisions, cost table and decision models.
   ...gatingMock(emit),
-  // Thumbnail Lab (mockThumbs.ts): canvas-drawn references, bases and variations measured with the shared code.
-  ...thumbsMock(emit),
   // Quality of life (mockQol.ts): bug report, settings, session file, away digest; ?digest=none.
   ...qolMock(emit, () => logs.slice(), () => project),
-  // Forge Doctor, spending cap, Add to game (mockQolc.ts): ?doctor=ok|issues, ?spend=ok|warn|stop.
+  // Forge Doctor & spending cap (mockQolc.ts): ?doctor=ok|issues, ?spend=ok|warn|stop.
   ...doctorMock(emit),
   ...spendMock(emit),
   ...editorAssistMock(emit),
@@ -991,7 +985,6 @@ const api: HarnessApi = {
     },
     changed: (paths) => emit('files:changed', paths)
   }),
-  ...addToGameMock(),
 
   on(event, handler) {
     let set = listeners.get(event)

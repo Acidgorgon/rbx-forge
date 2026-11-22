@@ -8,8 +8,8 @@ import { mkdir, mkdtemp, readdir, readFile, rm, symlink, utimes, writeFile } fro
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { test } from 'node:test'
-import { inboxDirs, resolveModelFile } from '../src/main/services/art/modelInbox.ts'
-import { INSERT_DONE_SUFFIX, INSERT_RESULT_SUFFIX, InsertInbox, parseInsertRequest, type InsertBridge, type InsertBridgeWindow, type InsertInboxDeps } from '../src/main/services/art/modelInsert.ts'
+import { inboxDirs, resolveModelFile } from '../src/main/services/inbox/modelInbox.ts'
+import { INSERT_DONE_SUFFIX, INSERT_RESULT_SUFFIX, InsertInbox, parseInsertRequest, type InsertBridge, type InsertBridgeWindow, type InsertInboxDeps } from '../src/main/services/inbox/modelInsert.ts'
 import { BridgeError, StudioBridge, type EventHandler, type RunOptions } from '../src/main/services/studio/bridge.ts'
 import { createIntegrations } from '../src/main/integrations.ts'
 import {
@@ -27,7 +27,7 @@ import {
 } from '../src/shared/studio/insert.ts'
 import { PLUGIN_VERSION } from '../src/shared/studio/plugin.ts'
 import { parseEvent, type BridgeEvent, type BridgeJob, type InstanceJson } from '../src/shared/studio/protocol.ts'
-import type { ModelInboxEntry, ModelInboxStatus } from '../src/shared/artTypes.ts'
+import type { ModelInboxEntry, ModelInboxStatus } from '../src/shared/inboxTypes.ts'
 import { fakeContext } from './agentFake.ts'
 
 // A small animation save, as Studio writes it: KeyframeSequence > Keyframe > Pose (HumanoidRootPart > LowerTorso).

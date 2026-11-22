@@ -2,13 +2,13 @@
 // drawn as its Roblox shape (box, wedge, corner wedge, ball, cylinder) with its CFrame, Size, Color,
 // Transparency and a material look (Neon glows, Glass and transparent parts blend, the rest is
 // matte like SmoothPlastic). One InstancedMesh per shape and look, so thousands of parts stay cheap.
-// The stage (backdrop, lights, floor) and the linear-light output are the VFX Lab's (vfx/preview/stage.ts).
+// The stage (backdrop, lights, floor) and the linear-light output (preview/stage.ts).
 
 import * as THREE from 'three'
 import { OrbitControls } from 'three/examples/jsm/controls/OrbitControls.js'
 import { displayOffset, partBounds, viewCamera, visibleParts, type Bounds, type ModelView } from '@shared/model/frame'
 import type { ModelPart } from '@shared/model/types'
-import { LinearOutput, Stage, type Background } from '../../vfx/preview/stage'
+import { LinearOutput, Stage, type Background } from './stage'
 import { shapeGeometry, shapeOf, type ShapeKey } from './geometry'
 import { previewPixelRatio } from '../../../lib/frameLoop'
 

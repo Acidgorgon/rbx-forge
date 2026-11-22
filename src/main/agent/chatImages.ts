@@ -205,3 +205,8 @@ export function chatImageStore(): ChatImageStore {
 export function hasChatImageStore(): boolean {
   return !!current
 }
+
+export async function defaultChatImage(absPath: string, name: string): Promise<string | null> {
+  if (!hasChatImageStore()) return null
+  return imageMarker(await chatImageStore().importFile(absPath, name))
+}

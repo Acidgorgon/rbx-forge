@@ -17,7 +17,7 @@
 // Pure code: request fields, the parent path, which Studio window gets it, the XML reader, the job and
 // the plugin's report (tested in test/modelInsert.test.ts).
 
-import { decodeAttributes, parseXml, type XmlEl } from '../vfx/rbxmx.ts'
+import { decodeAttributes, parseXml, type XmlEl } from './rbxmx.ts'
 import { BRIDGE_VERSION, type BridgeJob, type InstanceJson, type PropJson } from './protocol.ts'
 import type { StudioTarget } from './target.ts'
 

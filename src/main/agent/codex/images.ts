@@ -18,9 +18,14 @@
 import { mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import type { CodexImages } from '../../services/art/imageBackend.ts'
+import type { CodexImageInfo } from '../../../shared/accountTypes.ts'
 import { codexHome, codexService, type CodexService } from './service.ts'
 import { IMAGE_FILE, imagesIn } from './generated.ts'
+
+export interface CodexImages {
+  status(): Promise<CodexImageInfo>
+  generate(req: { prompt: string; n: number; size?: string; transparent?: boolean; references?: (string | Uint8Array)[] }): Promise<{ images: Buffer[]; notes: string[] }>
+}
 
 export const CODEX_MAX_IMAGES = 4
 export const CODEX_MAX_REFS = 5

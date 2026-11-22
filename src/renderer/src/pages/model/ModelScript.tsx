@@ -4,10 +4,17 @@ import { useEffect, useRef, useState } from 'react'
 import Editor, { type OnMount } from '@monaco-editor/react'
 import type { ModelBuild, ModelEntry } from '@shared/types'
 import { monaco } from '../../monaco'
-import { useAppearance } from '../../theme'
+import { motionAllowed, useAppearance } from '../../theme'
 import { Icon } from '../../components/Icons'
 import { errorText } from '../../lib/format'
-import { prefersReducedMotion } from '../vfx/motion'
+
+function prefersReducedMotion(): boolean {
+  try {
+    return !motionAllowed()
+  } catch {
+    return false
+  }
+}
 
 const OWNER = 'model-build'
 

@@ -6,7 +6,7 @@
 
 import { check, CENTER, mod, palette } from '../lib/ui.ts'
 import type { Page } from '../lib/app.ts'
-import type { MockFlow } from './mockArt.ts'
+import type { MockFlow } from './types.ts'
 
 const SIDE = 'aside.side'
 const SHARED_INVENTORY = 'src/shared/Features/Inventory/init.luau'

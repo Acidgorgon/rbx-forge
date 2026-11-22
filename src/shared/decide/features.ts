@@ -25,7 +25,7 @@ export function textFeatures(text: string | undefined, prefix: string): Record<s
 }
 
 function labFeatures(lab: LabId): Record<string, number> {
-  return { lab_vfx: lab === 'vfx' ? 1 : 0, lab_anim: lab === 'anim' ? 1 : 0, lab_ability: lab === 'ability' ? 1 : 0 }
+  return { lab_uimotion: lab === 'uimotion' ? 1 : 0, lab_model: lab === 'model' ? 1 : 0 }
 }
 
 // "Is this critique worth running?" (before the critic).

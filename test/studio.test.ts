@@ -12,33 +12,15 @@ import { parseEvent, type BridgeJob } from '../src/shared/studio/protocol.ts'
 import { beatTargets, FrameRing, firstAtOrAfter, NearestFramePicker, stageDrift, startEpoch } from '../src/shared/studio/timing.ts'
 import { findKeyRect, insetRect, KEY_COLOR, scaleRect } from '../src/shared/studio/crop.ts'
 import { PLUGIN_FILE, PLUGIN_VERSION, pluginRbxmx, pluginSource, pluginsDir, pluginVersionOf } from '../src/shared/studio/plugin.ts'
-import { abilityJob, animJob, CAMERAS, JOB_ROOT, placeholderClip, rbxmxToInstances, sequenceJson, vfxBeats, vfxJob } from '../src/shared/studio/payload.ts'
+import { JOB_ROOT, rbxmxToInstances, snapshotJob } from '../src/shared/studio/payload.ts'
 import { markStudioFrames, studioFramesNote, studioFramesOf } from '../src/shared/studio/frames.ts'
 import { STUDIO_PREFER_SETTING } from '../src/shared/studio/types.ts'
 import { StudioBridge, BridgeError } from '../src/main/services/studio/bridge.ts'
-import { CHECK_FILE, StudioService, StudioCheckError, type CapturedFrame, type StudioCaptureSession, type StudioLab } from '../src/main/services/studio/service.ts'
+import { StudioService, type CapturedFrame, type StudioCaptureSession, type StudioLab } from '../src/main/services/studio/service.ts'
 import { readPluginTemplate } from '../src/main/services/studio/wire.ts'
-import { compileTimeline } from '../src/shared/vfx/compile.ts'
-import { findExample } from '../src/shared/vfx/examples.ts'
-import { RECORDED } from '../src/shared/vfx/examples.recorded.ts'
-import { compileAnim } from '../src/shared/anim/compile.ts'
-import { ANIM_RECORDED } from '../src/shared/anim/examples.recorded.ts'
-import { animExample } from '../src/shared/anim/examples.ts'
-import { findAbilityExample } from '../src/shared/ability/examples.ts'
-import { keyBeats } from '../src/shared/ability/critique.ts'
 import { findLune } from '../src/main/services/tests/lune.ts'
 
 const close = (a: number, b: number, eps = 1e-6) => assert.ok(Math.abs(a - b) <= eps, `${a} != ${b}`)
-
-function purple() {
-  const ex = findExample('hollow-purple')!
-  return compileTimeline({ name: ex.name, roots: [], cues: [], duration: 2 }, RECORDED[ex.key] ?? [], ex.script).effect
-}
-
-function dashPunch() {
-  const ex = animExample('dash-punch')!
-  return compileAnim(ANIM_RECORDED[ex.key] ?? [], ex.script, { name: ex.name, learned: [], rig: 'R15' }).clip
-}
 
 // ------------------------------------------------------------------ protocol
 
@@ -173,61 +155,12 @@ test('plugin: the .rbxmx holds the stamped source', async () => {
 
 // ------------------------------------------------------------------ payloads
 
-test('payload: VFX job carries the module, timeline and runtime; beats inside each stage', () => {
-  const fx = purple()
-  const job = vfxJob(fx, { id: 'job-1' })
-  assert.equal(job.kind, 'vfx')
-  assert.equal(job.mode, 'realtime')
-  assert.equal(job.entry, 'Effect')
-  assert.deepEqual(job.camera, CAMERAS.vfx)
-  assert.deepEqual(job.modules.map((m) => m.name), ['ForgeFX', 'Effect'])
-  assert.deepEqual(job.modules[1].children?.map((c) => c.name), ['Timeline'])
-  assert.match(job.modules[1].source!, /require\(script\.Parent:WaitForChild\("ForgeFX"\)\)/)
-  assert.ok(job.beats.length >= 4)
-  for (const b of job.beats) assert.ok(fx.stages!.some((s) => s.label === b.label), `beat ${b.label} is a stage`)
-  assert.deepEqual(vfxBeats(fx).map((b) => b.t), job.beats.map((b) => b.t))
-  const timed = vfxJob(fx, { id: 'job-2', times: [0.1, 2.5] })
-  assert.deepEqual(timed.beats.map((b) => b.t), [0.1, 2.5])
-  assert.ok(JSON.stringify(job).length < 400_000)
-})
-
-test('payload: anim job is stepped and carries the KeyframeSequence as instance data', () => {
-  const clip = dashPunch()
-  const seq = sequenceJson(clip)
-  assert.equal(seq.className, 'KeyframeSequence')
-  assert.equal(seq.name, clip.name)
-  assert.deepEqual(seq.props.Loop, { t: 'bool', v: false })
-  const kfs = seq.children.filter((c) => c.className === 'Keyframe')
-  assert.ok(kfs.length > 3)
-  const root = kfs[1].children.find((c) => c.className === 'Pose')!
-  assert.equal(root.name, 'HumanoidRootPart')
-  assert.equal(root.props.CFrame.t, 'cframe')
-  assert.equal((root.props.CFrame.v as number[]).length, 12)
-  assert.ok(seq.children.some((k) => k.children.some((c) => c.className === 'KeyframeMarker' && c.name === 'hit')))
-  const job = animJob(clip, { id: 'a', times: [0.3, 0.54] })
-  assert.equal(job.mode, 'stepped')
-  assert.equal(job.rig, 'R15')
-  assert.deepEqual(job.beats, [
-    { t: 0.3, label: 'dash' },
-    { t: 0.54, label: 'hit' }
-  ])
-})
-
-test('payload: ability job has the VFX folder, runner pointed at the job root and the clip', () => {
-  const fx = purple()
-  const ability = findAbilityExample('hollow-purple')!.build({ 'purple-vfx': { id: 'fx-1', duration: fx.duration } })
-  const placeholder = placeholderClip(ability.animation!.clip)
-  assert.ok(placeholder && Object.keys(placeholder.tracks).length > 4)
-  const job = abilityJob(ability, { 'fx-1': fx }, null, { id: 'b', times: keyBeats(ability) })
-  assert.equal(job.mode, 'realtime')
-  assert.equal(job.entry, ability.name)
-  const vfx = job.modules.find((m) => m.name === 'VFX')!
-  assert.equal(vfx.className, 'Folder')
-  assert.deepEqual(vfx.children!.map((c) => c.name), ['ForgeFX', 'HollowPurple'])
-  const runner = job.modules.find((m) => m.name === 'AbilityRunner')!
-  assert.ok(runner.source!.includes(JOB_ROOT.map((p) => `"${p}"`).join(', ')))
-  assert.equal(job.sequence?.className, 'KeyframeSequence', 'the placeholder pose track is sampled into a clip')
-  assert.deepEqual(job.beats.map((b) => b.label), ['wind-up', 'anticipation', 'release', 'impact', 'follow-through'])
+test('payload: rbxmxToInstances unpacks XML items and JOB_ROOT points inside CoreGui', () => {
+  assert.deepEqual(JOB_ROOT, ['CoreGui', 'ForgeBridgeJob'])
+  const items = rbxmxToInstances('<roblox version="4"><Item class="Folder" referent="R0"><Properties><string name="Name">Sample</string></Properties></Item></roblox>')
+  assert.equal(items.length, 1)
+  assert.equal(items[0].className, 'Folder')
+  assert.equal(items[0].name, 'Sample')
 })
 
 test('frames: Studio frames are marked for the critic', () => {
@@ -258,7 +191,7 @@ function plugin(b: StudioBridge) {
   }
 }
 
-const tinyJob = (over: Partial<BridgeJob> = {}): BridgeJob => ({ ...animJob(dashPunch(), { id: `job-${Math.random().toString(36).slice(2)}`, times: [0.3, 0.54] }), ...over })
+const tinyJob = (over: Partial<BridgeJob> = {}): BridgeJob => ({ ...snapshotJob({ id: `job-${Math.random().toString(36).slice(2)}`, name: 'TestJob' }), ...over })
 
 test('bridge: poll is held, then gets the job; events are answered by the handler (held)', async () => {
   const b = await bridge()
@@ -353,31 +286,6 @@ function settingsStore(init: Record<string, unknown> = {}) {
   return { get: <T>(k: string, f: T) => (m.has(k) ? (m.get(k) as T) : f), set: (k: string, v: unknown) => void m.set(k, v) }
 }
 
-function memLab(job: (jobId: string) => BridgeJob, extra: Partial<StudioLab> = {}) {
-  const files = new Map<string, Buffer>()
-  const lab: StudioLab = {
-    prepare: async (_id, jobId) => ({ name: 'Purple', job: job(jobId), stages: purple().stages }),
-    writeFile: async (id, file, bytes) => {
-      files.set(`${id}/${file}`, bytes)
-      return `/lib/${id}/${file}`
-    },
-    readFile: async (id, file) => files.get(`${id}/${file}`) ?? null,
-    preview: async (_id, times) => times.map((t) => Buffer.from(`preview@${t}`)),
-    ...extra
-  }
-  return { lab, files }
-}
-
-// Plays the plugin's side of a job against the bridge.
-async function fakeStudio(b: StudioBridge, script: (job: BridgeJob, post: (ev: unknown) => Promise<Record<string, unknown>>) => Promise<void>): Promise<void> {
-  const p = plugin(b)
-  for (let i = 0; i < 50; i++) {
-    const r = await p.poll()
-    if (r.job) return script(r.job, (ev) => p.post(r.job!, ev))
-  }
-  throw new Error('no job')
-}
-
 function service(b: StudioBridge, session: FakeSession, labs: Record<string, StudioLab>, opts: { dir?: string | null; prefer?: boolean } = {}) {
   const events: { event: string; payload: any }[] = []
   const written = new Map<string, string>()
@@ -399,90 +307,6 @@ function service(b: StudioBridge, session: FakeSession, labs: Record<string, Stu
   })
   return { svc, events, written }
 }
-
-test('service: realtime check (VFX) maps the plugin clock, picks beats, crops, stores frames + preview', async () => {
-  const b = await bridge(100)
-  const session = new FakeSession()
-  const fx = purple()
-  const { lab, files } = memLab((id) => vfxJob(fx, { id }))
-  const { svc, events } = service(b, session, { vfx: lab })
-  try {
-    await plugin(b).poll()
-    let receivedStart = 0
-    const studio = fakeStudio(b, async (job, post) => {
-      assert.equal(job.kind, 'vfx')
-      await post({ type: 'accepted' })
-      assert.deepEqual(await post({ type: 'calibrate' }), { ok: true, crop: true })
-      assert.deepEqual(await post({ type: 'ready' }), { ok: true, go: true })
-      receivedStart = Date.now()
-      await post({ type: 'start', elapsed: 0.004, rtt: 6 })
-      await post({ type: 'done', marks: [{ label: 'fire', t: fx.stages!.find((s) => s.label === 'fire')!.at + 0.016 }] })
-    })
-    const record = await svc.check('vfx', 'fx-1', { critique: false })
-    await studio
-    assert.equal(record.ok, true)
-    assert.equal(record.mode, 'realtime')
-    assert.equal(session.picks.length, 1)
-    const job = vfxJob(fx, { id: 'x' })
-    // Targets: start = received - rtt/2 - elapsed; + t + lag.
-    const start = session.picks[0][0] - job.beats[0].t * 1000 - 50
-    assert.ok(Math.abs(start - (receivedStart - 3 - 4)) < 25, `start ${start} vs ${receivedStart - 7}`)
-    for (const [i, b2] of job.beats.entries()) close(session.picks[0][i] - session.picks[0][0], (b2.t - job.beats[0].t) * 1000, 1)
-    assert.equal(record.frames.length, job.beats.length)
-    assert.equal(record.frames[0].offsetMs, -9)
-    assert.deepEqual(record.crop, { x: 102, y: 52, width: 796, height: 446 }, 'calibration rect, inset by 2')
-    assert.equal(String(files.get('fx-1/studio/beat-1.png')), 'pick0|102,52,796x446|640')
-    assert.equal(String(files.get('fx-1/studio/preview-1.png')), `preview@${job.beats[0].t}`)
-    assert.equal(record.frames[0].preview, 'studio/preview-1.png')
-    assert.deepEqual(record.drift?.map((d) => d.label), ['fire'])
-    assert.ok(record.abs?.[0].endsWith('studio/beat-1.png'))
-    assert.ok(session.closed)
-    const saved = JSON.parse(String(files.get(`fx-1/${CHECK_FILE}`)))
-    assert.equal(saved.frames.length, record.frames.length)
-    assert.equal(saved.abs, undefined, 'absolute paths are not stored')
-    assert.deepEqual(await svc.lastCheck('vfx', 'fx-1'), saved)
-    const phases = events.filter((e) => e.event === 'studio:progress').map((e) => e.payload.phase)
-    assert.deepEqual([...new Set(phases)], ['queued', 'waiting', 'staging', 'capturing', 'preview', 'done'])
-  } finally {
-    await b.stop()
-  }
-})
-
-test('service: stepped check (anim) grabs one frame after each posed beat; critique sees Studio + preview', async () => {
-  const b = await bridge(100)
-  const session = new FakeSession()
-  const clip = dashPunch()
-  let critiqued: { studio: Buffer[]; preview: Buffer[]; times: number[] } | null = null
-  const { lab } = memLab((id) => animJob(clip, { id, times: [0.3, 0.54, 0.8] }), {
-    critique: async (_id, studio, times, preview) => {
-      critiqued = { studio, preview, times }
-      return { overall: 7.2, summary: 'reads well in Studio' }
-    }
-  })
-  const { svc } = service(b, session, { anim: lab })
-  try {
-    await plugin(b).poll()
-    const studio = fakeStudio(b, async (job, post) => {
-      await post({ type: 'accepted' })
-      await post({ type: 'calibrate' })
-      for (const [i, beat] of job.beats.entries()) await post({ type: 'beat', index: i, t: beat.t })
-      await post({ type: 'done', marks: [] })
-    })
-    const t0 = Date.now()
-    const record = await svc.check('anim', 'clip-1', { critique: true })
-    await studio
-    assert.equal(record.mode, 'stepped')
-    assert.equal(session.grabs.length, 4, 'calibration + 3 beats')
-    for (const at of session.grabs) assert.ok(at >= t0 + 80, 'each grab waits the settle time after the event')
-    assert.deepEqual(record.frames.map((f) => f.label), ['dash', 'hit', 'recovery'])
-    assert.equal(record.critique?.overall, 7.2)
-    assert.equal(critiqued!.studio.length, 3)
-    assert.equal(critiqued!.preview.length, 3)
-    assert.deepEqual(critiqued!.times, [0.3, 0.54, 0.8])
-  } finally {
-    await b.stop()
-  }
-})
 
 test('service: status explains what is missing; install writes the plugin with the port', async () => {
   const b = await bridge(100)
@@ -515,47 +339,6 @@ test('service: status explains what is missing; install writes the plugin with t
   }
 })
 
-test('service: checks fail clearly without Studio; the labs fall back to the preview', async () => {
-  const b = await bridge(100)
-  const session = new FakeSession()
-  const fx = purple()
-  const { lab } = memLab((id) => vfxJob(fx, { id }))
-  try {
-    const { svc } = service(b, session, { vfx: lab }, { prefer: true })
-    await assert.rejects(svc.check('vfx', 'fx-1'), (e: unknown) => e instanceof StudioCheckError && e.state === 'studio-offline')
-    let previewed = 0
-    const preview = async (req: { times: number[] }) => (previewed++, req.times.map(() => Buffer.from('p')))
-    const wrapped = svc.wrapCapture('vfx', preview, (req: { times: number[] }, id) => vfxJob(fx, { id, times: req.times }))!
-    // Not connected: straight to the preview.
-    assert.deepEqual((await wrapped({ times: [0.1, 0.2] })).map(String), ['p', 'p'])
-    assert.equal(previewed, 1)
-    // Connected and preferred: Studio frames, marked for the critic.
-    await plugin(b).poll()
-    const studio = fakeStudio(b, async (job, post) => {
-      await post({ type: 'accepted' })
-      await post({ type: 'calibrate' })
-      await post({ type: 'ready' })
-      await post({ type: 'start', elapsed: 0, rtt: 0 })
-      await post({ type: 'done', marks: [] })
-    })
-    const frames = await wrapped({ times: [0.1, 0.2] })
-    await studio
-    assert.equal(previewed, 1)
-    assert.deepEqual(studioFramesOf(frames), { studio: 2 })
-    // Studio errors mid-job: the preview takes over.
-    const failing = fakeStudio(b, async (_job, post) => {
-      await post({ type: 'accepted' })
-      await post({ type: 'error', message: 'script injection is not allowed' })
-    })
-    const again = await wrapped({ times: [0.1, 0.2] })
-    await failing
-    assert.equal(previewed, 2)
-    assert.equal(studioFramesOf(again), null)
-  } finally {
-    await b.stop()
-  }
-})
-
 // ------------------------------------------------------------------ plugin Luau
 
 const lune = process.env.LUNE_PATH || findLune()
@@ -568,7 +351,21 @@ test('the Forge Bridge plugin compiles with Lune', { skip: lune ? false : 'Lune 
   assert.match(out, /ok/)
 })
 
-// ------------------------------------------------------------------ Thumbnail Lab snapshot
+// ------------------------------------------------------------------ Snapshot
+
+async function fakeStudio(
+  b: StudioBridge,
+  handle: (job: BridgeJob, post: (ev: unknown) => Promise<Record<string, unknown>>) => Promise<void>
+): Promise<void> {
+  const p = plugin(b)
+  for (;;) {
+    const res = await p.poll()
+    if (res.job) {
+      await handle(res.job, (ev) => p.post(res.job!, ev))
+      return
+    }
+  }
+}
 
 test('snapshot: through the bridge (no stage, viewport crop, full width) and the window fallback', async () => {
   const b = await bridge(100)

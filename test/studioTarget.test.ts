@@ -14,8 +14,6 @@ import { isScriptInjectionError, scriptInjectionToasts, SCRIPT_INJECTION_CODE, S
 import { BridgeError, RETARGETED, StudioBridge } from '../src/main/services/studio/bridge.ts'
 import { studioTargets } from '../src/main/services/studio/wire.ts'
 import { deleteInStudio, deleteJob, DELETE_PLUGIN_VERSION } from '../src/main/services/studio/deleteInstance.ts'
-import { LiveStudio, type LiveStatus } from '../src/main/services/vfx/live.ts'
-import { effectFromSpec } from '../src/shared/vfx/spec.ts'
 
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms))
 const job = (): BridgeJob => deleteJob(['Workspace', 'Thing'], 'Part', `job-${Math.random().toString(36).slice(2)}`)
@@ -262,46 +260,4 @@ test('delete in Studio goes to the place the active place file syncs with', asyn
   await deleteInStudio({ bridge, refusal: () => null }, ['Workspace', 'Old'])
   assert.deepEqual((opts[0] as { target?: unknown }).target, { placeId: 111 })
   assert.equal((opts[1] as { target?: unknown }).target, undefined, 'no linked place: the default target')
-})
-
-// ------------------------------------------------------------------ live loop
-
-test('live: Studio refusing script writes stops the loop at once (no retries, one error status)', async () => {
-  const runs: { job: BridgeJob; reject: (e: Error) => void }[] = []
-  const timers: (() => void)[] = []
-  const bridge = {
-    port: 34877,
-    listening: true,
-    connected: () => true,
-    current: () => null,
-    run: (j: BridgeJob) => new Promise<void>((_resolve, reject) => void runs.push({ job: j, reject }))
-  }
-  const events: LiveStatus[] = []
-  const live = new LiveStudio({ bridge: () => bridge, emit: (_e, s) => events.push(s), now: () => 0, setTimer: (fn) => (timers.push(fn), fn), clearTimer: () => undefined })
-  const fx = effectFromSpec({ name: 'Fireball', duration: 1, layers: [{ name: 'Sparks', class: 'ParticleEmitter', props: { Rate: 10 }, emit: [{ at: 0, count: 5 }] }] })
-  live.start({ current: { key: 'e1', effect: fx, label: 'Fireball' } })
-  assert.equal(runs.length, 1)
-  runs[0].reject(new BridgeError('script-injection', SCRIPT_INJECTION_MESSAGE))
-  await sleep(0)
-  // Every pending timer (ticks, retry back-off) runs: nothing starts again.
-  for (let i = 0; i < 10 && timers.length; i++) timers.shift()!()
-  await sleep(0)
-  assert.equal(runs.length, 1, 'retried a job Studio cannot run')
-  const st = live.status()
-  assert.equal(st.state, 'off')
-  assert.equal(st.errorCode, 'script-injection')
-  assert.equal(st.error, SCRIPT_INJECTION_MESSAGE)
-  // The lab toasts once per distinct error: only one status carried it.
-  assert.equal(new Set(events.filter((e) => e.error).map((e) => e.error)).size, 1)
-  assert.equal(events.filter((e) => e.error && e.state !== 'looping').length, 1)
-  // A raw Studio message (an older code path) is recognised too.
-  live.start({ current: { key: 'e1', effect: fx, label: 'Fireball' } })
-  assert.equal(live.status().errorCode, undefined, 'a new start clears the error')
-  runs[1].reject(new BridgeError('plugin-error', 'Studio: Unable to assign property Source. Script write access is restricted'))
-  await sleep(0)
-  for (let i = 0; i < 10 && timers.length; i++) timers.shift()!()
-  await sleep(0)
-  assert.equal(runs.length, 2)
-  assert.equal(live.status().errorCode, 'script-injection')
-  live.dispose()
 })

@@ -30,7 +30,7 @@ import {
 import { newJobId, type BridgeEvent, type BridgeJob } from '../../../shared/studio/protocol.ts'
 import type { LabTier } from '../../../shared/labModels.ts'
 import { BridgeError, type RunOptions } from '../studio/bridge.ts'
-import type { LuneRun } from '../vfx/lune.ts'
+import type { LuneRun } from './lune.ts'
 import { findModelAssets, luneModelBuild, readKit, readTemplate, type ModelAssets } from './lune.ts'
 import { modelId, ModelStore, PROJECT_MODEL_DIR } from './store.ts'
 

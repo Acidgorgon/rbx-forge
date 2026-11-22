@@ -18,11 +18,6 @@ export const PAGES: PageSpec[] = [
   { label: 'Packages (Wally, Rokit)', expect: /Wally|Packages/i, narrow: true },
   { label: 'Release', expect: /Release/i, narrow: true },
   { label: 'Analytics', expect: /Analytics/i },
-  { label: 'Art (image concepts)', expect: /Art|concept/i },
-  { label: 'VFX Lab', expect: /VFX/i, narrow: true },
-  { label: 'Animation Lab', expect: /Animation/i, narrow: true },
-  { label: 'Ability Composer', expect: /Ability/i, narrow: true },
-  { label: 'Thumbnail Lab', expect: /Thumbnail/i, narrow: true },
   { label: 'UI Motion Lab', expect: /Motion/i, narrow: true },
   { label: 'Model Lab', expect: /Model Lab/i, narrow: true },
   { label: 'UI Preview (stories)', expect: /stor/i, narrow: true },
@@ -213,13 +208,13 @@ export const pageFlows: Flow[] = [
   },
   {
     name: 'digest-900',
-    title: 'Away digest is an inline banner: at 900px it covers no lab button (VFX, Animation, Ability, Thumbnail, UI Motion)',
+    title: 'Away digest is an inline banner: at 900px it covers no lab button (UI Motion, Model Lab)',
     timeoutMs: 90_000,
     async run({ app, page, shot, note }) {
       await setWindowSize(app, 900, 800)
       try {
         await page.waitForFunction(() => window.innerWidth <= 900, undefined, { timeout: 5000 })
-        await openPage(page, 'VFX Lab')
+        await openPage(page, 'UI Motion Lab')
         // The "Show digest" command (the automatic one is answered once per project open).
         await page.evaluate(() => window.dispatchEvent(new CustomEvent('forge:show-digest')))
         const d = page.locator('section.qol-digest')
@@ -227,7 +222,7 @@ export const pageFlows: Flow[] = [
         if (!shown) throw new SkipFlow('the digest had nothing to show (no Studio edits, commits or lab runs since the last session)')
         check(await page.locator(`${CENTER} section.qol-digest`).count(), 'the digest is not inside the editor area')
         const bad: string[] = []
-        for (const label of ['VFX Lab', 'Animation Lab', 'Ability Composer', 'Thumbnail Lab', 'UI Motion Lab']) {
+        for (const label of ['UI Motion Lab', 'Model Lab']) {
           await openPage(page, label)
           await page.waitForTimeout(300)
           const hits = await covered(page)

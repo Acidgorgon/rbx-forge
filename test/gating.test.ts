@@ -23,10 +23,6 @@ import { criticSkipFeatures, plateauFeatures, retryFeatures, textFeatures } from
 import { GatingService } from '../src/main/services/gating/service.ts'
 import { createGatingWiring, resultEntryId } from '../src/main/services/gating/wire.ts'
 import { PrincipleService } from '../src/main/services/principles/service.ts'
-import { refineLoop } from '../src/shared/vfx/critique.ts'
-import { VfxService } from '../src/main/services/vfx/service.ts'
-import { effectFromSpec } from '../src/shared/vfx/spec.ts'
-import type { VfxCritique } from '../src/shared/vfx/types.ts'
 
 // ------------------------------------------------------------------ helpers
 
@@ -225,7 +221,7 @@ test('composeWithGate: legacy without a gate, gate-routed retry / rephrase / giv
   const asks: string[] = []
   const answers = ['bad', 'bad', 'good']
   const base = {
-    lab: 'vfx' as const,
+    lab: 'uimotion' as const,
     ask: async () => (asks.push('ask'), answers.shift()!),
     check: async (raw: string) => (raw === 'good' ? { ok: true as const, value: 42 } : { ok: false as const, kind: 'script-error' as const, message: 'boom line 3' }),
     repair: async () => (asks.push('repair'), answers.shift()!),
@@ -259,37 +255,37 @@ test('composeWithGate: legacy without a gate, gate-routed retry / rephrase / giv
 // ------------------------------------------------------------------ cost accounting
 
 test('cost per kept: spend over kept results, per tier, unpriced calls counted, kept toggles', () => {
-  let runs = chargeRun([], 'vfx', 'a', 'default', { input: 3000, output: 1500, costUsd: 0.05 }, 1)
-  runs = chargeRun(runs, 'vfx', 'a', 'critic', { input: 5000, output: 600, costUsd: 0.08 }, 2)
-  runs = chargeRun(runs, 'vfx', 'a', 'critic', { input: 5000, output: 600, costUsd: 0.08 }, 3)
-  runs = chargeRun(runs, 'vfx', 'b', 'default', { input: 3000, output: 1500, costUsd: 0.05 }, 4)
-  runs = chargeRun(runs, 'vfx', 'b', 'cheap', { input: 800, output: 100 }, 5)
-  runs = chargeRun(runs, 'anim', 'c', 'critic', { input: 4000, output: 500, costUsd: 0.06 }, 6)
+  let runs = chargeRun([], 'uimotion', 'a', 'default', { input: 3000, output: 1500, costUsd: 0.05 }, 1)
+  runs = chargeRun(runs, 'uimotion', 'a', 'critic', { input: 5000, output: 600, costUsd: 0.08 }, 2)
+  runs = chargeRun(runs, 'uimotion', 'a', 'critic', { input: 5000, output: 600, costUsd: 0.08 }, 3)
+  runs = chargeRun(runs, 'uimotion', 'b', 'default', { input: 3000, output: 1500, costUsd: 0.05 }, 4)
+  runs = chargeRun(runs, 'uimotion', 'b', 'cheap', { input: 800, output: 100 }, 5)
+  runs = chargeRun(runs, 'model', 'c', 'critic', { input: 4000, output: 500, costUsd: 0.06 }, 6)
   let rows = costRows(runs)
-  const vfx = rows.find((r) => r.lab === 'vfx')!
+  const vfx = rows.find((r) => r.lab === 'uimotion')!
   assert.equal(vfx.runs, 2)
   assert.equal(vfx.kept, 0)
   assert.equal(vfx.costPerKept, null)
   assert.equal(vfx.unpriced, 1)
-  runs = markKept(runs, 'vfx', 'a', true, 7)
+  runs = markKept(runs, 'uimotion', 'a', true, 7)
   rows = costRows(runs)
-  const v2 = rows.find((r) => r.lab === 'vfx')!
+  const v2 = rows.find((r) => r.lab === 'uimotion')!
   assert.equal(v2.kept, 1)
   // Everything the lab spent (both runs) over one kept result.
   assert.equal(v2.costPerKept, 0.26)
   assert.equal(v2.tiers.critic!.costPerKept, 0.16)
   assert.equal(v2.tiers.critic!.calls, 2)
   assert.equal(v2.tokensPerKept, 3000 + 1500 + 2 * 5600 + 4500 + 900)
-  runs = markKept(runs, 'vfx', 'a', false, 8)
-  assert.equal(costRows(runs).find((r) => r.lab === 'vfx')!.kept, 0)
+  runs = markKept(runs, 'uimotion', 'a', false, 8)
+  assert.equal(costRows(runs).find((r) => r.lab === 'uimotion')!.kept, 0)
   // Kept with no model calls (an example) still counts.
-  runs = markKept(runs, 'ability', 'x', true, 9)
-  assert.equal(costRows(runs).find((r) => r.lab === 'ability')!.kept, 1)
+  runs = markKept(runs, 'model', 'x', true, 9)
+  assert.equal(costRows(runs).find((r) => r.lab === 'model')!.kept, 1)
   const ds: GateDecision[] = [
-    { id: '1', at: 1, lab: 'vfx', gate: 'critic-skip', mode: 'on', inputs: '', outcome: 'skipped critic', acted: true, by: 'code', tokensSaved: 2300 },
-    { id: '2', at: 2, lab: 'vfx', gate: 'plateau', mode: 'shadow', inputs: '', outcome: 'would stop', acted: false, by: 'code', tokensSaved: 4600 }
+    { id: '1', at: 1, lab: 'uimotion', gate: 'critic-skip', mode: 'on', inputs: '', outcome: 'skipped critic', acted: true, by: 'code', tokensSaved: 2300 },
+    { id: '2', at: 2, lab: 'uimotion', gate: 'plateau', mode: 'shadow', inputs: '', outcome: 'would stop', acted: false, by: 'code', tokensSaved: 4600 }
   ]
-  const r3 = costRows(runs, ds).find((r) => r.lab === 'vfx')!
+  const r3 = costRows(runs, ds).find((r) => r.lab === 'uimotion')!
   assert.deepEqual([r3.saved, r3.wouldSave, r3.decisions], [2300, 4600, 2])
   assert.equal(formatUsd(null), '—')
   assert.equal(formatUsd(0.004), '$0.0040')
@@ -400,37 +396,37 @@ test('decision model: holdout comparison, activation rule, serialisation round t
 })
 
 test('features: numeric gate inputs and keyword features for critique text and errors', () => {
-  const f = criticSkipFeatures({ lab: 'anim', diff: 0.02, hash: 6, comparable: true, iteration: 3, prevScore: 6.5, prevGain: 0.4, changes: 3, threshold: 7.5, heuristicSkip: false })
-  assert.equal(f.lab_anim, 1)
+  const f = criticSkipFeatures({ lab: 'model', diff: 0.02, hash: 6, comparable: true, iteration: 3, prevScore: 6.5, prevGain: 0.4, changes: 3, threshold: 7.5, heuristicSkip: false })
+  assert.equal(f.lab_model, 1)
   assert.equal(f.hash, 6 / 64)
   const t = textFeatures('Polished and reads well; only a minor tweak to the sparks, which pop off.', 's')
   assert.deepEqual([t.s_done, t.s_minor >= 2, t.s_problem], [2, true, 1])
-  const p = plateauFeatures({ lab: 'vfx', scores: [6, 6.1, 6.2], threshold: 7.5, remaining: 1, changes: 2, summary: 'Strong.' })
+  const p = plateauFeatures({ lab: 'uimotion', scores: [6, 6.1, 6.2], threshold: 7.5, remaining: 1, changes: 2, summary: 'Strong.' })
   assert.equal(p.flat_rounds, 2)
   assert.equal(p.sum_done, 1)
-  const r = retryFeatures({ lab: 'vfx', kind: 'script-error', repairs: 1, sameAsLast: false, message: "attempt to index nil with 'Emit' (line 14)" })
+  const r = retryFeatures({ lab: 'uimotion', kind: 'script-error', repairs: 1, sameAsLast: false, message: "attempt to index nil with 'Emit' (line 14)" })
   assert.deepEqual([r.k_script, r.has_line, r.nil_index], [1, 1, 1])
 })
 
 // ------------------------------------------------------------------ GatingService
 
-const crit = (lab: 'vfx' | 'anim', entryId: string, iteration: number, frames: Buffer[], previousScore: number | null) => ({ lab, entryId, iteration, frames, previousScore, changes: 2, threshold: 7.5 })
+const crit = (lab: 'uimotion' | 'model', entryId: string, iteration: number, frames: Buffer[], previousScore: number | null) => ({ lab, entryId, iteration, frames, previousScore, changes: 2, threshold: 7.5 })
 
 test('service shadow mode: logs "would skip", does not skip, labels the example from the next score', async () => {
   const dir = await tmp()
   const { svc } = service(dir)
-  assert.equal((await svc.beforeCritique(crit('vfx', 'e1', 1, [blob(20), blob(30)], null))).skip, false)
-  await svc.afterCritique({ lab: 'vfx', entryId: 'e1', iteration: 1, score: 6, threshold: 7.5, remaining: 3, changes: 2 })
-  const r = await svc.beforeCritique(crit('vfx', 'e1', 2, [blob(20), blob(30)], 6))
+  assert.equal((await svc.beforeCritique(crit('uimotion', 'e1', 1, [blob(20), blob(30)], null))).skip, false)
+  await svc.afterCritique({ lab: 'uimotion', entryId: 'e1', iteration: 1, score: 6, threshold: 7.5, remaining: 3, changes: 2 })
+  const r = await svc.beforeCritique(crit('uimotion', 'e1', 2, [blob(20), blob(30)], 6))
   assert.equal(r.skip, false)
-  await svc.afterCritique({ lab: 'vfx', entryId: 'e1', iteration: 2, score: 6.05, threshold: 7.5, remaining: 2, changes: 2 })
-  const v = await svc.view({ lab: 'vfx' })
+  await svc.afterCritique({ lab: 'uimotion', entryId: 'e1', iteration: 2, score: 6.05, threshold: 7.5, remaining: 2, changes: 2 })
+  const v = await svc.view({ lab: 'uimotion' })
   const skip = v.decisions.find((d) => d.gate === 'critic-skip')!
   assert.equal(skip.outcome, 'would skip critic')
   assert.equal(skip.acted, false)
   assert.equal(skip.mode, 'shadow')
   assert.ok(skip.tokensSaved > 2000)
-  assert.equal(v.costs.find((c) => c.lab === 'vfx')!.wouldSave, skip.tokensSaved + v.decisions.filter((d) => d.gate === 'plateau').reduce((s, d) => s + d.tokensSaved, 0))
+  assert.equal(v.costs.find((c) => c.lab === 'uimotion')!.wouldSave, skip.tokensSaved + v.decisions.filter((d) => d.gate === 'plateau').reduce((s, d) => s + d.tokensSaved, 0))
   await svc.flush()
   const ex = JSON.parse(await readFile(join(dir, 'examples-critic-skip.json'), 'utf8')) as Example[]
   assert.equal(ex.length, 1)
@@ -443,42 +439,42 @@ test('service shadow mode: logs "would skip", does not skip, labels the example 
 
 test('service on: skips the critic and stops on a plateau; off: nothing logged', async () => {
   const { svc } = service(await tmp(), { gates: 'on' })
-  await svc.beforeCritique(crit('anim', 'e2', 1, [blob(10)], null))
-  await svc.afterCritique({ lab: 'anim', entryId: 'e2', iteration: 1, score: 6.8, threshold: 7.5, remaining: 3, changes: 2 })
-  assert.equal((await svc.beforeCritique(crit('anim', 'e2', 2, [blob(44)], 6.8))).skip, false)
-  await svc.afterCritique({ lab: 'anim', entryId: 'e2', iteration: 2, score: 6.9, threshold: 7.5, remaining: 2, changes: 2 })
-  assert.equal((await svc.beforeCritique(crit('anim', 'e2', 3, [blob(20)], 6.9))).skip, false)
-  const stop = await svc.afterCritique({ lab: 'anim', entryId: 'e2', iteration: 3, score: 6.95, threshold: 7.5, remaining: 1, changes: 2 })
+  await svc.beforeCritique(crit('model', 'e2', 1, [blob(10)], null))
+  await svc.afterCritique({ lab: 'model', entryId: 'e2', iteration: 1, score: 6.8, threshold: 7.5, remaining: 3, changes: 2 })
+  assert.equal((await svc.beforeCritique(crit('model', 'e2', 2, [blob(44)], 6.8))).skip, false)
+  await svc.afterCritique({ lab: 'model', entryId: 'e2', iteration: 2, score: 6.9, threshold: 7.5, remaining: 2, changes: 2 })
+  assert.equal((await svc.beforeCritique(crit('model', 'e2', 3, [blob(20)], 6.9))).skip, false)
+  const stop = await svc.afterCritique({ lab: 'model', entryId: 'e2', iteration: 3, score: 6.95, threshold: 7.5, remaining: 1, changes: 2 })
   assert.equal(stop.stop, true)
-  const skip = await svc.beforeCritique(crit('anim', 'e2', 4, [blob(20)], 6.95))
+  const skip = await svc.beforeCritique(crit('model', 'e2', 4, [blob(20)], 6.95))
   assert.equal(skip.skip, true)
   const v = await svc.view({ entryId: 'e2' })
   assert.ok(v.decisions.some((d) => d.outcome === 'skipped critic' && d.acted))
   assert.ok(v.decisions.some((d) => d.outcome === 'stopped early' && d.acted))
-  assert.ok(v.costs.find((c) => c.lab === 'anim')!.saved > 0)
-  svc.endRun('anim', 'e2')
+  assert.ok(v.costs.find((c) => c.lab === 'model')!.saved > 0)
+  svc.endRun('model', 'e2')
 
   const off = service(await tmp(), { gates: 'off' }).svc
-  await off.beforeCritique(crit('vfx', 'e3', 1, [blob(20)], null))
-  assert.equal((await off.beforeCritique(crit('vfx', 'e3', 2, [blob(20)], 6))).skip, false)
-  assert.equal((await off.retry({ lab: 'vfx', message: 'no script in the answer', repairs: 0 })).outcome, 'give-up')
+  await off.beforeCritique(crit('uimotion', 'e3', 1, [blob(20)], null))
+  assert.equal((await off.beforeCritique(crit('uimotion', 'e3', 2, [blob(20)], 6))).skip, false)
+  assert.equal((await off.retry({ lab: 'uimotion', message: 'no script in the answer', repairs: 0 })).outcome, 'give-up')
   assert.equal((await off.view()).decisions.length, 0)
 })
 
 test('service retry: shadow keeps the v0.5 route and logs the gate, on takes the gate route', async () => {
   const sh = service(await tmp()).svc
-  const a = await sh.retry({ lab: 'vfx', message: 'no script in the answer', repairs: 0, kind: 'no-script' })
+  const a = await sh.retry({ lab: 'uimotion', message: 'no script in the answer', repairs: 0, kind: 'no-script' })
   assert.equal(a.outcome, 'give-up')
   const d = (await sh.view()).decisions[0]
   assert.equal(d.outcome, 'would rephrase (did give-up)')
   assert.equal(d.acted, false)
   const { svc: on } = service(await tmp(), { gates: 'on' })
-  const b = await on.retry({ lab: 'anim', message: 'no script in the answer', repairs: 0, kind: 'no-script' })
+  const b = await on.retry({ lab: 'model', message: 'no script in the answer', repairs: 0, kind: 'no-script' })
   assert.equal(b.outcome, 'rephrase')
   assert.ok(b.ticket)
   on.retryResult(b.ticket, true)
   // A recorded "script error" that is really a Lune timeout is not repaired when on.
-  const c = await on.retry({ lab: 'anim', message: 'Lune timed out after 20000 ms', repairs: 0, kind: 'script-error' })
+  const c = await on.retry({ lab: 'model', message: 'Lune timed out after 20000 ms', repairs: 0, kind: 'script-error' })
   assert.equal(c.outcome, 'give-up')
   assert.equal((await on.view()).decisions[0].tokensSaved > 0, true)
   await on.flush()
@@ -491,14 +487,14 @@ test('service decision models: learn in shadow, override only when active and mo
   // Teach it: every critique after a small change still mattered (the heuristic would skip those).
   for (let k = 0; k < 40; k++) {
     const id = `m${k}`
-    await svc.beforeCritique(crit('vfx', id, 1, [blob(20)], null))
-    await svc.afterCritique({ lab: 'vfx', entryId: id, iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
+    await svc.beforeCritique(crit('uimotion', id, 1, [blob(20)], null))
+    await svc.afterCritique({ lab: 'uimotion', entryId: id, iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
     // Alternate: unchanged frames that still moved the score, and changed frames that did not.
     const same = k % 2 === 0
-    const r = await svc.beforeCritique(crit('vfx', id, 2, [same ? blob(20) : blob(44)], 5))
+    const r = await svc.beforeCritique(crit('uimotion', id, 2, [same ? blob(20) : blob(44)], 5))
     if (r.skip) continue
-    await svc.afterCritique({ lab: 'vfx', entryId: id, iteration: 2, score: same ? 6 : 5.05, threshold: 9, remaining: 2, changes: 2 })
-    svc.endRun('vfx', id)
+    await svc.afterCritique({ lab: 'uimotion', entryId: id, iteration: 2, score: same ? 6 : 5.05, threshold: 9, remaining: 2, changes: 2 })
+    svc.endRun('uimotion', id)
   }
   // In gates-on mode the heuristic skipped the unchanged ones, so only the changed rounds labelled.
   let st = (await svc.view()).models.find((m) => m.type === 'critic-skip')!
@@ -507,12 +503,12 @@ test('service decision models: learn in shadow, override only when active and mo
   set({ gates: 'shadow' })
   for (let k = 0; k < 60; k++) {
     const id = `s${k}`
-    await svc.beforeCritique(crit('vfx', id, 1, [blob(20)], null))
-    await svc.afterCritique({ lab: 'vfx', entryId: id, iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
+    await svc.beforeCritique(crit('uimotion', id, 1, [blob(20)], null))
+    await svc.afterCritique({ lab: 'uimotion', entryId: id, iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
     const same = k % 2 === 0
-    await svc.beforeCritique(crit('vfx', id, 2, [same ? blob(20) : blob(44)], 5))
-    await svc.afterCritique({ lab: 'vfx', entryId: id, iteration: 2, score: same ? 6 : 5.05, threshold: 9, remaining: 2, changes: 2 })
-    svc.endRun('vfx', id)
+    await svc.beforeCritique(crit('uimotion', id, 2, [same ? blob(20) : blob(44)], 5))
+    await svc.afterCritique({ lab: 'uimotion', entryId: id, iteration: 2, score: same ? 6 : 5.05, threshold: 9, remaining: 2, changes: 2 })
+    svc.endRun('uimotion', id)
   }
   await svc.retrain()
   st = (await svc.view()).models.find((m) => m.type === 'critic-skip')!
@@ -520,26 +516,26 @@ test('service decision models: learn in shadow, override only when active and mo
   assert.ok(st.modelAcc! > st.heuristicAcc!)
   // Models shadow: the heuristic still decides, the model's view is logged.
   set({ gates: 'on', models: 'shadow' })
-  await svc.beforeCritique(crit('vfx', 'q1', 1, [blob(20)], null))
-  await svc.afterCritique({ lab: 'vfx', entryId: 'q1', iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
-  const h = await svc.beforeCritique(crit('vfx', 'q1', 2, [blob(20)], 5))
+  await svc.beforeCritique(crit('uimotion', 'q1', 1, [blob(20)], null))
+  await svc.afterCritique({ lab: 'uimotion', entryId: 'q1', iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
+  const h = await svc.beforeCritique(crit('uimotion', 'q1', 2, [blob(20)], 5))
   assert.equal(h.skip, true)
   let d = (await svc.view({ entryId: 'q1' })).decisions.find((x) => x.gate === 'critic-skip')!
   assert.equal(d.by, 'code')
   assert.equal(d.modelSays, 'critique')
   // Models on + active: the model overrides (this critique is worth it).
   set({ models: 'on' })
-  await svc.beforeCritique(crit('vfx', 'q2', 1, [blob(20)], null))
-  await svc.afterCritique({ lab: 'vfx', entryId: 'q2', iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
-  const m = await svc.beforeCritique(crit('vfx', 'q2', 2, [blob(20)], 5))
+  await svc.beforeCritique(crit('uimotion', 'q2', 1, [blob(20)], null))
+  await svc.afterCritique({ lab: 'uimotion', entryId: 'q2', iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
+  const m = await svc.beforeCritique(crit('uimotion', 'q2', 2, [blob(20)], 5))
   assert.equal(m.skip, false)
   d = (await svc.view({ entryId: 'q2' })).decisions.find((x) => x.gate === 'critic-skip')!
   assert.equal(d.by, 'model')
   // Raise the bar above the labelled count: back to the heuristic (fallback).
   set({ minExamples: 1000 })
-  await svc.beforeCritique(crit('vfx', 'q3', 1, [blob(20)], null))
-  await svc.afterCritique({ lab: 'vfx', entryId: 'q3', iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
-  assert.equal((await svc.beforeCritique(crit('vfx', 'q3', 2, [blob(20)], 5))).skip, true)
+  await svc.beforeCritique(crit('uimotion', 'q3', 1, [blob(20)], null))
+  await svc.afterCritique({ lab: 'uimotion', entryId: 'q3', iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
+  assert.equal((await svc.beforeCritique(crit('uimotion', 'q3', 2, [blob(20)], 5))).skip, true)
   // The model persists and is reloaded by a fresh service.
   await svc.flush()
   const again = service(dir, { gates: 'on', models: 'on', minExamples: 20 }).svc
@@ -548,17 +544,17 @@ test('service decision models: learn in shadow, override only when active and mo
   const { writeFile } = await import('node:fs/promises')
   await writeFile(join(dir, 'model-critic-skip.json'), '{"version":1,"garbage":true}')
   const fresh = service(dir, { gates: 'on', models: 'on', minExamples: 20 }).svc
-  await fresh.beforeCritique(crit('vfx', 'q4', 1, [blob(20)], null))
-  await fresh.afterCritique({ lab: 'vfx', entryId: 'q4', iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
-  assert.equal((await fresh.beforeCritique(crit('vfx', 'q4', 2, [blob(20)], 5))).skip, true)
+  await fresh.beforeCritique(crit('uimotion', 'q4', 1, [blob(20)], null))
+  await fresh.afterCritique({ lab: 'uimotion', entryId: 'q4', iteration: 1, score: 5, threshold: 9, remaining: 3, changes: 2 })
+  assert.equal((await fresh.beforeCritique(crit('uimotion', 'q4', 2, [blob(20)], 5))).skip, true)
 })
 
 test('service costs: a run charges per tier, compose charges wait for the entry id, kept marks it', async () => {
   const dir = await tmp()
   const { svc } = service(dir)
-  await svc.withRun('vfx', undefined, async () => {
+  await svc.withRun('uimotion', undefined, async () => {
     await svc.charge('default', { input: 3000, output: 1500, costUsd: 0.05 })
-    svc.attach('fx1')
+    svc.attach('ui1')
     // Background work started inside the run is still charged to it.
     await new Promise((r) => setTimeout(r, 5))
     await svc.charge('critic', { input: 5000, output: 600, costUsd: 0.08 })
@@ -566,28 +562,28 @@ test('service costs: a run charges per tier, compose charges wait for the entry 
   // Outside a run: ignored.
   await svc.charge('critic', { input: 1, output: 1, costUsd: 1 })
   await new Promise((r) => setTimeout(r, 5))
-  let row = (await svc.view()).costs.find((c) => c.lab === 'vfx')!
+  let row = (await svc.view()).costs.find((c) => c.lab === 'uimotion')!
   assert.equal(row.runs, 1)
   assert.equal(row.costUsd, 0.13)
-  await svc.kept('vfx', 'fx1', true)
-  row = (await svc.view()).costs.find((c) => c.lab === 'vfx')!
+  await svc.kept('uimotion', 'ui1', true)
+  row = (await svc.view()).costs.find((c) => c.lab === 'uimotion')!
   assert.equal(row.costPerKept, 0.13)
   await svc.flush()
   const reload = service(dir).svc
-  assert.equal((await reload.view()).costs.find((c) => c.lab === 'vfx')!.kept, 1)
+  assert.equal((await reload.view()).costs.find((c) => c.lab === 'uimotion')!.kept, 1)
   await reload.reset()
-  assert.equal((await reload.view()).costs.find((c) => c.lab === 'vfx')!.runs, 0)
+  assert.equal((await reload.view()).costs.find((c) => c.lab === 'uimotion')!.runs, 0)
 })
 
 test('principle weights: shadow logs the would-be change and keeps the critics neutral; on applies', async () => {
   const { svc, set } = service(await tmp())
   const p = new PrincipleService({ dir: await tmp(), gate: svc })
-  await p.record({ lab: 'anim', entryId: 'a1', name: 'Punch', rating: 'down', scores: { arcs: 3, anticipation: 8, timing: 7 }, notes: 'floaty' })
+  await p.record({ lab: 'uimotion', entryId: 'a1', name: 'PlayButton', rating: 'down', scores: { 'ui-overshoot': 3, 'ui-responsiveness': 8, 'ui-readability': 7 }, notes: 'wobbly' })
   assert.deepEqual(await p.weights(), {})
   assert.ok(Object.keys((await p.profile()).weights).length > 0)
   const d = (await svc.view()).decisions.find((x) => x.gate === 'principle-weights')!
   assert.equal(d.outcome, 'would apply')
-  assert.match(d.inputs, /arcs 1\.00→/)
+  assert.match(d.inputs, /ui-overshoot 1\.00→/)
   set({ gates: 'on' })
   assert.ok(Object.keys(await p.weights()).length > 0)
   // Off = the v0.5 behaviour (applied, not logged).
@@ -595,44 +591,32 @@ test('principle weights: shadow logs the would-be change and keeps the critics n
   assert.ok(Object.keys(await p.weights()).length > 0)
   // Without a gate the service behaves as before.
   const plain = new PrincipleService({ dir: await tmp() })
-  await plain.record({ lab: 'vfx', entryId: 'v1', rating: 'down', scores: { 'fx-timing': 3, 'fx-contrast': 8 } })
+  await plain.record({ lab: 'uimotion', entryId: 'v1', rating: 'down', scores: { 'ui-responsiveness': 3, 'ui-overshoot': 8 } })
   assert.ok(Object.keys(await plain.weights()).length > 0)
 })
 
 // ------------------------------------------------------------------ loop hook + IPC wrappers
-
-test('refineLoop: shouldStop ends the loop as "plateau" and is not asked on the last round', async () => {
-  const fx = effectFromSpec({ name: 'T', layers: [{ name: 'Core', class: 'ParticleEmitter', props: { Rate: 10 } }] })
-  const crit = (overall: number): VfxCritique => ({ scores: { readability: overall, layering: overall, timing: overall, color: overall, silhouette: overall, performance: overall }, overall, summary: '', changes: [{ node: 'Core', prop: 'Rate', value: 10 + overall }], references: [] })
-  const asked: number[] = []
-  const r = await refineLoop(fx, { render: async (_e, n) => [`f${n}`], critique: async (_e, _f, n) => crit(5 + n * 0.1), shouldStop: async (_c, n) => (asked.push(n), n === 2) }, { maxIterations: 5, threshold: 9 })
-  assert.equal(r.stop, 'plateau')
-  assert.equal(r.iterations.length, 2)
-  const last: number[] = []
-  await refineLoop(fx, { render: async (_e, n) => [`f${n}`], critique: async (_e, _f, n) => crit(5 + n), shouldStop: async (_c, n) => (last.push(n), false) }, { maxIterations: 2, threshold: 9 })
-  assert.deepEqual(last, [1])
-})
 
 test('gating wiring: settings round trip, compose runs attach the entry, ratings and exports mark kept', async () => {
   const store = new Map<string, unknown>()
   const w = createGatingWiring({ userDataDir: await tmp(), settings: { get: (k, f) => (store.has(k) ? (store.get(k) as never) : f), set: (k, v) => void store.set(k, v) }, emit: () => {} })
   assert.deepEqual(await w.handlers.labGatingSet({ gates: 'on', models: 'bogus' }), { gates: 'on', models: 'shadow', minExamples: 50 })
   assert.equal(((await w.handlers.labGatingView()) as { settings: GatingSettings }).settings.gates, 'on')
-  const hs = w.wrap('anim', {
-    animCompose: async () => {
+  const hs = w.wrap('uimotion', {
+    uiMotionCompose: async () => {
       await w.service.charge('default', { input: 100, output: 50, costUsd: 0.01 })
-      return { ok: true, entry: { id: 'clip1' } }
+      return { ok: true, entry: { id: 'ui1' } }
     },
-    animExport: async (id: string) => ({ id }),
-    animRate: async () => ({})
+    uiMotionExport: async (id: string) => ({ id }),
+    uiMotionRate: async () => ({})
   })
-  await hs.animCompose('a punch')
+  await hs.uiMotionCompose('a button')
   await new Promise((r) => setTimeout(r, 5))
-  await hs.animExport('clip1')
-  let row = ((await w.handlers.labGatingView()) as { costs: { lab: string; kept: number; costPerKept: number | null }[] }).costs.find((c) => c.lab === 'anim')!
+  await hs.uiMotionExport('ui1')
+  let row = ((await w.handlers.labGatingView()) as { costs: { lab: string; kept: number; costPerKept: number | null }[] }).costs.find((c) => c.lab === 'uimotion')!
   assert.deepEqual([row.kept, row.costPerKept], [1, 0.01])
-  await hs.animRate('clip1', 'down')
-  row = ((await w.handlers.labGatingView()) as { costs: { lab: string; kept: number; costPerKept: number | null }[] }).costs.find((c) => c.lab === 'anim')!
+  await hs.uiMotionRate('ui1', 'down')
+  row = ((await w.handlers.labGatingView()) as { costs: { lab: string; kept: number; costPerKept: number | null }[] }).costs.find((c) => c.lab === 'uimotion')!
   assert.equal(row.kept, 0)
   assert.equal(resultEntryId({ entry: { id: 'x' } }), 'x')
   assert.equal(resultEntryId({ id: 'y' }), 'y')
@@ -658,33 +642,7 @@ test('gating wiring: Model Lab Generate runs attach the model, Build in Studio m
   await w.service.flush()
 })
 
-// ------------------------------------------------------------------ lab service integration
-
-
-test('VFX Lab refine with gates: unchanged frames skip the critic when on, still run in shadow', async () => {
-  const spec = { name: 'GateSlash', tags: ['slash'], layers: [{ name: 'Core', class: 'ParticleEmitter' as const, props: { Rate: 20, LightEmission: 0.2 } }] }
-  const frame = blob(20)
-  const run = async (gates: 'on' | 'shadow') => {
-    const { svc: gate } = service(await tmp(), { gates })
-    let shots = 0
-    const vision = async () => {
-      shots++
-      return JSON.stringify({ scores: { readability: 5, layering: 5, timing: 5, color: 5, silhouette: 5, performance: 10 }, summary: 'Core too dim.', changes: [{ node: 'Core', prop: 'LightEmission', value: 0.2 + shots * 0.1 }] })
-    }
-    const lab = new VfxService({ userDir: await tmp(), projectRoot: () => null, lune: async () => ({ error: 'x' }), runtimeDir: () => null, capture: async (req) => req.times.map(() => frame), vision: () => vision, gate })
-    const { entry } = await lab.create(spec)
-    const r = await lab.refine(entry.id, { maxIterations: 4, threshold: 9, frames: 2 })
-    return { r, shots, view: await gate.view({ entryId: entry.id }) }
-  }
-  const on = await run('on')
-  assert.equal(on.shots, 1)
-  assert.equal(on.r.stop, 'no-changes')
-  assert.match(on.r.iterations[1].critique.summary, /^Critic skipped/)
-  assert.ok(on.view.decisions.some((d) => d.gate === 'critic-skip' && d.acted))
-  const shadow = await run('shadow')
-  assert.ok(shadow.shots >= 3, `shadow ran ${shadow.shots} critiques`)
-  assert.ok(shadow.view.decisions.some((d) => d.outcome === 'would skip critic' && !d.acted))
-})
+// ------------------------------------------------------------------ decision model retraining
 
 test('service decision models keep retraining once the example log is full (MAX_EXAMPLES)', async () => {
   const { writeFile, mkdir } = await import('node:fs/promises')
@@ -697,7 +655,7 @@ test('service decision models keep retraining once the example log is full (MAX_
   await writeFile(join(dir, 'model-retry.json'), JSON.stringify(model))
   const { svc } = service(dir, { gates: 'on' }, { t: 1_000_000 })
   for (let k = 0; k < RETRAIN_EVERY; k++) {
-    const r = await svc.retry({ lab: 'vfx', entryId: `e${k}`, message: 'parse error: unexpected token', repairs: 0, kind: 'parse' })
+    const r = await svc.retry({ lab: 'uimotion', entryId: `e${k}`, message: 'parse error: unexpected token', repairs: 0, kind: 'parse' })
     assert.ok(r.ticket)
     svc.retryResult(r.ticket, k % 2 === 0)
     await new Promise((res) => setTimeout(res, 5))

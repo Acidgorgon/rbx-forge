@@ -21,8 +21,6 @@ import { GeneratedImageWatch, complete } from '../src/main/agent/codex/generated
 import { codexGroupPrompt, codexPrompt } from '../src/main/agent/codex/chat.ts'
 import { importGeneratedImages, setCodexConceptSaver } from '../src/main/agent/codex/imageSink.ts'
 import { ChatImageStore, chatImageStore, setChatImageStore } from '../src/main/agent/chatImages.ts'
-import { ArtService } from '../src/main/services/art/service.ts'
-import { projectScope } from '../src/main/services/release/secrets.ts'
 import type { QueryFn } from '../src/main/agent/sdk.ts'
 
 // A tiny but complete PNG (signature, IHDR 2x3, IEND).
@@ -140,7 +138,7 @@ test('host chat on Codex: image_gen output shows inline before the reply, lands 
     assert.deepEqual((await chatImageStore().read(im.images![0].id))!.data, png(2, 3))
     assert.equal(im.images![0].name, 'menu-concepts-1')
     // Codex is told the images show here by themselves.
-    assert.match(execs[0].stdin, /appear in this chat automatically and Forge saves them to art\/concepts/)
+    assert.match(execs[0].stdin, /appear in this chat automatically/)
 
     await chats.send(c.id, 'thanks')
     await until(() => !chats.busy(c.id))
@@ -233,31 +231,6 @@ test('importGeneratedImages: without a project the image still shows; non-images
   assert.equal(r.images.length, 1)
   assert.deepEqual(r.concepts, [])
   assert.match(r.problems.join('\n'), /not saved to art\/concepts: No project open/)
-})
-
-test('ArtService.saveGenerated: chat images become concepts with the request as prompt, made by an agent, $0', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'forge-art-'))
-  const data = new Map<string, unknown>()
-  const changed: string[] = []
-  const svc = new ArtService({
-    root: () => root,
-    scope: projectScope,
-    settings: { get: (k, f) => (data.has(k) ? (data.get(k) as any) : f), set: (k, v) => void data.set(k, v) },
-    openAiKey: async () => null,
-    robloxKey: async () => null,
-    now: () => new Date(2026, 9, 17, 12, 0, 0).getTime(),
-    trashDir: join(root, '.trash'),
-    onChanged: (r) => changed.push(r)
-  })
-  const items = await svc.saveGenerated({ images: [png(), png(4, 4)], prompt: 'Make UI menu concepts for the football game' })
-  assert.deepEqual(items.map((i) => i.path), ['art/concepts/2026-10-17/make-ui-menu-concepts-football-game-1.png', 'art/concepts/2026-10-17/make-ui-menu-concepts-football-game-2.png'])
-  const side = JSON.parse(await readFile(join(root, 'art/concepts/2026-10-17/make-ui-menu-concepts-football-game-1.json'), 'utf8'))
-  assert.equal(side.prompt, 'Make UI menu concepts for the football game')
-  assert.equal(side.source, 'agent')
-  assert.equal(side.costUsd, 0)
-  assert.equal(side.model, items[0].model)
-  assert.deepEqual(changed, [root])
-  assert.equal((await svc.list()).length, 2, 'the Art page lists them')
 })
 
 test('codex prompts: attached images listed as paths; the image rule rides along in group calls', () => {

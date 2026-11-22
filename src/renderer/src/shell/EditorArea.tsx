@@ -22,11 +22,6 @@ import { SettingsPage } from '../pages/settings/SettingsPage'
 import { PackagesPage } from '../pages/PackagesPage'
 import { ReleasePage } from '../pages/ReleasePage'
 import { AnalyticsPage } from '../pages/AnalyticsPage'
-import { ArtPage } from '../pages/art/ArtPage'
-import { VfxLabPage } from '../pages/vfx/VfxLabPage'
-import { ThumbLabPage } from '../pages/thumbs/ThumbLabPage'
-import { AnimLabPage } from '../pages/anim/AnimLabPage'
-import { AbilityPage } from '../pages/ability/AbilityPage'
 import { UiMotionLabPage } from '../pages/uimotion/UiMotionLabPage'
 import { ModelLabPage } from '../pages/model/ModelLabPage'
 import { UiPreviewPage } from '../pages/uipreview/UiPreviewPage'
@@ -36,7 +31,7 @@ import { ConflictPage } from '../pages/ConflictPage'
 import { GitDiffPage } from '../pages/GitDiffPage'
 import { TranscriptPage } from '../pages/TranscriptPage'
 
-const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', art: 'image', vfx: 'sparkle', anim: 'figure', ability: 'bolt', thumbs: 'thumbnail', uimotion: 'tap', model: 'cube', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', gitdiff: 'diff', transcript: 'bot' }
+const PAGE_ICON: Record<string, IconName> = { forge: 'hammer', settings: 'gear', packages: 'package', release: 'rocket', analytics: 'chart', uimotion: 'tap', model: 'cube', uipreview: 'monitor', memory: 'memory', groups: 'round', conflict: 'diff', gitdiff: 'diff', transcript: 'bot' }
 
 function TabGlyph({ tab }: { tab: Tab }) {
   if (tab.kind === 'file' && tab.path) {
@@ -458,16 +453,6 @@ function pageFor(tab: Tab): ReactNode {
       return <ReleasePage />
     case 'analytics':
       return <AnalyticsPage />
-    case 'art':
-      return <ArtPage />
-    case 'vfx':
-      return <VfxLabPage />
-    case 'anim':
-      return <AnimLabPage />
-    case 'ability':
-      return <AbilityPage />
-    case 'thumbs':
-      return <ThumbLabPage />
     case 'uimotion':
       return <UiMotionLabPage />
     case 'model':

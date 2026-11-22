@@ -2,6 +2,7 @@
 // script: `lune run model_build.luau <BlockyKit.luau> <build.luau> <name>` prints one JSON line with
 // every recorded part (shared/model/checks.ts parseBuildOutput). No electron imports.
 
+import { execFile } from 'node:child_process'
 import { existsSync } from 'node:fs'
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -9,7 +10,22 @@ import { join, resolve } from 'node:path'
 import { parseBuildOutput } from '../../../shared/model/checks.ts'
 import type { ModelBuild, ModelTemplateId } from '../../../shared/model/types.ts'
 import { runtimeDirCandidates } from '../tests/lune.ts'
-import { runWithTimeout, type LuneRun } from '../vfx/lune.ts'
+import { planSpawn, toolEnv } from '../tools.ts'
+
+export type LuneRun = (lune: string, args: string[], cwd: string) => Promise<{ code: number; stdout: string; stderr: string }>
+
+// run() with a time limit (the process is killed when it runs out).
+export function runWithTimeout(file: string, args: string[], cwd: string, timeoutMs: number): Promise<{ code: number; stdout: string; stderr: string; timedOut: boolean }> {
+  const plan = planSpawn(file, args)
+  return new Promise((resolvePromise) => {
+    execFile(plan.file, plan.args, { cwd, env: toolEnv(), maxBuffer: 16 * 1024 * 1024, windowsHide: true, timeout: timeoutMs, killSignal: 'SIGKILL', windowsVerbatimArguments: plan.windowsVerbatimArguments }, (error, stdout, stderr) => {
+      const timedOut = !!error && ((error as NodeJS.ErrnoException & { killed?: boolean }).killed === true || /ETIMEDOUT/.test(String(error.message)))
+      let code = 0
+      if (error) code = typeof error.code === 'number' ? error.code : 1
+      resolvePromise({ code, stdout: String(stdout), stderr: String(stderr || (error && !timedOut ? error.message : '')), timedOut })
+    })
+  })
+}
 
 export const KIT_FILE = 'BlockyKit.luau'
 export const SANDBOX_FILE = 'model_build.luau'

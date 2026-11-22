@@ -59,28 +59,13 @@ const methods = [
   // Memory export/import (.forgepack) and device sync
   'packCandidates', 'packExport', 'packOpen', 'packImport',
   'brainSyncStatus', 'brainSyncGetSettings', 'brainSyncSetSettings', 'brainSyncNow', 'brainSyncChooseFolder',
-  // Art concepts (OpenAI images, Roblox import)
-  'artStatus', 'artSetSettings', 'artSetRobloxKey', 'artClearRobloxKey', 'artList', 'artEstimate', 'artGenerate',
-  'artThumbnail', 'artDelete', 'artUndoDelete', 'artImportToRoblox', 'artSaveToProject', 'artRegistry', 'artChooseReferences', 'artReveal',
-  'artLayersPropose', 'artLayersEstimate', 'artLayersGenerate', 'artLayersGet', 'artLayersImport',
+  // Model / media upload inbox & Open Cloud key/creator settings
   'fbxInboxStatus', 'fbxInboxSetSettings', 'fbxInboxChooseFolder',
+  'inboxCloudStatus', 'inboxSetRobloxKey', 'inboxClearRobloxKey', 'inboxSetCreator',
   // UI Preview (UI Labs stories)
   'uiPreviewStories', 'uiPreviewOpen', 'uiPreviewClose', 'uiPreviewInput', 'uiPreviewState', 'uiPreviewImages', 'uiPreviewSaveExport',
-  // VFX Lab (library, recipes, render / critique / refine)
-  'vfxStatus', 'vfxList', 'vfxGet', 'vfxSearch', 'vfxImport', 'vfxChooseImport', 'vfxUpdate', 'vfxDelete', 'vfxRate',
-  'vfxLearn', 'vfxRecipes', 'vfxMake', 'vfxRefine', 'vfxCancel', 'vfxCreate', 'vfxFile', 'vfxSaveThumb', 'vfxResolveTexture', 'vfxTestInStudio',
-  'vfxRunScript', 'vfxCompose', 'vfxExamples', 'vfxAddExample', 'vfxMeshGet', 'vfxMeshLoad', 'vfxMeshStatus', 'vfxReimport',
-  'vfxImportScan', 'vfxStudioScan', 'vfxImportCommit', 'vfxTrash', 'vfxRestore', 'vfxClear', 'vfxDuplicates', 'vfxRetag', 'vfxNameFromTags', 'vfxSetNameFromTags', 'vfxLiveStart', 'vfxLiveStop', 'vfxLiveSet', 'vfxLiveSettings', 'vfxLiveStatus',
-  'vfxPlaySelection', 'vfxStopSelection', 'vfxSelectionGap', 'vfxSelectionStatus', 'vfxInstallEmitRuntime',
-  'vfxTexStatus', 'vfxTexList', 'vfxTexGenerate', 'vfxTexPreview', 'vfxTexUpdate', 'vfxTexRate', 'vfxTexDelete', 'vfxTexUpload', 'vfxTexCheck', 'vfxTexFile',
-  'vfxTexImportPick', 'vfxTexImportScan', 'vfxTexImportIds', 'vfxTexImportStudio', 'vfxTexImportCommit', 'vfxTexSetPolicy',
-  // Animation Lab (services/anim) + Labs model tiers
-  'animStatus', 'animList', 'animGet', 'animImport', 'animPreviewImport', 'animChooseImport', 'animUpdate', 'animDelete', 'animRate',
-  'animLearn', 'animStyle', 'animCoverage', 'animMoveSets', 'animSetMoveSet', 'animAddMoveTag', 'animRemoveMoveTag', 'animRetag', 'animCompose', 'animRemixCandidates', 'animRemix', 'animRemixApply', 'animRemixMode', 'animSetRemixMode', 'animRunScript', 'animGetRig', 'animSetRig', 'animConvert', 'animRefine', 'animUseIteration', 'animCancel', 'animChecks', 'animExamples',
-  'animAddExample', 'animFile', 'animSaveThumb', 'animExport', 'animUpload', 'listAnimClips', 'getAnimPose', 'getLabModels', 'setLabModels',
-  // Ability Composer (moves: animation + VFX + shake / screen / hit-stop / movement)
-  'abilityStatus', 'abilityList', 'abilitySave', 'abilityDelete', 'abilityRate', 'abilityCompose', 'abilityCritique',
-  'abilityExport', 'abilityAddExample', 'abilityFile', 'abilitySaveThumb', 'abilityChooseSounds',
+  // Labs model tiers
+  'getLabModels', 'setLabModels',
   // UI Motion Lab (Figma import, effect stacks -> client Luau)
   'uiMotionStatus', 'uiMotionList', 'uiMotionGet', 'uiMotionSave', 'uiMotionDelete', 'uiMotionRate', 'uiMotionComponents',
   'uiMotionImportFigmaDoc', 'uiMotionImportFigmaUrl', 'uiMotionFigmaToken', 'uiMotionSetFigmaToken', 'uiMotionClearFigmaToken',
@@ -88,10 +73,8 @@ const methods = [
   // Model Lab (BlockyKit build scripts, Lune preview, critic rounds, Build in Studio)
   'modelStatus', 'modelList', 'modelLoad', 'modelRun', 'modelGenerate', 'modelFromTemplate', 'modelSave', 'modelRename', 'modelDelete',
   'modelCritique', 'modelSetSettings', 'modelFile', 'modelSaveThumb', 'modelBuildInStudio',
-  // Studio check (Forge Bridge plugin: play in Roblox Studio, capture the key beats)
+  // Studio check (Forge Bridge plugin: play / run build scripts in Roblox Studio)
   'studioStatus', 'studioInstallPlugin', 'studioOpenPluginsFolder', 'studioSetPrefer', 'studioCheck', 'studioLastCheck', 'studioFile', 'studioPlaces', 'studioSetTarget',
-  // Video references (VFX Lab + Animation Lab: "make it like this")
-  'refSave', 'refList', 'refGet', 'refDescribe', 'refFile', 'refDecodeSource',
   // Restate first (chat cards, Labs briefs)
   'getRestateSettings', 'setRestateSettings', 'restateBrief', 'restateConfirm', 'confirmChatRestate',
   // Chat modes + slash commands
@@ -103,22 +86,14 @@ const methods = [
   'forgeSyncSettings', 'setForgeSyncSettings',
   // Lab gating (decision log, decision models, cost per kept)
   'labGatingView', 'labGatingSet', 'labGatingRetrain', 'labGatingReset',
-  // Thumbnail Lab (references, style profiles, bases, variations, critic, CTR, upload)
-  'thumbStatus', 'thumbSetSettings', 'thumbRefs', 'thumbAddRefs', 'thumbChooseImages', 'thumbAnalyzeRef', 'thumbUpdateRef', 'thumbDeleteRef',
-  'thumbProfiles', 'thumbSaveProfile', 'thumbDeleteProfile', 'thumbBases', 'thumbAddBases', 'thumbCaptureStudio', 'thumbDeleteBase',
-  'thumbEstimate', 'thumbGenerate', 'thumbCritique', 'thumbRefine', 'thumbList', 'thumbRate', 'thumbShip', 'thumbNotes', 'thumbDelete',
-  'thumbAddCtr', 'thumbRemoveCtr', 'thumbUpload', 'thumbSetExperience', 'thumbTaste', 'thumbFile',
-  'thumbUseAsRef', 'thumbBuildPrompt', 'thumbUiEstimate', 'thumbUiGenerate', 'thumbUiList', 'thumbUiRate', 'thumbUiKeep', 'thumbUiPin',
-  'thumbUiCritique', 'thumbUiDelete', 'thumbUiKit', 'thumbUiExport', 'thumbUiUpload',
   // Quality of life (bug reports, notifications, session restore, away digest)
   'qolGetSettings', 'qolSetSettings', 'qolBugReportStart', 'qolBugReport', 'qolBugReportPreview', 'qolRevealPath', 'qolReportError',
   'qolLoadSession', 'qolSaveSession', 'qolDigest', 'qolSeen', 'qolTestNotify',
   // Self-update (electron-updater)
   'updateGetState', 'updateCheck', 'updateSetSettings', 'updateInstall', 'updateOpenRelease', 'updateQuickRestart',
-  // Forge Doctor, spending cap, Add to game (qol-c)
+  // Forge Doctor & spending cap (qol-c)
   'doctorRun', 'doctorLast', 'doctorFix',
   'spendState', 'spendSetSettings', 'spendRaiseToday', 'spendClearOverride',
-  'addToGameOptions', 'addToGamePreview', 'addToGameApply',
   // Editor assist (StyLua format, autosave settings, AI inline completions)
   'editorAssistStatus', 'editorAssistSetSettings', 'formatLuau', 'inlineComplete', 'inlineCompleteCancel',
   // Roblox Studio tools (MCP) for the Assistant

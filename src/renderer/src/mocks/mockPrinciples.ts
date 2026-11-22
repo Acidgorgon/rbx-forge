@@ -10,15 +10,10 @@ type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K])
 const t0 = Date.UTC(2026, 9, 10, 12, 0)
 let emitRef: Emit | null = null
 
-// Seed: the user disliked results with weak arcs / dissipation and liked ones with strong
-// anticipation, and wrote notes about floaty hits and effects popping off.
+// Seed: the user disliked results with excessive wobble / slow anticipation and liked crisp responsiveness.
 const feedback: PrincipleFeedback[] = [
-  { at: t0, lab: 'anim', entryId: 'seed-a', name: 'HeavyPunch', rating: 'down', scores: { arcs: 3.8, anticipation: 7.5, timing: 6.5, 'follow-through': 5, readability: 7, 'weight-impact': 4.2 }, notes: 'feels floaty, the hit has no weight' },
-  { at: t0 + 3_600_000, lab: 'vfx', entryId: 'seed-b', name: 'FireSlash', rating: 'down', scores: { 'fx-dissipation': 3, 'fx-contrast': 7, 'fx-layers': 7.5, 'fx-timing': 6.5, 'fx-shape': 6 }, notes: 'the sparks pop off at the end' },
-  { at: t0 + 7_200_000, lab: 'anim', entryId: 'seed-c', name: 'SpinKick', rating: 'up', scores: { arcs: 8.5, anticipation: 8, timing: 7.5, 'follow-through': 8, readability: 6, 'weight-impact': 7 } },
-  { at: t0 + 10_800_000, lab: 'vfx', entryId: 'seed-d', name: 'LightningImpact', rating: 'up', scores: { 'fx-dissipation': 8, 'fx-contrast': 8.5, 'fx-layers': 6, 'fx-timing': 7, 'fx-breakup': 4.5, 'fx-budget': 9 } },
-  { at: t0 + 14_400_000, lab: 'ability', entryId: 'seed-e', name: 'DashPunch', rating: 'down', scores: { anticipation: 4, 'weight-impact': 3.5, 'fx-cohesion': 6, responsiveness: 9, 'follow-through': 6.5 } },
-  { at: t0 + 18_000_000, lab: 'anim', entryId: 'seed-f', name: 'OverheadSlam', rating: 'down', scores: { arcs: 4.5, anticipation: 8, timing: 7, 'squash-stretch': 6.5, readability: 8, 'weight-impact': 5 } }
+  { at: t0, lab: 'uimotion', entryId: 'seed-a', name: 'PlayButton', rating: 'down', scores: { 'ui-responsiveness': 5.0, 'ui-anticipation': 4.5, 'ui-overshoot': 6.0, 'ui-consistency': 7.5, 'ui-readability': 4.0, 'ui-reduced-motion': 9.0 }, notes: 'wobbles too long on hover' },
+  { at: t0 + 3_600_000, lab: 'uimotion', entryId: 'seed-b', name: 'ShopCard', rating: 'up', scores: { 'ui-responsiveness': 9.0, 'ui-anticipation': 8.0, 'ui-overshoot': 8.5, 'ui-consistency': 8.5, 'ui-readability': 8.5, 'ui-reduced-motion': 9.0 } }
 ]
 
 function view(): PrincipleView {

@@ -1,7 +1,7 @@
-// v06 additions: Forge Doctor, bug report, Add to game, Thumbnail Lab, UI Motion Lab, chat modes,
+// v06 additions: Forge Doctor, bug report, UI Motion Lab, chat modes,
 // slash commands, spend cap. qolFlows run with no provider; providerQolFlows after 'fake-provider'.
 
-import { existsSync, readdirSync, readFileSync, writeFileSync } from 'node:fs'
+import { existsSync, readdirSync, readFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { WRITE_MARKER } from '../lib/fakeProvider.ts'
 import { INVENTORY_SERVICE } from '../lib/project.ts'
@@ -78,58 +78,6 @@ export const qolFlows: Flow[] = [
       check(report.includes('the preview went black'), 'report.md does not hold the description')
       note(`${dirs[0]}/report.md, ${report.length} chars${existsSync(join(root, dirs[0], 'screenshot.png')) ? ' + screenshot.png' : ''}`)
       await page.locator('[role="dialog"][aria-label="Bug report saved"]').getByRole('button', { name: 'Done' }).click()
-    }
-  },
-  {
-    name: 'thumbnail-lab',
-    title: 'Thumbnail Lab renders',
-    async run({ page, shot }) {
-      await openPage(page, 'Thumbnail Lab')
-      // The page's own heading (the tab label alone also says "Thumbnail").
-      await page.locator(`${CENTER} h1`, { hasText: 'Thumbnail Lab' }).first().waitFor({ state: 'visible', timeout: 10_000 })
-      await shot('page')
-    }
-  },
-  {
-    name: 'thumbnail-lab-ui-art',
-    title: 'Thumbnail Lab UI art: switch mode, build a button prompt, edit a section, no-backend message',
-    async run({ page, shot, note }) {
-      await openPage(page, 'Thumbnail Lab')
-      const lab = page.locator(`${CENTER} .page-inner.th`).first()
-      await lab.waitFor({ state: 'visible', timeout: 10_000 })
-      await lab.locator('.th-mode').getByRole('tab', { name: /UI art/ }).click()
-      const make = lab.locator('.th-ui-make')
-      await make.waitFor({ state: 'visible', timeout: 10_000 })
-      await make.locator('.th-kinds').getByRole('radio', { name: 'Button' }).click()
-      await make.getByLabel('UI asset to make').fill('a green BUY button, glossy simulator style')
-      // Build: rules only, no model, works with no backend.
-      await make.getByRole('button', { name: /^Build$/ }).click()
-      const sections = make.locator('.th-section')
-      await sections.first().waitFor({ state: 'visible', timeout: 10_000 })
-      check((await sections.count()) >= 5, `only ${await sections.count()} prompt sections`)
-      const subject = make.getByLabel('Subject section')
-      check(/button/i.test(await subject.inputValue()), 'the subject section does not describe the button')
-      // The ALL-CAPS label gets the "quote it" note (no text drawn by default).
-      check(/"BUY"/.test(await make.locator('.th-builder-notes').innerText()), 'no note about quoting the BUY label')
-      // Editing a section marks it as yours and the preview follows.
-      await subject.fill('a chunky green BUY button with a coin icon')
-      await make.locator('.th-section.src-user').first().waitFor({ state: 'visible', timeout: 5000 })
-      check(/with your edits/.test(await make.locator('.th-builder-state').innerText()), 'the builder does not say it will send your edits')
-      check((await make.locator('.th-prompt').textContent())?.includes('chunky green BUY button') ?? false, 'the "as sent" preview did not follow the edit')
-      const status = await page.evaluate(() => window.harness.thumbStatus())
-      if (!status.openaiKey && !status.codex) {
-        check(await lab.locator('.callout', { hasText: /No image backend/ }).count(), 'no "No image backend" message')
-        check(await make.locator('form .btn.primary').isDisabled(), 'Make is enabled with no image backend')
-        note('no backend: message shown, Make disabled, builder works')
-      }
-      await shot('builder')
-      await lab.locator('.vfx-view').getByRole('tab', { name: /^kit/ }).click()
-      await lab.locator('.empty', { hasText: /No UI kit yet/ }).or(lab.locator('.th-kit')).first().waitFor({ state: 'visible', timeout: 5000 })
-      const o = await horizontalOverflow(page)
-      check(o.doc <= o.win + 1 && !o.offenders.length, `the UI art view overflows: ${o.offenders.slice(0, 3).join(', ')}`)
-      // Leave the lab in thumbnail mode for later flows.
-      await lab.locator('.th-mode').getByRole('tab', { name: /thumbnails/ }).click()
-      await lab.locator('.th-ui-make').waitFor({ state: 'detached', timeout: 5000 })
     }
   },
   {
@@ -257,58 +205,6 @@ export const qolFlows: Flow[] = [
         await setWindowSize(app, 1400, 900)
       }
     }
-  },
-  {
-    name: 'add-to-game',
-    title: 'VFX example stays in the library; Add to game writes it, then shows a local change as a diff',
-    timeoutMs: 60_000,
-    async run({ page, root, note }) {
-      await openPage(page, 'VFX Lab')
-      await closeBottom(page)
-      const detail = page.locator(`${CENTER} .vfx-detail`).first()
-      // Open Hollow Purple itself, whatever is open. Earlier flows leave another effect open: after
-      // vfx-studio-import trashes the effect it made, studio-check opens the first card, which is the
-      // "Jab" labs-make-no-key made with Ability Composer, already in the project (no new files).
-      const card = page.locator(`${CENTER} .vfx-card`, { hasText: /HollowPurple|Hollow Purple/ }).first()
-      if (!(await card.evaluate((el: Element) => el.classList.contains('on')))) await card.click()
-      await page.locator(`${CENTER} .vfx-card.on`, { hasText: /HollowPurple|Hollow Purple/ }).waitFor({ timeout: 10_000 })
-      await detail.waitFor({ state: 'visible', timeout: 10_000 })
-      // Adding the example put it in the library only: nothing in the project yet.
-      const dir = join(root, 'src', 'shared', 'VFX', 'HollowPurple')
-      check(!existsSync(dir), 'adding the VFX example already wrote src/shared/VFX/HollowPurple')
-      const a2g = page.locator('[role="dialog"]', { has: page.locator('.a2g-files, .a2g-error') }).first()
-      const open = async () => {
-        await detail.getByRole('button', { name: /Add to game/ }).first().click()
-        await a2g.waitFor({ state: 'visible', timeout: 15_000 })
-        await a2g.locator('.a2g-file').first().waitFor({ timeout: 15_000 })
-        await page.waitForFunction(() => !document.querySelector('.a2g-files.stale'), undefined, { timeout: 15_000 })
-      }
-      // First time: every file is new; write them.
-      await open()
-      const heading = (await a2g.innerText()).split('\n')[0]
-      check(/HollowPurple|Hollow Purple/.test(heading), `Add to game opened for another effect: "${heading}"`)
-      const files = await a2g.locator('.a2g-file .a2g-path').allInnerTexts()
-      check(files.length > 0, 'Add to game lists no files')
-      check((await a2g.locator('.a2g-file.new').count()) > 0, 'no file is listed as new for an unwritten example')
-      await a2g.getByRole('button', { name: /^\s*Write \d+ files?/ }).click()
-      await page.locator('.a2g-result').waitFor({ timeout: 20_000 })
-      await a2g.getByRole('button', { name: 'Done' }).click()
-      check(existsSync(dir), 'Write did not create src/shared/VFX/HollowPurple')
-      // A local change to one of the written files: the next plan shows it as changed, with a diff.
-      const f = readdirSync(dir).find((x) => x.endsWith('.luau'))
-      check(f, `no .luau in ${dir}`)
-      writeFileSync(join(dir, f!), `${readFileSync(join(dir, f!), 'utf8')}\n-- local change (forge e2e)\n`)
-      await open()
-      const dialog = a2g
-      const diffBtn = dialog.getByRole('button', { name: /Diff/ }).first()
-      check(await diffBtn.count(), `no changed file with a Diff button (files: ${files.join(', ')})`)
-      await diffBtn.click()
-      await dialog.locator('pre.a2g-diff').first().waitFor({ timeout: 5000 })
-      const diff = await dialog.locator('pre.a2g-diff').first().innerText()
-      check(/local change \(forge e2e\)/.test(diff), 'the diff does not show the local change')
-      note(`${files.length} file(s): ${files.slice(0, 4).join(', ')}`)
-      await dialog.getByRole('button', { name: 'Cancel' }).click()
-    }
   }
 ]
 
@@ -429,11 +325,11 @@ export const providerQolFlows: Flow[] = [
   }
 ]
 
-// Last: the app again without WebGL. Each 3D preview must say so in place (not only in the console).
+// Last: the app again without WebGL. The Model Lab 3D preview must say so in place (not only in the console).
 export const webglOffFlows: Flow[] = [
   {
     name: 'webgl-off',
-    title: 'Without WebGL, the VFX / Animation / Ability / Model Lab previews show "3D preview needs WebGL"',
+    title: 'Without WebGL, the Model Lab preview shows "3D preview needs WebGL"',
     timeoutMs: 120_000,
     // three.js logs the failed context itself; the in-preview message is what this flow checks.
     allowErrors: [/WebGL|THREE\.WebGLRenderer|webgl/i],
@@ -442,23 +338,6 @@ export const webglOffFlows: Flow[] = [
       await page.locator('nav.activity').waitFor({ state: 'visible', timeout: 30_000 })
       check(!(await page.evaluate(() => !!document.createElement('canvas').getContext('webgl2'))), 'WebGL is still available with --disable-3d-apis')
       await dismissDigest(page, 4000)
-      const seen: string[] = []
-      for (const [label, example, detail] of [
-        ['VFX Lab', 'Hollow Purple', '.vfx-detail'],
-        ['Animation Lab', 'Dash punch', '.vfx-detail'],
-        ['Ability Composer', 'Hollow Purple', '.ab-detail']
-      ] as const) {
-        await openPage(page, label)
-        await page.locator(`${CENTER} .vfx-examples button, ${CENTER} button.badge-o`, { hasText: example }).first().click()
-        const msg = page.locator(`${CENTER} ${detail} .vfx-canvas-err`).first()
-        await msg.waitFor({ state: 'visible', timeout: 15_000 }).catch(() => {
-          throw new Error(`${label}: no in-preview WebGL message`)
-        })
-        const text = (await msg.innerText()).replace(/\s+/g, ' ')
-        check(/3D preview needs WebGL/.test(text), `${label}: preview message is "${text.slice(0, 120)}"`)
-        seen.push(`${label}: ${text.slice(0, 70)}`)
-      }
-      // Model Lab: a model from the template opens its (WebGL-less) preview.
       await openPage(page, 'Model Lab')
       await page.locator(`${CENTER} [data-testid="model-from-template"]`).click()
       const modelMsg = page.locator(`${CENTER} [data-testid="model-detail"] .vfx-canvas-err`).first()
@@ -467,8 +346,7 @@ export const webglOffFlows: Flow[] = [
       })
       const modelText = (await modelMsg.innerText()).replace(/\s+/g, ' ')
       check(/3D preview needs WebGL/.test(modelText), `Model Lab: preview message is "${modelText.slice(0, 120)}"`)
-      seen.push(`Model Lab: ${modelText.slice(0, 70)}`)
-      note(seen.join(' | '))
+      note(`Model Lab: ${modelText.slice(0, 70)}`)
     }
   }
 ]

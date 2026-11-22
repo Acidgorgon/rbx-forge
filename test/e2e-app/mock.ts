@@ -3,7 +3,7 @@
 // real-app run has (a vision model, an image backend, Open Cloud) live here. Not part of npm test.
 //
 //   npm run build
-//   xvfb-run -a -s "-screen 0 1920x1080x24" node --experimental-strip-types test/e2e-app/mock.ts [--only=art-split-layers]
+//   xvfb-run -a -s "-screen 0 1920x1080x24" node --experimental-strip-types test/e2e-app/mock.ts [--only=source-control]
 //
 // Each flow fails on its own checks and on any renderer console error / page error while it ran.
 // Screenshots: test/e2e-app/out/shots/mock-<flow>-<name>.png; failures: out/fail-mock-<flow>.png.
@@ -12,12 +12,11 @@ import { existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { appEnv, IGNORED_ERRORS, loadPlaywright, REPO } from './lib/app.ts'
-import { mockArtFlows } from './flows/mockArt.ts'
 import { mockScmFlows } from './flows/mockScm.ts'
 import { mockSearchFlows } from './flows/mockSearch.ts'
 
 const OUT = resolve(import.meta.dirname, 'out')
-const FLOWS = [...mockArtFlows, ...mockScmFlows, ...mockSearchFlows]
+const FLOWS = [...mockScmFlows, ...mockSearchFlows]
 
 async function main(): Promise<void> {
   const only = process.argv.find((a) => a.startsWith('--only='))?.slice(7).split(',').filter(Boolean)

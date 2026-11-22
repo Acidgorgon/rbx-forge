@@ -4,13 +4,13 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { z } from 'zod'
-import type { ArtFetch } from '../src/main/services/art/openaiImages.ts'
-import { AssetUploadError, isRateLimitedBeforeCreate, looksLikeFbx, MODEL_CONTENT_TYPE, uploadAudioAsset, uploadMediaImageAsset, uploadModelAsset } from '../src/main/services/art/robloxAssets.ts'
-import { createModelUploader, inboxDirs, ModelInbox, modelUploadTools, NO_KEY_ERROR, parseRequest, resolveModelFile, type ModelInboxDeps, type UploadModel } from '../src/main/services/art/modelInbox.ts'
+import type { HttpFetch } from '../src/main/services/inbox/http.ts'
+import { AssetUploadError, isRateLimitedBeforeCreate, looksLikeFbx, MODEL_CONTENT_TYPE, uploadAudioAsset, uploadMediaImageAsset, uploadModelAsset } from '../src/main/services/inbox/robloxAssets.ts'
+import { createModelUploader, inboxDirs, ModelInbox, modelUploadTools, NO_KEY_ERROR, parseRequest, resolveModelFile, type ModelInboxDeps, type UploadModel } from '../src/main/services/inbox/modelInbox.ts'
 import { SERVICE_WRITE_TOOLS } from '../src/main/agent/serviceTools.ts'
 import { createIntegrations } from '../src/main/integrations.ts'
 import { fakeContext } from './agentFake.ts'
-import type { ModelInboxEntry, ModelInboxStatus } from '../src/shared/artTypes.ts'
+import type { InboxCloudStatus, ModelInboxEntry, ModelInboxStatus } from '../src/shared/inboxTypes.ts'
 
 const FBX = Buffer.concat([Buffer.from('Kaydara FBX Binary  \0\x1a\0', 'latin1'), Buffer.alloc(64, 1)])
 const KEY = 'roblox-open-cloud-key-secret-xxxxxxxx'
@@ -23,10 +23,10 @@ interface Call {
   body?: string | Uint8Array
 }
 
-function fakeFetch(replies: Reply[] | ((call: Call, i: number) => Reply)): { fetch: ArtFetch; calls: Call[] } {
+function fakeFetch(replies: Reply[] | ((call: Call, i: number) => Reply)): { fetch: HttpFetch; calls: Call[] } {
   const calls: Call[] = []
   let i = 0
-  const fetch: ArtFetch = async (url, init = {}) => {
+  const fetch: HttpFetch = async (url, init = {}) => {
     const call = { url, method: init.method, headers: init.headers, body: init.body }
     calls.push(call)
     const n = i++
@@ -123,7 +123,7 @@ test('model upload: Model + model/fbx multipart request, operation polling, asse
 })
 
 test('model upload: moderation, permission and size errors read clearly; bad files never reach Roblox', async () => {
-  const up = (fetch: ArtFetch, extra: Partial<Parameters<typeof uploadModelAsset>[0]> = {}) =>
+  const up = (fetch: HttpFetch, extra: Partial<Parameters<typeof uploadModelAsset>[0]> = {}) =>
     uploadModelAsset({ apiKey: KEY, bytes: FBX, fileName: 'A.fbx', displayName: 'A', creator: { userId: 1 }, fetch, sleep: async () => {}, ...extra })
   await assert.rejects(up(fakeFetch([op({ done: true, response: { assetId: '5', moderationResult: { moderationState: 'MODERATION_STATE_REJECTED' } } })]).fetch), /moderation rejected the model \(asset 5\)/)
   await assert.rejects(up(fakeFetch([op({ done: true, error: { code: 400, message: 'Asset name is moderated' } })]).fetch), /moderation rejected the model.*Asset name is moderated/)
@@ -141,7 +141,7 @@ test('model upload: moderation, permission and size errors read clearly; bad fil
 })
 
 test('model upload: a 429 on create is marked not-created; a 429 while polling keeps polling', async () => {
-  const up = (fetch: ArtFetch) => uploadModelAsset({ apiKey: KEY, bytes: FBX, fileName: 'A.fbx', displayName: 'A', creator: { userId: 1 }, fetch, sleep: async () => {} })
+  const up = (fetch: HttpFetch) => uploadModelAsset({ apiKey: KEY, bytes: FBX, fileName: 'A.fbx', displayName: 'A', creator: { userId: 1 }, fetch, sleep: async () => {} })
   const limited = fakeFetch(() => ({ status: 429, body: '' }))
   const error = await up(limited.fetch).then(() => null, (e: unknown) => e)
   assert.ok(isRateLimitedBeforeCreate(error))
@@ -450,12 +450,15 @@ test('wiring: inbox is off by default, needs a key to turn on, keeps the key out
     assert.equal(s.dir, t.inboxDir)
     assert.equal(s.modelsDir, t.modelsDir)
     await assert.rejects(Promise.resolve().then(() => h.fbxInboxSetSettings({ enabled: true })), /Open Cloud API key/)
-    await h.artSetRobloxKey(KEY, 'global')
+    await h.inboxSetRobloxKey(KEY, 'global')
+    const cloudAfterCreator = (await h.inboxSetCreator({ userId: 12345 })) as InboxCloudStatus
+    assert.equal(cloudAfterCreator.robloxKey, true)
+    assert.equal(cloudAfterCreator.creatorUserId, 12345)
     s = (await h.fbxInboxSetSettings({ enabled: true })) as ModelInboxStatus
     assert.equal(s.enabled, true)
     assert.equal(s.watching, true)
     assert.equal(s.robloxKey, true)
-    assert.equal(s.creator, false)
+    assert.equal(s.creator, true)
     assert.ok(!JSON.stringify(s).includes(KEY))
     s = (await h.fbxInboxChooseFolder()) as ModelInboxStatus
     assert.equal(s.dir, join(t.docs, 'Picked'))

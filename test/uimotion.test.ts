@@ -167,7 +167,6 @@ test('ui principles: catalogue, selection and the plan for the UI Motion Lab', (
   const ids = principlesFor('ui').map((p) => p.id)
   assert.deepEqual(ids, ['ui-responsiveness', 'ui-anticipation', 'ui-overshoot', 'ui-consistency', 'ui-readability', 'ui-reduced-motion'])
   assert.ok(selectPrinciples('uimotion', 'bouncy button').every((p) => p.domain === 'ui'))
-  assert.ok(!selectPrinciples('vfx', 'fire').some((p) => p.domain === 'ui'))
   assert.match(principlePlan('uimotion', 'shop button'), /"plan"/)
 })
 

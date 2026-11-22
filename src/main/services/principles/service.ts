@@ -143,7 +143,7 @@ export class PrincipleService implements PrincipleHooks {
   private async saveMemory(profile: PrincipleProfile): Promise<void> {
     if (!this.deps.memory) return
     await this.deps.memory
-      .remember({ scope: 'user', kind: 'memory', type: 'feedback', name: 'principle-priorities', description: 'Which animation and VFX principles the user cares most about (learned from Labs ratings)', body: prioritiesText(profile) }, 'style')
+      .remember({ scope: 'user', kind: 'memory', type: 'feedback', name: 'principle-priorities', description: 'Which UI Motion principles the user cares most about (learned from Labs ratings)', body: prioritiesText(profile) }, 'style')
       .catch((e) => this.deps.log?.(`principles: memory: ${(e as Error).message}`, 'stderr'))
   }
 }

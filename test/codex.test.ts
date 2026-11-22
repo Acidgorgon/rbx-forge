@@ -20,10 +20,6 @@ import { fakeContext } from './agentFake.ts'
 import { ChatManager } from '../src/main/agent/chat.ts'
 import { Credentials } from '../src/main/agent/credentials.ts'
 import { SYSTEM_PROMPT } from '../src/main/agent/sdk.ts'
-import { encodePng } from '../src/main/services/vfx/textures/png.ts'
-import { ArtService } from '../src/main/services/art/service.ts'
-import type { CodexImages } from '../src/main/services/art/imageBackend.ts'
-import { CODEX_IMAGE_MODEL } from '../src/shared/artTypes.ts'
 import { Providers } from '../src/main/agent/providers.ts'
 
 const shOnly = { skip: process.platform === 'win32' ? 'fake codex is a sh script' : false }
@@ -41,8 +37,9 @@ function toolCtx(platform: NodeJS.Platform, env: NodeJS.ProcessEnv, home: string
   return { platform, env, home, isExecutable: (f) => set.has(f), listDir: () => [] }
 }
 
-function png(w = 4, h = 4): Buffer {
-  return encodePng({ width: w, height: h, data: new Uint8Array(w * h * 4).fill(200) } as any)
+const TINY_PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR42mP4z8DwHwAEBgIA+4w52AAAAABJRU5ErkJggg==', 'base64')
+function png(_w = 4, _h = 4): Buffer {
+  return TINY_PNG
 }
 
 // ---------------------------------------------------------------- binary
@@ -419,50 +416,6 @@ test('generateWithCodex: read-only run in a scratch folder with references; read
   }
 })
 
-test('ArtService on the codex backend: no key, no cost, no budget; masks refused clearly', async () => {
-  const root = await mkdtemp(join(tmpdir(), 'codex-art-'))
-  try {
-    const store = new Map<string, unknown>()
-    const reqs: any[] = []
-    const codex: CodexImages = {
-      status: async () => ({ ready: true, detail: 'Signed in with ChatGPT' }),
-      generate: async (req) => {
-        reqs.push(req)
-        return { images: [png(16, 16)], notes: [] }
-      }
-    }
-    const svc = new ArtService({
-      root: () => root,
-      scope: () => 's',
-      settings: { get: (k, f) => (store.has(k) ? (store.get(k) as any) : f), set: (k, v) => void store.set(k, v) },
-      openAiKey: async () => null,
-      robloxKey: async () => null,
-      trashDir: join(root, '.trash'),
-      codex
-    })
-    let status = await svc.setSettings({ backend: 'codex', dailyCapUsd: 0.01 })
-    assert.equal(status.settings.backend, 'codex')
-    assert.deepEqual(status.codex, { ready: true, detail: 'Signed in with ChatGPT' })
-    const est = await svc.estimate({ prompt: 'coin', n: 3 })
-    assert.equal(est.totalUsd, 0)
-    const items = await svc.generate({ prompt: 'coin icon', n: 2, transparent: true })
-    assert.equal(items.length, 1)
-    assert.equal(items[0].costUsd, 0)
-    assert.equal(items[0].model, CODEX_IMAGE_MODEL)
-    assert.equal(items[0].width, 16)
-    assert.ok(existsSync(items[0].absPath))
-    assert.equal(reqs[0].transparent, true)
-    assert.equal(reqs[0].n, 2)
-    await assert.rejects(svc.generate({ prompt: 'x', referencePaths: [items[0].path], maskPath: items[0].path }), /Masks need the OpenAI API/)
-    status = await svc.setSettings({ backend: 'api' })
-    assert.equal(status.settings.backend, undefined)
-    assert.equal(status.codex, undefined)
-    await assert.rejects(svc.generate({ prompt: 'x' }), /No OpenAI API key/)
-  } finally {
-    await rm(root, { recursive: true, force: true })
-  }
-})
-
 // ---------------------------------------------------------------- the real process (fake codex script)
 
 async function fakeCodex(): Promise<{ dir: string; bin: string; state: string; home: string }> {
@@ -560,32 +513,5 @@ test('fake codex: cancel kills the run (process tree) promptly', shOnly, async (
     assert.equal(svc.signingInNow(), false)
   } finally {
     await rm(f.dir, { recursive: true, force: true })
-  }
-})
-
-test('TextureService on the codex backend: no key or budget; a short 2x2 flipbook still fills four frames', async () => {
-  const { TextureService } = await import('../src/main/services/vfx/textures/service.ts')
-  const dir = await mkdtemp(join(tmpdir(), 'codex-tex-'))
-  try {
-    const reqs: any[] = []
-    const codex: CodexImages = {
-      status: async () => ({ ready: true, detail: 'Signed in with ChatGPT' }),
-      generate: async (req) => {
-        reqs.push(req)
-        return { images: [png(64, 64)], notes: ['Codex returned 1 of 4 images.'] }
-      }
-    }
-    // dailyCapUsd 0.0001 would stop any API generation; Codex ignores it.
-    const svc = new TextureService({ userDir: dir, projectRoot: () => null, imageSettings: () => ({ model: 'gpt-image-2.5-flare', quality: 'high', dailyCapUsd: 0.0001, backend: 'codex' }), codexImages: codex })
-    const st = await svc.status()
-    assert.equal(st.codex?.ready, true)
-    const [sheet] = await svc.generate({ ai: true, kind: 'wisp', description: 'purple wisp', frames: 4 })
-    assert.equal(sheet.flipbook?.frames, 4)
-    assert.equal(sheet.model, CODEX_IMAGE_MODEL)
-    assert.equal(sheet.costUsd, 0)
-    assert.equal(reqs[0].transparent, true)
-    assert.equal(reqs[0].n, 4)
-  } finally {
-    await rm(dir, { recursive: true, force: true })
   }
 })

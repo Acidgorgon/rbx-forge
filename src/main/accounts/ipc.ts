@@ -2,7 +2,7 @@
 // which owns Credentials and Providers.
 
 import type { IpcMain } from 'electron'
-import { ACCOUNT_IDS, type AccountId } from '../../shared/accountTypes.ts'
+import { ACCOUNT_IDS, type AccountId, type ImageBackend } from '../../shared/accountTypes.ts'
 import { INVOKE_PREFIX } from '../../shared/types.ts'
 import type { HarnessContext } from '../context.ts'
 import type { Credentials } from '../agent/credentials.ts'
@@ -11,7 +11,6 @@ import { codexService } from '../agent/codex/service.ts'
 import { ClaudeAccount } from './claude.ts'
 import { codexAccountProvider } from './codex.ts'
 import { applyCodexDefaults } from './codexDefaults.ts'
-import type { ArtSettings } from '../../shared/artTypes.ts'
 import { accountRegistry, type AccountRegistry } from './registry.ts'
 import { AccountsService, keyCheckMessage } from './service.ts'
 
@@ -103,8 +102,8 @@ async function codexDefaults(ctx: HarnessContext, deps: { credentials: Credentia
     defaultModel: () => deps.providers.defaultModel(),
     providerReady: (p) => deps.providers.ready(p),
     setDefaultModel: (c) => deps.providers.setDefaultModel(c.provider, c.model),
-    imageBackend: () => ctx.getSetting<Partial<ArtSettings>>('art.settings', {})?.backend,
-    setImageBackend: (backend) => ctx.setSetting('art.settings', { ...ctx.getSetting<Partial<ArtSettings>>('art.settings', {}), backend })
+    imageBackend: () => ctx.getSetting<{ backend?: ImageBackend }>('art.settings', {})?.backend,
+    setImageBackend: (backend) => ctx.setSetting('art.settings', { ...ctx.getSetting<{ backend?: ImageBackend }>('art.settings', {}), backend })
   })
   if (r.message) ctx.log({ service: 'agent', stream: 'info', text: `[codex] ${r.message}` })
   return r.message

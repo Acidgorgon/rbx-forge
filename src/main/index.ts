@@ -39,7 +39,6 @@ import { trailingDebounce } from '../shared/debounce.ts'
 import { Packages } from './services/packages.ts'
 import { BLINK_ENTRY, BlinkWatcher } from './services/blink.ts'
 import { createIntegrations } from './integrations.ts'
-import { artElectronDeps } from './services/art/electron.ts'
 import { findTool, loadLoginShellPath, run } from './services/tools.ts'
 import iconPath from '../../build/icon.png?asset'
 import { PRODUCTION_CSP } from './csp.ts'
@@ -53,26 +52,15 @@ import { wireBrainSync } from './agent/memory/sync/electron.ts'
 import { wireUpdater } from './services/updater/electron.ts'
 import { netGet, watchBoot } from './services/quick/electron.ts'
 import { registerPackSection } from './agent/memory/sync/sections.ts'
-import { createVfxWiring } from './services/vfx/wire.ts'
-import { vfxElectronDeps } from './services/vfx/electron.ts'
 import { uiPreviewCapture } from './services/uiPreview/electron.ts'
-import { withVfxTools } from './services/vfx/tools.ts'
-import { createAnimWiring } from './services/anim/wire.ts'
-import { animElectronDeps } from './services/anim/electron.ts'
-import { withAnimTools } from './services/anim/tools.ts'
-import { createRefWiring } from './services/videoref/wire.ts'
-import { refElectronDeps } from './services/videoref/electron.ts'
-import { withRefTools } from './services/videoref/tools.ts'
-import { createAbilityWiring } from './services/ability/wire.ts'
-import { abilityElectronDeps } from './services/ability/electron.ts'
-import { withAbilityTools } from './services/ability/tools.ts'
+import { findLune } from './services/tests/lune.ts'
 import { createUiMotionWiring } from './services/uimotion/wire.ts'
 import { uiMotionElectronDeps } from './services/uimotion/electron.ts'
 import { createModelWiring } from './services/model/wire.ts'
 import { modelElectronDeps } from './services/model/electron.ts'
 import { createPrincipleWiring } from './services/principles/wire.ts'
 import { createGatingWiring } from './services/gating/wire.ts'
-import type { LabTier } from '../shared/labModels.ts'
+import { LAB_MODELS_SETTING, normalizeLabModels, type LabModels, type LabTier } from '../shared/labModels.ts'
 import type { LabId } from '../shared/gating/types.ts'
 import { createStudioWiring } from './services/studio/wire.ts'
 import { SyncEngine } from './services/sync/engine.ts'
@@ -83,15 +71,11 @@ import { pluginsDir } from '../shared/studio/plugin.ts'
 import { homedir } from 'node:os'
 import { studioElectronDeps } from './services/studio/electron.ts'
 import { withStudioTools } from './services/studio/tools.ts'
-import { defaultChatImage } from './services/art/wire.ts'
-import { createThumbsWiring } from './services/thumbs/wire.ts'
-import { thumbsElectronDeps } from './services/thumbs/electron.ts'
 import { createQol } from './services/qol/wire.ts'
 import { createSpendWiring } from './services/spend/wire.ts'
 import { createDoctorWiring } from './services/doctor/wire.ts'
 import { doctorMarkdown } from '../shared/doctor/format.ts'
 import { isRosetta } from '../shared/doctor/checks.ts'
-import { createAddToGameWiring } from './services/addToGame/wire.ts'
 import { createEditorAssistWiring } from './services/editorAssist/wire.ts'
 import { studioMcpHandlers } from './agent/studioMcp.ts'
 import { completionBlock } from './services/editorAssist/completions.ts'
@@ -554,7 +538,7 @@ const ctx: HarnessContext = {
   emit,
   log: (line) => logs.push(line),
 
-  serviceTools: () => ({ ...withStudioTools(withAbilityTools(withRefTools(withAnimTools(withVfxTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), vfx.tools()), anim.tools()), refs.tools()), ability.tools()), studio.tools()), chat: terminal.chatTools() }),
+  serviceTools: () => ({ ...withStudioTools(withMemoryTools(integrations.serviceTools(), memoryToolSets), studio.tools()), chat: terminal.chatTools() }),
   notifyTestFailure: (event) => integrations.notifyTestFailure(event)
 }
 
@@ -580,8 +564,6 @@ const integrations = createIntegrations({
   withRojoPaused: (fn, reason) => rojoPause.run(fn, reason),
   openExternal: (url) => void shell.openExternal(url),
   summarize: (prompt) => agentIpc.summarize(prompt),
-  // "Split into layers" proposes the layer list with the Labs critic-tier vision model (labModel below).
-  art: { ...artElectronDeps(), vision: (system, prompt, images) => labModel(undefined, 'critic', false)(system, prompt, images) },
   // FBX upload inbox (<Documents>/ForgeModels/_upload_inbox by default; off until turned on).
   modelInbox: {
     documentsDir: app.getPath('documents'),
@@ -645,20 +627,12 @@ const updater = wireUpdater({
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text })
 })
 
-// Studio check (services/studio): the Forge Bridge plugin plays lab items in the user's Roblox Studio
-// and Forge records the Studio window at the key beats. Created before the labs because their render
-// step goes through it ("critique in Studio when connected"); it reaches the labs lazily.
-const vfxElectron = vfxElectronDeps(preloadPath())
-const animElectron = animElectronDeps(preloadPath())
-const abilityElectron = abilityElectronDeps(preloadPath())
+// Studio bridge (services/studio): Forge Bridge plugin connection, Studio targets, Build in Studio, inbox inserts.
 const studio = createStudioWiring({
   settings,
   emit: (event, payload) => emit(event, payload as never),
   log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[studio] ${text}` }),
-  labs: () => ({ vfx: vfx.service, anim: anim.service, ability: ability.service }),
-  previews: { vfx: vfxElectron.capture, anim: animElectron.capture, ability: abilityElectron.capture },
   rojo: () => (supervisor.statuses().some((s) => s.id === 'rojo' && (s.state === 'running' || s.state === 'starting')) ? 'running' : 'stopped'),
-  chatImage: defaultChatImage,
   // Studio target (several places open): kept per project, defaults to the active place's PlaceIds.
   projectRoot: () => project?.info.root ?? null,
   linkedPlaceIds: () => {
@@ -744,8 +718,7 @@ const labModel = (lab: LabId | undefined, tier: LabTier, charge = true) => (syst
     throw e
   })
 
-// Principle priorities (services/principles): per-principle weights learned from Labs ratings; the
-// VFX Lab, Animation Lab and Ability Composer critics weigh their principle scores by them.
+// Principle priorities (services/principles): per-principle weights learned from Labs ratings.
 const principles = createPrincipleWiring({
   gate: gating.service,
   userDataDir: app.getPath('userData'),
@@ -755,117 +728,6 @@ const principles = createPrincipleWiring({
 })
 registerPackSection({ id: 'principles', label: 'Principle priorities', dir: () => principles.service.dir })
 
-// VFX Lab (services/vfx): reference library, recipes as memory skills, offscreen three.js renders and
-// the render / critique / refine loop (critique on the default model through the agent layer).
-const vfx = createVfxWiring({
-  principles: principles.service,
-  userDataDir: app.getPath('userData'),
-  root: () => project?.info.root ?? null,
-  settings,
-  emit: (event, payload) => emit(event, payload as never),
-  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[vfx] ${text}` }),
-  memory,
-  vision: (tier) => labModel('vfx', tier ?? 'default'),
-  visionReady: () => agentIpc.visionReady(),
-  gate: gating.service,
-  rojo: {
-    running: () => supervisor.statuses().some((s) => s.id === 'rojo' && (s.state === 'running' || s.state === 'starting')),
-    start: () => supervisor.start('rojo')
-  },
-  chatImage: defaultChatImage,
-  images: integrations.images,
-  openCloud: integrations.openCloud,
-  ...vfxElectron,
-  capture: studio.wrap.vfx(vfxElectron.capture),
-  // Texture import "From Studio": Forge Sync's live tree and a read-only Forge Bridge job.
-  studioTextures: { liveTree: () => (project ? forgeSync.liveTree(project.activePlace) : null), bridge: studio.bridge }
-})
-// The user VFX library rides along in .forgepack export/import and device sync (one folder per entry).
-registerPackSection({ id: 'vfx', label: 'VFX library', dir: () => vfx.service.userLibraryDir })
-registerPackSection({ id: 'vfx-textures', label: 'VFX textures', dir: () => vfx.textures.userLibraryDir })
-
-// Animation Lab (services/anim): clip library, style profiles as memory skills, timeline scripts and
-// the render / critique / refine loop. Models per Labs tier (Settings > Labs) through the agent layer.
-const anim = createAnimWiring({
-  principles: principles.service,
-  userDataDir: app.getPath('userData'),
-  root: () => project?.info.root ?? null,
-  settings,
-  emit: (event, payload) => emit(event, payload as never),
-  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[anim] ${text}` }),
-  memory,
-  model: (tier) => labModel('anim', tier),
-  gate: gating.service,
-  openCloud: integrations.openCloud,
-  ...animElectron,
-  capture: studio.wrap.anim(animElectron.capture)
-})
-// The user animation library rides along in .forgepack export/import and device sync.
-registerPackSection({ id: 'anim', label: 'Animation library', dir: () => anim.service.userLibraryDir })
-
-// Video references (services/videoref): clips / GIFs decoded in the renderer, analysed in shared code
-// and stored as 'media' entries in the VFX / Animation libraries (so they ride along in the packs
-// above); the vision summary runs on the Labs critic tier.
-const refs = createRefWiring({
-  vfx: vfx.service,
-  anim: anim.service,
-  model: (tier) => labModel(undefined, tier, false),
-  emit: (event, payload) => emit(event, payload as never),
-  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[ref] ${text}` }),
-  chatImage: defaultChatImage,
-  ...refElectronDeps(preloadPath())
-})
-
-// Ability Composer (services/ability): moves that reference VFX Lab effects and Animation Lab clips by
-// id; compose uses vfx_compose / anim_compose from the tool registry when they exist.
-const ability = createAbilityWiring({
-  principles: principles.service,
-  userDataDir: app.getPath('userData'),
-  root: () => project?.info.root ?? null,
-  emit: (event, payload) => emit(event, payload as never),
-  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[ability] ${text}` }),
-  memory,
-  model: (tier) => labModel('ability', tier),
-  gate: gating.service,
-  vfx: { get: (id) => vfx.service.get(id), list: () => vfx.service.list(), search: (q, o) => vfx.service.search(q, o), addExample: (k) => vfx.service.addExample(k), writeProjectFiles: (e) => vfx.service.writeProjectFiles(e) },
-  anim: () => anim.service.listAnimClips(),
-  tools: () => {
-    const sets = ctx.serviceTools?.()
-    return sets ? [...sets.read, ...sets.write] : []
-  },
-  lune: async () => (await vfx.service.status()).lune.available,
-  ...abilityElectron,
-  capture: studio.wrap.ability(abilityElectron.capture)
-})
-registerPackSection({ id: 'abilities', label: 'Ability library', dir: () => ability.service.userLibraryDir })
-
-// Thumbnail Lab (services/thumbs): reference thumbnails -> style profiles, base images from the game
-// (files or a Studio capture through the Forge Bridge), OpenAI variations through the Art page's key
-// and budget, the thumbnail critic, ratings / CTR that teach taste, and the Open Cloud upload.
-const thumbs = createThumbsWiring({
-  userDataDir: app.getPath('userData'),
-  root: () => project?.info.root ?? null,
-  gameName: () => project?.info.name,
-  settings,
-  emit: (event, payload) => emit(event, payload as never),
-  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[thumbs] ${text}` }),
-  memory,
-  principles: principles.service,
-  vision: (tier) => labModel('thumbs', tier),
-  images: integrations.images,
-  openCloud: integrations.openCloud,
-  studio: {
-    snapshot: () => studio.service.snapshot(),
-    status: async () => {
-      const s = await studio.service.status()
-      return { connected: s.studio.connected, message: s.message }
-    }
-  },
-  // Image spend counts in the Labs cost-per-kept table (default tier: it is the "compose" step).
-  chargeImage: (usd) => void gating.service.charge('default', { input: 0, output: 0, costUsd: usd }),
-  ...thumbsElectronDeps()
-})
-registerPackSection({ id: 'thumbs', label: 'Thumbnail Lab library', dir: () => thumbs.service.userLibraryDir })
 // Quality of life (services/qol): bug reports, done notifications, session restore, away digest.
 const qol = createQol({
   userDataDir: app.getPath('userData'),
@@ -913,7 +775,7 @@ const doctor = createDoctorWiring({
   providers: () => agentIpc.providers(),
   defaultProvider: () => agentIpc.defaultProvider(),
   openCloudKey: () => integrations.openCloud.key(),
-  openAiKey: () => integrations.images.openAiKey(),
+  openAiKey: () => integrations.openAiKey(),
   updateState: () => updater.handlers.updateGetState() as never,
   updateCheck: () => Promise.resolve(updater.handlers.updateCheck()),
   startRojo: () => supervisor.start('rojo'),
@@ -925,16 +787,7 @@ const doctor = createDoctorWiring({
   openExternal: (url) => void shell.openExternal(url),
   emit: (report) => emit('doctor:report', report)
 })
-const addToGame = createAddToGameWiring({
-  root: () => project?.info.root ?? null,
-  settings,
-  log: (text) => logs.push({ service: 'harness', stream: 'info', text: `[add to game] ${text}` }),
-  vfx: vfx.service,
-  textures: vfx.textures,
-  anim: anim.service,
-  ability: ability.service
-})
-const qolcHandlers = { ...doctor.handlers, ...spend.handlers, ...addToGame.handlers }
+const qolcHandlers = { ...doctor.handlers, ...spend.handlers }
 // Bug reports carry a Forge Doctor section (home folder shown as ~).
 qol.service.setBugReportExtra(async () => doctorMarkdown(await doctor.service.run(), { home: homedir() }))
 // UI Motion Lab (services/uimotion): Figma imports (plugin JSON or a link; the token lives in the
@@ -950,7 +803,7 @@ const uiMotion = createUiMotionWiring({
   model: (tier) => labModel('uimotion', tier),
   gate: gating.service,
   secrets: integrations.secrets,
-  lune: async () => (await vfx.service.status()).lune.available,
+  lune: async () => Boolean(findLune(settings.get<string | null>('tests.lunePath', null))),
   ...uiMotionElectronDeps()
 })
 registerPackSection({ id: 'uimotion', label: 'UI motion library', dir: () => uiMotion.service.userLibraryDir })
@@ -1085,7 +938,13 @@ const handlers: Record<string, (...args: any[]) => unknown> = {
   listRokitTools: () => packages.listTools(),
   addRokitTool: (repo: string, version?: string) => packages.addTool(repo, version),
   updateRokitTool: (name: string) => packages.updateTool(name),
-  curatedTools: () => packages.curated()
+  curatedTools: () => packages.curated(),
+  getLabModels: () => normalizeLabModels(settings.get<LabModels>(LAB_MODELS_SETTING, {})),
+  setLabModels: (models: LabModels) => {
+    const next = normalizeLabModels(models)
+    settings.set(LAB_MODELS_SETTING, next)
+    return next
+  }
 }
 
 for (const [name, handler] of Object.entries(handlers)) {
@@ -1093,12 +952,12 @@ for (const [name, handler] of Object.entries(handlers)) {
 }
 // Long lab / build calls notify when they finish (services/qol).
 const timed = (name: string, handler: (...args: any[]) => unknown) => qol.service.timed(name, handler)
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...gating.wrap('vfx', vfx.handlers), ...gating.wrap('anim', anim.handlers), ...studio.handlers, ...refs.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers, ...qolcHandlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...studio.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers, ...qolcHandlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
 }
-for (const [name, handler] of Object.entries({ ...gating.wrap('ability', ability.handlers), ...gating.wrap('thumbs', thumbs.handlers), ...gating.wrap('uimotion', uiMotion.handlers), ...gating.wrap('model', model.handlers) })) {
+for (const [name, handler] of Object.entries({ ...gating.wrap('uimotion', uiMotion.handlers), ...gating.wrap('model', model.handlers) })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
@@ -1255,10 +1114,6 @@ app.on('before-quit', (event) => {
   brainSync.dispose()
   updater.dispose()
   void spend.dispose()
-  vfx.service.dispose()
-  vfx.live.dispose()
-  vfx.selection.dispose()
-  anim.service.dispose()
   void studio.dispose()
   lsp.dispose()
   void lspCompanion.dispose()

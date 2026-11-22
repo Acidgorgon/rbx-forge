@@ -85,7 +85,7 @@ export function prioritiesText(profile: PrincipleProfile, max = 6): string {
   const up = ws.filter(([, w]) => w > 1.05).slice(0, max)
   const down = ws.filter(([, w]) => w < 0.95).slice(-3).reverse()
   const name = (id: string) => `${principle(id)?.name ?? id} (${id}, x${profile.weights[id].toFixed(2)})`
-  const lines = [`Principle priorities learned from ${profile.ratings} rating${profile.ratings === 1 ? '' : 's'} in the VFX Lab, Animation Lab and Ability Composer.`]
+  const lines = [`Principle priorities learned from ${profile.ratings} rating${profile.ratings === 1 ? '' : 's'} in the UI Motion Lab.`]
   lines.push(up.length ? `The user cares most about: ${up.map(([id]) => name(id)).join('; ')}.` : 'No strong priorities yet (all principles count equally).')
   if (down.length) lines.push(`They mind less about: ${down.map(([id]) => name(id)).join('; ')}.`)
   lines.push('The lab critics weigh principle scores by these weights and the refine loops fix the highest-weight low scores first.')

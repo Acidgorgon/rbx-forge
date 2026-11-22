@@ -24,13 +24,7 @@ export const SERVICE_WRITE_TOOLS = [
   'add_blink_event',
   'add_wally_package',
   'rename_feature',
-  // services/art/tools.ts: spend money (OpenAI images), upload to Roblox and edit Images.luau.
-  'generate_image',
-  'import_image_to_roblox',
-  'list_art',
-  'art_split_layers',
-  'art_layers_get',
-  // services/art/modelInbox.ts: uploads an FBX to Roblox as a Model asset.
+  // services/inbox/modelInbox.ts: uploads an FBX to Roblox as a Model asset.
   'roblox_upload_model'
 ] as const
 

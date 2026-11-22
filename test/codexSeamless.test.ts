@@ -31,8 +31,7 @@ import { Credentials } from '../src/main/agent/credentials.ts'
 import { fakeContext } from './agentFake.ts'
 import type { ToolContext } from '../src/main/services/tools.ts'
 import type { ModelChoice } from '../src/shared/types.ts'
-import type { ImageBackend } from '../src/shared/artTypes.ts'
-import type { SignInProgress } from '../src/shared/accountTypes.ts'
+import type { ImageBackend, SignInProgress } from '../src/shared/accountTypes.ts'
 
 const shOnly = { skip: process.platform === 'win32' ? 'fake codex/npm are sh scripts' : false }
 

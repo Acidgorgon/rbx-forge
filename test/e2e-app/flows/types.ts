@@ -29,3 +29,15 @@ export interface Flow {
   allowErrors?: RegExp[]
   run(ctx: FlowCtx): Promise<void>
 }
+
+export interface MockFlowCtx {
+  page: Page
+  note(message: string): void
+  shot(name: string): Promise<string>
+}
+
+export interface MockFlow {
+  name: string
+  title: string
+  run(ctx: MockFlowCtx): Promise<void>
+}

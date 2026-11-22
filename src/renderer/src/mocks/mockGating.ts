@@ -21,28 +21,20 @@ function seedRuns(): LabRun[] {
     if (cheap) runs = chargeRun(runs, lab, id, 'cheap', { input: 900, output: 120, costUsd: 0.0011 }, at)
     if (kept) runs = markKept(runs, lab, id, true, at + 1000)
   }
-  add('vfx', 'vfx-hollow-purple', 4, 1, 1, true, 0)
-  add('vfx', 'vfx-fire-slash', 3, 2, 0, true, 1)
-  add('vfx', 'vfx-ground-slam', 4, 1, 0, false, 2)
-  add('vfx', 'vfx-ice-burst', 2, 1, 1, false, 3)
-  add('anim', 'anim-heavy-punch', 4, 1, 1, true, 4)
-  add('anim', 'anim-spin-kick', 3, 1, 0, false, 5)
-  add('ability', 'ability-dash-punch', 1, 1, 0, true, 6)
+  add('uimotion', 'ui-play-button', 2, 1, 1, true, 0)
+  add('uimotion', 'ui-shop-card', 1, 1, 0, false, 1)
+  add('model', 'model-shark-guard', 3, 1, 1, true, 2)
   return runs
 }
 
 function seedDecisions(): GateDecision[] {
   const d = (i: number, lab: LabId, entryId: string, gate: GateDecision['gate'], inputs: string, outcome: string, tokensSaved: number, extra: Partial<GateDecision> = {}): GateDecision => ({ id: `seed-${i}`, at: t0 + i * 240_000, lab, entryId, gate, mode: 'shadow', inputs, outcome, acted: false, by: 'code', tokensSaved, ...extra })
   return [
-    d(1, 'vfx', 'vfx-hollow-purple', 'critic-skip', 'frames changed (diff 6.2%, hash 14/64); round 2, prev 6.4', 'critique', 0),
-    d(2, 'vfx', 'vfx-hollow-purple', 'plateau', 'improving (6.4 > 7.1); 2 rounds left', 'continue', 0),
-    d(3, 'vfx', 'vfx-hollow-purple', 'critic-skip', 'frames unchanged (diff 0.6%, hash 2/64); round 3, prev 7.1', 'would skip critic', 2318, { modelP: 0.18 }),
-    d(4, 'vfx', 'vfx-ground-slam', 'plateau', 'plateau (6.8 > 6.9 > 6.9); 1 round left', 'would stop', 2318, { modelP: 0.22 }),
-    d(5, 'vfx', 'vfx-ground-slam', 'retry', 'script-error: attempt to index nil with \'Emit\' (line 14); 0 repairs so far', 'retry', 0),
-    d(6, 'anim', 'anim-heavy-punch', 'critic-skip', 'small change (diff 2.1%, hash 6/64); round 2, prev 6.9', 'critique', 0, { unsure: true, modelP: 0.61 }),
-    d(7, 'anim', 'anim-spin-kick', 'retry', 'no-script: no script in the answer; 0 repairs so far', 'would rephrase (did give-up)', 0),
-    d(8, 'anim', 'anim-spin-kick', 'principle-weights', 'arcs 1.00→1.24, weight-impact 1.00→1.12', 'would apply', 0),
-    d(9, 'ability', 'ability-dash-punch', 'critic-skip', 'frames unchanged (diff 0.3%, hash 0/64); round 1, prev 7.2', 'would skip critic', 1534, { modelSays: 'critique', modelP: 0.55 })
+    d(1, 'uimotion', 'ui-play-button', 'critic-skip', 'frames changed (diff 6.2%, hash 14/64); round 2, prev 7.4', 'critique', 0),
+    d(2, 'uimotion', 'ui-play-button', 'plateau', 'improving (7.4 > 8.1); 1 round left', 'continue', 0),
+    d(3, 'model', 'model-shark-guard', 'critic-skip', 'frames unchanged (diff 0.6%, hash 2/64); round 3, prev 7.1', 'would skip critic', 2318, { modelP: 0.18 }),
+    d(4, 'model', 'model-shark-guard', 'plateau', 'plateau (7.8 > 7.9 > 7.9); 1 round left', 'would stop', 2318, { modelP: 0.22 }),
+    d(5, 'uimotion', 'ui-shop-card', 'principle-weights', 'ui-responsiveness 1.00→1.18, ui-readability 1.00→1.12', 'would apply', 0)
   ]
 }
 

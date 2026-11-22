@@ -23,9 +23,8 @@ export function projectBrief(basePrompt: string): string {
   return (cut > 0 ? basePrompt.slice(0, cut) : basePrompt).trim()
 }
 
-// Images: Forge shows what image_gen makes in the chat and saves it to art/concepts by itself
-// (codex/imageSink.ts), so Codex must not copy the files (a read-only sandbox refuses it anyway).
-export const CODEX_IMAGE_RULES = `- Images you make with the built-in image_gen tool appear in this chat automatically and Forge saves them to art/concepts (the Art page). Do not copy, move or re-save them, and do not tell the user to look in another folder.`
+// Images: Forge shows what image_gen makes inline in the chat (codex/imageSink.ts).
+export const CODEX_IMAGE_RULES = `- Images you make with the built-in image_gen tool appear in this chat automatically. Do not copy, move or re-save them, and do not tell the user to look in another folder.`
 
 export const CODEX_RULES = `Working rules (you are Codex, running inside RBX Forge on the user's project):
 - Never edit Packages/ (Wally) or generated files (src/shared/events/client.luau and server.luau come from events.blink).

@@ -36,7 +36,7 @@ import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
 import { isLinkedKey, linkKey, matchPlace, PlaceLinks } from './links.ts'
 import { BaseStore } from './store.ts'
 import { findHeldDeletions } from '../gitSync.ts'
-import { LIVE_FOLDER } from '../../../shared/vfx/live.ts'
+const LIVE_FOLDER = 'ForgeLivePreview'
 import { collisionLabels, fingerprintText } from '../../../shared/sync/labels.ts'
 
 // ---- What the service needs from the engine worker's modules (engine.ts, mapping.ts) ----

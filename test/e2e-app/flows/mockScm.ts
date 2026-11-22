@@ -4,7 +4,7 @@
 // confirm, and checks the palette's Git commands are listed.
 
 import { check, CENTER, mod, palette, showSide } from '../lib/ui.ts'
-import type { MockFlow } from './mockArt.ts'
+import type { MockFlow } from './types.ts'
 
 const SCM = 'aside.side section.scm'
 

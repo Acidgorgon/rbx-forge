@@ -37,13 +37,10 @@ import * as collab from './services/collab/index.ts'
 import { git as runGit } from './services/collab/git.ts'
 import { renameFeature, FEATURE_NAME } from './services/featureOps.ts'
 import * as release from './services/release/index.ts'
-import { createArtWiring, type ArtWireDeps } from './services/art/wire.ts'
-import { setCodexConceptSaver } from './agent/codex/imageSink.ts'
-import { backendOf, type CodexImages } from './services/art/imageBackend.ts'
-import { codexImages } from './agent/codex/images.ts'
-import type { ImageBackend, ModelInboxStatus } from '../shared/artTypes.ts'
-import { createModelUploader, inboxDirs, ModelInbox, modelUploadTools, NO_CREATOR_ERROR, NO_KEY_ERROR } from './services/art/modelInbox.ts'
-import { InsertInbox, type InsertBridge } from './services/art/modelInsert.ts'
+import { InboxCloudConfig } from './services/inbox/openCloud.ts'
+import type { ModelInboxStatus } from '../shared/inboxTypes.ts'
+import { createModelUploader, inboxDirs, ModelInbox, modelUploadTools, NO_CREATOR_ERROR, NO_KEY_ERROR } from './services/inbox/modelInbox.ts'
+import { InsertInbox, type InsertBridge } from './services/inbox/modelInsert.ts'
 import type { InsertProjectPlace } from '../shared/studio/insert.ts'
 import { Credentials } from './agent/credentials.ts'
 import { TestService, testTools } from './services/tests/index.ts'
@@ -78,8 +75,6 @@ export interface IntegrationDeps {
   choosePlaceFile: () => Promise<string | null>
   // One-shot model call for "summarize incoming changes" (agent layer); optional.
   summarize?: (prompt: string) => Promise<string>
-  // Art page: Electron nativeImage thumbnailer, image file picker, chat image bridge (optional).
-  art?: Pick<ArtWireDeps, 'thumbnail' | 'chooseImages' | 'reveal' | 'chatImage' | 'resolveReference' | 'vision'>
   // UI Preview: the offscreen screenshot for preview_ui (Electron).
   uiPreview?: Pick<UiPreviewWireDeps, 'capture'>
   // FBX upload inbox: the OS Documents folder and a folder picker. Without it the inbox never runs.
@@ -104,12 +99,12 @@ export interface Integrations {
   analytics: analyticsSvc.AnalyticsService
   releases: release.ReleaseService
   secrets: release.SecretStore
-  // Open Cloud asset uploads outside the Art page (Animation Lab): the key and creator set there.
+  // Open Cloud asset uploads (FBX/media upload inbox): the key and creator in Settings > Integrations.
   openCloud: { key(): Promise<string | null>; creator(): { userId?: number; groupId?: number } }
+  // OpenAI API key check for Doctor diagnostics.
+  openAiKey(): Promise<string | null>
   // FBX upload inbox and Studio insert watchers: start() after launch (and again on settings changes, done here).
   modelInbox: { start(): Promise<void> }
-  // OpenAI image generation outside the Art page (VFX Lab textures): the key, model and budget set there.
-  images: { openAiKey(): Promise<string | null>; settings(): { model: string; quality: string; dailyCapUsd: number; backend?: ImageBackend }; spentToday(): Promise<number>; codex?: CodexImages }
 }
 
 const SECRET_KINDS: ReleaseSecretKind[] = ['openCloudApiKey', 'discordWebhook']
@@ -131,33 +126,16 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
 
   // ---------------------------------------------------------------- secrets (one encrypted store)
   const secrets = release.createEncryptedSecretStore(deps.safeStorage, settings)
-
-  // ---------------------------------------------------------------- art (OpenAI images, Roblox import)
   let credentials: Credentials | null = null
-  // Image backend 'codex': the ChatGPT plan through the user's Codex CLI.
-  const imageCodex = codexImages()
-  const art = createArtWiring({
-    root: deps.root,
-    settings,
-    secrets,
-    userDataDir: deps.userDataDir,
-    openAiKey: () => (credentials ??= new Credentials(deps.ctx)).getKey('openai'),
-    codex: imageCodex,
-    emit,
-    ...(deps.art ?? {})
-  })
+  const cloud = new InboxCloudConfig({ root: deps.root, settings, secrets })
 
-  // Images Codex makes in a chat land in art/concepts too (agent/codex/imageSink.ts).
-  setCodexConceptSaver(async ({ images, prompt }) => (await art.service.saveGenerated({ images, prompt })).map((i) => i.path))
-
-  // Open Cloud uploads outside the Art page use the key and creator set there.
   const openCloud: Integrations['openCloud'] = {
-    key: async () => (await art.robloxKey().catch(() => null))?.key ?? null,
-    creator: () => art.service.uploadCreator()
+    key: () => cloud.key(),
+    creator: () => cloud.creator()
   }
 
   // ---------------------------------------------------------------- FBX upload inbox (Model assets)
-  // Opt-in (modelInbox.enabled, off by default). See services/art/modelInbox.ts for the file formats.
+  // Opt-in (modelInbox.enabled, off by default). See services/inbox/modelInbox.ts for the file formats.
   const inboxPaths = inboxDirs(deps.modelInbox?.documentsDir ?? join(deps.userDataDir, 'Documents'))
   const inboxDir = () => settings.get<string | null>('modelInbox.dir', null) || inboxPaths.inboxDir
   const inboxEnabled = () => !!deps.modelInbox && settings.get<boolean>('modelInbox.enabled', false) === true
@@ -176,7 +154,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     onResult: (entry) => emit('fbxInbox:upload', entry)
   })
   // Studio inserts (<id>.insert.json in the same folder): their own opt-in (modelInbox.insertEnabled,
-  // off by default); no Open Cloud key involved. See services/art/modelInsert.ts.
+  // off by default); no Open Cloud key involved. See services/inbox/modelInsert.ts.
   const insertEnabled = () => !!deps.modelInbox && settings.get<boolean>('modelInbox.insertEnabled', false) === true
   const insertInbox = new InsertInbox({
     dir: inboxDir,
@@ -350,7 +328,6 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
         ...blink.write,
         ...pkgs.write,
         renameTool,
-        ...(art.tools() as ServiceTool[]),
         ...(modelUploadTools({ upload: uploadModel, roots: () => [inboxDir(), inboxPaths.modelsDir], projectRoot: deps.root }) as unknown as ServiceTool[])
       ]
     }, uiPreview.tools() as unknown as ServiceTool[])
@@ -536,8 +513,11 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     // Feature folders
     renameFeature: (from: string, to: string) => doRename(String(from ?? ''), String(to ?? '')),
 
-    // Art concepts
-    ...art.handlers,
+    // Inbox Open Cloud key & creator
+    inboxCloudStatus: () => cloud.status(),
+    inboxSetRobloxKey: (key: string, scope: 'project' | 'global') => cloud.setKey(String(key ?? ''), scope === 'global' ? 'global' : 'project'),
+    inboxClearRobloxKey: (scope: 'project' | 'global') => cloud.clearKey(scope === 'global' ? 'global' : 'project'),
+    inboxSetCreator: (creator: { userId?: number | null; groupId?: number | null }) => cloud.setCreator(creator ?? {}),
 
     // FBX upload inbox
     fbxInboxStatus: () => inboxStatus(),
@@ -548,7 +528,7 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
         settings.set('modelInbox.dir', d || null)
       }
       if (typeof patch?.enabled === 'boolean') {
-        if (patch.enabled && !(await openCloud.key())) throw new Error('Add an Open Cloud API key (Art page > Roblox import) before turning on the inbox.')
+        if (patch.enabled && !(await openCloud.key())) throw new Error('Add an Open Cloud API key (Settings > Integrations) before turning on the inbox.')
         settings.set('modelInbox.enabled', patch.enabled)
       }
       if (typeof patch?.insert === 'boolean') settings.set('modelInbox.insertEnabled', patch.insert)
@@ -572,16 +552,8 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
     handlers,
     serviceTools,
     openCloud,
+    openAiKey: () => (credentials ??= new Credentials(deps.ctx)).getKey('openai'),
     modelInbox: { start: startInboxes },
-    images: {
-      openAiKey: () => (credentials ??= new Credentials(deps.ctx)).getKey('openai'),
-      settings: () => {
-        const s = art.service.settings()
-        return { model: s.model, quality: s.quality, dailyCapUsd: s.dailyCapUsd, backend: backendOf(s.backend) }
-      },
-      spentToday: () => art.service.spentToday(),
-      codex: imageCodex
-    },
     notifyTestFailure: (event) => {
       const r = deps.root()
       if (!r) return
@@ -610,7 +582,6 @@ export function createIntegrations(deps: IntegrationDeps): Integrations {
       notifiers.clear()
     },
     dispose() {
-      setCodexConceptSaver(null)
       modelInbox.stop()
       insertInbox.stop()
       uiPreview.dispose()

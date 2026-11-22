@@ -28,11 +28,6 @@ import { CORRECTIONS_SETTING, Restater } from '../src/main/agent/restate.ts'
 import { ChatManager } from '../src/main/agent/chat.ts'
 import { Credentials } from '../src/main/agent/credentials.ts'
 import type { QueryFn } from '../src/main/agent/sdk.ts'
-import { AbilityService, type LabTier, type ModelFn } from '../src/main/services/ability/service.ts'
-import { VfxService } from '../src/main/services/vfx/service.ts'
-import { compileTimeline } from '../src/shared/vfx/compile.ts'
-import { findExample } from '../src/shared/vfx/examples.ts'
-import { RECORDED } from '../src/shared/vfx/examples.recorded.ts'
 import { fakeContext } from './agentFake.ts'
 
 const R: Restatement = {
@@ -339,48 +334,4 @@ test('chat: when the restatement cannot be written the request runs as usual', a
   await chats.send(c.id, BIG)
   await until(() => sdkCalls.length === 1 && !chats.busy(c.id))
   assert.equal(String(sdkCalls[0].prompt), BIG)
-})
-
-// ---------------------------------------------------------------- Labs persistence
-
-test('labs: the Ability Composer puts the confirmed reading in the compose prompt, saves it on the entry, and the critic judges against it', async () => {
-  const userDir = mkdtempSync(join(tmpdir(), 'restate-ability-'))
-  const prompts: { tier: LabTier; prompt: string }[] = []
-  const model = (tier: LabTier): ModelFn => async (_sys, prompt) => {
-    prompts.push({ tier, prompt })
-    return tier === 'critic' ? JSON.stringify({ scores: { anticipation: 7, impact: 7, sync: 7, readability: 7, followThrough: 7 }, overall: 7, summary: 'ok' }) : '{}'
-  }
-  const make = () => new AbilityService({ userDir, projectRoot: () => null, model, capture: async (req) => req.times.map(() => Buffer.from('png')) })
-  const s = make()
-  const r = await s.compose('a charged palm blast', { restatement: { ...R, goal: 'A palm blast that knocks the caster back' } })
-  const compose = prompts.find((p) => p.tier === 'default')!.prompt
-  assert.match(compose, /^Move: a charged palm blast\n\nThe user confirmed this reading of the brief/)
-  assert.match(compose, /Goal: A palm blast that knocks the caster back/)
-  assert.equal(r.entry.restatement!.goal, 'A palm blast that knocks the caster back')
-  // Saved to disk with the entry.
-  assert.equal((await make().get(r.entry.id)).restatement!.goal, 'A palm blast that knocks the caster back')
-  await s.critique(r.entry.id)
-  const critic = prompts.find((p) => p.tier === 'critic')!.prompt
-  assert.match(critic, /Confirmed goal: A palm blast that knocks the caster back/)
-  // Without a restatement nothing changes.
-  const plain = await s.compose('a quick punch')
-  assert.equal(plain.entry.restatement, undefined)
-  assert.doesNotMatch(prompts.filter((p) => p.tier === 'default').at(-1)!.prompt, /confirmed this reading/)
-})
-
-test('labs: a VFX entry keeps its restatement and the critic prompt carries it', async () => {
-  const ex = findExample('charge-slash')!
-  const effect = compileTimeline({ name: ex.name, roots: [], cues: [], duration: 2 }, RECORDED[ex.key], ex.script).effect
-  const prompts: string[] = []
-  const svc = new VfxService({
-    userDir: mkdtempSync(join(tmpdir(), 'restate-vfx-')),
-    projectRoot: () => null,
-    lune: async () => ({ error: 'no lune' }),
-    runtimeDir: () => null,
-    vision: () => async (_sys, prompt) => (prompts.push(prompt), JSON.stringify({ overall: 7, summary: 'ok', scores: {} }))
-  })
-  const { entry } = await svc.saveEffect(effect, { prompt: 'a charged slash', restatement: R })
-  assert.deepEqual((await svc.get(entry.id)).restatement, R)
-  await svc.critique(entry, effect, [Buffer.from('png')], [0.5], 1, null)
-  assert.match(prompts[0], /Confirmed goal: Players get a daily login reward/)
 })

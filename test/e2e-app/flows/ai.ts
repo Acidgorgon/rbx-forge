@@ -175,38 +175,5 @@ export const aiFlows: Flow[] = [
       await page.waitForFunction((k: number) => /FAKE-REPLY/.test(document.querySelector('aside.panel.right')?.textContent ?? '') && k >= 0, n, { timeout: 20_000 })
       note(`restate rule hits: ${fake.requests.filter((r) => r.rule === 'restate').length}`)
     }
-  },
-  {
-    name: 'restate-lab',
-    title: 'VFX Make with a big brief: restate card, then compose via the fake model',
-    timeoutMs: 120_000,
-    async run({ page, fake, note, shot }) {
-      await openPage(page, 'VFX Lab')
-      const input = page.locator(`${CENTER} .vfx-make-row input`).first()
-      await input.fill('a dark fireball that charges up in the hand, then launches and explodes into lingering embers like in jjk, then dissipates slowly')
-      const before = (await page.evaluate(() => window.harness.vfxList())).length
-      await page.locator(`${CENTER} .vfx-make-row button.primary, ${CENTER} button`, { hasText: /^\s*Make\s*$/ }).first().click()
-      const card = page.locator(`${CENTER} .rs-actions`).first()
-      await card.waitFor({ state: 'visible', timeout: 20_000 }).catch(() => {
-        throw new Error(`no restate card for a staged brief (fake rules: ${fake.requests.map((r) => r.rule).join(', ')})`)
-      })
-      await card.getByRole('button', { name: /Yes, go/ }).click()
-      let after = before
-      let failed = ''
-      for (let i = 0; i < 180 && after <= before && !failed; i++) {
-        await page.waitForTimeout(500)
-        after = (await page.evaluate(() => window.harness.vfxList())).length
-        failed = (await page.locator('.toast', { hasText: /Could not make/ }).allInnerTexts()).join(' ').replace(/\s+/g, ' ')
-      }
-      if (failed && /Lune/i.test(failed)) throw new SkipFlow(`sequence compose needs Lune (set LUNE_PATH); restate card + fake compose call worked, then: "${failed}"`)
-      if (failed) throw new Error(`Make failed after confirming: ${failed}`)
-      await shot('made')
-      if (after <= before) {
-        const toast = await page.locator('.toast').allInnerTexts()
-        const logs = (await page.evaluate(() => window.harness.getLogs())).filter((l: { text: string }) => /\[vfx\]|\[gating\]|restate/.test(l.text)).slice(-6).map((l: { text: string }) => l.text)
-        throw new Error(`Make did not add an effect after confirming (toasts: ${toast.join(' | ').replace(/\s+/g, ' ')}; logs: ${logs.join(' / ')})`)
-      }
-      note(`library ${before} -> ${(await page.evaluate(() => window.harness.vfxList())).length}; fake rules: ${[...new Set(fake.requests.map((r) => r.rule))].join(', ')}`)
-    }
   }
 ]

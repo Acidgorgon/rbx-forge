@@ -108,6 +108,17 @@ export interface AccountsEvents {
   'accounts:signin': SignInProgress
 }
 
+// Image generation backend metadata shared with Codex CLI image generation and accounts IPC.
+export type ImageBackend = 'api' | 'codex'
+
+export interface CodexImageInfo {
+  ready: boolean
+  detail: string
+}
+
+export const CODEX_IMAGE_MODEL = 'codex-gpt-image-2'
+export const CODEX_IMAGE_NOTE = 'ChatGPT plan (Codex): counts toward your plan limits, no spend cap. Codex picks the size; up to 4 images per run.'
+
 export interface AccountsApi {
   accountsList(opts?: { refresh?: boolean }): Promise<AccountSummary[]>
   // Starts the card's sign-in method; progress arrives as 'accounts:signin'. Resolves when it ends.

@@ -1,7 +1,6 @@
 // Image resolution for the UI preview. No electron imports.
 //
-//   rbxassetid://N    an Art concept uploaded as N (art/concepts sidecars) -> the local PNG;
-//                     else Roblox's public thumbnails API (thumbnails.roblox.com/v1/assets, no auth),
+//   rbxassetid://N    Roblox's public thumbnails API (thumbnails.roblox.com/v1/assets, no auth),
 //                     which returns a CDN URL of a rendered thumbnail (420x420, so 9-slice margins
 //                     are approximate). Asset delivery (the original file) needs a .ROBLOSECURITY
 //                     cookie per Roblox's docs, which Forge does not ask for.
@@ -10,10 +9,9 @@
 //   rbxasset://...    engine textures are not available outside Studio: placeholder.
 
 import { readFile } from 'node:fs/promises'
-import { extname } from 'node:path'
+import { extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { parseImage, parseThumbnailResponse, thumbnailRequest } from '../../../shared/uiPreview/assets.ts'
 import type { UiImageInfo } from '../../../shared/uiPreviewTypes.ts'
-import { insideRoot, listConcepts } from '../art/store.ts'
 
 export type FetchLike = (url: string, init?: { signal?: AbortSignal; headers?: Record<string, string> }) => Promise<{ ok: boolean; status: number; json(): Promise<unknown> }>
 
@@ -27,9 +25,15 @@ const MIME: Record<string, string> = { '.png': 'image/png', '.jpg': 'image/jpeg'
 const RETRY_MS = 5 * 60_000
 const MAX_LOCAL_BYTES = 8 * 1024 * 1024
 
+function insideRoot(root: string, path: string): string | null {
+  const abs = isAbsolute(path) ? resolve(path) : resolve(root, path)
+  const rel = relative(resolve(root), abs)
+  if (!rel || rel.startsWith('..') || isAbsolute(rel)) return null
+  return rel.split(sep).join('/')
+}
+
 export class ImageResolver {
   private cache = new Map<string, { info: UiImageInfo; at: number }>()
-  private concepts: { at: number; byId: Map<string, string> } | null = null
 
   private deps: ImageResolverDeps
 
@@ -43,18 +47,6 @@ export class ImageResolver {
 
   clear(): void {
     this.cache.clear()
-    this.concepts = null
-  }
-
-  private async conceptFor(id: string): Promise<string | null> {
-    const root = this.deps.root()
-    if (!root) return null
-    if (!this.concepts || this.now() - this.concepts.at > 30_000) {
-      const byId = new Map<string, string>()
-      for (const item of await listConcepts(root).catch(() => [])) if (item.roblox?.assetId) byId.set(String(item.roblox.assetId), item.path)
-      this.concepts = { at: this.now(), byId }
-    }
-    return this.concepts.byId.get(id) ?? null
   }
 
   private async local(rel: string): Promise<UiImageInfo> {
@@ -108,14 +100,7 @@ export class ImageResolver {
         return this.local(parsed.path)
       case 'url':
         return { state: 'ok', url: parsed.url }
-      case 'asset': {
-        const concept = await this.conceptFor(parsed.id)
-        if (concept) {
-          const local = await this.local(concept)
-          if (local.state === 'ok') return local
-        }
-        return this.thumbnail(thumbnailRequest(parsed)!)
-      }
+      case 'asset':
       case 'thumb':
         return this.thumbnail(thumbnailRequest(parsed)!)
     }

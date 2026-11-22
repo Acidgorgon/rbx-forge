@@ -11,8 +11,10 @@ import { fakeContext } from './agentFake.ts'
 import { ChatManager } from '../src/main/agent/chat.ts'
 import { Credentials } from '../src/main/agent/credentials.ts'
 import { ChatImageStore, setChatImageStore } from '../src/main/agent/chatImages.ts'
-import { encodePng } from '../src/main/services/vfx/textures/png.ts'
 import type { QueryFn } from '../src/main/agent/sdk.ts'
+
+// Minimal valid 2x2 RGBA PNG data URL (8-byte PNG signature + IHDR + IDAT + IEND).
+const TINY_PNG_URL = 'data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAIAAAACCAYAAABytg0kAAAADklEQVR42mP4z8DwHwAEBgIA+4w52AAAAABJRU5ErkJggg=='
 
 const plainSafe = async () => null
 
@@ -106,7 +108,7 @@ test('deleting a chat removes the images only it used and drops its checkpoints'
   try {
     const store = new ChatImageStore(dir)
     setChatImageStore(store)
-    const png = `data:image/png;base64,${encodePng({ width: 2, height: 2, data: new Uint8Array(16).fill(9) } as any).toString('base64')}`
+    const png = TINY_PNG_URL
     const shared = await store.add({ dataUrl: png, name: 'shared' })
     const own = await store.add({ dataUrl: png, name: 'own' })
     const dropped: string[] = []

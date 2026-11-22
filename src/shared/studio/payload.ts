@@ -1,36 +1,11 @@
-// Builds Forge Bridge jobs from lab data. Jobs carry everything the plugin needs (the same Luau
-// modules Forge writes into the project, and the clip as KeyframeSequence data), so a Studio check
-// does not depend on Rojo having synced the latest edit; each refine iteration plays exactly the
-// version being judged.
+// Builds Forge Bridge jobs (snapshot, rbxmx helpers) using standalone XML/attribute decoding.
 
-import { stageAt, stageFrameTimes } from '../vfx/critique.ts'
-import { EMIT_RUNTIME_MODULE, FORGEVFX_SOURCE } from '../vfx/emitRuntime.ts'
-import { effectModules, needsRuntime, playsWithForgeVFX, sourceLength, SOURCE_LIMIT, timelineModule } from '../vfx/luau.ts'
-import { playTiming } from '../vfx/live.ts'
-import { FORGEFX_SOURCE, RUNTIME_MODULE } from '../vfx/runtime.ts'
-import { parseXml, type XmlEl } from '../vfx/rbxmx.ts'
-import type { VfxEffect } from '../vfx/types.ts'
-import { writeKeyframeSequenceXml } from '../anim/rbxmx.ts'
-import { clipRig } from '../anim/sample.ts'
-import type { AnimClip, AnimJoint, AnimKey } from '../anim/model.ts'
-import { abilityModule, runnerModule, RUNNER_MODULE } from '../ability/luau.ts'
-import { placeholderClips, placeholderPose, isPlaceholder } from '../ability/placeholder.ts'
-import type { Ability } from '../ability/types.ts'
+import { parseXml, type XmlEl } from './rbxmx.ts'
 import { KEY_COLOR } from './crop.ts'
-import { BRIDGE_VERSION, type BridgeBeat, type BridgeCamera, type BridgeJob, type BridgeModule, type InstanceJson, type PropJson } from './protocol.ts'
+import { BRIDGE_VERSION, type BridgeJob, type InstanceJson, type PropJson } from './protocol.ts'
 
-// The previews' "front" views (pages/*/preview), so Studio frames line up with the preview frames.
-export const CAMERAS: Record<Exclude<BridgeJob['kind'], 'snapshot' | 'delete' | 'model' | 'insert'>, BridgeCamera> = {
-  vfx: { pos: [5.5, 5.2, -9.5], target: [0, 3.2, -1], fov: 70 },
-  anim: { pos: [6.4, 4.8, -9.8], target: [0, 2.4, -0.6], fov: 50 },
-  ability: { pos: [6.5, 5.5, -10.5], target: [0, 3, -2], fov: 70 }
-}
-
-// Where the plugin puts the job's modules (CoreGui: not saved with the place, not synced by Rojo or
-// the template's studio-sync plugin). The plugin points AbilityRunner.VfxPath at the real folder.
+// Where the plugin puts the job's modules (CoreGui: not saved with the place, not synced by Forge Sync).
 export const JOB_ROOT = ['CoreGui', 'ForgeBridgeJob']
-
-// ------------------------------------------------------------ instances from .rbxmx XML
 
 const CF_KEYS = ['X', 'Y', 'Z', 'R00', 'R01', 'R02', 'R10', 'R11', 'R12', 'R20', 'R21', 'R22']
 
@@ -75,184 +50,21 @@ function itemOf(el: XmlEl): InstanceJson {
   return { className: el.attrs.class ?? 'Folder', name, props, children: el.children.filter((c) => c.name === 'Item').map(itemOf) }
 }
 
-// Top-level items of an .rbxmx document as plain instance data (the types a KeyframeSequence uses).
+// Top-level items of an .rbxmx document as plain instance data.
 export function rbxmxToInstances(xml: string): InstanceJson[] {
   const root = parseXml(xml)
   const doc = root.children.find((c) => c.name === 'roblox') ?? root
   return doc.children.filter((c) => c.name === 'Item').map(itemOf)
 }
 
-export function sequenceJson(clip: AnimClip): InstanceJson {
-  const [seq] = rbxmxToInstances(writeKeyframeSequenceXml(clip))
-  return seq
-}
-
-// A built-in placeholder pose track (Ability Composer) sampled into a clip, so Studio can play it.
-export function placeholderClip(id: string, fps = 20): AnimClip | null {
-  const ref = placeholderClips().find((c) => c.id === id)
-  if (!ref) return null
-  const tracks: Partial<Record<AnimJoint, AnimKey[]>> = {}
-  const n = Math.max(2, Math.ceil(ref.duration * fps))
-  for (let i = 0; i <= n; i++) {
-    const t = Math.round(Math.min(ref.duration, i / fps) * 1000) / 1000
-    const pose = placeholderPose(id, t) ?? {}
-    for (const [joint, cf] of Object.entries(pose)) {
-      if (!cf) continue
-      ;(tracks[joint as AnimJoint] ??= []).push({ t, cf: [...cf] })
-    }
-  }
-  return { name: ref.name.replace(/\W+/g, ''), duration: ref.duration, looped: false, priority: 'Action', tracks, markers: ref.markers.map((m) => ({ ...m })) }
-}
-
-// ------------------------------------------------------------ jobs
-
-interface JobBase {
-  id: string
-}
-
-// The effect module with its children: the Timeline script, and the data parts of an effect too big
-// for one module (luau.ts effectModules).
-function vfxModules(effect: VfxEffect, name = 'Effect'): BridgeModule {
-  const m = effectModules(effect, {})
-  const children: BridgeModule[] = m.data.map((d) => ({ name: d.name, className: 'ModuleScript', source: d.source }))
-  if (effect.script) children.push({ name: 'Timeline', className: 'ModuleScript', source: timelineModule(effect.script) })
-  return { name, className: 'ModuleScript', source: m.source, children }
-}
-
-// Roblox refuses a Source of SOURCE_LIMIT characters or more with a cryptic Studio error; effect
-// modules split themselves well below it, so anything this close is refused here with a clear one.
-export const MAX_JOB_SOURCE = SOURCE_LIMIT - 1
-
-export class ModuleTooLargeError extends Error {}
-
-export function assertModuleSizes(modules: BridgeModule[], path: string[] = []): void {
-  for (const m of modules) {
-    const at = [...path, m.name]
-    const n = m.source ? sourceLength(m.source) : 0
-    if (n >= MAX_JOB_SOURCE) {
-      const what = m.name === 'Timeline' ? `the timeline script of ${path[path.length - 1] ?? 'this effect'}` : `the module ${at.join('.')}`
-      throw new ModuleTooLargeError(`Forge: ${what} is ${n.toLocaleString('en-US')} characters, and Roblox only accepts scripts shorter than ${SOURCE_LIMIT.toLocaleString('en-US')}. ${m.name === 'Timeline' ? 'Shorten the script (loops instead of repeated lines) and try again.' : 'This is a Forge bug; please report it.'}`)
-    }
-    if (m.children) assertModuleSizes(m.children, at)
-  }
-}
-
-const runtimeModule = (): BridgeModule => ({ name: RUNTIME_MODULE, className: 'ModuleScript', source: FORGEFX_SOURCE })
-// ForgeVFX, next to the module of an effect that playsWithForgeVFX (it requires the sibling).
-const emitRuntimeModule = (): BridgeModule => ({ name: EMIT_RUNTIME_MODULE, className: 'ModuleScript', source: FORGEVFX_SOURCE })
-
-// Beat times and labels for an effect: one inside each stage, else spread over the play.
-export function vfxBeats(effect: VfxEffect, n = 4): BridgeBeat[] {
-  const staged = effect.stages?.length ? stageFrameTimes(effect, Math.max(n, Math.min(8, effect.stages.length))) : []
-  const times = staged.length ? staged : Array.from({ length: n }, (_, i) => Math.round(effect.duration * Math.pow((i + 0.5) / n, 1.5) * 1000) / 1000)
-  return times.map((t, i) => ({ t, label: stageAt(effect, t) ?? `t${i + 1}` }))
-}
-
-export function vfxJob(effect: VfxEffect, opts: JobBase & { times?: number[]; calibrate?: boolean }): BridgeJob {
-  const beats = opts.times?.length ? opts.times.map((t, i) => ({ t, label: stageAt(effect, t) ?? `t${i + 1}` })) : vfxBeats(effect)
-  const modules: BridgeModule[] = [vfxModules(effect)]
-  if (needsRuntime(effect)) modules.unshift(runtimeModule())
-  if (playsWithForgeVFX(effect)) modules.unshift(emitRuntimeModule())
-  assertModuleSizes(modules)
-  // The module's Duration (ForgeVFX effects: from the emit plan) and its particles' linger. A
-  // ForgeVFX play is shorter than the Lab's loop (Duration + Linger, at least 1 s): the recording
-  // runs at least to the last beat.
-  const timing = playTiming(effect)
-  const duration = timing.forge ? Math.max(timing.duration, ...beats.map((b) => b.t)) : timing.duration
-  return {
-    id: opts.id,
-    version: BRIDGE_VERSION,
-    kind: 'vfx',
-    mode: 'realtime',
-    name: effect.name,
-    rig: 'R15',
-    duration,
-    beats,
-    camera: CAMERAS.vfx,
-    modules,
-    entry: 'Effect',
-    calibrate: opts.calibrate ?? true,
-    key: KEY_COLOR,
-    linger: timing.linger,
-    timeout: Math.ceil(duration + 40)
-  }
-}
-
-export function animJob(clip: AnimClip, opts: JobBase & { times: number[]; calibrate?: boolean }): BridgeJob {
-  const marker = (t: number) => clip.markers.find((m) => Math.abs(m.t - t) < 0.02)?.name
-  const beat = (t: number) => [...(clip.beats ?? [])].sort((a, b) => a.at - b.at).filter((b) => b.at <= t + 1e-6).pop()?.label
-  return {
-    id: opts.id,
-    version: BRIDGE_VERSION,
-    kind: 'anim',
-    mode: 'stepped',
-    name: clip.name,
-    rig: clipRig(clip),
-    duration: clip.duration,
-    beats: opts.times.map((t, i) => ({ t, label: marker(t) ?? beat(t) ?? `t${i + 1}` })),
-    camera: CAMERAS.anim,
-    modules: [],
-    sequence: sequenceJson(clip),
-    calibrate: opts.calibrate ?? true,
-    key: KEY_COLOR,
-    linger: 0,
-    timeout: 60
-  }
-}
-
-// effects: VFX Lab entry id -> effect. clip: the move's Animation Lab clip (placeholders are sampled).
-export function abilityJob(ability: Ability, effects: Record<string, VfxEffect>, clip: AnimClip | null, opts: JobBase & { times: { t: number; label: string }[]; calibrate?: boolean }): BridgeJob {
-  const vfx: BridgeModule[] = [runtimeModule()]
-  const seen = new Set<string>()
-  for (const ev of ability.events) {
-    if (ev.kind !== 'vfx' || ev.muted || seen.has(ev.effectName)) continue
-    const fx = effects[ev.effect]
-    if (!fx) continue
-    seen.add(ev.effectName)
-    vfx.push(vfxModules(fx, ev.effectName))
-    if (playsWithForgeVFX(fx) && !vfx.some((m) => m.name === EMIT_RUNTIME_MODULE)) vfx.splice(1, 0, emitRuntimeModule())
-  }
-  const lengths = { vfx: (id: string) => effects[id]?.duration, stages: (id: string) => effects[id]?.stages }
-  const anim = ability.animation
-  const playClip = clip ?? (anim && isPlaceholder(anim.clip) ? placeholderClip(anim.clip) : null)
-  let lingerS = 0
-  for (const fx of Object.values(effects)) lingerS = Math.max(lingerS, playTiming(fx).linger)
-  const modules: BridgeModule[] = [
-    { name: 'VFX', className: 'Folder', children: vfx },
-    { name: RUNNER_MODULE, className: 'ModuleScript', source: runnerModule([...JOB_ROOT, 'VFX']) },
-    { name: ability.name, className: 'ModuleScript', source: abilityModule(ability, lengths).source }
-  ]
-  assertModuleSizes(modules)
-  return {
-    id: opts.id,
-    version: BRIDGE_VERSION,
-    kind: 'ability',
-    mode: 'realtime',
-    name: ability.name,
-    rig: anim?.rig === 'R6' ? 'R6' : 'R15',
-    duration: ability.duration,
-    beats: opts.times.map((b) => ({ t: b.t, label: b.label })),
-    camera: CAMERAS.ability,
-    modules,
-    entry: ability.name,
-    vfxFolder: 'VFX',
-    ...(playClip ? { sequence: sequenceJson(playClip) } : {}),
-    calibrate: opts.calibrate ?? true,
-    key: KEY_COLOR,
-    linger: lingerS,
-    timeout: Math.ceil(ability.duration + 40)
-  }
-}
-
-// Thumbnail Lab: capture the user's own Studio viewport as it is (no stage, the camera is not moved).
-// The plugin shows the key colour to find the viewport, removes it, then answers one beat.
+// Capture the user's own Studio viewport as it is (no stage, camera unchanged).
 export function snapshotJob(opts: { id: string; name?: string }): BridgeJob {
   return {
     id: opts.id,
     version: BRIDGE_VERSION,
     kind: 'snapshot',
     mode: 'stepped',
-    name: opts.name ?? 'Thumbnail capture',
+    name: opts.name ?? 'Viewport snapshot',
     rig: 'R15',
     duration: 0,
     beats: [{ t: 0, label: 'view' }],

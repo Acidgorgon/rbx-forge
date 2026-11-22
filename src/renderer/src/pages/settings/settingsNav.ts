@@ -9,7 +9,7 @@ export const SETTINGS_CATEGORIES: { id: SettingsCategory; label: string; section
   { id: 'spending', label: 'Spending', sections: [['usage', 'Usage', 'spending cap daily monthly cost'], ['budgets', 'Budgets', 'tokens warning']] },
   { id: 'editing', label: 'Editing', sections: [['editor', 'Editor', 'format stylua autosave completions delete confirm luau-lsp studio plugin companion port search find replace in files grep regex ctrl+shift+f']] },
   { id: 'studio', label: 'Studio & sync', sections: [['places', 'Places', 'serve rojo'], ['sync', 'Sync', 'studio engine team auto commit git source control stage push pull fetch'], ['studio-mcp', 'Studio tools', 'roblox studio mcp assistant playtest luau execute console screen capture connection'], ['toolchain', 'Toolchain', 'rokit rojo wally lune luau-lsp install']] },
-  { id: 'labs', label: 'Labs & integrations', sections: [['labs', 'Labs', 'vfx animation ability tiers cheap default critic model dropdown decision gates models tokens'], ['integrations', 'Integrations', 'figma token fbx model upload inbox open cloud roblox']] }
+  { id: 'labs', label: 'Labs & integrations', sections: [['labs', 'Labs', 'ui motion model labs tiers cheap default critic model dropdown decision gates models tokens'], ['integrations', 'Integrations', 'figma token fbx model upload inbox open cloud roblox creator']] }
 ]
 
 export function categoryOf(section: string): SettingsCategory | undefined {

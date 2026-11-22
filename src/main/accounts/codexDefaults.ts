@@ -5,7 +5,7 @@
 // A working API key changes nothing, and a project's own image backend setting is left alone.
 
 import type { ModelChoice, ProviderId } from '../../shared/types.ts'
-import type { ImageBackend } from '../../shared/artTypes.ts'
+import type { ImageBackend } from '../../shared/accountTypes.ts'
 import { CODEX_DEFAULT_MODEL } from '../agent/codex/args.ts'
 
 export interface CodexDefaultsDeps {

@@ -175,7 +175,7 @@ export class MemoryStore {
   }
 
   // Validates, refuses secrets, deduplicates, writes the file and the index.
-  save(input: MemoryInput, opts: { dedupe?: boolean } = {}): Promise<SaveResult> {
+  save(input: MemoryInput, opts: { dedupe?: boolean; allowLarge?: boolean } = {}): Promise<SaveResult> {
     return this.serial(async () => {
       const kind: MemoryKind = input.kind ?? 'memory'
       const name = slugify(input.name)
@@ -186,7 +186,7 @@ export class MemoryStore {
       const body = input.body.replace(/\r\n/g, '\n').trim()
       const max = kind === 'skill' ? LIMITS.skillBody : LIMITS.memoryBody
       if (!body) throw new MemoryError('body is empty')
-      if (body.length > max) throw new MemoryError(`body is ${body.length} chars (limit ${max}); condense it to the durable facts`)
+      if (!opts.allowLarge && body.length > max) throw new MemoryError(`body is ${body.length} chars (limit ${max}); condense it to the durable facts`)
       const unsafe = unsafeReason(`${input.name}\n${description}\n${body}`)
       if (unsafe) throw new MemoryError(unsafe)
       const type = kind === 'memory' ? (TYPES.includes(input.type as MemoryType) ? input.type : this.scope === 'user' ? 'user' : 'project') : undefined

@@ -15,7 +15,9 @@ export type {
   MemoryListing,
   StyleProfile
 } from '../main/agent/memory/types.ts'
+export type { MarkdownImportItem, MarkdownImportRequest, MarkdownImportResult } from '../main/agent/memory/claudeImport.ts'
 import type { MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryListing, MemoryProposal, MemoryScope, MemorySettings, SaveResult, StyleProfile } from '../main/agent/memory/types.ts'
+import type { MarkdownImportItem, MarkdownImportRequest, MarkdownImportResult } from '../main/agent/memory/claudeImport.ts'
 
 export interface MemoryApi {
   memoryList(): Promise<MemoryListing>
@@ -34,6 +36,8 @@ export interface MemoryApi {
   memoryAcceptProposal(id: string, edited?: MemoryInput): Promise<SaveResult>
   memoryDismissProposal(id: string): Promise<void>
   memoryAnalyzeStyle(): Promise<{ profile: StyleProfile; result: SaveResult | null }>
+  memoryPreviewMarkdownImport(req: MarkdownImportRequest): Promise<MarkdownImportItem[]>
+  memoryCommitMarkdownImport(scope: MemoryScope, items: MarkdownImportItem[]): Promise<MarkdownImportResult>
 }
 
 export interface MemoryEvents {

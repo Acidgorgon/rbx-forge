@@ -50,6 +50,7 @@ import { memoryHandlers } from './agent/memory/ipc.ts'
 import { memoryTools, withMemoryTools, vanguardsTools, withVanguardsTools, harborTools, withHarborTools } from './agent/serviceTools.ts'
 import { VanguardsService } from './services/vanguards/service.ts'
 import { HarborService } from './services/harbor/service.ts'
+import { StudioTurnLock } from './agent/orchestrator/studioLock.ts'
 import { wireBrainSync } from './agent/memory/sync/electron.ts'
 import { wireUpdater } from './services/updater/electron.ts'
 import { netGet, watchBoot } from './services/quick/electron.ts'
@@ -802,12 +803,31 @@ const doctor = createDoctorWiring({
   emit: (report) => emit('doctor:report', report)
 })
 const qolcHandlers = { ...doctor.handlers, ...spend.handlers }
+// Fair FIFO mutex serializing live Roblox Studio turns across agents, labs, and inserts.
+const studioLock = new StudioTurnLock({
+  onChange: (st) => emit('studioLock:status', st),
+  onTimeout: (expired) => logs.push({ service: 'harness', stream: 'stderr', text: `[studio-lock] lease expired for ${expired.owner} (${expired.reason})` })
+})
+const studioLockHandlers = {
+  studioLockStatus: () => studioLock.status(),
+  studioLockForceRelease: (reason?: string) => studioLock.forceRelease(reason)
+}
+function lockStudioOps(map: Record<string, (...args: any[]) => unknown>, keys: string[]): Record<string, (...args: any[]) => unknown> {
+  const out = { ...map }
+  for (const k of keys) {
+    const orig = out[k]
+    if (!orig) continue
+    out[k] = (...args: unknown[]) => studioLock.withLock(`ipc:${k}`, k, () => Promise.resolve(orig(...args)))
+  }
+  return out
+}
 // Vanguards external CLIs (ror, rur, ree) and FM offline build pipeline.
 const vanguards = new VanguardsService({
   root: () => project?.info.root ?? null,
   settings,
   emit: (event, payload) => emit(event, payload as never),
-  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[vanguards] ${text}` })
+  log: (text, stream = 'info') => logs.push({ service: 'harness', stream, text: `[vanguards] ${text}` }),
+  withStudioLock: (owner, reason, fn) => studioLock.withLock(owner, reason, fn)
 })
 const vanguardsHandlers = {
   vanguardsStatus: () => vanguards.status(),
@@ -997,12 +1017,12 @@ for (const [name, handler] of Object.entries(handlers)) {
 }
 // Long lab / build calls notify when they finish (services/qol).
 const timed = (name: string, handler: (...args: any[]) => unknown) => qol.service.timed(name, handler)
-for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...studio.handlers, ...principles.handlers, ...gating.handlers, ...forgeSync.handlers, ...qol.handlers, ...qolcHandlers, ...vanguardsHandlers, ...harborHandlers })) {
+for (const [name, handler] of Object.entries({ ...integrations.handlers, ...terminal.handlers(), ...setup.handlers, ...memoryHandlers(memory), ...brainSync.handlers, ...updater.handlers, ...lockStudioOps(studio.handlers, ['studioCheck']), ...principles.handlers, ...gating.handlers, ...lockStudioOps(forgeSync.handlers, ['syncDeleteInStudio', 'syncDeleteManyInStudio']), ...qol.handlers, ...qolcHandlers, ...studioLockHandlers, ...vanguardsHandlers, ...harborHandlers })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
 }
-for (const [name, handler] of Object.entries({ ...gating.wrap('uimotion', uiMotion.handlers), ...gating.wrap('model', model.handlers) })) {
+for (const [name, handler] of Object.entries({ ...gating.wrap('uimotion', uiMotion.handlers), ...gating.wrap('model', lockStudioOps(model.handlers, ['modelBuildInStudio'])) })) {
   if (name in handlers) throw new Error(`duplicate IPC handler ${name}`)
   const fn = timed(name, handler)
   ipcMain.handle(INVOKE_PREFIX + name, (_event, ...args) => fn(...args))
@@ -1162,6 +1182,7 @@ app.on('before-quit', (event) => {
   void studio.dispose()
   vanguards.dispose()
   harbor.dispose()
+  studioLock.dispose()
   lsp.dispose()
   void lspCompanion.dispose()
   void Promise.all([rojoStopped, closeProject().catch(() => undefined)]).finally(() => {
@@ -1182,12 +1203,15 @@ process.on('exit', () => {
   terminal.dispose()
   vanguards.dispose()
   harbor.dispose()
+  studioLock.dispose()
   lsp.dispose()
   supervisor.killAllSync()
 })
 for (const signal of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) {
   process.on(signal, () => {
     vanguards.dispose()
+    harbor.dispose()
+    studioLock.dispose()
     supervisor.killAllSync()
     process.exit(0)
   })

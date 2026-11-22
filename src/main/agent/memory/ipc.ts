@@ -1,6 +1,7 @@
 // IPC handlers for the Memory page and the chat proposals card (MemoryApi in shared/memoryTypes.ts).
 // main/index.ts registers them with INVOKE_PREFIX like the other handler maps.
 
+import { commitMarkdownImport, previewMarkdownImport, type MarkdownImportItem, type MarkdownImportRequest } from './claudeImport.ts'
 import type { MemoryService } from './service.ts'
 import type { MemoryInput, MemoryKind, MemoryScope, MemorySettings } from './types.ts'
 
@@ -35,11 +36,14 @@ export function memoryHandlers(memory: MemoryService): Record<string, (...args: 
     memoryProposals: (sessionId?: unknown) => memory.pending(typeof sessionId === 'string' ? sessionId : undefined),
     memoryAcceptProposal: (id: unknown, edited?: unknown) => memory.accept(String(id ?? ''), edited ? input(edited) : undefined),
     memoryDismissProposal: (id: unknown) => memory.dismiss(String(id ?? '')),
-    memoryAnalyzeStyle: () => memory.analyzeStyle()
+    memoryAnalyzeStyle: () => memory.analyzeStyle(),
+    memoryPreviewMarkdownImport: (req: unknown) => previewMarkdownImport((req && typeof req === 'object' ? req : { content: '' }) as MarkdownImportRequest),
+    memoryCommitMarkdownImport: (s: unknown, items: unknown) => commitMarkdownImport(memory, scope(s), Array.isArray(items) ? (items as MarkdownImportItem[]) : [])
   }
 }
 
 export const MEMORY_METHODS = [
   'memoryList', 'memorySearch', 'memorySave', 'memoryDelete', 'memoryPin', 'memoryPromote', 'memoryFeed',
-  'memoryGetSettings', 'memorySetSettings', 'memoryProposals', 'memoryAcceptProposal', 'memoryDismissProposal', 'memoryAnalyzeStyle'
+  'memoryGetSettings', 'memorySetSettings', 'memoryProposals', 'memoryAcceptProposal', 'memoryDismissProposal', 'memoryAnalyzeStyle',
+  'memoryPreviewMarkdownImport', 'memoryCommitMarkdownImport'
 ] as const

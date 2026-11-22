@@ -970,6 +970,8 @@ const api: HarnessApi = {
   ...studioMcpMock(emit),
   ...vanguardsMock(emit),
   ...harborMock(emit),
+  studioLockStatus: async () => ({ holder: null, queue: [] }),
+  studioLockForceRelease: async () => false,
   // Source control panel (mockScm.ts): a fake index over the mock files; ?scm=clean|held|reject.
   ...scmMock(emit, {
     files,

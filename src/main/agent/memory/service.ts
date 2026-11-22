@@ -144,6 +144,14 @@ export class MemoryService {
     return r
   }
 
+  async importEntry(input: MemoryInput, opts: { dedupe?: boolean; allowLarge?: boolean } = {}): Promise<SaveResult> {
+    const r = await this.store(input.scope).save(input, opts)
+    const action: MemoryFeedItem['action'] = input.kind === 'skill' && r.action === 'created' ? 'skill' : r.action === 'created' ? 'saved' : r.action
+    this.feed({ action, scope: input.scope, kind: input.kind ?? 'memory', name: r.entry.name, description: r.entry.description, source: 'user' })
+    this.changed()
+    return r
+  }
+
   // Removes by name; when both stores hold the name, scope must say which.
   async forget(name: string, opts: { scope?: MemoryScope; kind?: MemoryKind } = {}, source: MemoryFeedItem['source'] = 'agent'): Promise<MemoryEntry> {
     const slug = slugify(name)

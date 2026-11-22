@@ -14,7 +14,7 @@ import { ModelPreview } from './ModelPreview'
 import { ModelScript } from './ModelScript'
 import { StudioTargetPicker } from '../studio/StudioTarget'
 import { LabCostLine } from '../gating/LabGating'
-import '../vfx/vfx.css'
+import '../labShared.css'
 import './model.css'
 
 const MAX_REFS = 4

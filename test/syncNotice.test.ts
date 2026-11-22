@@ -13,7 +13,10 @@ import { syncSummary } from '../src/main/services/sync/wire.ts'
 import { PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../src/shared/studio/plugin.ts'
 
 const dirs: string[] = []
+const services: SyncService[] = []
 after(() => {
+  for (const s of services) s.close()
+  services.length = 0
   for (const d of dirs) rmSync(d, { recursive: true, force: true })
 })
 
@@ -48,7 +51,7 @@ async function make(opts: { root: string; studio: () => Studio; plugin?: { insta
     root: opts.root,
     engine: new SyncEngine({ root: opts.root }),
     mapping: { loadPlaces, placeFor },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? ('forge' as T) : fb) },
     git: async () => ({ code: 1, stdout: '', stderr: '' }),
     pluginsDir: () => null,
     studio: opts.studio,
@@ -56,6 +59,7 @@ async function make(opts: { root: string; studio: () => Studio; plugin?: { insta
     emit: () => undefined,
     now: opts.now
   })
+  services.push(service)
   await service.start()
   return service
 }

@@ -67,7 +67,7 @@ async function setup() {
   // The plugin's ids are short; the fixture uses the joined path.
   const short = (id: string) => createHash('sha1').update(id).digest('hex').slice(0, 16)
   const studio = (placeId: number) => studioFromDisk(root, placeFor(maps, placeId)!).map((n) => ({ ...n, id: short(n.id) }))
-  return { root, service, bridge, plugin, gates, studio, done: () => bridge.stop() }
+  return { root, service, bridge, plugin, gates, studio, done: async () => { service.close(); await bridge.stop() } }
 }
 
 const CONFIG = ['ServerScriptService', 'Server', 'Features', 'Skills', 'Moves', 'Dash', 'Config']

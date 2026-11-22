@@ -76,7 +76,7 @@ function make(root: string, opts: { now?: () => number; studios?: () => { placeI
     root,
     engine: new SyncEngine({ root }),
     mapping: { loadPlaces, placeFor },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? ('forge' as T) : fb) },
     git: async () => ({ code: 1, stdout: '', stderr: '' }),
     pluginsDir: () => null,
     emit: () => undefined,
@@ -300,7 +300,7 @@ test('project A sync state never appears or applies in project B', async () => {
   const bBefore = diskState(b)
   const gates: [string, GateState][] = []
   const wiring = createSync({
-    settings: { get: <T>(_k: string, fb: T) => fb, set: () => undefined },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? ('forge' as T) : fb), set: () => undefined },
     emit: () => undefined,
     supervisor: { setGate: (f, g) => gates.push([f, g]), applyGates: () => undefined, setSyncSummary: () => undefined },
     pluginsDir: () => null,
@@ -308,26 +308,29 @@ test('project A sync state never appears or applies in project B', async () => {
     mapping: { loadPlaces, placeFor },
     git: async () => ({ code: 1, stdout: '', stderr: '' })
   })
-  await wiring.onProjectOpen(a)
-  const cfg = await wiring.handler.config({ placeId: 111, place: 'FSF' })
-  await wiring.handler.snapshot({ session: cfg.sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: FOREIGN })
-  await settle()
-  assert.ok(wiring.service()!.conflicts().length > 0)
-  // Switch to project B: A's place, session and conflicts are gone; its token is dead; its place is not B's.
-  await wiring.onProjectOpen(b)
-  gates.length = 0
-  const status = (await wiring.handlers.syncStatus()) as Awaited<ReturnType<SyncService['status']>>
-  // B's place has never been checked: it waits (rojo serve held), nothing of A's shows.
-  assert.ok(status.places.every((p) => p.placeKey !== '111' && p.gate === 'waiting' && !p.connected && !p.conflicts), JSON.stringify(status.places))
-  assert.deepEqual(wiring.service()!.conflicts(), [])
-  assert.equal((await wiring.handler.snapshot({ session: cfg.sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: FOREIGN })).ok, false)
-  assert.equal((await wiring.handler.config({ placeId: 111, place: 'FSF' })).enabled, false)
-  await settle()
-  // Place 111 is not B's: it never gets a session in B, so B's gate only ever waits.
-  assert.ok(gates.every(([, g]) => g === 'waiting'), JSON.stringify(gates))
-  assert.deepEqual(diskState(b), bBefore)
-  assert.equal(existsSync(join(b, '.forge', 'sync', 'links.json')) ? Object.keys(JSON.parse(readFileSync(join(b, '.forge', 'sync', 'links.json'), 'utf8')).links).length : 0, 0)
-  wiring.onProjectClose()
+  try {
+    await wiring.onProjectOpen(a)
+    const cfg = await wiring.handler.config({ placeId: 111, place: 'FSF' })
+    await wiring.handler.snapshot({ session: cfg.sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: FOREIGN })
+    await settle()
+    assert.ok(wiring.service()!.conflicts().length > 0)
+    // Switch to project B: A's place, session and conflicts are gone; its token is dead; its place is not B's.
+    await wiring.onProjectOpen(b)
+    gates.length = 0
+    const status = (await wiring.handlers.syncStatus()) as Awaited<ReturnType<SyncService['status']>>
+    // B's place has never been checked: it waits (rojo serve held), nothing of A's shows.
+    assert.ok(status.places.every((p) => p.placeKey !== '111' && p.gate === 'waiting' && !p.connected && !p.conflicts), JSON.stringify(status.places))
+    assert.deepEqual(wiring.service()!.conflicts(), [])
+    assert.equal((await wiring.handler.snapshot({ session: cfg.sessionToken, place: { placeId: 111 }, seq: 0, final: true, nodes: FOREIGN })).ok, false)
+    assert.equal((await wiring.handler.config({ placeId: 111, place: 'FSF' })).enabled, false)
+    await settle()
+    // Place 111 is not B's: it never gets a session in B, so B's gate only ever waits.
+    assert.ok(gates.every(([, g]) => g === 'waiting'), JSON.stringify(gates))
+    assert.deepEqual(diskState(b), bBefore)
+    assert.equal(existsSync(join(b, '.forge', 'sync', 'links.json')) ? Object.keys(JSON.parse(readFileSync(join(b, '.forge', 'sync', 'links.json'), 'utf8')).links).length : 0, 0)
+  } finally {
+    wiring.onProjectClose()
+  }
 })
 
 test('a place whose Studio went away is not live and its conflicts stop holding rojo: it waits for the next Studio check (never-connected: see the unlinked test)', async () => {

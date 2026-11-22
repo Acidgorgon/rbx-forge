@@ -25,7 +25,7 @@ import { namePath, storyExportPlan } from '@shared/uimotion/story'
 import { MotionTimeline } from './MotionTimeline'
 import { FigmaImport } from './FigmaImport'
 import type { StageMode } from '../uipreview/Stage'
-import '../vfx/vfx.css'
+import '../labShared.css'
 import './uimotion.css'
 
 const SUGGESTIONS = ['snappy and tight', 'bouncy play button', 'juicy shop button with a shine', 'calm menu card that floats', 'satisfying claim reward button']

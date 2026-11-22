@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 14
+-- forge-bridge-template: 15
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while

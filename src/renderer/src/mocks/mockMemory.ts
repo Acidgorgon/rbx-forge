@@ -1,7 +1,7 @@
 // Browser-preview mock of the memory + skills layer (MemoryApi). In-memory stores seeded with a few
 // memories and skills, a feed, and one reflection proposal on chat-3. mock.ts spreads it into its
 // api object. window.__forgeMemoryPropose("chat-id") fakes a new reflection card for design work.
-import type { HarnessEvents, MemoryApi, MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryProposal, MemoryScope, MemorySettings } from '@shared/types'
+import type { HarnessEvents, MarkdownImportItem, MarkdownImportRequest, MemoryApi, MemoryEntry, MemoryFeedItem, MemoryInput, MemoryKind, MemoryProposal, MemoryScope, MemorySettings } from '@shared/types'
 
 type Emit = <K extends keyof HarnessEvents>(event: K, payload: HarnessEvents[K]) => void
 
@@ -156,6 +156,36 @@ export function memoryMock(emit: Emit): MemoryApi {
         profile: { files: 42, lines: 3118, indent: { style: 'tabs' }, strictMode: 0.81, naming: { locals: 'camelCase', functions: 'PascalCase', constants: 'UPPER_SNAKE', modules: 'PascalCase' }, modules: [], comments: [], vide: [], body: e.body },
         result: { entry: updated, action: 'updated' }
       }
+    },
+    async memoryPreviewMarkdownImport(req: MarkdownImportRequest) {
+      const text = String(req.content ?? '').replace(/\r\n/g, '\n').trim()
+      if (!text) return []
+      const kind = req.defaultKind ?? 'memory'
+      const stem = (req.fileName ?? 'imported-rules').replace(/\.[^.]+$/, '')
+      if (!req.splitByHeadings) {
+        const name = slug(stem) || 'imported-rules'
+        const desc = text.split('\n').find((l) => l.trim())?.replace(/^#+\s*/, '').slice(0, 200) || name
+        return [{ kind, ...(kind === 'memory' ? { type: req.defaultType ?? 'project' } : {}), name, description: desc, body: text, chars: text.length }]
+      }
+      const chunks = text.split(/\n(?=##\s+)/).filter((c) => c.trim())
+      return chunks.map((chunk, i) => {
+        const heading = /^##\s+(.+)$/m.exec(chunk)?.[1] ?? `${stem}-${i + 1}`
+        const name = slug(heading) || `section-${i + 1}`
+        const desc = chunk.split('\n').find((l) => l.trim() && !l.startsWith('#'))?.slice(0, 200) || heading
+        return { kind, ...(kind === 'memory' ? { type: req.defaultType ?? 'project' } : {}), name, description: desc, body: chunk.trim(), chars: chunk.trim().length }
+      })
+    },
+    async memoryCommitMarkdownImport(scope: MemoryScope, items: MarkdownImportItem[]) {
+      const imported: string[] = []
+      const updated: string[] = []
+      const skipped: string[] = []
+      for (const item of items) {
+        const r = save({ scope, kind: item.kind, ...(item.type ? { type: item.type } : {}), name: item.name, description: item.description, body: item.body })
+        if (r.action === 'updated') updated.push(r.entry.name)
+        else imported.push(r.entry.name)
+      }
+      changed()
+      return { imported, updated, skipped }
     }
   }
 }

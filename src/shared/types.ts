@@ -68,6 +68,9 @@ export type * from './vanguardsTypes.ts'
 // Harbor Family Stack (Current, Ripple, Anchor, Tide, Lighthouse).
 import type { HarborApi, HarborEvents } from './harborTypes.ts'
 export type * from './harborTypes.ts'
+// StudioTurnLock FIFO mutex across live Studio operations.
+import type { StudioLockApi, StudioLockEvents } from './studioLockTypes.ts'
+export type * from './studioLockTypes.ts'
 
 export type ServiceId = 'dev' | 'rojo' | 'lsp' | 'studioSync'
 
@@ -606,7 +609,7 @@ export interface BlinkModel {
   blinkCompiler?: 'current' | 'blink'
 }
 
-export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, InboxEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, StudioEvents, PrincipleEvents, SyncEvents, GatingEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents, ModelEvents, StudioMcpEvents, SearchEvents, VanguardsEvents, HarborEvents {
+export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupEvents, MemoryEvents, InboxEvents, UpdateEvents, BrainSyncEvents, UiPreviewEvents, StudioEvents, PrincipleEvents, SyncEvents, GatingEvents, QolEvents, DoctorEvents, SpendEvents, UiMotionEvents, AccountsEvents, EditorAssistEvents, ModelEvents, StudioMcpEvents, SearchEvents, VanguardsEvents, HarborEvents, StudioLockEvents {
   'services:status': ServiceStatus[]
   'log:line': LogLine
   // Batched log lines (main sends these; one message per ~100 ms).
@@ -638,7 +641,7 @@ export interface HarnessEvents extends IntegrationEvents, TerminalEvents, SetupE
   'places:changed': PlacesChanged
 }
 
-export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, InboxApi, UpdateApi, BrainSyncApi, UiPreviewApi, StudioApi, PrincipleApi, SyncApi, GatingApi, RestateApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, UiMotionApi, AccountsApi, EditorAssistApi, ModelApi, StudioMcpApi, ScmApi, SearchApi, VanguardsApi, HarborApi {
+export interface HarnessApi extends IntegrationApi, TerminalApi, SetupApi, ChatExtrasApi, MemoryApi, InboxApi, UpdateApi, BrainSyncApi, UiPreviewApi, StudioApi, PrincipleApi, SyncApi, GatingApi, RestateApi, GroupApi, QolApi, ChatModesApi, DoctorApi, SpendApi, UiMotionApi, AccountsApi, EditorAssistApi, ModelApi, StudioMcpApi, ScmApi, SearchApi, VanguardsApi, HarborApi, StudioLockApi {
   // Project
   openProject(root?: string): Promise<ProjectInfo | null>
   getProject(): Promise<ProjectInfo | null>

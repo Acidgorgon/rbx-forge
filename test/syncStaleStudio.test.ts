@@ -27,7 +27,10 @@ import type { StudioNode, SyncEntry } from '../src/shared/sync/types.ts'
 import { find, get, makeFsfProject, MENU_PLACE, put, studioFromDisk } from './syncFixture.ts'
 
 const roots: string[] = []
+const services: SyncService[] = []
 after(() => {
+  for (const s of services) s.close()
+  services.length = 0
   for (const r of roots) rmSync(r, { recursive: true, force: true })
 })
 
@@ -75,11 +78,11 @@ async function world(): Promise<World> {
 }
 
 function service(w: World): SyncService {
-  return new SyncService({
+  const s = new SyncService({
     root: w.root,
     engine: new SyncEngine({ root: w.root, now: () => w.clock.t, log: (text) => w.logs.push(text) }),
     mapping: { loadPlaces, placeFor },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? ('forge' as T) : fb) },
     git: async () => ({ code: 1, stdout: '', stderr: '' }),
     pluginsDir: () => null,
     emit: () => undefined,
@@ -89,6 +92,8 @@ function service(w: World): SyncService {
     rojo: () => 'serving',
     log: (text) => w.logs.push(text)
   })
+  services.push(s)
+  return s
 }
 
 // A Studio window: config + one-chunk snapshot. Returns its session token.

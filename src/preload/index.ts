@@ -56,6 +56,7 @@ const methods = [
   // Memory and skills
   'memoryList', 'memorySearch', 'memorySave', 'memoryDelete', 'memoryPin', 'memoryPromote', 'memoryFeed',
   'memoryGetSettings', 'memorySetSettings', 'memoryProposals', 'memoryAcceptProposal', 'memoryDismissProposal', 'memoryAnalyzeStyle',
+  'memoryPreviewMarkdownImport', 'memoryCommitMarkdownImport',
   // Memory export/import (.forgepack) and device sync
   'packCandidates', 'packExport', 'packOpen', 'packImport',
   'brainSyncStatus', 'brainSyncGetSettings', 'brainSyncSetSettings', 'brainSyncNow', 'brainSyncChooseFolder',
@@ -104,7 +105,9 @@ const methods = [
   'vanguardsFmEnvbuild', 'vanguardsFmModelpreview', 'vanguardsFmInsertRbxm',
   'vanguardsStartMcpBridge', 'vanguardsStopMcpBridge',
   // Harbor Family Stack (Current, Ripple, Anchor, Tide, Lighthouse)
-  'harborStatus', 'harborRefresh', 'harborToggleLib', 'harborGenerate', 'harborScaffold'
+  'harborStatus', 'harborRefresh', 'harborToggleLib', 'harborGenerate', 'harborScaffold',
+  // StudioTurnLock
+  'studioLockStatus', 'studioLockForceRelease'
 ] as const satisfies readonly Exclude<keyof HarnessApi, 'on' | 'lspSend'>[]
 
 // Compile-time check: every HarnessApi method is exposed (tsc names any that is missing).

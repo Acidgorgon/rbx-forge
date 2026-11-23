@@ -175,6 +175,13 @@ In team mode, large multi-part requests go to an orchestrator instead of a singl
 
 Forge's agents keep memories about you (user) and about the game (project, stored in `.forge/memory` so the team shares them), plus **skills**, which are step-by-step recipes such as "add a GenTree feature". Prompts only carry names and one-line descriptions. Agents load the rest with `recall` and `use_skill`. After a chat, a background review can propose new memories as a card you save, edit or dismiss (*Ask*), save them itself (*Auto*), or do nothing (*Off*). **Learn code style** builds a Luau style profile of the project locally, with no model call. You can edit, pin, delete, or promote any memory to the project from the Memory page.
 
+**Cross-harness project instructions** (on the Memory page) write the same rules for every agent that opens the game: `AGENTS.md` for Codex, Cursor and Forge, `CLAUDE.md` for Claude Code, and `.agents/rules/rbx-forge.md` for Antigravity. Forge only rewrites the part between its `<!-- rbx-forge:guide -->` markers, so your own notes stay. With **Framework playbook** on, Forge also writes:
+
+- `.forge/FRAMEWORK.md`: how a Forge game is laid out, which Harbor library replaces what (remotes to Current, saving to Anchor, replicated state to Ripple, movement and hit checks to Tide, profiling to Lighthouse), the order to migrate in, an optimization checklist, and when a step counts as done.
+- the `forge-refactor` skill in `.claude/skills` and `.agents/skills`, so Claude Code, Codex, Antigravity and Cursor pick it up from a prompt like "refactor this game into RBX Forge's framework". It tracks progress in `.forge/MIGRATION.md`, so the next session, in any harness, continues where the last one stopped.
+
+Commit these files and every teammate's agent follows the same playbook.
+
 ### Art: OpenAI images to Roblox assets
 
 ![Art page: prompt, style presets, gallery and a generated asset's details](docs/screenshots/43-art-detail-dark.png)

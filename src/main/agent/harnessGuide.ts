@@ -4,6 +4,7 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs'
 import { dirname, join, resolve } from 'node:path'
+import { FRAMEWORK_PLAYBOOK, REFACTOR_SKILL } from './framework/content.ts'
 
 export const GUIDE_START = '<!-- rbx-forge:guide:start -->'
 export const GUIDE_END = '<!-- rbx-forge:guide:end -->'
@@ -19,6 +20,24 @@ export const HARNESS_TARGETS: Record<HarnessTargetId, { file: string; label: str
 
 export const HARNESS_TARGET_IDS: readonly HarnessTargetId[] = ['agents', 'claude', 'antigravity']
 
+// Written with the frameworkPlaybook option: the playbook itself (a managed block, notes around it
+// are kept) and the forge-refactor skill, which Forge owns whole (SKILL.md must start with its
+// frontmatter). .agents/skills is read by Codex, Antigravity and Cursor; .claude/skills by Claude Code.
+export const FRAMEWORK_FILE = '.forge/FRAMEWORK.md'
+export const CLAUDE_SKILL_FILE = '.claude/skills/forge-refactor/SKILL.md'
+export const AGENTS_SKILL_FILE = '.agents/skills/forge-refactor/SKILL.md'
+
+export type HarnessExtraId = 'framework' | 'claudeSkill' | 'agentsSkill'
+
+export interface HarnessExtraFileState {
+  id: HarnessExtraId
+  file: string
+  label: string
+  harnesses: string
+  exists: boolean
+  upToDate: boolean
+}
+
 export interface HarnessGuideOptions {
   targets: HarnessTargetId[]
   noComments: boolean
@@ -26,6 +45,7 @@ export interface HarnessGuideOptions {
   enforceDirectSyncAndGit: boolean
   enforceOfflineVanguards: boolean
   enforceProjectStructure: boolean
+  frameworkPlaybook: boolean
   customRules?: string
 }
 
@@ -36,6 +56,7 @@ export const DEFAULT_HARNESS_GUIDE_OPTIONS: HarnessGuideOptions = {
   enforceDirectSyncAndGit: true,
   enforceOfflineVanguards: true,
   enforceProjectStructure: true,
+  frameworkPlaybook: true,
   customRules: ''
 }
 
@@ -53,6 +74,7 @@ export interface HarnessGuideStatus {
   projectRoot: string | null
   options: HarnessGuideOptions
   files: HarnessGuideFileState[]
+  extraFiles: HarnessExtraFileState[]
   preview: string
 }
 
@@ -77,6 +99,7 @@ function mergeOptions(base: HarnessGuideOptions, patch?: Partial<HarnessGuideOpt
       typeof patch.enforceOfflineVanguards === 'boolean' ? patch.enforceOfflineVanguards : base.enforceOfflineVanguards,
     enforceProjectStructure:
       typeof patch.enforceProjectStructure === 'boolean' ? patch.enforceProjectStructure : base.enforceProjectStructure,
+    frameworkPlaybook: typeof patch.frameworkPlaybook === 'boolean' ? patch.frameworkPlaybook : base.frameworkPlaybook,
     customRules: typeof patch.customRules === 'string' ? patch.customRules : base.customRules
   }
 }
@@ -88,6 +111,11 @@ export function buildHarnessGuideMarkdown(rawOpts: Partial<HarnessGuideOptions>,
     const bullets: string[] = [
       'Read and follow `AGENTS.md` first before planning, editing, syncing, or importing.'
     ]
+    if (opts.frameworkPlaybook) {
+      bullets.push(
+        '**Refactors, migrations, optimization & new systems**: read `.forge/FRAMEWORK.md` first and follow it (what replaces what, migration order, definition of done). The `forge-refactor` skill runs it step by step and tracks progress in `.forge/MIGRATION.md`.'
+      )
+    }
     if (opts.enforceDirectSyncAndGit) {
       bullets.push(
         '**RBX Forge Sync & Assets**: Do not launch separate `rojo serve` processes or overwrite Studio-only instances. Let RBX Forge Direct Sync + `sourcemap.json` handle disk/Studio sync, import `.rbxm`/media via RBX Forge Inbox / `fm/insert_rbxm.py` (never `125988560196910`), and commit clean diffs through Git / RBX Forge Source Control.'
@@ -124,6 +152,15 @@ export function buildHarnessGuideMarkdown(rawOpts: Partial<HarnessGuideOptions>,
     '',
     'These workspace rules are managed by RBX Forge so any harness (Claude Code, Antigravity, Codex, or RBX Forge) follows one workflow.'
   ]
+
+  if (opts.frameworkPlaybook) {
+    sections.push(
+      '',
+      '## Refactors, Migrations & New Systems',
+      '- Before refactoring or migrating a game or feature into RBX Forge, replacing remotes / DataStores / custom replication, optimizing, or building a new system: read `.forge/FRAMEWORK.md` and follow it. It says which Harbor library replaces what, the migration order, and the definition of done.',
+      '- Track a migration in `.forge/MIGRATION.md` (the audit and a checklist per feature), so the next session in any harness continues where this one stopped. The `forge-refactor` skill runs the playbook step by step.'
+    )
+  }
 
   if (opts.enforceDirectSyncAndGit) {
     sections.push(
@@ -205,6 +242,51 @@ export function upsertManagedBlock(existing: string | null, managedBlock: string
   return useCrlf ? out.replace(/\n/g, '\r\n') : out
 }
 
+interface ExtraFile {
+  id: HarnessExtraId
+  file: string
+  label: string
+  harnesses: string
+  // 'block': Forge's part of the file sits between the guide markers; 'whole': Forge owns the file.
+  mode: 'block' | 'whole'
+  content: string
+}
+
+export function buildFrameworkMarkdown(): string {
+  return [GUIDE_START, FRAMEWORK_PLAYBOOK, GUIDE_END].join('\n')
+}
+
+// The extra files the options ask for: none without frameworkPlaybook; each skill only when a
+// harness that reads it is a target.
+function extraFiles(opts: HarnessGuideOptions): ExtraFile[] {
+  if (!opts.frameworkPlaybook) return []
+  const out: ExtraFile[] = [
+    { id: 'framework', file: FRAMEWORK_FILE, label: FRAMEWORK_FILE, harnesses: 'Playbook, read by every harness', mode: 'block', content: buildFrameworkMarkdown() }
+  ]
+  if (opts.targets.includes('claude')) {
+    out.push({ id: 'claudeSkill', file: CLAUDE_SKILL_FILE, label: CLAUDE_SKILL_FILE, harnesses: 'Claude Code skill', mode: 'whole', content: REFACTOR_SKILL + '\n' })
+  }
+  if (opts.targets.includes('agents') || opts.targets.includes('antigravity')) {
+    out.push({ id: 'agentsSkill', file: AGENTS_SKILL_FILE, label: AGENTS_SKILL_FILE, harnesses: 'Codex, Antigravity, Cursor skill', mode: 'whole', content: REFACTOR_SKILL + '\n' })
+  }
+  return out
+}
+
+function extraState(root: string | null, extra: ExtraFile): HarnessExtraFileState {
+  const base = { id: extra.id, file: extra.file, label: extra.label, harnesses: extra.harnesses }
+  if (!root) return { ...base, exists: false, upToDate: false }
+  const abs = join(root, ...extra.file.split('/'))
+  if (!existsSync(abs)) return { ...base, exists: false, upToDate: false }
+  try {
+    const content = readFileSync(abs, 'utf8').replace(/\r\n/g, '\n')
+    const expected = extra.content.replace(/\r\n/g, '\n')
+    const upToDate = extra.mode === 'whole' ? content === expected : content.includes(GUIDE_START) && content.includes(expected)
+    return { ...base, exists: true, upToDate }
+  } catch {
+    return { ...base, exists: false, upToDate: false }
+  }
+}
+
 function readSavedOptions(projectRoot: string): Partial<HarnessGuideOptions> | undefined {
   const cfgPath = join(projectRoot, HARNESS_GUIDE_CONFIG)
   if (!existsSync(cfgPath)) return undefined
@@ -243,6 +325,7 @@ export function inspectHarnessGuide(projectRoot: string | null, patch?: Partial<
     projectRoot,
     options,
     files,
+    extraFiles: extraFiles(options).map((e) => extraState(projectRoot, e)),
     preview: buildHarnessGuideMarkdown(options, 'agents')
   }
 }
@@ -271,6 +354,17 @@ export function syncHarnessGuide(projectRoot: string, patch?: Partial<HarnessGui
     if (existing !== next) {
       writeFileSync(abs, next, 'utf8')
       written.push(meta.file)
+    }
+  }
+
+  for (const extra of extraFiles(options)) {
+    const abs = join(root, ...extra.file.split('/'))
+    mkdirSync(dirname(abs), { recursive: true })
+    const existing = existsSync(abs) ? readFileSync(abs, 'utf8') : null
+    const next = extra.mode === 'whole' ? extra.content : upsertManagedBlock(existing, extra.content)
+    if (existing !== next) {
+      writeFileSync(abs, next, 'utf8')
+      written.push(extra.file)
     }
   }
 

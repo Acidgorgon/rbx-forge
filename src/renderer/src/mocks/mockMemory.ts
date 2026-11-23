@@ -83,6 +83,7 @@ export function memoryMock(emit: Emit): MemoryApi {
     enforceDirectSyncAndGit: true,
     enforceOfflineVanguards: true,
     enforceProjectStructure: true,
+    frameworkPlaybook: true,
     customRules: ''
   }
   const harnessGuideMeta = [
@@ -116,6 +117,13 @@ export function memoryMock(emit: Emit): MemoryApi {
       projectRoot: 'E:/MockProject',
       options: { ...harnessGuideOpts, targets: [...harnessGuideOpts.targets] },
       files,
+      extraFiles: harnessGuideOpts.frameworkPlaybook
+        ? [
+            { id: 'framework', file: '.forge/FRAMEWORK.md', label: '.forge/FRAMEWORK.md', harnesses: 'Playbook, read by every harness', exists: syncedTargets.has('agents'), upToDate: syncedTargets.has('agents') },
+            { id: 'claudeSkill', file: '.claude/skills/forge-refactor/SKILL.md', label: '.claude/skills/forge-refactor/SKILL.md', harnesses: 'Claude Code skill', exists: syncedTargets.has('claude'), upToDate: syncedTargets.has('claude') },
+            { id: 'agentsSkill', file: '.agents/skills/forge-refactor/SKILL.md', label: '.agents/skills/forge-refactor/SKILL.md', harnesses: 'Codex, Antigravity, Cursor skill', exists: syncedTargets.has('agents'), upToDate: syncedTargets.has('agents') }
+          ]
+        : [],
       preview
     }
   }

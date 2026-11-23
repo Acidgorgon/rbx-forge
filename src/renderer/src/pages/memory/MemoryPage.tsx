@@ -166,7 +166,7 @@ function Detail({ e, onEdit, onChanged, onDeleted }: { e: MemoryEntry; onEdit: (
   )
 }
 
-type GuideBoolKey = 'enforceDirectSyncAndGit' | 'enforceHarborAndPackages' | 'enforceProjectStructure' | 'enforceOfflineVanguards' | 'noComments'
+type GuideBoolKey = 'enforceDirectSyncAndGit' | 'enforceHarborAndPackages' | 'enforceProjectStructure' | 'enforceOfflineVanguards' | 'frameworkPlaybook' | 'noComments'
 
 const DEFAULT_GUIDE_OPTS: HarnessGuideOptions = {
   targets: ['agents', 'claude', 'antigravity'],
@@ -175,6 +175,7 @@ const DEFAULT_GUIDE_OPTS: HarnessGuideOptions = {
   enforceDirectSyncAndGit: true,
   enforceOfflineVanguards: true,
   enforceProjectStructure: true,
+  frameworkPlaybook: true,
   customRules: ''
 }
 
@@ -183,6 +184,7 @@ const GUIDE_RULE_TOGGLES: Array<{ key: GuideBoolKey; label: string }> = [
   { key: 'enforceHarborAndPackages', label: 'Packages guard & Harbor Stack (Current, Ripple, Anchor, Tide, Lighthouse)' },
   { key: 'enforceProjectStructure', label: 'Project structure (src/shared, src/server, src/client, *.story.luau)' },
   { key: 'enforceOfflineVanguards', label: 'Offline Vanguards verification (rur, ror, ree, fm/)' },
+  { key: 'frameworkPlaybook', label: 'Framework playbook + forge-refactor skill (refactors, migrations, optimization)' },
   { key: 'noComments', label: 'No comments in Luau / TypeScript unless requested' }
 ]
 
@@ -194,6 +196,7 @@ function sameGuideOptions(a: HarnessGuideOptions, b: HarnessGuideOptions): boole
     a.enforceDirectSyncAndGit === b.enforceDirectSyncAndGit &&
     a.enforceOfflineVanguards === b.enforceOfflineVanguards &&
     a.enforceProjectStructure === b.enforceProjectStructure &&
+    a.frameworkPlaybook === b.frameworkPlaybook &&
     (a.customRules ?? '') === (b.customRules ?? '')
   )
 }
@@ -249,7 +252,9 @@ function HarnessGuideCard({ projectOpen, projectRoot }: { projectOpen: boolean; 
   const dirty = !!status && !sameGuideOptions(opts, status.options)
   const files = status?.files ?? []
   const selectedFiles = files.filter((f) => opts.targets.includes(f.id))
-  const allSynced = projectOpen && !dirty && selectedFiles.length > 0 && selectedFiles.every((f) => f.exists && f.upToDate)
+  const extras = status?.extraFiles ?? []
+  const allSynced =
+    projectOpen && !dirty && selectedFiles.length > 0 && selectedFiles.every((f) => f.exists && f.upToDate) && extras.every((f) => f.exists && f.upToDate)
 
   const headerTag = !projectOpen
     ? <span className="tag">open a project</span>
@@ -300,6 +305,22 @@ function HarnessGuideCard({ projectOpen, projectRoot }: { projectOpen: boolean; 
             </div>
           )
         })}
+        {!dirty && extras.map((f) => (
+          <div key={f.id} className="hg-file-row">
+            <span className="hg-check" />
+            <button
+              type="button"
+              className="mini-btn mono hg-file-btn"
+              disabled={!projectOpen || !f.exists}
+              title={f.exists ? `Open ${f.file}` : `${f.file} has not been created yet`}
+              onClick={() => void actions.openFile(f.file)}
+            >
+              {f.label}
+            </button>
+            <span className="faint hg-harnesses">{f.harnesses}</span>
+            {!f.exists ? <span className="tag">missing</span> : f.upToDate ? <span className="tag ok">up to date</span> : <span className="tag warn">needs sync</span>}
+          </div>
+        ))}
       </div>
       <div className="hg-rules">
         {GUIDE_RULE_TOGGLES.map((r) => (

@@ -17,6 +17,7 @@ export type {
 } from '../main/agent/memory/types.ts'
 export type { MarkdownImportItem, MarkdownImportRequest, MarkdownImportResult } from '../main/agent/memory/claudeImport.ts'
 export type {
+  HarnessExtraFileState,
   HarnessGuideFileState,
   HarnessGuideOptions,
   HarnessGuideStatus,

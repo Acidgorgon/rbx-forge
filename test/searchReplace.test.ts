@@ -178,7 +178,7 @@ test('replaceInProject: refuses paths outside the project, in .git / .forge, lin
   assert.equal(result.skipped.length, targets.length - 1)
   const why = Object.fromEntries(result.skipped.map((s) => [s.path, s.reason]))
   assert.equal(why['../secret.txt'], 'outside the project')
-  assert.equal(why[join(outside, 'secret.txt')], 'outside the project')
+  assert.equal(why[join(outside, 'secret.txt').replace(/\\/g, '/')], 'outside the project')
   assert.equal(why['a/../../secret.txt'], 'outside the project')
   assert.equal(why['.git/config'], 'not a searched folder')
   assert.equal(why['link.txt'], 'outside the project')

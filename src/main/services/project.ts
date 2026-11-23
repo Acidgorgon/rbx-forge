@@ -1,4 +1,4 @@
-import { watch, type Dirent, type FSWatcher } from 'node:fs'
+import { existsSync, watch, type Dirent, type FSWatcher } from 'node:fs'
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { MtimeJsonCache } from './jsonCache.ts'
@@ -748,7 +748,12 @@ export class Project {
           if (rel) this.changedFiles.add(rel)
           // A content edit of a script the tree already has cannot change the tree (names, kinds and
           // the sourcemap shape it); anything else rebuilds.
-          this.schedule(!filter && event === 'change' && SCRIPT_FILE.test(rel) && this.knownScripts.has(rel))
+          const knownEdit =
+            !filter &&
+            SCRIPT_FILE.test(rel) &&
+            this.knownScripts.has(rel) &&
+            (event === 'change' || (event === 'rename' && existsSync(join(this.root, rel))))
+          this.schedule(knownEdit)
         })
         watcher.on('error', () => watcher.close())
         this.watchers.push(watcher)

@@ -412,5 +412,5 @@ test('checkRepoUpdates detects upstream pushes and updateTools fast-forward pull
   assert.equal(cleanUp.ok, true, cleanUp.results[0].message)
   assert.equal(cleanUp.results[0].updated, true)
   assert.equal(cleanUp.repos.rur.behind, 0)
-  assert.equal(readFileSync(join(rurRepo, 'README.md'), 'utf8'), 'v2\n')
+  assert.equal(readFileSync(join(rurRepo, 'README.md'), 'utf8').replace(/\r\n/g, '\n'), 'v2\n')
 })

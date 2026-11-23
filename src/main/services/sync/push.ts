@@ -6,7 +6,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { watch, type FSWatcher } from 'node:fs'
 import * as fsp from 'node:fs/promises'
-import { basename, join, relative, resolve } from 'node:path'
+import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { SyncPushAck, SyncPushBatch, SyncPushOp } from '../../../shared/sync/protocol.ts'
 import type { PlacePushStats, StudioNode, SyncEntry, SyncValue } from '../../../shared/sync/types.ts'
 import { fromDisk, parseFileName, rojoIgnored, toDisk, type PlaceMap } from './mapping.ts'
@@ -424,11 +424,13 @@ export class DirectPushEngine {
     const folders = new Map<string, string[]>()
     const hashes = new Map<string, string>()
     const seenReal = new Set<string>()
+    const realRoot = await fsp.realpath(this.root).catch(() => this.root)
 
     const walk = async (absDir: string) => {
       const real = await fsp.realpath(absDir).catch(() => null)
       if (!real || seenReal.has(real)) return
-      if (!real.startsWith(this.root)) return
+      const relReal = relative(realRoot, real)
+      if (relReal === '..' || relReal.startsWith('..' + sep) || isAbsolute(relReal)) return
       seenReal.add(real)
 
       let entries

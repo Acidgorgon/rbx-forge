@@ -23,6 +23,10 @@ export function emptyStatus(error?: string): GitStatus {
 }
 
 // Collaborator sync over the plain git CLI. Never force-pushes or resets.
+// After this long without an auto-commit (staged files or a typed message in the way) the note says
+// so plainly and the status bar warns.
+export const COMMIT_BLOCKED_WARN_MS = 30 * 60_000
+
 export class GitSync {
   readonly root: string
   private options: GitSyncOptions
@@ -41,6 +45,8 @@ export class GitSync {
   // What the last sync skipped because of manual work (GitStatus.note), and the last one logged.
   private note?: string
   private noteLogged?: string
+  // First auto-sync that skipped its commit for manual work (GitStatus.commitBlockedSince).
+  private blockedSince?: number
   // The last status sent to onStatus, serialised: an unchanged status is not sent again.
   private lastSent?: string
 
@@ -88,6 +94,14 @@ export class GitSync {
     // Exit 1: the index differs from HEAD (also before the first commit, against the empty tree).
     const staged = (await this.quiet(['--no-optional-locks', 'diff', '--cached', '--quiet'])).code === 1
     return { staged, draft: this.draft }
+  }
+
+  // "2 files are staged in Source control (trailer/a.lock, trailer/b.lock)".
+  private async stagedSummary(): Promise<string> {
+    const names = outputLines((await this.quiet(['--no-optional-locks', 'diff', '--cached', '--name-only'])).stdout).map(toRepoPath)
+    if (!names.length) return 'files are staged in Source control'
+    const shown = names.slice(0, 3).join(', ') + (names.length > 3 ? `, +${names.length - 3} more` : '')
+    return `${names.length} file${names.length === 1 ? ' is' : 's are'} staged in Source control (${shown})`
   }
 
   clearNote(): void {
@@ -153,6 +167,7 @@ export class GitSync {
     if (this.lastSync) status.lastSync = this.lastSync
     if (this.lastError) status.error = this.lastError
     if (this.note) status.note = this.note
+    if (this.blockedSince) status.commitBlockedSince = this.blockedSince
     return status
   }
 
@@ -192,10 +207,19 @@ export class GitSync {
 
     const manual = await this.manualWork()
     const skipped: string[] = []
+    if (!this.options.settings().autoCommit || before.dirty === 0) this.blockedSince = undefined
     if (this.options.settings().autoCommit && before.dirty > 0) {
       if (manual.staged || manual.draft) {
-        skipped.push(`did not commit your changes (${manual.staged ? 'files are staged' : 'a commit message is typed'} in Source control)`)
+        this.blockedSince ??= Date.now()
+        const why = manual.staged ? await this.stagedSummary() : 'a commit message is typed in Source control'
+        const long = Date.now() - this.blockedSince >= COMMIT_BLOCKED_WARN_MS
+        skipped.push(
+          long
+            ? `has not committed anything since ${new Date(this.blockedSince).toLocaleString()} because ${why}; commit or unstage ${manual.staged ? 'them' : 'it'} so your work is committed again`
+            : `did not commit your changes (${why})`
+        )
       } else {
+        this.blockedSince = undefined
         const held = await this.heldDeletions()
         await this.git(['add', '-A'])
         if (held.length) await this.quiet(['reset', '-q', '--', ...held.map((h) => h.path)])

@@ -501,6 +501,38 @@ export class SyncEngine {
     })
   }
 
+  // Before "Serve anyway" lets Rojo push the disk over Studio: saves Studio's copy of every held
+  // conflict and every Studio-only script under .forge/sync/recovered/<stamp>-serve-anyway/<file>, so
+  // nothing that exists only in Studio can be lost (Rojo overwrites the first and may offer to delete
+  // the second). Nothing is written when nothing is held.
+  backupStudio(placeKey: string): Promise<{ dir: string; files: string[] }> {
+    return this.serial(async () => {
+      const s = this.sessions.get(placeKey)
+      const dir = `${RECOVERED_DIR}/${this.stamp()}-serve-anyway`
+      const files: string[] = []
+      if (!s) return { dir, files }
+      const write = async (rel: string, text: string): Promise<void> => {
+        if (files.includes(rel)) return
+        await atomicWrite(this.fs, join(this.root, ...`${dir}/${rel}`.split('/')), normalise(text) + '\n')
+        files.push(rel)
+      }
+      for (const c of s.conflicts.values()) {
+        if (c.info.reason === 'deleted-vs-edited' && !c.info.studio) continue
+        await write(c.info.file, c.info.studio)
+      }
+      if (s.tree && s.studioOnly.length) {
+        const byPath = new Map<string, StudioNode>()
+        for (const node of s.tree.values()) if (typeof node.source === 'string') byPath.set(pkey(node.path), node)
+        for (const item of s.studioOnly) {
+          const node = byPath.get(pkey(item.instancePath))
+          if (!node) continue
+          await write(item.file ?? `${item.instancePath.map((n) => n.replace(/[<>:"/\\|?*\u0000-\u001f]/g, '_')).join('/')}.luau`, node.source!)
+        }
+      }
+      return { dir, files }
+    })
+  }
+
   // Where "Save to repo" would write a Studio-only instance of this place, or why it cannot.
   async saveTarget(placeKey: string, path: string[]): Promise<SaveTarget & { className?: string }> {
     await this.ensureLoaded()

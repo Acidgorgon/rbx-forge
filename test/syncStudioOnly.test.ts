@@ -200,6 +200,27 @@ test('regression: "Disk wins" on the first sync no longer lets Rojo delete scrip
   assert.deepEqual(later.filter((e) => e.file.startsWith(WAKE_DIR) && e.action !== 'same'), [])
 })
 
+test('Serve anyway backup: Studio copies of held conflicts and Studio-only scripts are saved before Rojo pushes', async () => {
+  const ctx = await setup()
+  const studio = [...ctx.disk().map((n) => (n.path.join('/') === [...CONTROLLERS, 'DayNightController'].join('/') ? { ...n, source: 'return { cycle = 900 }\n' } : n)), ...wakeUp()]
+  await ctx.snapshot(studio)
+  assert.equal(ctx.engine.gate(KEY), 'blocked')
+  const { dir, files: saved } = await ctx.engine.backupStudio(KEY)
+  assert.match(dir, /^\.forge\/sync\/recovered\/.+-serve-anyway$/)
+  assert.deepEqual(saved.sort(), ['src/client/Controllers/DayNightController.luau', ...WAKE_FILES].sort())
+  assert.equal(readFileSync(join(ctx.root, dir, 'src/client/Controllers/DayNightController.luau'), 'utf8'), 'return { cycle = 900 }\n')
+  assert.equal(readFileSync(join(ctx.root, dir, `${WAKE_DIR}/init.luau`), 'utf8'), 'local WakeUp = {}\nreturn WakeUp\n')
+  // The disk is untouched and the place stays held: the backup only copies.
+  assert.equal(readFileSync(join(ctx.root, 'src/client/Controllers/DayNightController.luau'), 'utf8'), 'return { cycle = 600 }\n')
+  assert.ok(!onDisk(ctx.root, `${WAKE_DIR}/init.luau`))
+  assert.equal(ctx.engine.gate(KEY), 'blocked')
+
+  // After "Disk wins" only the Studio-only scripts are held; they are still saved.
+  await ctx.engine.resolveAll(KEY, 'disk', 'first-run')
+  const later = await ctx.engine.backupStudio(KEY)
+  assert.deepEqual(later.files.sort(), WAKE_FILES)
+})
+
 test('regression: scripts the disk lost since the last sync (git checkout, delete while Studio was closed) hold rojo until pulled or served anyway', async () => {
   const ctx = await setup()
   await agreed(ctx)

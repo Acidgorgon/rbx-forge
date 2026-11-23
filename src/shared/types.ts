@@ -189,6 +189,9 @@ export interface GitStatus {
   // The last sync held back because of manual work in Source control (staged files or a typed
   // commit message): what it skipped. Not an error.
   note?: string
+  // Since when (ms) the auto-sync has skipped its commit for manual work while there were changes; a
+  // long stretch means a forgotten staged file is silently stopping every auto-commit (status bar warns).
+  commitBlockedSince?: number
 }
 
 export interface StudioConflict {

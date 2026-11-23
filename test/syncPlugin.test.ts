@@ -18,7 +18,7 @@ import { deleteInStudio, deleteJob } from '../src/main/services/studio/deleteIns
 import { findLune } from '../src/main/services/tests/lune.ts'
 import { pluginSource } from '../src/shared/studio/plugin.ts'
 import { linkPlaces } from './syncFixture.ts'
-import type { SyncStatus } from '../src/shared/sync/types.ts'
+import { SYNC_ENGINE_SETTING, type SyncStatus } from '../src/shared/sync/types.ts'
 
 const lune = process.env.LUNE_PATH || findLune()
 const skip = lune ? false : 'Lune not installed (set LUNE_PATH)'
@@ -60,6 +60,7 @@ interface During {
   bridge: StudioBridge
   service: SyncService
   trees: string[][]
+  polls: () => number
   // Drops a marker file the fake Studio's scenario waits for (waitForMarker).
   mark: (name: string) => void
 }
@@ -67,27 +68,37 @@ interface During {
 // The link id an already linked place keeps in ServerStorage.ForgeSyncLink.
 const LINK = 'link-0001-place1'
 
-async function runStudio(scenario: string, during?: (env: During) => Promise<void>, opts: { linked?: boolean } = {}): Promise<{ root: string; out: string; status: SyncStatus; trees: string[][]; final: string[] }> {
+async function runStudio(scenario: string, during?: (env: During) => Promise<void>, opts: { linked?: boolean; engine?: 'forge' | 'forge-direct' } = {}): Promise<{ root: string; out: string; status: SyncStatus; trees: string[][]; final: string[]; polls: number }> {
   const root = gentree()
   const linked = opts.linked !== false
   if (linked) linkPlaces(root, { [`local:${LINK}`]: 'default.project.json' })
+  let bridgeRef: StudioBridge | null = null
   const service = new SyncService({
     root,
     engine: new SyncEngine({ root }),
     mapping: { loadPlaces, placeFor },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === SYNC_ENGINE_SETTING && opts.engine ? opts.engine : fb) as T },
     git: async () => ({ code: 1, stdout: '', stderr: '' }),
     pluginsDir: () => null,
+    wakePush: (match) => {
+      bridgeRef?.wakeForPush(match)
+    },
     emit: () => undefined
   })
   await service.start()
   const bridge = new StudioBridge({ port: 0, holdMs: 200 })
+  bridgeRef = bridge
   await bridge.start()
   // Every outline the plugin posts, as the Game tab sees it (live tree paths, joined with dots).
   const trees: string[][] = []
+  let pollCount = 0
   const paths = () => (service.liveTree(join(root, 'default.project.json')) ?? service.liveTree('default.project.json'))?.nodes.map((n) => n.path.join('.')).sort() ?? []
   bridge.setSyncHandler({
     ...service.handler,
+    pollHint: (info) => {
+      pollCount++
+      return service.handler.pollHint?.(info) ?? null
+    },
     outline: async (body) => {
       const answer = await service.handler.outline!(body)
       trees.push(paths())
@@ -105,9 +116,9 @@ async function runStudio(scenario: string, during?: (env: During) => Promise<voi
       children.push(execFile(lune!, ['run', harness, join(dir, 'ForgeBridge.luau'), scenario, linked ? LINK : ''], { cwd: dir, timeout: 60_000 }, (err, stdout, stderr) => (err ? rej(new Error(`${err.message}\n${stdout}\n${stderr}`)) : res(stdout + stderr))))
     })
     const mark = (name: string) => writeFileSync(join(dir, name), '')
-    const [out] = await Promise.all([run, during?.({ bridge, service, trees, mark })])
+    const [out] = await Promise.all([run, during?.({ bridge, service, trees, polls: () => pollCount, mark })])
     assert.match(out, /SCENARIO DONE/, out)
-    return { root, out, status: await service.status(), trees, final: paths() }
+    return { root, out, status: await service.status(), trees, final: paths(), polls: pollCount }
   } finally {
     for (const c of children) {
       try {
@@ -120,7 +131,7 @@ async function runStudio(scenario: string, during?: (env: During) => Promise<voi
 }
 
 test('plugin: mapped folders Rojo builds after the bridge started are synced (fresh unpublished place)', { skip }, async () => {
-  const { root, out, status } = await runStudio('late-root')
+  const { root, out, status } = await runStudio('late-root', undefined, { engine: 'forge' })
   assert.match(out, /not in Studio yet/, out)
   assert.match(out, /StarterPlayer\.StarterPlayerScripts\.Client is in Studio now/, out)
   // The edit typed into StarterPlayerScripts.Client.Client reached init.client.luau.
@@ -191,7 +202,7 @@ test('plugin: Delete in Studio removes a Studio-only instance undoably and refus
   assert.match(refusals.gone, /not in Studio/, JSON.stringify(refusals))
   assert.match(out, /LOOSE DELETED/, out)
   // One recording, committed: Ctrl+Z in Studio restores it. Refusals record nothing.
-  assert.equal(out.match(/RECORDING /g)?.length, 1, out)
+  assert.equal(out.match(/RECORDING \S+ Forge: delete /g)?.length, 1, out)
   assert.match(out, /RECORDING Commit Forge: delete LocalScript/, out)
   // The Game tab dropped it (and its child) right away.
   assert.ok(!final.some((p) => p.startsWith('StarterPlayer.StarterPlayerScripts.LocalScript')), JSON.stringify(final))
@@ -378,4 +389,35 @@ test('plugin v12: after Forge restarts, an idle Studio window is asked to check 
   } finally {
     ;(second as SyncService | null)?.close()
   }
+})
+
+test('plugin: Direct Sync pushes new/edited scripts disk -> Studio without poll-spinning, and supports clean 2-way edits back to disk', { skip }, async () => {
+  let checked = false
+  const { root, out, polls } = await runStudio('direct-push', async ({ service, mark }) => {
+    const key = `local:${LINK}`
+    await until('initial sync check clear', async () => (await service.status()).places.some((p) => p.placeKey === key && p.connected && p.gate === 'clear'))
+
+    const tetPath = join(service.root, 'src/client/TET.client.luau')
+    writeFileSync(tetPath, 'print("hello from disk")\n', 'utf8')
+    mark('create-tet')
+
+    // Studio pulls TET and then edits it back to 'print("from studio")'
+    await until('Studio edit reaches disk cleanly', async () => existsSync(tetPath) && readFileSync(tetPath, 'utf8') === 'print("from studio")\n')
+    assert.deepEqual(service.conflicts(), [])
+    mark('studio-edit-synced')
+
+    // Now edit TET again on disk -> pushed back to Studio
+    writeFileSync(tetPath, 'print("from disk")\n', 'utf8')
+    await until('second disk edit pushed and acked', async () => {
+      const place = (await service.status()).places.find((p) => p.placeKey === key)
+      return (place?.pushStats?.pushed ?? 0) >= 3 && place?.pushStats?.pending === 0
+    })
+    checked = true
+  })
+  assert.ok(checked, out)
+  assert.ok(polls < 25, `expected < 25 polls (no spin loop), got ${polls}\n${out}`)
+  assert.match(out, /TET CREATED print\("hello from disk"\)/, out)
+  assert.match(out, /TET UPDATED print\("from disk"\)/, out)
+  assert.match(out, /RECORDING Commit Forge Direct Sync/, out)
+  assert.equal(readFileSync(join(root, 'src/client/TET.client.luau'), 'utf8'), 'print("from disk")\n')
 })

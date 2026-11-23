@@ -29,7 +29,7 @@ import type {
   WaitReason
 } from '../../../shared/sync/types.ts'
 import { DRIFT_FILES_MAX, isForgeSyncEngine, STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
-import type { SyncPollHint, SyncPollInfo, SyncPushAck, SyncPushBatch } from '../../../shared/sync/protocol.ts'
+import type { SyncPollHint, SyncPollInfo, SyncPushAck, SyncPushBatch, SyncPushOp } from '../../../shared/sync/protocol.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import { PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
@@ -69,6 +69,7 @@ export interface SyncEngineLike {
   // "Pull to disk" for them.
   studioOnly?(placeKey: string): { items: StudioOnlyScript[]; holds: boolean }
   pullStudioOnly?(placeKey: string): Promise<SyncEntry[]>
+  recordDirectPush?(placeKey: string, ops: SyncPushOp[]): Promise<void>
   // How many files the place's Studio is behind the disk (engine.ts drift), null without a base.
   drift?(projectFile: string, placeKey: string): Promise<{ behind: number; files: { file: string; mtime: number }[]; deleted?: string[] } | null>
 }
@@ -214,6 +215,8 @@ export interface SyncServiceDeps {
   // microtask, as before). The app sets STATUS_DELAY_MS so a polling plugin does not run git status
   // and an IPC push on every request. status() itself always answers fresh.
   statusDelayMs?: number
+  // Wakes a waiting /poll request when Direct Push queues changes so Studio pulls immediately.
+  wakePush?: (match: (w: StudioWindow) => boolean) => void
 }
 
 // A Studio window as the bridge sees it (bridge.ts StudioInfo).
@@ -231,6 +234,7 @@ export interface StudioWindow {
 // not while its own config request is this recent (its check is on its way).
 export const RESYNC_EVERY_MS = 30_000
 export const RESYNC_QUIET_MS = 15_000
+export const PUSH_NUDGE_COOLDOWN_MS = 2_000
 export const DRIFT_GRACE_MS = 15_000
 // One Studio window syncs a place at a time. Another window of the same place (the place opened twice,
 // a second Studio, a playtest copy whose plugin ran) is refused while the holder still polls within
@@ -424,6 +428,8 @@ export class SyncService {
   private refusedNoted = new Set<string>()
   // Duplicate-mapping lines already logged.
   private dupNoted = new Set<string>()
+  // Last time each Studio window was nudged with pushPending: true (prevents /poll spin loops).
+  private pushNudgeAt = new Map<string, number>()
   private sourcemapWatcher: SourcemapWatcher | null = null
   private pushEngine: DirectPushEngine | null = null
 
@@ -485,6 +491,7 @@ export class SyncService {
         canDeletePlace: (pk) => this.directMode() && this.liveSession(pk) && this.gate(pk) === 'clear',
         isFileConflicted: (pk, file) => this.conflictsFor(pk).some((c) => c.file === file),
         onEntries: (pk, entries) => void this.recordDirectPush(pk, entries),
+        onQueued: (pk) => this.notifyPushPending(pk),
         onChange: () => this.refresh()
       })
     }
@@ -609,7 +616,7 @@ export class SyncService {
       changed = true
     }
     for (const [id, u] of this.unlinked) if (now - u.lastSeen > UNLINKED_SHOW_MS) this.unlinked.delete(id)
-    for (const m of [this.configSeen, this.resyncAt, this.windowSeen]) for (const [k, at] of m) if (now - at > 10 * 60_000) m.delete(k)
+    for (const m of [this.configSeen, this.resyncAt, this.windowSeen, this.pushNudgeAt]) for (const [k, at] of m) if (now - at > 10 * 60_000) m.delete(k)
     // Gates also follow the bridge's view of Studio (plugin version, unlinked places going away).
     if (this.pushGates() || changed) this.refresh()
   }
@@ -617,6 +624,7 @@ export class SyncService {
   close(): void {
     this.closed = true
     this.sessions.clear()
+    this.pushNudgeAt.clear()
     this.sourcemapWatcher?.close()
     this.sourcemapWatcher = null
     this.pushEngine?.close()
@@ -659,8 +667,42 @@ export class SyncService {
     if (!session) return { ok: false, error: 'unknown session', resend: true }
     const state = this.placeStates.get(session.placeKey)
     if (state) state.lastSeen = this.now()
-    this.pushEngine.ackBatch(session.placeKey, ack)
+    const { entries, appliedOps } = this.pushEngine.ackBatchWithOps(session.placeKey, ack)
+    if (appliedOps.length && this.deps.engine?.recordDirectPush) {
+      await this.serial(() => this.deps.engine!.recordDirectPush!(session.placeKey, appliedOps))
+      this.checkTree()
+    }
+    if (entries.length) {
+      this.deps.log?.(`sync: Direct Sync pushed ${entries.length} change${entries.length === 1 ? '' : 's'} to Studio`)
+    }
+    if (ack.errors?.length) {
+      this.deps.log?.(`sync: Direct Sync error in Studio: ${ack.errors[0].path.join('.')}: ${ack.errors[0].message}`, 'stderr')
+    }
+    if (!this.pushEngine.hasPending(session.placeKey)) {
+      if (session.probe) this.pushNudgeAt.delete(`probe:${session.probe}`)
+      if (state) {
+        this.pushNudgeAt.delete(this.windowKey({ placeId: state.place.placeId, place: state.place.name }))
+        for (const w of this.windowsFor(state.projectFile)) {
+          if (this.windowMatch(w)?.placeKey === session.placeKey) this.pushNudgeAt.delete(this.windowKey(w))
+        }
+      }
+    }
+    this.refresh()
     return { ok: true }
+  }
+
+  private notifyPushPending(placeKey: string): void {
+    if (this.closed || !this.canDirectPush(placeKey) || !this.pushEngine?.hasPending(placeKey)) return
+    const now = this.now()
+    this.deps.wakePush?.((w) => {
+      const m = this.windowMatch(w)
+      if (!m || m.placeKey !== placeKey) return false
+      if (!w.syncSession || !this.sessions.has(w.syncSession)) return false
+      const key = this.windowKey(w)
+      if (now - (this.pushNudgeAt.get(key) ?? 0) < PUSH_NUDGE_COOLDOWN_MS) return false
+      this.pushNudgeAt.set(key, now)
+      return true
+    })
   }
 
   private async syncDirectPush(placeKey: string, projectFile?: string): Promise<void> {
@@ -708,7 +750,12 @@ export class SyncService {
       return { resync: true }
     }
     if (info.session && this.sessions.has(info.session)) {
-      if (this.directMode() && this.pushEngine?.hasPending(match.placeKey)) return { pushPending: true }
+      if (this.directMode() && this.pushEngine?.hasPending(match.placeKey)) {
+        if (now - (this.pushNudgeAt.get(key) ?? 0) >= PUSH_NUDGE_COOLDOWN_MS) {
+          this.pushNudgeAt.set(key, now)
+          return { pushPending: true }
+        }
+      }
       return null
     }
     if (now - (this.configSeen.get(key) ?? 0) < RESYNC_QUIET_MS) return null
@@ -802,6 +849,8 @@ export class SyncService {
     const prior = q.probe ? [...this.sessions.values()].find((s) => s.placeKey === placeKey && s.probe === q.probe) : undefined
     const soft = !!prior && (prior.ready ? this.gate(placeKey) === 'clear' : !!prior.soft)
     for (const [token, s] of this.sessions) if (s.placeKey === placeKey) this.sessions.delete(token)
+    this.pushEngine?.clearInflight(placeKey)
+    this.pushNudgeAt.delete(this.windowKey({ placeId, place: q.place, probe: q.probe }))
     const token = randomUUID()
     // Unready until its snapshot is reconciled: the place is 'checking' from now on, so a rojo serve
     // still running from an earlier session stops before Studio's Rojo plugin can (re)connect to it.

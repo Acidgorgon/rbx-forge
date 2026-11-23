@@ -30,6 +30,7 @@
 
 import * as nodeFs from 'node:fs/promises'
 import { join, resolve as resolvePath } from 'node:path'
+import type { SyncPushOp } from '../../../shared/sync/protocol.ts'
 import type { GateState, PlaceSyncStatus, StudioChange, StudioNode, StudioOnlyScript, SyncAction, SyncConflictInfo, SyncEntry, SyncPlace } from '../../../shared/sync/types.ts'
 import { matchPlace, PlaceLinks } from './links.ts'
 import { cleanRel, type DiskProbe, findRoot, fromDisk, insideMappedRoots, isProjectNode, isScriptClass, isSkipped, loadPlaces, PACKAGE_DIRS, parseFileName, type PlaceMap, placeFor, rojoIgnored, saveTarget, type SaveTarget, shadowedBy, sharedWith, type SyncRoot, toDisk, unsafeName } from './mapping.ts'
@@ -392,6 +393,58 @@ export class SyncEngine {
     s.gate = 'idle'
     s.version++
     this.emit(placeKey)
+  }
+
+  /** Records Direct Sync disk -> Studio pushes in the 2-way base store and live session tree. */
+  recordDirectPush(placeKey: string, ops: SyncPushOp[]): Promise<void> {
+    if (!ops.length) return Promise.resolve()
+    return this.serial(async () => {
+      await this.ensureLoaded()
+      const s = this.sessions.get(placeKey)
+      let touched = false
+      for (const op of ops) {
+        if (!('file' in op) || !op.file) continue
+        if (s && !insideMappedRoots(s.map, op.file)) continue
+        if (op.kind === 'upsert-script') {
+          await this.store.set(placeKey, op.file, canon('script', op.source), true)
+          this.confirmedDeletes.get(placeKey)?.delete(op.file)
+          if (s?.tree) {
+            const targetKey = pkey(op.path)
+            for (const n of s.tree.values()) {
+              if (pkey(n.path) !== targetKey) continue
+              n.source = op.source
+              n.runContext = op.runContext === 'Server' || op.runContext === 'Client' ? op.runContext : undefined
+            }
+          }
+          touched = true
+        } else if (op.kind === 'upsert-instance') {
+          if (op.file.endsWith('.model.json')) {
+            const text = await this.read(op.file)
+            if (text !== null) await this.store.set(placeKey, op.file, canon('model', text), true)
+          }
+          this.confirmedDeletes.get(placeKey)?.delete(op.file)
+          touched = true
+        } else if (op.kind === 'delete') {
+          await this.store.delete(placeKey, op.file)
+          this.confirmedDeletes.get(placeKey)?.delete(op.file)
+          if (s?.tree) {
+            const targetKey = pkey(op.path)
+            const matches = [...s.tree.values()].filter((n) => pkey(n.path) === targetKey)
+            if (matches.length) {
+              for (const n of matches) this.removeSubtree(s, n.id, n.path)
+              s.version++
+            }
+          }
+          touched = true
+        }
+      }
+      if (!touched) return
+      await this.store.save()
+      if (s) {
+        this.updateGate(s)
+        this.emit(placeKey)
+      }
+    })
   }
 
   // ---- Game tab ----

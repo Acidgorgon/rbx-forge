@@ -73,6 +73,8 @@ interface Active {
   timers: ReturnType<typeof setTimeout>[]
 }
 
+type PollWaitResult = { job?: BridgeJob; pushPending?: true } | null
+
 const MAX_BODY = 256 * 1024
 
 export class StudioBridge {
@@ -85,7 +87,7 @@ export class StudioBridge {
   private pollers = new Map<string, StudioInfo>()
   private active: Active | null = null
   // Held polls, with the window each one came from.
-  private waiters = new Map<(job: BridgeJob | null) => void, StudioInfo>()
+  private waiters = new Map<(result: PollWaitResult) => void, StudioInfo>()
   private now: () => number
   private onChange?: () => void
   private log?: (text: string, stream?: 'info' | 'stderr') => void
@@ -263,10 +265,21 @@ export class StudioBridge {
         this.waiters.delete(w)
         a.delivered = true
         a.deliveredTo = targetKey(info)
-        w(job)
+        w({ job })
         break
       }
     })
+  }
+
+  wakeForPush(match: (info: StudioInfo) => boolean): boolean {
+    let woken = false
+    for (const [w, info] of [...this.waiters.entries()]) {
+      if (!match(info)) continue
+      this.waiters.delete(w)
+      w({ pushPending: true })
+      woken = true
+    }
+    return woken
   }
 
   // Stops the running job; the plugin is told to abort on its next event.
@@ -332,11 +345,12 @@ export class StudioBridge {
         if (hint?.resync) return send(200, { idle: true, resync: true })
         const pendingJob = this.active && !this.active.delivered && (!this.active.target || matchesTarget(this.active.target, this.info!))
         if (hint?.pushPending && !pendingJob) return send(200, { idle: true, pushPending: true })
-        const job = await this.nextJob(req, this.info!)
-        if (job) {
-          this.log?.(`studio bridge: job ${job.id} (${job.kind} ${job.name}) sent to Studio`)
-          return send(200, { job, ...(hint?.pushPending ? { pushPending: true } : {}) })
+        const result = await this.nextJob(req, this.info!)
+        if (result?.job) {
+          this.log?.(`studio bridge: job ${result.job.id} (${result.job.kind} ${result.job.name}) sent to Studio`)
+          return send(200, { job: result.job, ...(hint?.pushPending ? { pushPending: true } : {}) })
         }
+        if (result?.pushPending) return send(200, { idle: true, pushPending: true })
         return send(200, { idle: true })
       }
       if (path.startsWith('/forge-bridge/sync/')) return await this.handleSync(req, url, send)
@@ -447,21 +461,21 @@ export class StudioBridge {
     }
   }
 
-  private nextJob(req: IncomingMessage, from: StudioInfo): Promise<BridgeJob | null> {
+  private nextJob(req: IncomingMessage, from: StudioInfo): Promise<PollWaitResult> {
     const a = this.active
     if (a && !a.delivered && (!a.target || matchesTarget(a.target, from))) {
       a.delivered = true
       a.deliveredTo = targetKey(from)
-      return Promise.resolve(a.job)
+      return Promise.resolve({ job: a.job })
     }
     return new Promise((resolve) => {
       let done = false
-      const w = (job: BridgeJob | null) => {
+      const w = (result: PollWaitResult) => {
         if (done) return
         done = true
         clearTimeout(t)
         this.waiters.delete(w)
-        resolve(job)
+        resolve(result)
       }
       const t = setTimeout(() => w(null), this.holdMs)
       req.once('close', () => w(null))

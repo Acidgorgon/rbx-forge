@@ -345,6 +345,11 @@ local env = {
 	game = game,
 	plugin = plugin,
 	task = task,
+	Instance = {
+		new = function(cls)
+			return new(cls)
+		end,
+	},
 	warn = function(...)
 		print("WARN", ...)
 	end,
@@ -353,7 +358,7 @@ local env = {
 			return {}
 		end,
 	},
-	Enum = { RunContext = { Legacy = "Legacy" }, FinishRecordingOperation = { Commit = "Commit", Cancel = "Cancel" } },
+	Enum = { RunContext = { Legacy = "Legacy", Server = "Server", Client = "Client" }, FinishRecordingOperation = { Commit = "Commit", Cancel = "Cancel" } },
 }
 local run = luau.load(fs.readFile(pluginFile), { debugName = "ForgeBridge", environment = env })
 run()
@@ -513,6 +518,31 @@ elseif scenario == "cutscene" or scenario == "duplicate-rename" then
 		methods.FindFirstChild(trainer, "Body").Source = "return 'trainer body 2'"
 		waitForMarker("deleted")
 	end
+elseif scenario == "direct-push" then
+	local clientFolder = rojoBuildsClient()
+	waitForMarker("create-tet")
+	local waited = 0
+	local tet = nil
+	while waited < 20 do
+		tet = methods.FindFirstChild(clientFolder, "TET")
+		if tet then
+			break
+		end
+		task.wait(0.1)
+		waited += 0.1
+	end
+	assert(tet ~= nil, "TET was not pushed into Studio")
+	assert(tet.ClassName == "LocalScript", "expected LocalScript, got " .. tostring(tet.ClassName))
+	print("TET CREATED " .. tostring(tet.Source))
+	tet.Source = 'print("from studio")'
+	waitForMarker("studio-edit-synced")
+	waited = 0
+	while waited < 20 and tet.Source ~= 'print("from disk")\n' do
+		task.wait(0.1)
+		waited += 0.1
+	end
+	assert(tet.Source == 'print("from disk")\n', "expected TET updated from disk, got: " .. tostring(tet.Source))
+	print("TET UPDATED " .. tostring(tet.Source))
 end
 
 print("SCENARIO DONE")

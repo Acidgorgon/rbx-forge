@@ -6,11 +6,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { watch, type FSWatcher } from 'node:fs'
 import * as fsp from 'node:fs/promises'
-import { basename, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { basename, dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import type { SyncPushAck, SyncPushBatch, SyncPushOp } from '../../../shared/sync/protocol.ts'
 import type { PlacePushStats, StudioNode, SyncEntry, SyncValue } from '../../../shared/sync/types.ts'
-import { fromDisk, parseFileName, rojoIgnored, toDisk, type PlaceMap } from './mapping.ts'
+import { fromDisk, isSkipped, PACKAGE_DIRS, parseFileName, rojoGlob, rojoIgnored, toDisk, type PlaceMap } from './mapping.ts'
 import { normalise } from './merge.ts'
+import { atomicWrite } from './store.ts'
 
 export type PushMapLike = {
   projectFile: string
@@ -20,7 +21,17 @@ export type PushMapLike = {
 } & Partial<Omit<PlaceMap, 'roots' | 'skipped'>>
 
 const MAX_BATCH_BYTES = 1024 * 1024
+const INFLIGHT_RETRY_MS = 15_000
 const IGNORE_DIRS = new Set(['.git', '.forge', 'node_modules'])
+const PACKAGES_PATH_RE = /^(Server|Dev)?Packages(\/|$)/
+const PACKAGE_META_SKIP = new Set(['sourcemap.json', 'package.json', 'tsconfig.json', 'wally.toml', 'wally.lock'])
+const PUSHED_PACKAGES_FILE = join('.forge', 'sync', 'pushed-packages.json')
+
+function isPackageSkip(s: { instance: string[]; path: string }): boolean {
+  const last = s.instance[s.instance.length - 1]
+  if (last && PACKAGE_DIRS.has(last)) return true
+  return PACKAGES_PATH_RE.test(s.path.replace(/\\/g, '/'))
+}
 
 export function sha256Text(text: string): string {
   return createHash('sha256').update(normalise(text), 'utf8').digest('hex')
@@ -56,6 +67,7 @@ interface DiskSnapshot {
   opsByFile: Map<string, SyncPushOp>
   folders: Map<string, string[]> // relDir -> instancePath
   hashes: Map<string, string> // relFile -> sha256
+  paths: Map<string, string[]> // relFile -> instancePath
 }
 
 interface QueuedPlace {
@@ -63,6 +75,7 @@ interface QueuedPlace {
   projectFile: string
   ops: SyncPushOp[]
   inflight?: SyncPushBatch
+  inflightAt?: number
   seq: number
   pushed: number
   lastPushAt?: number
@@ -77,6 +90,7 @@ export interface DirectPushOptions {
   canDeletePlace?: (placeKey: string) => boolean
   isFileConflicted: (placeKey: string, file: string) => boolean
   onEntries?: (placeKey: string, entries: SyncEntry[]) => void
+  onQueued?: (placeKey: string) => void
   onChange?: () => void
   onError?: (err: Error) => void
 }
@@ -113,12 +127,17 @@ export class DirectPushEngine {
 
   private maps: PlaceMap[] = []
   private readonly knownStudioHashes = new Map<string, Map<string, string>>() // placeKey -> relFile -> sha256
+  private readonly knownInstancePaths = new Map<string, Map<string, string[]>>() // placeKey -> relFile -> instancePath
   private readonly queues = new Map<string, QueuedPlace>() // placeKey -> queue
   private readonly activePlaceKeys = new Map<string, string>() // projectFile -> placeKey
   private readonly echoSuppression = new Map<string, { hash: string; at: number }>() // relFile -> { hash, at }
+  private persistedPkgHashes: Record<string, Record<string, string>> = {}
+  private packageHashesLoaded = false
+  private packageSaveChain: Promise<void> = Promise.resolve()
   private watchers: FSWatcher[] = []
   private timer: ReturnType<typeof setTimeout> | null = null
   private pendingScan = false
+  private rescanNeeded = false
   private closed = false
 
   constructor(opts: DirectPushOptions) {
@@ -183,12 +202,26 @@ export class DirectPushEngine {
   recordStudioSnapshot(placeKey: string, rawMap: PushMapLike, nodes: StudioNode[]): void {
     const map = this.normalizeMap(rawMap)
     this.activePlaceKeys.set(map.projectFile, placeKey)
+    this.clearInflight(placeKey)
+
     let hashes = this.knownStudioHashes.get(placeKey)
     if (!hashes) {
       hashes = new Map()
       this.knownStudioHashes.set(placeKey, hashes)
     }
-    hashes.clear()
+    for (const k of [...hashes.keys()]) {
+      if (!PACKAGES_PATH_RE.test(k)) hashes.delete(k)
+    }
+
+    let paths = this.knownInstancePaths.get(placeKey)
+    if (!paths) {
+      paths = new Map()
+      this.knownInstancePaths.set(placeKey, paths)
+    }
+    for (const k of [...paths.keys()]) {
+      if (!PACKAGES_PATH_RE.test(k)) paths.delete(k)
+    }
+
     const parentKeys = new Set<string>()
     for (const node of nodes) {
       if (node.path.length > 1) parentKeys.add(node.path.slice(0, -1).join('\u0000'))
@@ -206,9 +239,11 @@ export class DirectPushEngine {
           const runContext = node.runContext
           const keyStr = runContext ? `${normalise(node.source)}\u0000${runContext}` : normalise(node.source)
           hashes.set(mapped.file, sha256Text(keyStr))
+          paths.set(mapped.file, node.path)
         }
       } else {
         hashes.set(mapped.file, stableModelDigest(node.className, node.properties, node.attributes, node.tags))
+        paths.set(mapped.file, node.path)
       }
     }
   }
@@ -234,12 +269,20 @@ export class DirectPushEngine {
     this.activePlaceKeys.set(projectFile, placeKey)
   }
 
+  clearInflight(placeKey: string): void {
+    const q = this.queues.get(placeKey)
+    if (!q) return
+    q.inflight = undefined
+    q.inflightAt = undefined
+  }
+
   unbindPlace(placeKey: string): void {
     for (const [pf, pk] of this.activePlaceKeys) {
       if (pk === placeKey) this.activePlaceKeys.delete(pf)
     }
     this.queues.delete(placeKey)
     this.knownStudioHashes.delete(placeKey)
+    this.knownInstancePaths.delete(placeKey)
   }
 
   private canDelete(placeKey: string): boolean {
@@ -250,7 +293,7 @@ export class DirectPushEngine {
     if (!this.opts.canPushPlace(placeKey)) return false
     const q = this.queues.get(placeKey)
     if (!q) return false
-    if (q.inflight) return true
+    if (q.inflight) return this.now() - (q.inflightAt ?? 0) >= INFLIGHT_RETRY_MS
     return q.ops.some(
       (op) =>
         (op.kind !== 'delete' || this.canDelete(placeKey)) &&
@@ -270,13 +313,46 @@ export class DirectPushEngine {
     }
   }
 
+  private async ensurePackageHashesLoaded(): Promise<void> {
+    if (this.packageHashesLoaded) return
+    this.packageHashesLoaded = true
+    const parsed = await readJsonObj(join(this.root, PUSHED_PACKAGES_FILE))
+    const places = parsed?.places
+    if (!places || typeof places !== 'object' || Array.isArray(places)) return
+    for (const [pk, entries] of Object.entries(places as Record<string, unknown>)) {
+      if (!entries || typeof entries !== 'object' || Array.isArray(entries)) continue
+      const map: Record<string, string> = {}
+      for (const [file, hash] of Object.entries(entries as Record<string, unknown>)) {
+        if (typeof hash === 'string') map[file.replace(/\\/g, '/')] = hash
+      }
+      this.persistedPkgHashes[pk] = map
+    }
+  }
+
+  private queueSavePackageHashes(): void {
+    const snapshot = JSON.stringify({ version: 1, places: this.persistedPkgHashes })
+    const target = join(this.root, PUSHED_PACKAGES_FILE)
+    this.packageSaveChain = this.packageSaveChain
+      .then(async () => {
+        await atomicWrite(fsp, target, snapshot)
+      })
+      .catch(() => undefined)
+  }
+
   async syncPlace(placeKey: string, rawMap: PushMapLike): Promise<SyncPushOp[]> {
     if (this.closed) return []
     const map = this.normalizeMap(rawMap)
     this.activePlaceKeys.set(map.projectFile, placeKey)
+    await this.ensurePackageHashesLoaded()
+
     const snap = await this.scanMap(map)
     const prevHashes = this.knownStudioHashes.get(placeKey) ?? new Map<string, string>()
     this.knownStudioHashes.set(placeKey, prevHashes)
+    for (const [file, hash] of Object.entries(this.persistedPkgHashes[placeKey] ?? {})) {
+      if (!prevHashes.has(file)) prevHashes.set(file, hash)
+    }
+    const prevPaths = this.knownInstancePaths.get(placeKey) ?? new Map<string, string[]>()
+    this.knownInstancePaths.set(placeKey, prevPaths)
 
     const ops: SyncPushOp[] = []
     const neededFolders = new Set<string>()
@@ -289,9 +365,15 @@ export class DirectPushEngine {
       const suppressed = this.echoSuppression.get(rel)
       if (suppressed && suppressed.hash === newHash && this.now() - suppressed.at < 10_000) {
         prevHashes.set(rel, newHash)
+        const p = snap.paths.get(rel)
+        if (p) prevPaths.set(rel, p)
         continue
       }
-      if (knownHash === newHash) continue
+      if (knownHash === newHash) {
+        const p = snap.paths.get(rel)
+        if (p) prevPaths.set(rel, p)
+        continue
+      }
 
       // Ensure parent folders along mapped path exist before script/instance upsert
       for (let i = 2; i < op.path.length; i++) {
@@ -314,16 +396,31 @@ export class DirectPushEngine {
       if (snap.hashes.has(rel)) continue
       if (!this.canDelete(placeKey)) continue
       if (this.opts.isFileConflicted(placeKey, rel)) continue
-      const instPath = instancePathForPush(map, rel)
+      const instPath = prevPaths.get(rel) ?? instancePathForPush(map, rel)
       if (!instPath || instPath.length < 2) continue
       if (diskInstanceKeys.has(instPath.join('\u0000'))) {
         prevHashes.delete(rel)
+        prevPaths.delete(rel)
         continue
       }
       ops.push({ kind: 'delete', path: instPath, file: rel })
     }
 
+    for (const [rel, p] of snap.paths) prevPaths.set(rel, p)
+
+    const opInstanceKeys = new Set<string>()
+    for (const o of ops) {
+      if (o.kind !== 'delete') opInstanceKeys.add(o.path.join('\u0000'))
+    }
+
+    const pkgInstancePrefixes = map.skipped.filter(isPackageSkip).map((s) => s.instance)
+    const isPackageOp = (op: SyncPushOp): boolean => {
+      if ('file' in op && op.file && PACKAGES_PATH_RE.test(op.file.replace(/\\/g, '/'))) return true
+      return pkgInstancePrefixes.some((pref) => op.path.length >= pref.length && pref.every((seg, i) => op.path[i] === seg))
+    }
+
     const folderOps: SyncPushOp[] = [...neededFolders]
+      .filter((k) => !opInstanceKeys.has(k))
       .map((k) => k.split('\u0000'))
       .sort((a, b) => a.length - b.length || a.join('.').localeCompare(b.join('.')))
       .map((path) => ({ kind: 'upsert-folder' as const, path }))
@@ -335,12 +432,31 @@ export class DirectPushEngine {
       .filter((o) => o.kind === 'delete')
       .sort((a, b) => b.path.length - a.path.length || b.path.join('.').localeCompare(a.path.join('.')))
 
-    // Only emit upsert-folder ops if there are actual file upserts/empty folders and no previous batch redundant noise
-    const combined = upsertOps.length > 0 ? [...folderOps, ...upsertOps, ...deleteOps] : [...deleteOps]
+    const srcFolders = folderOps.filter((o) => !isPackageOp(o))
+    const pkgFolders = folderOps.filter((o) => isPackageOp(o))
+    const srcUpserts = upsertOps.filter((o) => !isPackageOp(o))
+    const pkgUpserts = upsertOps.filter((o) => isPackageOp(o))
+    const srcDeletes = deleteOps.filter((o) => !isPackageOp(o))
+    const pkgDeletes = deleteOps.filter((o) => isPackageOp(o))
+
+    // Prioritize user source changes before package dependencies; omit redundant folders if no upserts
+    const hasSrc = srcUpserts.length > 0
+    const hasPkg = pkgUpserts.length > 0
+    const combined: SyncPushOp[] = [
+      ...(hasSrc ? srcFolders : []),
+      ...srcUpserts,
+      ...srcDeletes,
+      ...(hasPkg ? pkgFolders : []),
+      ...pkgUpserts,
+      ...pkgDeletes
+    ]
 
     const q = this.ensureQueue(placeKey, map.projectFile)
     q.ops = combined
-    if (combined.length > 0) this.opts.onChange?.()
+    if (combined.length > 0) {
+      this.opts.onQueued?.(placeKey)
+      this.opts.onChange?.()
+    }
     return combined
   }
 
@@ -348,7 +464,10 @@ export class DirectPushEngine {
     if (!this.opts.canPushPlace(placeKey)) return undefined
     const q = this.queues.get(placeKey)
     if (!q) return undefined
-    if (q.inflight) return q.inflight
+    if (q.inflight) {
+      q.inflightAt = this.now()
+      return q.inflight
+    }
 
     // Filter out any ops that became conflicted or restricted in the meantime
     q.ops = q.ops.filter(
@@ -376,32 +495,52 @@ export class DirectPushEngine {
       ops: batchOps
     }
     q.inflight = batch
+    q.inflightAt = this.now()
     return batch
   }
 
   ackBatch(placeKey: string, ack: SyncPushAck): SyncEntry[] {
+    return this.ackBatchWithOps(placeKey, ack).entries
+  }
+
+  ackBatchWithOps(placeKey: string, ack: SyncPushAck): { entries: SyncEntry[]; appliedOps: SyncPushOp[] } {
     const q = this.queues.get(placeKey)
     if (!q || !q.inflight || q.inflight.batchId !== ack.batchId) {
-      return []
+      return { entries: [], appliedOps: [] }
     }
     const batch = q.inflight
     q.inflight = undefined
+    q.inflightAt = undefined
 
     const hashes = this.knownStudioHashes.get(placeKey) ?? new Map<string, string>()
     this.knownStudioHashes.set(placeKey, hashes)
 
     const appliedSet = new Set(ack.applied)
     const entries: SyncEntry[] = []
+    const appliedOps: SyncPushOp[] = []
     const ts = this.now()
+    let pkgTouched = false
 
     for (const op of batch.ops) {
       if (!('file' in op) || !op.file) continue
       if (!appliedSet.has(op.file)) continue
+      const isPkg = PACKAGES_PATH_RE.test(op.file)
       if (op.kind === 'delete') {
         hashes.delete(op.file)
+        this.knownInstancePaths.get(placeKey)?.delete(op.file)
+        if (isPkg && this.persistedPkgHashes[placeKey]) {
+          delete this.persistedPkgHashes[placeKey][op.file]
+          pkgTouched = true
+        }
       } else if (op.kind === 'upsert-script' || op.kind === 'upsert-instance') {
         hashes.set(op.file, op.sha256)
+        this.knownInstancePaths.get(placeKey)?.set(op.file, op.path)
+        if (isPkg) {
+          ;(this.persistedPkgHashes[placeKey] ??= {})[op.file] = op.sha256
+          pkgTouched = true
+        }
       }
+      appliedOps.push(op)
       entries.push({
         file: op.file,
         action: 'pushed',
@@ -410,6 +549,8 @@ export class DirectPushEngine {
       })
       q.pushed++
     }
+
+    if (pkgTouched) this.queueSavePackageHashes()
 
     q.lastPushAt = ts
     if (ack.errors?.length) {
@@ -420,7 +561,7 @@ export class DirectPushEngine {
 
     if (entries.length) this.opts.onEntries?.(placeKey, entries)
     this.opts.onChange?.()
-    return entries
+    return { entries, appliedOps }
   }
 
   private ensureQueue(placeKey: string, projectFile: string): QueuedPlace {
@@ -437,145 +578,240 @@ export class DirectPushEngine {
     const opsByFile = new Map<string, SyncPushOp>()
     const folders = new Map<string, string[]>()
     const hashes = new Map<string, string>()
+    const paths = new Map<string, string[]>()
     const seenReal = new Set<string>()
     const realRoot = await fsp.realpath(this.root).catch(() => this.root)
 
-    const walk = async (absDir: string) => {
-      const real = await fsp.realpath(absDir).catch(() => null)
-      if (!real || seenReal.has(real)) return
+    const isInsideRoot = async (absPath: string): Promise<string | null> => {
+      const real = await fsp.realpath(absPath).catch(() => null)
+      if (!real) return null
       const relReal = relative(realRoot, real)
-      if (relReal === '..' || relReal.startsWith('..' + sep) || isAbsolute(relReal)) return
-      seenReal.add(real)
+      if (relReal === '..' || relReal.startsWith('..' + sep) || isAbsolute(relReal)) return null
+      return real
+    }
 
+    const addFile = async (
+      fileAbs: string,
+      fileName: string,
+      instPath: string[],
+      isPackageTree: boolean,
+      emitLegacyScripts: boolean,
+      siblingNames: Set<string> | null
+    ) => {
+      if (instPath.length < 2) return
+      const childRel = relative(this.root, fileAbs).replace(/\\/g, '/')
+      if (!isPackageTree && isSkipped(map.skipGlobs, childRel)) return
+      if (rojoIgnored({ roots: map.roots, ignoreGlobs: (map as Partial<PlaceMap>).ignoreGlobs ?? [] }, childRel)) return
+      if (fileName.endsWith('.meta.json')) return
+      if (isPackageTree && (PACKAGE_META_SKIP.has(fileName) || fileName.endsWith('.project.json'))) return
+
+      const info = parseFileName(fileName, emitLegacyScripts)
+      if (info?.kind === 'script') {
+        const sourceRaw = await fsp.readFile(fileAbs, 'utf8').catch(() => null)
+        if (sourceRaw === null) return
+        const source = sourceRaw.replace(/\r\n/g, '\n')
+        const metaName = info.stem === null ? 'init.meta.json' : `${info.stem}.meta.json`
+        const meta = siblingNames === null || siblingNames.has(metaName) ? await readJsonObj(join(dirname(fileAbs), metaName)) : null
+        const runContext = parseMetaRunContext(meta)
+        const digestInput = runContext && runContext !== 'Legacy' ? `${normalise(source)}\u0000${runContext}` : normalise(source)
+        const sha256 = sha256Text(digestInput)
+        hashes.set(childRel, sha256)
+        paths.set(childRel, instPath)
+        opsByFile.set(childRel, {
+          kind: 'upsert-script',
+          path: instPath,
+          className: scriptClassOf(info.className),
+          source,
+          ...(runContext && runContext !== 'Legacy' ? { runContext } : {}),
+          sha256,
+          file: childRel
+        })
+      } else if (info?.kind === 'model') {
+        const model = await readJsonObj(fileAbs)
+        if (!model) return
+        const className = typeof (model.ClassName ?? model.className) === 'string' ? String(model.ClassName ?? model.className) : 'Folder'
+        const properties = (model.Properties ?? model.properties) as Record<string, SyncValue> | undefined
+        const attributes = (model.Attributes ?? model.attributes) as Record<string, SyncValue> | undefined
+        const tags = Array.isArray(model.Tags ?? model.tags) ? ((model.Tags ?? model.tags) as unknown[]).filter((t): t is string => typeof t === 'string') : undefined
+        const sha256 = stableModelDigest(className, properties, attributes, tags)
+        hashes.set(childRel, sha256)
+        paths.set(childRel, instPath)
+        opsByFile.set(childRel, {
+          kind: 'upsert-instance',
+          path: instPath,
+          className,
+          ...(properties && Object.keys(properties).length ? { properties } : {}),
+          ...(attributes && Object.keys(attributes).length ? { attributes } : {}),
+          ...(tags?.length ? { tags } : {}),
+          sha256,
+          file: childRel
+        })
+      } else if (fileName.endsWith('.json') && !fileName.endsWith('.project.json')) {
+        const rawJson = await fsp.readFile(fileAbs, 'utf8').catch(() => null)
+        if (rawJson === null) return
+        const source = `return game:GetService("HttpService"):JSONDecode(${JSON.stringify(normalise(rawJson))})\n`
+        const sha256 = sha256Text(source)
+        hashes.set(childRel, sha256)
+        paths.set(childRel, instPath)
+        opsByFile.set(childRel, {
+          kind: 'upsert-script',
+          path: instPath,
+          className: 'ModuleScript',
+          source,
+          sha256,
+          file: childRel
+        })
+      } else if (fileName.endsWith('.txt')) {
+        const rawTxt = await fsp.readFile(fileAbs, 'utf8').catch(() => null)
+        if (rawTxt === null) return
+        const properties: Record<string, SyncValue> = { Value: normalise(rawTxt) }
+        const sha256 = stableModelDigest('StringValue', properties)
+        hashes.set(childRel, sha256)
+        paths.set(childRel, instPath)
+        opsByFile.set(childRel, {
+          kind: 'upsert-instance',
+          path: instPath,
+          className: 'StringValue',
+          properties,
+          sha256,
+          file: childRel
+        })
+      }
+    }
+
+    const walkEntries = async (
+      absDir: string,
+      realDir: string,
+      instPrefix: string[],
+      isPackageTree: boolean,
+      emitLegacyScripts: boolean,
+      allowNested: boolean,
+      nestedIgnores: RegExp[] = [],
+      nestedRootAbs?: string
+    ): Promise<void> => {
       let entries
       try {
         entries = await fsp.readdir(absDir, { withFileTypes: true })
       } catch {
         return
       }
+      const entryNames = new Set(entries.map((e) => e.name))
+
+      // Honor nested default.project.json inside package subdirectories (e.g. Wally _Index)
+      if (allowNested && absDir !== this.root && entryNames.has('default.project.json')) {
+        const proj = await readJsonObj(join(absDir, 'default.project.json'))
+        if (proj && proj.tree && typeof proj.tree === 'object' && !Array.isArray(proj.tree)) {
+          const nestedLegacy = proj.emitLegacyScripts !== undefined ? proj.emitLegacyScripts !== false : emitLegacyScripts
+          const extraIgnores = [
+            ...nestedIgnores,
+            ...(Array.isArray(proj.globIgnorePaths) ? proj.globIgnorePaths : [])
+              .filter((g): g is string => typeof g === 'string' && !!g.trim())
+              .map(rojoGlob)
+              .filter((r): r is RegExp => !!r)
+          ]
+          const projBaseAbs = extraIgnores.length ? absDir : nestedRootAbs
+          const resolveNestedNode = async (nodeObj: Record<string, unknown>, nodeInstPrefix: string[]) => {
+            let rawPath = nodeObj.$path
+            if (rawPath && typeof rawPath === 'object' && !Array.isArray(rawPath)) {
+              rawPath = (rawPath as Record<string, unknown>).optional
+            }
+            if (typeof rawPath === 'string' && rawPath.trim()) {
+              const targetAbs = resolve(absDir, rawPath)
+              const realTarget = await isInsideRoot(targetAbs)
+              if (realTarget) {
+                const st = await fsp.stat(targetAbs).catch(() => null)
+                if (st?.isDirectory()) {
+                  if (realTarget === realDir) {
+                    await walkEntries(absDir, realDir, nodeInstPrefix, isPackageTree, nestedLegacy, false, extraIgnores, projBaseAbs)
+                  } else {
+                    await walk(targetAbs, nodeInstPrefix, isPackageTree, nestedLegacy, false, extraIgnores, projBaseAbs)
+                  }
+                } else if (st?.isFile()) {
+                  await addFile(targetAbs, basename(targetAbs), nodeInstPrefix, isPackageTree, nestedLegacy, null)
+                }
+              }
+            }
+            for (const [k, child] of Object.entries(nodeObj)) {
+              if (k.startsWith('$') || !child || typeof child !== 'object' || Array.isArray(child)) continue
+              await resolveNestedNode(child as Record<string, unknown>, [...nodeInstPrefix, k])
+            }
+          }
+          await resolveNestedNode(proj.tree as Record<string, unknown>, instPrefix)
+          return
+        }
+      }
+
+      const isNestedIgnored = (absPath: string): boolean => {
+        if (!nestedIgnores.length || !nestedRootAbs) return false
+        const relToNested = relative(nestedRootAbs, absPath).replace(/\\/g, '/')
+        return !!relToNested && !relToNested.startsWith('..') && nestedIgnores.some((re) => re.test(relToNested))
+      }
 
       for (const e of entries) {
-        if (IGNORE_DIRS.has(e.name) || e.name.endsWith('.forge-tmp')) continue
+        if (IGNORE_DIRS.has(e.name) || e.name.endsWith('.forge-tmp') || e.name === '.DS_Store') continue
         const childAbs = join(absDir, e.name)
         const childRel = relative(this.root, childAbs).replace(/\\/g, '/')
         if (e.isSymbolicLink()) continue
+        if (isNestedIgnored(childAbs)) continue
+        if (rojoIgnored({ roots: map.roots, ignoreGlobs: (map as Partial<PlaceMap>).ignoreGlobs ?? [] }, childRel)) continue
+        if (!isPackageTree && (PACKAGE_DIRS.has(e.name) || isSkipped(map.skipGlobs, childRel))) continue
 
         if (e.isDirectory()) {
-          await walk(childAbs)
+          await walk(childAbs, [...instPrefix, e.name], isPackageTree, emitLegacyScripts, true, nestedIgnores, nestedRootAbs)
           continue
         }
         if (!e.isFile()) continue
         if (e.name === '.gitkeep') {
           const dirRel = relative(this.root, absDir).replace(/\\/g, '/')
-          const instPath = instancePathForPush(map, dirRel)
+          const instPath = isPackageTree ? instPrefix : instancePathForPush(map, dirRel)
           if (instPath && instPath.length >= 2) folders.set(dirRel, instPath)
           continue
         }
-        if (rojoIgnored({ roots: map.roots, ignoreGlobs: (map as Partial<PlaceMap>).ignoreGlobs ?? [] }, childRel)) continue
-
         if (e.name.endsWith('.meta.json')) continue
+        if (isPackageTree && (PACKAGE_META_SKIP.has(e.name) || e.name.endsWith('.project.json'))) continue
 
-        const info = parseFileName(e.name, map.emitLegacyScripts)
-        const instPath = instancePathForPush(map, childRel, info)
+        const info = parseFileName(e.name, emitLegacyScripts)
+        const instPath = isPackageTree
+          ? info
+            ? info.stem === null
+              ? [...instPrefix]
+              : [...instPrefix, info.stem]
+            : null
+          : instancePathForPush(map, childRel, info)
         if (!instPath || instPath.length < 2) continue
 
-        if (info?.kind === 'script') {
-          const sourceRaw = await fsp.readFile(childAbs, 'utf8').catch(() => null)
-          if (sourceRaw === null) continue
-          const source = sourceRaw.replace(/\r\n/g, '\n')
-          const metaName = info.stem === null ? 'init.meta.json' : `${info.stem}.meta.json`
-          const meta = await readJsonObj(join(absDir, metaName))
-          const runContext = parseMetaRunContext(meta)
-          const digestInput = runContext && runContext !== 'Legacy' ? `${normalise(source)}\u0000${runContext}` : normalise(source)
-          const sha256 = sha256Text(digestInput)
-          hashes.set(childRel, sha256)
-          opsByFile.set(childRel, {
-            kind: 'upsert-script',
-            path: instPath,
-            className: scriptClassOf(info.className),
-            source,
-            ...(runContext && runContext !== 'Legacy' ? { runContext } : {}),
-            sha256,
-            file: childRel
-          })
-        } else if (info?.kind === 'model') {
-          const model = await readJsonObj(childAbs)
-          if (!model) continue
-          const className = typeof (model.ClassName ?? model.className) === 'string' ? String(model.ClassName ?? model.className) : 'Folder'
-          const properties = (model.Properties ?? model.properties) as Record<string, SyncValue> | undefined
-          const attributes = (model.Attributes ?? model.attributes) as Record<string, SyncValue> | undefined
-          const tags = Array.isArray(model.Tags ?? model.tags) ? ((model.Tags ?? model.tags) as unknown[]).filter((t): t is string => typeof t === 'string') : undefined
-          const sha256 = stableModelDigest(className, properties, attributes, tags)
-          hashes.set(childRel, sha256)
-          opsByFile.set(childRel, {
-            kind: 'upsert-instance',
-            path: instPath,
-            className,
-            ...(properties && Object.keys(properties).length ? { properties } : {}),
-            ...(attributes && Object.keys(attributes).length ? { attributes } : {}),
-            ...(tags?.length ? { tags } : {}),
-            sha256,
-            file: childRel
-          })
-        } else if (e.name.endsWith('.json') && !e.name.endsWith('.project.json')) {
-          const rawJson = await fsp.readFile(childAbs, 'utf8').catch(() => null)
-          if (rawJson === null) continue
-          const source = `return game:GetService("HttpService"):JSONDecode(${JSON.stringify(normalise(rawJson))})\n`
-          const sha256 = sha256Text(source)
-          hashes.set(childRel, sha256)
-          opsByFile.set(childRel, {
-            kind: 'upsert-script',
-            path: instPath,
-            className: 'ModuleScript',
-            source,
-            sha256,
-            file: childRel
-          })
-        } else if (e.name.endsWith('.txt')) {
-          const rawTxt = await fsp.readFile(childAbs, 'utf8').catch(() => null)
-          if (rawTxt === null) continue
-          const properties: Record<string, SyncValue> = { Value: normalise(rawTxt) }
-          const sha256 = stableModelDigest('StringValue', properties)
-          hashes.set(childRel, sha256)
-          opsByFile.set(childRel, {
-            kind: 'upsert-instance',
-            path: instPath,
-            className: 'StringValue',
-            properties,
-            sha256,
-            file: childRel
-          })
-        }
+        await addFile(childAbs, e.name, instPath, isPackageTree, emitLegacyScripts, entryNames)
       }
     }
 
-    for (const r of [...map.roots, ...map.skipped]) {
+    const walk = async (
+      absDir: string,
+      instPrefix: string[],
+      isPackageTree: boolean,
+      emitLegacyScripts: boolean,
+      allowNested = true,
+      nestedIgnores: RegExp[] = [],
+      nestedRootAbs?: string
+    ): Promise<void> => {
+      const real = await isInsideRoot(absDir)
+      if (!real || seenReal.has(real)) return
+      seenReal.add(real)
+      await walkEntries(absDir, real, instPrefix, isPackageTree, emitLegacyScripts, allowNested, nestedIgnores, nestedRootAbs)
+    }
+
+    for (const r of [...map.roots, ...map.skipped.filter(isPackageSkip)]) {
       const targetAbs = resolve(this.root, r.path)
       const stat = await fsp.stat(targetAbs).catch(() => null)
       if (!stat) continue
+      const isPkg = PACKAGES_PATH_RE.test(r.path.replace(/\\/g, '/')) || PACKAGE_DIRS.has(r.instance[r.instance.length - 1] ?? '')
       if (stat.isDirectory()) {
-        await walk(targetAbs)
+        await walk(targetAbs, r.instance, isPkg, map.emitLegacyScripts, true)
       } else if (stat.isFile()) {
-        const rel = relative(this.root, targetAbs).replace(/\\/g, '/')
-        const info = parseFileName(basename(targetAbs), map.emitLegacyScripts)
-        if (info?.kind === 'script') {
-          const sourceRaw = await fsp.readFile(targetAbs, 'utf8').catch(() => '')
-          const source = sourceRaw.replace(/\r\n/g, '\n')
-          const sha256 = sha256Text(normalise(source))
-          hashes.set(rel, sha256)
-          opsByFile.set(rel, {
-            kind: 'upsert-script',
-            path: r.instance,
-            className: scriptClassOf(info.className),
-            source,
-            sha256,
-            file: rel
-          })
-        }
+        await addFile(targetAbs, basename(targetAbs), r.instance, isPkg, map.emitLegacyScripts, null)
       }
     }
 
-    return { opsByFile, folders, hashes }
+    return { opsByFile, folders, hashes, paths }
   }
 
   private resetWatchers(): void {
@@ -586,7 +822,7 @@ export class DirectPushEngine {
     const dirs = new Set<string>()
     for (const m of this.maps) {
       for (const r of m.roots) dirs.add(resolve(this.root, r.path))
-      for (const s of m.skipped) dirs.add(resolve(this.root, s.path))
+      for (const s of m.skipped) if (isPackageSkip(s)) dirs.add(resolve(this.root, s.path))
     }
 
     for (const dir of dirs) {
@@ -619,7 +855,10 @@ export class DirectPushEngine {
 
   async scanActivePlaces(): Promise<void> {
     if (this.closed) return
-    if (this.pendingScan) return
+    if (this.pendingScan) {
+      this.rescanNeeded = true
+      return
+    }
     this.pendingScan = true
     try {
       for (const [projectFile, placeKey] of this.activePlaceKeys) {
@@ -629,17 +868,23 @@ export class DirectPushEngine {
       }
     } finally {
       this.pendingScan = false
+      if (this.rescanNeeded && !this.closed) {
+        this.rescanNeeded = false
+        this.scheduleScan()
+      }
     }
   }
 
   close(): void {
     this.closed = true
+    this.rescanNeeded = false
     if (this.timer) clearTimeout(this.timer)
     this.timer = null
     for (const w of this.watchers) w.close()
     this.watchers = []
     this.queues.clear()
     this.knownStudioHashes.clear()
+    this.knownInstancePaths.clear()
     this.activePlaceKeys.clear()
   }
 }

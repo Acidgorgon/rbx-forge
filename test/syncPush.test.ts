@@ -8,6 +8,7 @@ import { SyncEngine } from '../src/main/services/sync/engine.ts'
 import { loadPlaces, placeFor } from '../src/main/services/sync/mapping.ts'
 import { DirectPushEngine, sha256Text } from '../src/main/services/sync/push.ts'
 import { SyncService } from '../src/main/services/sync/service.ts'
+import { PLUGIN_VERSION } from '../src/shared/studio/plugin.ts'
 
 const dirs: string[] = []
 after(() => {
@@ -175,7 +176,7 @@ test('HTTP bridge roundtrip: default forge-direct serves sourcemap + /sync/push 
 
     // Next poll advertises pushPending: true
     const pollRes = (await fetch(
-      `${base}/poll?v=15&place=DirectGame&placeId=555&sync=${cfg.sessionToken}&probe=probe-dir-1`
+      `${base}/poll?v=${PLUGIN_VERSION}&place=DirectGame&placeId=555&sync=${cfg.sessionToken}&probe=probe-dir-1`
     ).then((r) => r.json())) as { idle?: boolean; pushPending?: boolean }
     assert.equal(pollRes.pushPending, true)
 
@@ -312,5 +313,302 @@ test('DirectPushEngine: pushes unconflicted creates while holding conflicted fil
     assert.equal(batch.ops.some((o) => 'file' in o && o.file === 'src/shared/Fresh.luau'), true)
   } finally {
     push.close()
+  }
+})
+
+test('DirectPushEngine + StudioBridge: no /poll spin-loop while batch is inflight or within cooldown', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-push-nospin-'))
+  dirs.push(root)
+
+  put(
+    root,
+    'default.project.json',
+    JSON.stringify({
+      name: 'NoSpinGame',
+      servePlaceIds: [777],
+      tree: {
+        $className: 'DataModel',
+        ReplicatedStorage: { Shared: { $path: 'src/shared' } }
+      }
+    })
+  )
+  put(root, 'src/shared/Pending.luau', 'return 1\n')
+
+  const service = new SyncService({
+    root,
+    engine: new SyncEngine({ root }),
+    mapping: { loadPlaces, placeFor },
+    settings: { get: <T>(_k: string, fb: T) => fb },
+    git: async () => ({ code: 1, stdout: '', stderr: '' }),
+    pluginsDir: () => null,
+    emit: () => undefined
+  })
+  const bridge = new StudioBridge({ port: 0, holdMs: 120 })
+  bridge.setSyncHandler(service.handler)
+
+  try {
+    await service.start()
+    await bridge.start()
+    const base = `http://127.0.0.1:${bridge.port}/forge-bridge`
+    const cfg = (await fetch(`${base}/sync/config?placeId=777&place=NoSpinGame&probe=p-nospin&mode=edit`).then((r) => r.json())) as {
+      enabled: boolean
+      sessionToken: string
+    }
+    assert.equal(cfg.enabled, true)
+
+    await fetch(`${base}/sync/snapshot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'edit',
+        session: cfg.sessionToken,
+        place: { placeId: 777, name: 'NoSpinGame' },
+        seq: 0,
+        final: true,
+        nodes: [{ id: 'r1', path: ['ReplicatedStorage', 'Shared'], className: 'Folder' }]
+      })
+    })
+
+    // First poll wakes immediately with pushPending: true
+    const t0 = Date.now()
+    const poll1 = (await fetch(`${base}/poll?v=${PLUGIN_VERSION}&place=NoSpinGame&placeId=777&sync=${cfg.sessionToken}&probe=p-nospin`).then((r) => r.json())) as {
+      pushPending?: boolean
+    }
+    assert.equal(poll1.pushPending, true)
+    assert.ok(Date.now() - t0 < 100)
+
+    // Immediate second poll is cooldown-held (does NOT spin-return pushPending: true immediately)
+    const t1 = Date.now()
+    const poll2 = (await fetch(`${base}/poll?v=${PLUGIN_VERSION}&place=NoSpinGame&placeId=777&sync=${cfg.sessionToken}&probe=p-nospin`).then((r) => r.json())) as {
+      idle?: boolean
+      pushPending?: boolean
+    }
+    assert.equal(poll2.idle, true)
+    assert.notEqual(poll2.pushPending, true)
+    assert.ok(Date.now() - t1 >= 80, `expected held poll, got ${Date.now() - t1}ms`)
+
+    // Pull batch (now inflight): pollHint must NOT return pushPending while batch is actively inflight
+    const pull = (await fetch(`${base}/sync/push?session=${cfg.sessionToken}`).then((r) => r.json())) as { batch?: { batchId: string } }
+    assert.ok(pull.batch)
+    assert.equal(service.handler.pollHint!({ placeId: 777, place: 'NoSpinGame', session: cfg.sessionToken, probe: 'p-nospin', pluginVersion: PLUGIN_VERSION }), null)
+  } finally {
+    service.close()
+    await bridge.stop()
+  }
+})
+
+test('DirectPushEngine: clears stale inflight and preserves Packages hashes across snapshots', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-push-pkg-snap-'))
+  dirs.push(root)
+
+  put(
+    root,
+    'default.project.json',
+    JSON.stringify({
+      name: 'PkgSnap',
+      tree: {
+        $className: 'DataModel',
+        ReplicatedStorage: {
+          Shared: { $path: 'src/shared' },
+          Packages: { $path: 'Packages' }
+        }
+      }
+    })
+  )
+  put(root, 'Packages/Conch.lua', 'return {}\n')
+  put(root, 'src/shared/Mod.luau', 'return 1\n')
+
+  const maps = await loadPlaces(root)
+  const map = maps[0]
+  const push = new DirectPushEngine({
+    root,
+    canPushPlace: () => true,
+    isFileConflicted: () => false
+  })
+  try {
+    push.recordStudioSnapshot('place:1', map, [
+      { id: 'r1', path: ['ReplicatedStorage', 'Shared'], className: 'Folder' },
+      { id: 'r2', path: ['ReplicatedStorage', 'Shared', 'Mod'], className: 'ModuleScript', source: 'return 1\n' }
+    ])
+    await push.syncPlace('place:1', map)
+    const b1 = push.pullNextBatch('place:1')!
+    assert.ok(b1)
+    assert.equal(b1.ops.some((o) => 'file' in o && o.file === 'Packages/Conch.lua'), true)
+    push.ackBatch('place:1', { session: 's1', batchId: b1.batchId, applied: ['Packages/Conch.lua'] })
+
+    // Queue another edit and leave it inflight
+    put(root, 'src/shared/Mod2.luau', 'return 2\n')
+    await push.syncPlace('place:1', map)
+    const stale = push.pullNextBatch('place:1')
+    assert.ok(stale)
+
+    // New snapshot arrives: stale inflight is cleared AND acked Packages/Conch.lua hash is preserved
+    push.recordStudioSnapshot('place:1', map, [
+      { id: 'r1', path: ['ReplicatedStorage', 'Shared'], className: 'Folder' },
+      { id: 'r2', path: ['ReplicatedStorage', 'Shared', 'Mod'], className: 'ModuleScript', source: 'return 1\n' }
+    ])
+    const ops2 = await push.syncPlace('place:1', map)
+    assert.equal(ops2.some((o) => 'file' in o && o.file === 'Packages/Conch.lua'), false, 'Packages must not re-push after snapshot')
+    const b2 = push.pullNextBatch('place:1')!
+    assert.ok(b2)
+    assert.notEqual(b2.batchId, stale.batchId)
+    assert.equal(b2.ops.some((o) => 'file' in o && o.file === 'src/shared/Mod2.luau'), true)
+  } finally {
+    push.close()
+  }
+})
+
+test('DirectPushEngine: honors Wally nested default.project.json, skipGlobs, and prioritizes src over Packages', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-push-wally-'))
+  dirs.push(root)
+
+  put(
+    root,
+    'default.project.json',
+    JSON.stringify({
+      name: 'WallyGame',
+      tree: {
+        $className: 'DataModel',
+        StarterPlayer: {
+          StarterPlayerScripts: { Client: { $path: 'src/client' } }
+        },
+        ServerStorage: { $path: 'src/ServerStorage' },
+        ReplicatedStorage: {
+          Packages: { $path: 'Packages' }
+        }
+      }
+    })
+  )
+  put(root, 'tools/studio-sync.json', JSON.stringify({ placeIds: [], skip: ['src/ServerStorage'] }))
+  put(root, 'src/client/TET.client.luau', 'print("hi")\n')
+  put(root, 'src/ServerStorage/Ignored.luau', 'return "skip"\n')
+  put(root, 'Packages/_Index/author_conch@0.3.1/conch/default.project.json', JSON.stringify({ name: 'conch', tree: { $path: 'dist' } }))
+  put(root, 'Packages/_Index/author_conch@0.3.1/conch/dist/init.luau', 'return { ok = true }\n')
+  put(root, 'Packages/_Index/author_conch@0.3.1/conch/package.json', '{"name":"conch"}')
+  put(root, 'Packages/_Index/author_conch@0.3.1/conch/tsconfig.json', '{}')
+
+  const maps = await loadPlaces(root)
+  const map = maps[0]
+  const push = new DirectPushEngine({
+    root,
+    canPushPlace: () => true,
+    isFileConflicted: () => false
+  })
+  try {
+    push.recordStudioSnapshot('place:1', map, [{ id: 'c1', path: ['StarterPlayer', 'StarterPlayerScripts', 'Client'], className: 'Folder' }])
+    const ops = await push.syncPlace('place:1', map)
+
+    const conchOp = ops.find((o): o is Extract<typeof o, { kind: 'upsert-script' }> => o.kind === 'upsert-script' && o.file === 'Packages/_Index/author_conch@0.3.1/conch/dist/init.luau')
+    assert.ok(conchOp, JSON.stringify(ops))
+    assert.deepEqual(conchOp.path, ['ReplicatedStorage', 'Packages', '_Index', 'author_conch@0.3.1', 'conch'])
+    assert.equal(conchOp.className, 'ModuleScript')
+
+    // Metadata files and skipGlobs files excluded
+    assert.equal(ops.some((o) => 'file' in o && !!o.file && (o.file.endsWith('package.json') || o.file.endsWith('tsconfig.json'))), false)
+    assert.equal(ops.some((o) => 'file' in o && o.file === 'src/ServerStorage/Ignored.luau'), false)
+
+    // User src/ ordered ahead of Packages/
+    const tetIdx = ops.findIndex((o) => 'file' in o && o.file === 'src/client/TET.client.luau')
+    const conchIdx = ops.findIndex((o) => 'file' in o && o.file === 'Packages/_Index/author_conch@0.3.1/conch/dist/init.luau')
+    assert.ok(tetIdx >= 0 && conchIdx > tetIdx, `expected TET (${tetIdx}) before conch (${conchIdx})`)
+  } finally {
+    push.close()
+  }
+})
+
+test('SyncService: push-ack updates BaseStore so subsequent Studio edit pulls cleanly without conflict', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-direct-2way-'))
+  dirs.push(root)
+
+  put(
+    root,
+    'default.project.json',
+    JSON.stringify({
+      name: 'TwoWayGame',
+      servePlaceIds: [888],
+      tree: {
+        $className: 'DataModel',
+        ReplicatedStorage: { Shared: { $path: 'src/shared' } }
+      }
+    })
+  )
+  put(root, 'src/shared/Same.luau', 'return "v1"\n')
+  put(root, 'src/shared/Ahead.luau', 'return "from-disk"\n')
+
+  const service = new SyncService({
+    root,
+    engine: new SyncEngine({ root }),
+    mapping: { loadPlaces, placeFor },
+    settings: { get: <T>(_k: string, fb: T) => fb },
+    git: async () => ({ code: 1, stdout: '', stderr: '' }),
+    pluginsDir: () => null,
+    emit: () => undefined
+  })
+  const bridge = new StudioBridge({ port: 0, holdMs: 100 })
+  bridge.setSyncHandler(service.handler)
+
+  try {
+    await service.start()
+    await bridge.start()
+    const base = `http://127.0.0.1:${bridge.port}/forge-bridge`
+
+    const cfg = (await fetch(`${base}/sync/config?placeId=888&place=TwoWayGame&probe=p-2way&mode=edit`).then((r) => r.json())) as {
+      enabled: boolean
+      sessionToken: string
+    }
+    await fetch(`${base}/sync/snapshot`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'edit',
+        session: cfg.sessionToken,
+        place: { placeId: 888, name: 'TwoWayGame' },
+        seq: 0,
+        final: true,
+        nodes: [
+          { id: 'r1', path: ['ReplicatedStorage', 'Shared'], className: 'Folder' },
+          { id: 'r2', path: ['ReplicatedStorage', 'Shared', 'Same'], className: 'ModuleScript', source: 'return "v1"\n' }
+        ]
+      })
+    })
+
+    const pullRes = (await fetch(`${base}/sync/push?session=${cfg.sessionToken}`).then((r) => r.json())) as {
+      batch?: { batchId: string }
+    }
+    assert.ok(pullRes.batch)
+
+    await fetch(`${base}/sync/push-ack`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        session: cfg.sessionToken,
+        batchId: pullRes.batch.batchId,
+        applied: ['src/shared/Ahead.luau']
+      })
+    })
+
+    // Studio now edits Ahead.luau -> pulls to disk cleanly with zero conflicts
+    const changesReply = (await fetch(`${base}/sync/changes`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        mode: 'edit',
+        session: cfg.sessionToken,
+        place: { placeId: 888, name: 'TwoWayGame' },
+        changes: [
+          {
+            kind: 'added',
+            node: { id: 'r3', path: ['ReplicatedStorage', 'Shared', 'Ahead'], className: 'ModuleScript', source: 'return "edited-in-studio"\n' }
+          }
+        ]
+      })
+    }).then((r) => r.json())) as { ok: boolean }
+    assert.equal(changesReply.ok, true)
+    assert.deepEqual(service.conflicts(), [])
+    const { readFileSync } = await import('node:fs')
+    assert.equal(readFileSync(join(root, 'src/shared/Ahead.luau'), 'utf8'), 'return "edited-in-studio"\n')
+  } finally {
+    service.close()
+    await bridge.stop()
   }
 })

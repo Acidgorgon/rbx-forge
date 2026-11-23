@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 15
+-- forge-bridge-template: 16
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -77,6 +77,10 @@ local CoreGui = game:GetService("CoreGui")
 local ServerStorage = game:GetService("ServerStorage")
 local KeyframeSequenceProvider = game:GetService("KeyframeSequenceProvider")
 local CollectionService = game:GetService("CollectionService")
+local ChangeHistoryService: any = nil
+pcall(function()
+	ChangeHistoryService = game:GetService("ChangeHistoryService")
+end)
 
 -- Edit mode only (v13): never a playtest DataModel (Play: server and client copies; Run).
 local function isEditMode(): boolean
@@ -1706,6 +1710,9 @@ local function applySinglePushOp(op: any): (boolean, string?, string?)
 			return false, "skipped", "outside synced root"
 		end
 		unregister(target)
+		for _, d in target:GetDescendants() do
+			unregister(d)
+		end
 		target.Parent = nil
 		return true, nil, nil
 	end
@@ -1731,13 +1738,18 @@ local function applySinglePushOp(op: any): (boolean, string?, string?)
 	end
 
 	local targetClass = if type(op.className) == "string" and op.className ~= "" then op.className else "Folder"
+	local inst = existing
 	if existing and existing.ClassName ~= targetClass then
+		local replacement = Instance.new(targetClass)
+		replacement.Name = name
+		for _, child in existing:GetChildren() do
+			child.Parent = replacement
+		end
 		unregister(existing)
 		existing.Parent = nil
-		existing = nil
+		inst = replacement
 	end
 
-	local inst = existing
 	if not inst then
 		inst = Instance.new(targetClass)
 		inst.Name = name
@@ -1843,17 +1855,21 @@ local function applyPushBatch(batch: any)
 			end
 		end
 	end)
-	sync.applyingPush = false
 
+	local shouldCommit = okRun and (#applied > 0 or #errors == 0)
 	if recording and ChangeHistoryService then
 		pcall(function()
 			ChangeHistoryService:FinishRecording(
 				recording,
-				if okRun and #errors == 0 then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
+				if shouldCommit then Enum.FinishRecordingOperation.Commit else Enum.FinishRecordingOperation.Cancel
 			)
 		end)
 	end
+	sync.applyingPush = false
 
+	if not shouldCommit then
+		applied = {}
+	end
 	if not okRun then
 		table.insert(errors, { path = { "batch" }, message = tostring(runErr) })
 	end
@@ -1985,7 +2001,10 @@ local function syncLoop()
 			end
 		end
 		if sync.session and (sync.pushPending or now - sync.lastPushPoll >= 2) then
-			pcall(drainPushQueue)
+			local okPush, errPush = pcall(drainPushQueue)
+			if not okPush then
+				warn("[Forge Bridge] Forge Direct Sync error: " .. tostring(errPush))
+			end
 		end
 		if sync.wanted and not sync.session then
 			task.wait(0.5)
@@ -2079,11 +2098,6 @@ local function deleteTarget(path: any, className: any): (Instance?, string?)
 	end
 	return node, nil
 end
-
-local ChangeHistoryService: any = nil
-pcall(function()
-	ChangeHistoryService = game:GetService("ChangeHistoryService")
-end)
 
 -- Removes the instance (undoable); returns true or false and why.
 local function deleteInStudio(path: any, className: any): (boolean, string?)
@@ -2614,8 +2628,20 @@ task.spawn(function()
 				query ..= "&link=" .. HttpService:UrlEncode(link)
 			end
 		end
+		local pollStart = os.clock()
 		local ok, answer = request("GET", query)
 		if not ok then
+			local errText = tostring(answer)
+			if string.find(errText, "Number of requests", 1, true) then
+				warn("[Forge Bridge] Roblox Studio HTTP request limit reached; backing off")
+				if sync.session then
+					stopSync()
+					sync.waitingForForge = true
+				end
+				connected = false
+				task.wait(10)
+				continue
+			end
 			if connected then
 				print("[Forge Bridge] RBX Forge is not reachable; retrying")
 			end
@@ -2649,7 +2675,9 @@ task.spawn(function()
 		if type(answer) == "table" and answer.pushPending == true then
 			sync.pushPending = true
 		end
+		local hadJob = false
 		if type(answer) == "table" and answer.job then
+			hadJob = true
 			if answer.job.kind == "delete" then
 				runDeleteJob(answer.job)
 			elseif answer.job.kind == "model" then
@@ -2659,6 +2687,9 @@ task.spawn(function()
 			else
 				runJob(answer.job)
 			end
+		end
+		if not hadJob and os.clock() - pollStart < 0.5 then
+			task.wait(0.5)
 		end
 	end
 end)

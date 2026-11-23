@@ -41,8 +41,8 @@ export interface SyncWireDeps {
   activePlace?: () => string | null
   // The live Studio tree changed shape (throttled): the Game tab re-reads liveTree().
   onStudioTree?: () => void
-  // The Forge Bridge (Game tab "Delete in Studio" queues a delete job for the plugin).
-  bridge?: () => DeleteBridge | null
+  // The Forge Bridge (Game tab "Delete in Studio" queues a delete job for the plugin, and wakes polls for Direct Push).
+  bridge?: () => (DeleteBridge & { wakeForPush?: (match: (info: StudioWindow) => boolean) => boolean }) | null
   // SyncServiceDeps.statusDelayMs: the app coalesces status pushes (STATUS_DELAY_MS); tests leave it 0.
   statusDelayMs?: number
 }
@@ -255,7 +255,10 @@ export function createSync(deps: SyncWireDeps): SyncWiring {
         emit,
         log: deps.log,
         onStudioTree: deps.onStudioTree,
-        statusDelayMs: deps.statusDelayMs
+        statusDelayMs: deps.statusDelayMs,
+        wakePush: (match) => {
+          deps.bridge?.()?.wakeForPush?.(match)
+        }
       })
       await current.start().catch((e) => deps.log?.(`sync: ${(e as Error).message}`, 'stderr'))
     },

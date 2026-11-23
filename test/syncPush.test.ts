@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { after, test } from 'node:test'
@@ -8,7 +8,9 @@ import { SyncEngine } from '../src/main/services/sync/engine.ts'
 import { loadPlaces, placeFor } from '../src/main/services/sync/mapping.ts'
 import { DirectPushEngine, sha256Text } from '../src/main/services/sync/push.ts'
 import { SyncService } from '../src/main/services/sync/service.ts'
-import { PLUGIN_VERSION } from '../src/shared/studio/plugin.ts'
+import { BaseStore } from '../src/main/services/sync/store.ts'
+import { DIRECT_PUSH_PLUGIN_VERSION, PLUGIN_VERSION } from '../src/shared/studio/plugin.ts'
+import type { SyncPushOp } from '../src/shared/sync/protocol.ts'
 
 const dirs: string[] = []
 after(() => {
@@ -605,10 +607,231 @@ test('SyncService: push-ack updates BaseStore so subsequent Studio edit pulls cl
     }).then((r) => r.json())) as { ok: boolean }
     assert.equal(changesReply.ok, true)
     assert.deepEqual(service.conflicts(), [])
-    const { readFileSync } = await import('node:fs')
     assert.equal(readFileSync(join(root, 'src/shared/Ahead.luau'), 'utf8'), 'return "edited-in-studio"\n')
   } finally {
     service.close()
     await bridge.stop()
   }
+})
+
+test('DirectPushEngine: Studio writes match by file text (meta RunContext), emitLegacyScripts:false RunContext, skipped deletes settle', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-push-hash-'))
+  dirs.push(root)
+  put(
+    root,
+    'default.project.json',
+    JSON.stringify({
+      name: 'HashGame',
+      emitLegacyScripts: false,
+      tree: { $className: 'DataModel', ReplicatedStorage: { Shared: { $path: 'src/shared' }, Packages: { $path: 'Packages' } } }
+    })
+  )
+  put(root, 'src/shared/Boot.server.luau', 'print("boot")\n')
+  put(root, 'src/shared/Hud.client.luau', 'print("hud")\n')
+  put(root, 'src/shared/Ctx.luau', 'return 1\n')
+  put(root, 'src/shared/Ctx.meta.json', JSON.stringify({ properties: { RunContext: 'Client' } }))
+  put(root, 'Packages/Old.lua', 'return "old"\n')
+
+  const map = (await loadPlaces(root))[0]
+  const engine = new DirectPushEngine({ root, canPushPlace: () => true, isFileConflicted: () => false })
+  const files = (ops: SyncPushOp[]) => ops.flatMap((o) => ('file' in o && o.file ? [o.file] : []))
+  try {
+    engine.recordStudioSnapshot('5', map, [])
+    let ops = await engine.syncPlace('5', map)
+    const scripts = new Map(ops.flatMap((o) => (o.kind === 'upsert-script' ? [[o.file, o] as const] : [])))
+    assert.equal(scripts.get('src/shared/Boot.server.luau')?.runContext, 'Server')
+    assert.equal(scripts.get('src/shared/Hud.client.luau')?.runContext, 'Client')
+    assert.equal(scripts.get('src/shared/Hud.client.luau')?.className, 'Script')
+    const batch = engine.pullNextBatch('5')!
+    engine.ackBatch('5', { session: 's', batchId: batch.batchId, applied: files(batch.ops) })
+
+    // A Studio edit Forge wrote to disk (meta RunContext script: the scan digest is source + RunContext,
+    // not the file text) is not pushed back, even after the 10 s echo window.
+    put(root, 'src/shared/Ctx.luau', 'return 2\n')
+    engine.markFromStudio('src/shared/Ctx.luau', 'return 2\n', '5')
+    ops = await engine.syncPlace('5', map)
+    assert.ok(!files(ops).includes('src/shared/Ctx.luau'), 'Studio write not echoed back')
+    // A later disk edit still pushes.
+    put(root, 'src/shared/Ctx.luau', 'return 3\n')
+    ops = await engine.syncPlace('5', map)
+    assert.ok(files(ops).includes('src/shared/Ctx.luau'))
+    const b2 = engine.pullNextBatch('5')!
+    engine.ackBatch('5', { session: 's', batchId: b2.batchId, applied: files(b2.ops) })
+
+    // A delete the plugin skipped is settled, not queued again on every scan.
+    rmSync(join(root, 'Packages/Old.lua'))
+    ops = await engine.syncPlace('5', map)
+    const del = ops.find((o) => o.kind === 'delete' && o.file === 'Packages/Old.lua')
+    assert.ok(del)
+    const b3 = engine.pullNextBatch('5')!
+    engine.ackBatch('5', { session: 's', batchId: b3.batchId, applied: [], skipped: [{ path: del.path, reason: 'outside synced root' }] })
+    ops = await engine.syncPlace('5', map)
+    assert.ok(!ops.some((o) => o.kind === 'delete' && o.file === 'Packages/Old.lua'))
+  } finally {
+    engine.close()
+  }
+})
+
+type PulledBatch = { batchId: string; ops: { file?: string; kind: string }[] }
+
+async function directSession(placeId: number, name: string, studios?: () => { placeId?: number; place?: string; pluginVersion?: number }[]) {
+  const root = mkdtempSync(join(tmpdir(), 'forge-direct-keep-'))
+  dirs.push(root)
+  put(root, 'default.project.json', JSON.stringify({ name, servePlaceIds: [placeId], tree: { $className: 'DataModel', ReplicatedStorage: { Shared: { $path: 'src/shared' } } } }))
+  put(root, 'src/shared/Old.luau', 'return "old"\n')
+  const service = new SyncService({
+    root,
+    engine: new SyncEngine({ root }),
+    mapping: { loadPlaces, placeFor },
+    settings: { get: <T>(_k: string, fb: T) => fb },
+    git: async () => ({ code: 1, stdout: '', stderr: '' }),
+    pluginsDir: () => null,
+    emit: () => undefined,
+    ...(studios ? { studios } : {})
+  })
+  const bridge = new StudioBridge({ port: 0, holdMs: 100 })
+  bridge.setSyncHandler(service.handler)
+  await service.start()
+  await bridge.start()
+  const base = `http://127.0.0.1:${bridge.port}/forge-bridge`
+  const post = (route: string, body: unknown) =>
+    fetch(`${base}/sync/${route}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }).then((r) => r.json())
+  const config = async () =>
+    ((await fetch(`${base}/sync/config?placeId=${placeId}&place=${name}&probe=p-${name}&mode=edit`).then((r) => r.json())) as { sessionToken: string }).sessionToken
+  const snapshot = (session: string, nodes: unknown[]) => post('snapshot', { mode: 'edit', session, place: { placeId, name }, seq: 0, final: true, nodes })
+  const pull = async (session: string) => ((await fetch(`${base}/sync/push?session=${session}`).then((r) => r.json())) as { batch?: PulledBatch }).batch
+  const rescan = () => (service as unknown as { syncDirectPush(pk: string): Promise<void> }).syncDirectPush(String(placeId))
+  const close = async () => {
+    service.close()
+    await bridge.stop()
+  }
+  return { root, service, post, config, snapshot, pull, rescan, close }
+}
+
+const OLD_NODES = [
+  { id: 'r1', path: ['ReplicatedStorage', 'Shared'], className: 'Folder' },
+  { id: 'r2', path: ['ReplicatedStorage', 'Shared', 'Old'], className: 'ModuleScript', source: 'return "old"\n' }
+]
+
+test('SyncService: a pushed script Studio does not keep (undo, unsaved place) stays on disk and is pushed again', async () => {
+  const s = await directSession(901, 'KeepGame')
+  try {
+    let session = await s.config()
+    await s.snapshot(session, OLD_NODES)
+    put(s.root, 'src/shared/TET.luau', 'return "new"\n')
+    await s.rescan()
+    const batch = await s.pull(session)
+    assert.ok(batch?.ops.some((o) => o.file === 'src/shared/TET.luau'))
+    await s.post('push-ack', { session, batchId: batch!.batchId, applied: ['src/shared/TET.luau'] })
+
+    // Studio comes back without it (Ctrl+Z, or the place was closed unsaved): kept, not trashed.
+    session = await s.config()
+    await s.snapshot(session, OLD_NODES)
+    assert.ok(existsSync(join(s.root, 'src/shared/TET.luau')), 'disk file kept')
+    const again = await s.pull(session)
+    assert.ok(again?.ops.some((o) => o.file === 'src/shared/TET.luau'), 'pushed again')
+
+    // Studio confirming the same copy keeps it Forge's: removed in Studio later (Ctrl+Z, closed unsaved),
+    // the disk copy still stays.
+    await s.post('push-ack', { session, batchId: again!.batchId, applied: ['src/shared/TET.luau'] })
+    session = await s.config()
+    const tet = { id: 'r3', path: ['ReplicatedStorage', 'Shared', 'TET'], className: 'ModuleScript', source: 'return "new"\n' }
+    await s.snapshot(session, [...OLD_NODES, tet])
+    const change = (changes: unknown[]) => s.post('changes', { mode: 'edit', session, place: { placeId: 901, name: 'KeepGame' }, changes }) as Promise<{ ok: boolean }>
+    assert.equal((await change([{ kind: 'removed', id: 'r3', path: tet.path }])).ok, true)
+    assert.ok(existsSync(join(s.root, 'src/shared/TET.luau')), 'same copy confirmed, then removed in Studio: kept')
+
+    // Edited in Studio (pulled to disk), it syncs both ways again: a Studio delete trashes it.
+    assert.equal((await change([{ kind: 'added', node: { ...tet, id: 'r4', source: 'return "studio"\n' } }])).ok, true)
+    assert.equal(readFileSync(join(s.root, 'src/shared/TET.luau'), 'utf8'), 'return "studio"\n')
+    assert.equal((await change([{ kind: 'removed', id: 'r4', path: tet.path }])).ok, true)
+    assert.ok(!existsSync(join(s.root, 'src/shared/TET.luau')), 'edited in Studio, then deleted there: trashed')
+  } finally {
+    await s.close()
+  }
+})
+
+test('SyncService: no disk -> Studio push to a plugin older than DIRECT_PUSH_PLUGIN_VERSION', async () => {
+  let version = DIRECT_PUSH_PLUGIN_VERSION - 1
+  const s = await directSession(902, 'OldPlugin', () => [{ placeId: 902, place: 'OldPlugin', pluginVersion: version }])
+  try {
+    const session = await s.config()
+    put(s.root, 'src/shared/New.luau', 'return 1\n')
+    await s.snapshot(session, OLD_NODES)
+    assert.equal(await s.pull(session), undefined)
+    version = DIRECT_PUSH_PLUGIN_VERSION
+    await s.rescan()
+    const batch = await s.pull(session)
+    assert.ok(batch?.ops.some((o) => o.file === 'src/shared/New.luau'))
+  } finally {
+    await s.close()
+  }
+})
+
+test('SyncService: a held Studio-only script does not stop pushes of other files', async () => {
+  const s = await directSession(903, 'HeldGame')
+  try {
+    const session = await s.config()
+    // First snapshot settles the first sync (Old is the same on both sides).
+    await s.snapshot(session, OLD_NODES)
+    put(s.root, 'src/shared/Fresh.luau', 'return "fresh"\n')
+    // A teammate's script Forge cannot write (unsafe name) is held as Studio-only.
+    const session2 = await s.config()
+    await s.snapshot(session2, [...OLD_NODES, { id: 'r9', path: ['ReplicatedStorage', 'Shared', 'Bad/Name'], className: 'ModuleScript', source: 'return 0\n' }])
+    const batch = await s.pull(session2)
+    assert.ok(batch?.ops.some((o) => o.file === 'src/shared/Fresh.luau'))
+  } finally {
+    await s.close()
+  }
+})
+
+test('DirectPushEngine: a meta file Forge wrote from Studio never pushes a delete of its container; reverts push', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-push-meta-'))
+  dirs.push(root)
+  put(root, 'default.project.json', JSON.stringify({ name: 'MetaGame', tree: { $className: 'DataModel', ReplicatedStorage: { Shared: { $path: 'src/shared' } } } }))
+  put(root, 'src/shared/MyModel/init.meta.json', JSON.stringify({ className: 'Model' }))
+  put(root, 'src/shared/MyModel/Child.luau', 'return "v1"\n')
+  const map = (await loadPlaces(root))[0]
+  const engine = new DirectPushEngine({ root, canPushPlace: () => true, isFileConflicted: () => false })
+  try {
+    engine.recordStudioSnapshot('7', map, [
+      { id: 'm', path: ['ReplicatedStorage', 'Shared', 'MyModel'], className: 'Model' },
+      { id: 'c', path: ['ReplicatedStorage', 'Shared', 'MyModel', 'Child'], className: 'ModuleScript', source: 'return "v1"\n' }
+    ])
+    engine.markFromStudio('src/shared/MyModel/init.meta.json', JSON.stringify({ className: 'Model' }), '7')
+    let ops = await engine.syncPlace('7', map)
+    assert.ok(!ops.some((o) => o.kind === 'delete'), `no delete: ${JSON.stringify(ops)}`)
+
+    // Studio edits Child to v2 (written to disk), then the disk goes back to v1 (git checkout): v1 is pushed.
+    put(root, 'src/shared/MyModel/Child.luau', 'return "v2"\n')
+    engine.markFromStudio('src/shared/MyModel/Child.luau', 'return "v2"\n', '7')
+    put(root, 'src/shared/MyModel/Child.luau', 'return "v1"\n')
+    ops = await engine.syncPlace('7', map)
+    assert.ok(ops.some((o) => o.kind === 'upsert-script' && o.file === 'src/shared/MyModel/Child.luau' && o.source === 'return "v1"\n'))
+  } finally {
+    engine.close()
+  }
+})
+
+test('BaseStore: the copy a pushed file had before its push stays superseded after a restart', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-store-prev-'))
+  dirs.push(root)
+  const store = new BaseStore(root)
+  await store.set('9', 'src/a.luau', 'v1\n')
+  const prev = await store.hashOf('9', 'src/a.luau')
+  await store.set('9', 'src/a.luau', 'v2\n', true)
+  store.markPushed('9', 'src/a.luau', prev)
+  await store.save()
+
+  const again = new BaseStore(root)
+  assert.equal(again.superseded('9', 'src/a.luau', prev!), false, 'not loaded yet')
+  await again.load()
+  assert.equal(again.isPushedUnconfirmed('9', 'src/a.luau'), true)
+  assert.equal(again.superseded('9', 'src/a.luau', prev!), true)
+  // Studio confirming the pushed copy keeps the mark; a Studio edit ends it.
+  await again.set('9', 'src/a.luau', 'v2\n')
+  assert.equal(again.isPushedUnconfirmed('9', 'src/a.luau'), true)
+  await again.set('9', 'src/a.luau', 'v3 from studio\n')
+  assert.equal(again.isPushedUnconfirmed('9', 'src/a.luau'), false)
+  assert.equal(again.superseded('9', 'src/a.luau', prev!), false)
 })

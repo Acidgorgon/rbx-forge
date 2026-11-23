@@ -1,6 +1,6 @@
 --!nonstrict
 -- forge-bridge-version: __FORGE_BRIDGE_VERSION__
--- forge-bridge-template: 16
+-- forge-bridge-template: 17
 -- Forge Bridge: the Studio side of RBX Forge's "Studio check". RBX Forge writes this plugin into the
 -- local Plugins folder; it polls Forge on 127.0.0.1 for jobs. A job plays a VFX Lab effect, an
 -- Animation Lab clip or an Ability Composer move on a small stage in front of a fixed camera, while
@@ -955,8 +955,53 @@ local function nodeBytes(node: any): number
 	return n
 end
 
+-- v17: what Forge Direct Sync just wrote, per instance, so the change events of a push are not sent
+-- back to Forge as Studio edits. Per instance (not "while a batch applies"): edits the user or a Team
+-- Create collaborator makes to anything else during a batch still stream, and with deferred signals
+-- (events delivered after the batch) the push's own events are still recognised.
+local PUSH_ECHO_SECONDS = 3
+type PushWrite = { at: number, source: string?, runContext: string?, deleted: boolean? }
+local pushWrites: { [Instance]: PushWrite } = setmetatable({}, { __mode = "k" }) :: any
+
+local function notePushWrite(inst: Instance, source: string?, runContext: string?, deleted: boolean?)
+	pushWrites[inst] = { at = os.clock(), source = source, runContext = runContext, deleted = deleted }
+end
+
+local function isPushEcho(inst: Instance, flag: string?): boolean
+	local w = pushWrites[inst]
+	if not w then
+		return false
+	end
+	if os.clock() - w.at > PUSH_ECHO_SECONDS then
+		pushWrites[inst] = nil
+		return false
+	end
+	-- Removed by a push but back under a root (Ctrl+Z of the push): a real change, so it is re-tracked.
+	if w.deleted and syncPath(inst) then
+		pushWrites[inst] = nil
+		return false
+	end
+	if flag == "source" and w.source ~= nil then
+		-- The script still holds exactly what the push wrote (editor text included, and the RunContext it
+		-- set): its own event. Anything else is an edit made since.
+		local ok, src = scriptSource(inst)
+		if not ok or src ~= w.source then
+			return false
+		end
+		if w.runContext then
+			local okRc, rc = pcall(function()
+				return (inst :: any).RunContext.Name
+			end)
+			if okRc and rc ~= w.runContext then
+				return false
+			end
+		end
+	end
+	return true
+end
+
 local function touch(inst: Instance, flag: string?)
-	if not sync.session or sync.applyingPush then
+	if not sync.session or isPushEcho(inst, flag) then
 		return
 	end
 	local flags = sync.touched[inst]
@@ -1040,6 +1085,7 @@ end
 local function stopSync()
 	sync.generation += 1
 	sync.session = nil
+	table.clear(pushWrites)
 	for _, c in sync.rootConns do
 		c:Disconnect()
 	end
@@ -1595,7 +1641,7 @@ end
 if scriptEditor then
 	pcall(function()
 		scriptEditor.TextDocumentDidChange:Connect(function(doc)
-			if game.PlaceId ~= 0 or not sync.session or sync.applyingPush then
+			if game.PlaceId ~= 0 or not sync.session then
 				return
 			end
 			local ok, inst = pcall(function()
@@ -1684,6 +1730,7 @@ local function ensureParentOf(path: { string }): Instance?
 		if not child then
 			child = Instance.new("Folder")
 			child.Name = name
+			notePushWrite(child)
 			child.Parent = node
 			local sp = syncPath(child)
 			if sp then
@@ -1693,6 +1740,20 @@ local function ensureParentOf(path: { string }): Instance?
 		node = child
 	end
 	return node
+end
+
+-- v17: inside a Wally package folder (Packages / ServerPackages / DevPackages / _Index), which Direct
+-- Sync pushes from disk outside the synced roots. Never the package folder itself.
+local PACKAGE_FOLDER_NAMES = { Packages = true, ServerPackages = true, DevPackages = true, _Index = true }
+local function insidePackageFolder(inst: Instance): boolean
+	local node = inst.Parent
+	while node and node ~= game do
+		if PACKAGE_FOLDER_NAMES[node.Name] then
+			return true
+		end
+		node = node.Parent
+	end
+	return false
 end
 
 local function applySinglePushOp(op: any): (boolean, string?, string?)
@@ -1706,11 +1767,13 @@ local function applySinglePushOp(op: any): (boolean, string?, string?)
 		if not target then
 			return true, nil, nil
 		end
-		if not insideSyncRoot(target) then
+		if not insideSyncRoot(target) and not insidePackageFolder(target) then
 			return false, "skipped", "outside synced root"
 		end
+		notePushWrite(target, nil, nil, true)
 		unregister(target)
 		for _, d in target:GetDescendants() do
+			notePushWrite(d, nil, nil, true)
 			unregister(d)
 		end
 		target.Parent = nil
@@ -1728,6 +1791,7 @@ local function applySinglePushOp(op: any): (boolean, string?, string?)
 		if not existing then
 			local folder = Instance.new("Folder")
 			folder.Name = name
+			notePushWrite(folder)
 			folder.Parent = parent
 			local sp = syncPath(folder)
 			if sp then
@@ -1742,6 +1806,11 @@ local function applySinglePushOp(op: any): (boolean, string?, string?)
 	if existing and existing.ClassName ~= targetClass then
 		local replacement = Instance.new(targetClass)
 		replacement.Name = name
+		notePushWrite(replacement)
+		notePushWrite(existing, nil, nil, true)
+		for _, d in existing:GetDescendants() do
+			notePushWrite(d)
+		end
 		for _, child in existing:GetChildren() do
 			child.Parent = replacement
 		end
@@ -1757,8 +1826,20 @@ local function applySinglePushOp(op: any): (boolean, string?, string?)
 
 	if kind == "upsert-script" then
 		local src = tostring(op.source or "")
-		local updated = false
-		if inst.Parent and scriptEditor and (scriptEditor :: any).UpdateSourceAsync then
+		local wantRc = if type(op.runContext) == "string" and op.runContext ~= "" then op.runContext else nil
+		notePushWrite(inst, src, wantRc)
+		local same = false
+		if inst.Parent then
+			-- Both the property and (unpublished places) the open editor's text must already match.
+			local okSame, current = pcall(function()
+				return (inst :: any).Source
+			end)
+			local okDoc, doc = scriptSource(inst)
+			same = okSame and current == src and okDoc and doc == src
+		end
+		-- Unchanged (Packages pushed again, a re-snapshot): no write, no Team Create replication.
+		local updated = same
+		if not updated and inst.Parent and scriptEditor and (scriptEditor :: any).UpdateSourceAsync then
 			local okEdit = pcall(function()
 				(scriptEditor :: any):UpdateSourceAsync(inst, function()
 					return src
@@ -1773,10 +1854,14 @@ local function applySinglePushOp(op: any): (boolean, string?, string?)
 		end
 		if type(op.runContext) == "string" and op.runContext ~= "" then
 			pcall(function()
-				(inst :: any).RunContext = (Enum.RunContext :: any)[op.runContext]
+				local want = (Enum.RunContext :: any)[op.runContext]
+				if (inst :: any).RunContext ~= want then
+					(inst :: any).RunContext = want
+				end
 			end)
 		end
 	elseif kind == "upsert-instance" then
+		notePushWrite(inst)
 		if type(op.properties) == "table" then
 			for propName, rawVal in op.properties do
 				local val = decodeRojoValue(rawVal)
@@ -1820,9 +1905,10 @@ local function applySinglePushOp(op: any): (boolean, string?, string?)
 	return true, nil, nil
 end
 
-local function applyPushBatch(batch: any)
+-- Returns whether Forge took the ack.
+local function applyPushBatch(batch: any): boolean
 	if type(batch) ~= "table" or type(batch.batchId) ~= "string" or type(batch.ops) ~= "table" then
-		return
+		return false
 	end
 	local applied: { string } = {}
 	local skipped = {}
@@ -1843,15 +1929,15 @@ local function applyPushBatch(batch: any)
 		for _, op in batch.ops do
 			local okOp, okSuccess, failKind, reason = pcall(applySinglePushOp, op)
 			if not okOp then
-				table.insert(errors, { path = if type(op.path) == "table" then op.path else { "unknown" }, message = tostring(okSuccess) })
+				table.insert(errors, { path = if type(op.path) == "table" then op.path else { "unknown" }, message = string.sub(tostring(okSuccess), 1, 900) })
 			elseif okSuccess then
 				if type(op.file) == "string" and op.file ~= "" then
 					table.insert(applied, op.file)
 				end
 			elseif failKind == "skipped" then
-				table.insert(skipped, { path = op.path, reason = tostring(reason or "skipped") })
+				table.insert(skipped, { path = op.path, reason = string.sub(tostring(reason or "skipped"), 1, 400) })
 			else
-				table.insert(errors, { path = op.path, message = tostring(reason or "error") })
+				table.insert(errors, { path = op.path, message = string.sub(tostring(reason or "error"), 1, 900) })
 			end
 		end
 	end)
@@ -1871,7 +1957,7 @@ local function applyPushBatch(batch: any)
 		applied = {}
 	end
 	if not okRun then
-		table.insert(errors, { path = { "batch" }, message = tostring(runErr) })
+		table.insert(errors, { path = { "batch" }, message = string.sub(tostring(runErr), 1, 900) })
 	end
 
 	if #applied > 0 then
@@ -1893,8 +1979,10 @@ local function applyPushBatch(batch: any)
 		if #errors > 0 then
 			ackBody.errors = errors
 		end
-		pcall(syncPost, "push-ack", ackBody)
+		local okPost, took = pcall(syncPost, "push-ack", ackBody)
+		return okPost and took == true
 	end
+	return false
 end
 
 local function drainPushQueue()
@@ -1911,7 +1999,10 @@ local function drainPushQueue()
 		if not ok or type(answer) ~= "table" or type(answer.batch) ~= "table" then
 			return
 		end
-		applyPushBatch(answer.batch)
+		if not applyPushBatch(answer.batch) then
+			-- The ack did not land: Forge would hand the same batch back at once. Wait for the next turn.
+			return
+		end
 	end
 end
 

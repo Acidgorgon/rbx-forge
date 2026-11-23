@@ -5,7 +5,7 @@
 // to the renderer. No electron imports (tested in test/syncService.test.ts with a fake engine).
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, stat, writeFile } from 'node:fs/promises'
 import { basename, dirname, join } from 'node:path'
 import type {
   DriftCause,
@@ -31,7 +31,7 @@ import type {
 import { DRIFT_FILES_MAX, isForgeSyncEngine, STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
 import type { SyncPollHint, SyncPollInfo, SyncPushAck, SyncPushBatch, SyncPushOp } from '../../../shared/sync/protocol.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
-import { PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
+import { DIRECT_PUSH_PLUGIN_VERSION, PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
 import { disableLegacyPlugins, findLegacyPlugins } from './legacy.ts'
 import { isLinkedKey, linkKey, matchPlace, PlaceLinks } from './links.ts'
 import { DirectPushEngine } from './push.ts'
@@ -430,6 +430,8 @@ export class SyncService {
   private dupNoted = new Set<string>()
   // Last time each Studio window was nudged with pushPending: true (prevents /poll spin loops).
   private pushNudgeAt = new Map<string, number>()
+  // Sync sessions whose disk was scanned for pushes, with whether deletes could go then (see pullPush).
+  private pushScanned = new Map<string, 'clear' | 'held'>()
   private sourcemapWatcher: SourcemapWatcher | null = null
   private pushEngine: DirectPushEngine | null = null
 
@@ -457,12 +459,19 @@ export class SyncService {
     return !!this.deps.engine && !!this.deps.mapping && isForgeSyncEngine(this.settings().engine)
   }
 
+  // Disk -> Studio pushes for a place. Held conflicts and held Studio-only scripts only stop their own
+  // files (push.ts filters conflicted files; deletes still wait for a clear gate): one Studio-only script
+  // a teammate made used to stop every push to the place. An undecided first sync stops them all.
+  // A plugin older than DIRECT_PUSH_PLUGIN_VERSION gets nothing (see plugin.ts): its push handling
+  // dropped Studio edits made while a batch applied, or echoed the push back as Studio edits.
   private canDirectPush(placeKey: string): boolean {
     if (!this.directMode() || !this.liveSession(placeKey)) return false
+    const state = this.placeStates.get(placeKey)
+    const v = state ? this.pluginVersionOf(state.place) : undefined
+    if (v !== undefined && v < DIRECT_PUSH_PLUGIN_VERSION) return false
     const g = this.gate(placeKey)
     if (g === 'clear') return true
     if (g !== 'blocked') return false
-    if (this.deps.engine?.studioOnly?.(placeKey)?.holds) return false
     return !this.conflictsFor(placeKey).some((c) => c.reason === 'first-run')
   }
 
@@ -484,11 +493,12 @@ export class SyncService {
       startedSourcemap = true
     }
     if (!this.pushEngine) {
+      this.pushScanned.clear()
       this.pushEngine = new DirectPushEngine({
         root: this.root,
         now: this.now,
         canPushPlace: (pk) => this.canDirectPush(pk),
-        canDeletePlace: (pk) => this.directMode() && this.liveSession(pk) && this.gate(pk) === 'clear',
+        canDeletePlace: (pk) => this.canDirectPush(pk) && this.gate(pk) === 'clear',
         isFileConflicted: (pk, file) => this.conflictsFor(pk).some((c) => c.file === file),
         onEntries: (pk, entries) => void this.recordDirectPush(pk, entries),
         onQueued: (pk) => this.notifyPushPending(pk),
@@ -616,6 +626,7 @@ export class SyncService {
       changed = true
     }
     for (const [id, u] of this.unlinked) if (now - u.lastSeen > UNLINKED_SHOW_MS) this.unlinked.delete(id)
+    for (const token of this.pushScanned.keys()) if (!this.sessions.has(token)) this.pushScanned.delete(token)
     for (const m of [this.configSeen, this.resyncAt, this.windowSeen, this.pushNudgeAt]) for (const [k, at] of m) if (now - at > 10 * 60_000) m.delete(k)
     // Gates also follow the bridge's view of Studio (plugin version, unlinked places going away).
     if (this.pushGates() || changed) this.refresh()
@@ -625,6 +636,7 @@ export class SyncService {
     this.closed = true
     this.sessions.clear()
     this.pushNudgeAt.clear()
+    this.pushScanned.clear()
     this.sourcemapWatcher?.close()
     this.sourcemapWatcher = null
     this.pushEngine?.close()
@@ -657,6 +669,20 @@ export class SyncService {
     if (!session || !session.ready) return {}
     const state = this.placeStates.get(session.placeKey)
     if (state) state.lastSeen = this.now()
+    // A session whose snapshot could not push (gate held, Direct Sync switched on mid-session) scans the
+    // disk on its first pull once pushes are allowed: unblocking (Take Studio, Pull to disk, a conflict
+    // resolved in Studio) otherwise waited for the next file edit.
+    // Without a snapshot this engine saw (Direct Sync switched on mid-session) it does not know what
+    // Studio has: it would push the whole project and take it all for Forge's. Studio checks again first.
+    if (state && !this.pushEngine.hasStudioSnapshot(session.placeKey)) {
+      this.recheck.add(state.projectFile)
+      return {}
+    }
+    const scanned = this.pushScanned.get(sessionToken)
+    if ((!scanned || (scanned === 'held' && this.gate(session.placeKey) === 'clear')) && this.canDirectPush(session.placeKey)) {
+      this.pushScanned.set(sessionToken, this.gate(session.placeKey) === 'clear' ? 'clear' : 'held')
+      await this.syncDirectPush(session.placeKey)
+    }
     const batch = this.pushEngine.pullNextBatch(session.placeKey)
     return batch ? { batch } : {}
   }
@@ -906,6 +932,7 @@ export class SyncService {
           session.nextSeq = 0
           session.ready = false
           session.rootsSeen = new Set()
+          this.pushScanned.delete(session.token)
           this.noCheck.delete(state.projectFile)
           state.counts = {}
           state.snapshotRefs = []
@@ -949,7 +976,10 @@ export class SyncService {
           }
           const conflicts = engine.conflicts().filter((c) => c.placeKey === session.placeKey).length
           const after = this.gate(session.placeKey)
-          if (this.canDirectPush(session.placeKey)) await this.syncDirectPush(session.placeKey, state.projectFile)
+          if (this.canDirectPush(session.placeKey)) {
+            this.pushScanned.set(session.token, after === 'clear' ? 'clear' : 'held')
+            await this.syncDirectPush(session.placeKey, state.projectFile)
+          }
           const held = after === 'blocked' && session.soft ? '; rojo serve stops: the re-check found something to hold' : this.forced.has(state.projectFile) && engine.gate(session.placeKey) === 'blocked' ? '; rojo keeps serving (Serve anyway is on: Hold again in Forge Sync to hold it)' : ''
           this.deps.log?.(`sync: ${state.projectFile} reconciled, ${entries.length} files, ${conflicts} conflict${conflicts === 1 ? '' : 's'}${held}`)
         }
@@ -1026,6 +1056,9 @@ export class SyncService {
       await this.suppressPushEcho(placeKey, file)
     }
     if (take === 'disk' || take === 'merged') {
+      // Studio has something else there: what Forge last pushed is no longer what it has. Not for a file
+      // gone from disk: Studio's copy stays known so the scan pushes its delete.
+      if (await this.onDisk(file)) this.pushEngine?.forgetStudio(placeKey, file)
       if (this.canDirectPush(placeKey)) await this.syncDirectPush(placeKey)
     }
     this.refresh()
@@ -1039,8 +1072,9 @@ export class SyncService {
     if (take === 'studio') {
       await this.markWritten(files)
       for (const f of files) await this.suppressPushEcho(placeKey, f)
-    } else if (this.canDirectPush(placeKey)) {
-      await this.syncDirectPush(placeKey)
+    } else {
+      for (const f of files) if (await this.onDisk(f)) this.pushEngine?.forgetStudio(placeKey, f)
+      if (this.canDirectPush(placeKey)) await this.syncDirectPush(placeKey)
     }
     this.refresh()
     return this.status()
@@ -1602,8 +1636,8 @@ export class SyncService {
       return { level: 'warn', action: 'restart-studio', text: `Restart Studio to update the Forge Bridge plugin (v${v} → v${PLUGIN_VERSION}). Until then rojo serve waits: an older plugin's check could let Rojo delete scripts that exist only in Studio.` }
     }
     if (v > 0 && v < PLUGIN_VERSION) {
-      if (this.directMode()) {
-        return { level: 'warn', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (required for disk -> Studio Direct Sync).` }
+      if (this.directMode() && v < DIRECT_PUSH_PLUGIN_VERSION) {
+        return { level: 'warn', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (required for disk -> Studio Direct Sync: pushes to this place wait until then).` }
       }
       return { level: 'info', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (syncs folders Rojo creates after Studio opened, Script Editor text in unpublished places, and Ctrl+D copies of scripts).` }
     }
@@ -1931,6 +1965,10 @@ export class SyncService {
     if (!shown.length) return
     this.recent = [...shown.slice().reverse(), ...this.recent].slice(0, RECENT_MAX)
     this.deps.emit('sync:entry', shown)
+  }
+
+  private onDisk(relFile: string): Promise<boolean> {
+    return stat(join(this.root, relFile)).then((i) => i.isFile(), () => false)
   }
 
   private async suppressPushEcho(placeKey: string, relFile: string): Promise<void> {

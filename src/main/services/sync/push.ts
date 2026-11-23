@@ -21,11 +21,22 @@ export type PushMapLike = {
 } & Partial<Omit<PlaceMap, 'roots' | 'skipped'>>
 
 const MAX_BATCH_BYTES = 1024 * 1024
+// The ack lists every applied file (protocol maxChanges 5000): small Wally files must not overflow it.
+const MAX_BATCH_OPS = 1000
 const INFLIGHT_RETRY_MS = 15_000
 const IGNORE_DIRS = new Set(['.git', '.forge', 'node_modules'])
 const PACKAGES_PATH_RE = /^(Server|Dev)?Packages(\/|$)/
 const PACKAGE_META_SKIP = new Set(['sourcemap.json', 'package.json', 'tsconfig.json', 'wally.toml', 'wally.lock'])
 const PUSHED_PACKAGES_FILE = join('.forge', 'sync', 'pushed-packages.json')
+
+// Files a scan turns into push ops (scanMap.addFile): scripts, .model.json, .json modules and .txt.
+// Anything else (.meta.json, .gitkeep, .project.json ...) must never be recorded as "Studio has it": with
+// no op on disk it would read as deleted and push a delete of its instance (a whole Model / folder).
+function isPushTracked(relPath: string): boolean {
+  const name = relPath.slice(relPath.lastIndexOf('/') + 1)
+  if (name.endsWith('.meta.json') || name.endsWith('.meta.jsonc') || name.endsWith('.project.json')) return false
+  return /\.(lua|luau|txt)$/.test(name) || name.endsWith('.json')
+}
 
 function isPackageSkip(s: { instance: string[]; path: string }): boolean {
   const last = s.instance[s.instance.length - 1]
@@ -67,6 +78,7 @@ interface DiskSnapshot {
   opsByFile: Map<string, SyncPushOp>
   folders: Map<string, string[]> // relDir -> instancePath
   hashes: Map<string, string> // relFile -> sha256
+  raw: Map<string, string> // relFile -> sha256 of the file's own text (what markFromStudio sees)
   paths: Map<string, string[]> // relFile -> instancePath
 }
 
@@ -105,6 +117,15 @@ async function readJsonObj(file: string): Promise<Record<string, unknown> | null
   }
 }
 
+// RunContext a script file gets from its name alone (Rojo 7.7 lua.rs): without emitLegacyScripts,
+// .server -> Server and .client -> Client. An adjacent meta file's RunContext wins.
+function suffixRunContext(fileName: string, emitLegacyScripts: boolean): 'Server' | 'Client' | undefined {
+  if (emitLegacyScripts) return undefined
+  if (/\.server\.(lua|luau)$/.test(fileName)) return 'Server'
+  if (/\.client\.(lua|luau)$/.test(fileName)) return 'Client'
+  return undefined
+}
+
 function parseMetaRunContext(meta: Record<string, unknown> | null): 'Legacy' | 'Server' | 'Client' | undefined {
   const props = meta?.properties
   if (!props || typeof props !== 'object') return undefined
@@ -128,6 +149,12 @@ export class DirectPushEngine {
   private maps: PlaceMap[] = []
   private readonly knownStudioHashes = new Map<string, Map<string, string>>() // placeKey -> relFile -> sha256
   private readonly knownInstancePaths = new Map<string, Map<string, string[]>>() // placeKey -> relFile -> instancePath
+  // placeKey -> relFile -> sha256 of the raw file text Forge wrote from Studio. The digest a scan
+  // compares (source + RunContext, the JSON module wrapper, a model digest) is not the file's text, so
+  // a Studio write is matched by its text and the scan then records its digest.
+  private readonly knownStudioRaw = new Map<string, Map<string, string>>()
+  // Places whose Studio hashes came from a snapshot (recordStudioSnapshot) in this engine.
+  private readonly snapshotted = new Set<string>()
   private readonly queues = new Map<string, QueuedPlace>() // placeKey -> queue
   private readonly activePlaceKeys = new Map<string, string>() // projectFile -> placeKey
   private readonly echoSuppression = new Map<string, { hash: string; at: number }>() // relFile -> { hash, at }
@@ -150,20 +177,34 @@ export class DirectPushEngine {
   /** Called right before/when Studio->disk pull writes a file so fs.watch never echoes it back. */
   markFromStudio(relPath: string, content: string, placeKey?: string): void {
     const normRel = relPath.replace(/\\/g, '/')
+    if (!isPushTracked(normRel)) return
     const hash = sha256Text(content)
     this.echoSuppression.set(normRel, { hash, at: this.now() })
     if (placeKey) {
+      let raw = this.knownStudioRaw.get(placeKey)
+      if (!raw) this.knownStudioRaw.set(placeKey, (raw = new Map()))
+      raw.set(normRel, hash)
       let placeHashes = this.knownStudioHashes.get(placeKey)
       if (!placeHashes) {
         placeHashes = new Map()
         this.knownStudioHashes.set(placeKey, placeHashes)
       }
-      placeHashes.set(normRel, hash)
+      // Studio has this copy now (a later disk delete pushes a delete, a disk revert to an older copy
+      // pushes it); the scan records the real digest once the file still holds it.
+      placeHashes.set(normRel, `studio:${hash}`)
       const q = this.queues.get(placeKey)
       if (q) {
         q.ops = q.ops.filter((op) => !('file' in op) || op.file !== normRel)
       }
     }
+  }
+
+  /** Forgets what Forge believed Studio has for a file (a conflict resolved to the disk copy): the next scan pushes it. */
+  forgetStudio(placeKey: string, relPath: string): void {
+    const normRel = relPath.replace(/\\/g, '/')
+    this.knownStudioHashes.get(placeKey)?.delete(normRel)
+    this.knownStudioRaw.get(placeKey)?.delete(normRel)
+    this.echoSuppression.delete(normRel)
   }
 
   /** Called when Studio->disk trashed/removed a file so we don't re-push a deletion. */
@@ -172,6 +213,7 @@ export class DirectPushEngine {
     this.echoSuppression.delete(normRel)
     if (placeKey) {
       this.knownStudioHashes.get(placeKey)?.delete(normRel)
+      this.knownStudioRaw.get(placeKey)?.delete(normRel)
       const q = this.queues.get(placeKey)
       if (q) q.ops = q.ops.filter((op) => !('file' in op) || op.file !== normRel)
     }
@@ -203,6 +245,7 @@ export class DirectPushEngine {
     const map = this.normalizeMap(rawMap)
     this.activePlaceKeys.set(map.projectFile, placeKey)
     this.clearInflight(placeKey)
+    this.snapshotted.add(placeKey)
 
     let hashes = this.knownStudioHashes.get(placeKey)
     if (!hashes) {
@@ -221,6 +264,7 @@ export class DirectPushEngine {
     for (const k of [...paths.keys()]) {
       if (!PACKAGES_PATH_RE.test(k)) paths.delete(k)
     }
+    this.knownStudioRaw.delete(placeKey)
 
     const parentKeys = new Set<string>()
     for (const node of nodes) {
@@ -283,6 +327,13 @@ export class DirectPushEngine {
     this.queues.delete(placeKey)
     this.knownStudioHashes.delete(placeKey)
     this.knownInstancePaths.delete(placeKey)
+    this.knownStudioRaw.delete(placeKey)
+    this.snapshotted.delete(placeKey)
+  }
+
+  /** Whether this engine knows what Studio has for the place (a snapshot was recorded). */
+  hasStudioSnapshot(placeKey: string): boolean {
+    return this.snapshotted.has(placeKey)
   }
 
   private canDelete(placeKey: string): boolean {
@@ -353,6 +404,7 @@ export class DirectPushEngine {
     }
     const prevPaths = this.knownInstancePaths.get(placeKey) ?? new Map<string, string[]>()
     this.knownInstancePaths.set(placeKey, prevPaths)
+    const studioRaw = this.knownStudioRaw.get(placeKey)
 
     const ops: SyncPushOp[] = []
     const neededFolders = new Set<string>()
@@ -361,9 +413,15 @@ export class DirectPushEngine {
     for (const [rel, op] of snap.opsByFile) {
       if (this.opts.isFileConflicted(placeKey, rel)) continue
       const newHash = snap.hashes.get(rel)!
+      const rawHash = snap.raw.get(rel)
       const knownHash = prevHashes.get(rel)
+      // The file still holds exactly what Forge wrote from Studio: Studio has it (an echo, not an edit).
+      // Kept on a mismatch (a scan that read the file before Forge wrote Studio's copy, or a disk edit):
+      // it stays true until Studio changes again (markFromStudio) or a push lands (ack).
+      const fromStudio = studioRaw?.get(rel)
       const suppressed = this.echoSuppression.get(rel)
-      if (suppressed && suppressed.hash === newHash && this.now() - suppressed.at < 10_000) {
+      if ((fromStudio !== undefined && fromStudio === rawHash) || (suppressed && suppressed.hash === rawHash && this.now() - suppressed.at < 10_000)) {
+        studioRaw?.delete(rel)
         prevHashes.set(rel, newHash)
         const p = snap.paths.get(rel)
         if (p) prevPaths.set(rel, p)
@@ -387,9 +445,14 @@ export class DirectPushEngine {
       if (folderPath.length >= 2) neededFolders.add(folderPath.join('\u0000'))
     }
 
+    // Every instance the disk still has, ancestors included: a delete is never sent for something that
+    // still holds a file on disk (it would take the whole subtree with it).
     const diskInstanceKeys = new Set<string>()
-    for (const op of snap.opsByFile.values()) diskInstanceKeys.add(op.path.join('\u0000'))
-    for (const folderPath of snap.folders.values()) diskInstanceKeys.add(folderPath.join('\u0000'))
+    const addWithAncestors = (path: string[]) => {
+      for (let i = 1; i <= path.length; i++) diskInstanceKeys.add(path.slice(0, i).join('\u0000'))
+    }
+    for (const op of snap.opsByFile.values()) addWithAncestors(op.path)
+    for (const folderPath of snap.folders.values()) addWithAncestors(folderPath)
 
     // Detect deletions (previously known on Studio, now gone from disk under this map)
     for (const [rel] of prevHashes) {
@@ -482,7 +545,7 @@ export class DirectPushEngine {
     while (q.ops.length > 0) {
       const next = q.ops[0]
       const size = opByteSize(next)
-      if (batchOps.length > 0 && bytes + size > MAX_BATCH_BYTES) break
+      if (batchOps.length > 0 && (bytes + size > MAX_BATCH_BYTES || batchOps.length >= MAX_BATCH_OPS)) break
       q.ops.shift()
       batchOps.push(next)
       bytes += size
@@ -516,15 +579,28 @@ export class DirectPushEngine {
     this.knownStudioHashes.set(placeKey, hashes)
 
     const appliedSet = new Set(ack.applied)
+    // A delete the plugin skipped (nothing to remove, or a place it may not touch) is settled too:
+    // kept, it would be queued again on every scan.
+    let pkgTouched = false
+    const skippedKeys = new Set((ack.skipped ?? []).map((sk) => sk.path.join('\u0000')))
+    for (const op of batch.ops) {
+      if (op.kind !== 'delete' || !op.file || appliedSet.has(op.file) || !skippedKeys.has(op.path.join('\u0000'))) continue
+      hashes.delete(op.file)
+      this.knownInstancePaths.get(placeKey)?.delete(op.file)
+      if (PACKAGES_PATH_RE.test(op.file) && this.persistedPkgHashes[placeKey]?.[op.file]) {
+        delete this.persistedPkgHashes[placeKey][op.file]
+        pkgTouched = true
+      }
+    }
     const entries: SyncEntry[] = []
     const appliedOps: SyncPushOp[] = []
     const ts = this.now()
-    let pkgTouched = false
 
     for (const op of batch.ops) {
       if (!('file' in op) || !op.file) continue
       if (!appliedSet.has(op.file)) continue
       const isPkg = PACKAGES_PATH_RE.test(op.file)
+      this.knownStudioRaw.get(placeKey)?.delete(op.file)
       if (op.kind === 'delete') {
         hashes.delete(op.file)
         this.knownInstancePaths.get(placeKey)?.delete(op.file)
@@ -578,6 +654,7 @@ export class DirectPushEngine {
     const opsByFile = new Map<string, SyncPushOp>()
     const folders = new Map<string, string[]>()
     const hashes = new Map<string, string>()
+    const raw = new Map<string, string>()
     const paths = new Map<string, string[]>()
     const seenReal = new Set<string>()
     const realRoot = await fsp.realpath(this.root).catch(() => this.root)
@@ -609,10 +686,11 @@ export class DirectPushEngine {
       if (info?.kind === 'script') {
         const sourceRaw = await fsp.readFile(fileAbs, 'utf8').catch(() => null)
         if (sourceRaw === null) return
+        raw.set(childRel, sha256Text(sourceRaw))
         const source = sourceRaw.replace(/\r\n/g, '\n')
         const metaName = info.stem === null ? 'init.meta.json' : `${info.stem}.meta.json`
         const meta = siblingNames === null || siblingNames.has(metaName) ? await readJsonObj(join(dirname(fileAbs), metaName)) : null
-        const runContext = parseMetaRunContext(meta)
+        const runContext = parseMetaRunContext(meta) ?? (info.className === 'Script' ? suffixRunContext(fileName, emitLegacyScripts) : undefined)
         const digestInput = runContext && runContext !== 'Legacy' ? `${normalise(source)}\u0000${runContext}` : normalise(source)
         const sha256 = sha256Text(digestInput)
         hashes.set(childRel, sha256)
@@ -627,8 +705,17 @@ export class DirectPushEngine {
           file: childRel
         })
       } else if (info?.kind === 'model') {
-        const model = await readJsonObj(fileAbs)
+        const modelText = await fsp.readFile(fileAbs, 'utf8').catch(() => null)
+        if (modelText === null) return
+        let model: Record<string, unknown> | null = null
+        try {
+          const parsed: unknown = JSON.parse(modelText)
+          if (parsed && typeof parsed === 'object' && !Array.isArray(parsed)) model = parsed as Record<string, unknown>
+        } catch {
+          model = null
+        }
         if (!model) return
+        raw.set(childRel, sha256Text(modelText))
         const className = typeof (model.ClassName ?? model.className) === 'string' ? String(model.ClassName ?? model.className) : 'Folder'
         const properties = (model.Properties ?? model.properties) as Record<string, SyncValue> | undefined
         const attributes = (model.Attributes ?? model.attributes) as Record<string, SyncValue> | undefined
@@ -649,6 +736,7 @@ export class DirectPushEngine {
       } else if (fileName.endsWith('.json') && !fileName.endsWith('.project.json')) {
         const rawJson = await fsp.readFile(fileAbs, 'utf8').catch(() => null)
         if (rawJson === null) return
+        raw.set(childRel, sha256Text(rawJson))
         const source = `return game:GetService("HttpService"):JSONDecode(${JSON.stringify(normalise(rawJson))})\n`
         const sha256 = sha256Text(source)
         hashes.set(childRel, sha256)
@@ -664,6 +752,7 @@ export class DirectPushEngine {
       } else if (fileName.endsWith('.txt')) {
         const rawTxt = await fsp.readFile(fileAbs, 'utf8').catch(() => null)
         if (rawTxt === null) return
+        raw.set(childRel, sha256Text(rawTxt))
         const properties: Record<string, SyncValue> = { Value: normalise(rawTxt) }
         const sha256 = stableModelDigest('StringValue', properties)
         hashes.set(childRel, sha256)
@@ -811,7 +900,7 @@ export class DirectPushEngine {
       }
     }
 
-    return { opsByFile, folders, hashes, paths }
+    return { opsByFile, folders, hashes, raw, paths }
   }
 
   private resetWatchers(): void {
@@ -885,6 +974,8 @@ export class DirectPushEngine {
     this.queues.clear()
     this.knownStudioHashes.clear()
     this.knownInstancePaths.clear()
+    this.knownStudioRaw.clear()
+    this.snapshotted.clear()
     this.activePlaceKeys.clear()
   }
 }

@@ -80,7 +80,7 @@ export function ForgePage() {
     actions.requestCreate(kind)
   }
 
-  const syncEngine = syncSt?.engine ?? syncSet?.engine ?? 'forge-direct'
+  const syncEngine = syncSt?.engine ?? syncSet?.engine ?? 'forge'
   const syncLabel =
     syncEngine === 'forge-direct' ? 'Direct 2-way' : syncEngine === 'forge' ? 'Rojo Gated' : syncEngine === 'project' ? 'Project Sync' : 'Off'
   const connectedPlaces = syncSt?.places.filter((p) => p.connected).length ?? 0

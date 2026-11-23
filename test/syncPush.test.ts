@@ -116,7 +116,7 @@ test('DirectPushEngine: orders ops, deduplicates via sha256, suppresses Studio e
   }
 })
 
-test('HTTP bridge roundtrip: default forge-direct serves sourcemap + /sync/push + /sync/push-ack', async () => {
+test('HTTP bridge roundtrip: forge-direct serves sourcemap + /sync/push + /sync/push-ack', async () => {
   const root = mkdtempSync(join(tmpdir(), 'forge-direct-http-'))
   dirs.push(root)
 
@@ -139,7 +139,7 @@ test('HTTP bridge roundtrip: default forge-direct serves sourcemap + /sync/push 
     root,
     engine: new SyncEngine({ root }),
     mapping: { loadPlaces, placeFor },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? 'forge-direct' : fb) as T },
     git: async () => ({ code: 1, stdout: '', stderr: '' }),
     pluginsDir: () => null,
     emit: () => undefined
@@ -340,7 +340,7 @@ test('DirectPushEngine + StudioBridge: no /poll spin-loop while batch is infligh
     root,
     engine: new SyncEngine({ root }),
     mapping: { loadPlaces, placeFor },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? 'forge-direct' : fb) as T },
     git: async () => ({ code: 1, stdout: '', stderr: '' }),
     pluginsDir: () => null,
     emit: () => undefined
@@ -541,7 +541,7 @@ test('SyncService: push-ack updates BaseStore so subsequent Studio edit pulls cl
     root,
     engine: new SyncEngine({ root }),
     mapping: { loadPlaces, placeFor },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? 'forge-direct' : fb) as T },
     git: async () => ({ code: 1, stdout: '', stderr: '' }),
     pluginsDir: () => null,
     emit: () => undefined
@@ -683,7 +683,7 @@ async function directSession(placeId: number, name: string, studios?: () => { pl
     root,
     engine: new SyncEngine({ root }),
     mapping: { loadPlaces, placeFor },
-    settings: { get: <T>(_k: string, fb: T) => fb },
+    settings: { get: <T>(k: string, fb: T) => (k === 'sync.engine' ? 'forge-direct' : fb) as T },
     git: async () => ({ code: 1, stdout: '', stderr: '' }),
     pluginsDir: () => null,
     emit: () => undefined,

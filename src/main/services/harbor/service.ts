@@ -242,15 +242,34 @@ export class HarborService {
   }
 
   private startWatchers(root: string): void {
-    const targets = [root]
-    for (const dir of targets) {
-      if (!existsSync(dir)) continue
+    const recursive = process.platform === 'win32' || process.platform === 'darwin'
+    const targets: Array<{ dir: string; prefix: string; recursive: boolean }> = [{ dir: root, prefix: '', recursive }]
+    if (!recursive) {
+      const seen = new Set<string>([resolve(root)])
+      const addSub = (relDir: string) => {
+        const abs = join(root, ...relDir.split('/'))
+        const norm = resolve(abs)
+        if (seen.has(norm) || !existsSync(abs)) return
+        seen.add(norm)
+        targets.push({ dir: abs, prefix: `${relDir}/`, recursive: false })
+      }
+      addSub('tools')
+      addSub('src/shared')
+      addSub('src/shared/Modules')
+      const libsRel = findLibsConfigFile(root)
+      if (libsRel && libsRel.includes('/')) {
+        addSub(libsRel.slice(0, libsRel.lastIndexOf('/')))
+      }
+    }
+    for (const target of targets) {
+      if (!existsSync(target.dir)) continue
       try {
         const w = watch(
-          dir,
-          { recursive: process.platform === 'win32' || process.platform === 'darwin', persistent: false },
+          target.dir,
+          { recursive: target.recursive, persistent: false },
           (_ev, filename) => {
-            const rel = typeof filename === 'string' ? filename.replace(/\\/g, '/') : ''
+            const name = typeof filename === 'string' ? filename.replace(/\\/g, '/') : ''
+            const rel = name ? `${target.prefix}${name}` : ''
             if (!rel || rel.startsWith('.git/') || rel.startsWith('.forge/') || rel.startsWith('node_modules/')) return
             if (
               rel === 'rokit.toml' ||

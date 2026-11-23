@@ -77,6 +77,13 @@ export class StudioTurnLock {
     }
   }
 
+  private syncTimerRef(): void {
+    const t = this.holder?.timer as { ref?: () => void; unref?: () => void } | null | undefined
+    if (!t) return
+    if (this.waiters.length > 0) t.ref?.()
+    else t.unref?.()
+  }
+
   private grantTo(owner: string, reason: string, leaseMs: number): () => void {
     const token = Symbol(owner)
     const acquiredAt = this.now()
@@ -93,9 +100,9 @@ export class StudioTurnLock {
       this.releaseToken(token)
       this.onTimeout?.(expired)
     }, effectiveLease)
-    ;(timer as { unref?: () => void }).unref?.()
 
     this.holder = { token, info, timer }
+    this.syncTimerRef()
     this.notify()
 
     let released = false
@@ -143,6 +150,7 @@ export class StudioTurnLock {
           const idx = this.waiters.indexOf(waiter)
           if (idx >= 0) {
             this.waiters.splice(idx, 1)
+            this.syncTimerRef()
             this.notify()
             reject(makeAbortError())
           }
@@ -151,6 +159,7 @@ export class StudioTurnLock {
         waiter.abortCleanup = () => opts.signal?.removeEventListener('abort', onAbort)
       }
       this.waiters.push(waiter)
+      this.syncTimerRef()
       this.notify()
     })
   }

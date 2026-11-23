@@ -471,7 +471,7 @@ export class Supervisor {
   }
 
   private gating(): boolean {
-    return this.syncEngine() === 'forge' && this.options.getSetting<boolean>(SYNC_GATE_SETTING, true) !== false
+    return isForgeSyncEngine(this.syncEngine()) && this.options.getSetting<boolean>(SYNC_GATE_SETTING, true) !== false
   }
 
   // The place a rojo serve proc serves ("rojo" = the active place, "rojo:<file>" = another place).

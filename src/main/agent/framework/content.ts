@@ -18,7 +18,7 @@ Harbor APIs are listed in section 7. Read the linked page before you use a call 
 
 ## 2. Project layout
 
-Rojo maps the folders (see \`default.project.json\`):
+Rojo maps the folders (see \`default.project.json\`). If the root has more than one \`*.project.json\`, the game has several places: read section 8 before anything else.
 
 | Folder | In the game |
 |---|---|
@@ -73,7 +73,7 @@ Creating the shared folder makes the \`./dev\` watcher scaffold the Service and 
 
 First, the audit.
 
-- Read the whole game and write \`.forge/MIGRATION.md\`. If the file already exists, continue from it.
+- Read the whole game, every place, and write \`.forge/MIGRATION.md\`. If the file already exists, continue from it. With several places, follow section 8 for how to lay it out.
 - List every:
   - remote: \`Instance.new("RemoteEvent")\`, \`:FireServer\`, \`OnServerEvent\`, \`InvokeServer\`, \`*.blink\`;
   - data store or profile library;
@@ -203,7 +203,7 @@ Measure with Lighthouse first (F8 overlay, \`Lighthouse.export()\`), change one 
 ## 5. Definition of done (per feature)
 
 - The schemas compile and the generated files are current: \`current events.blink\`, \`ripple src/shared/Ripple.ripple\`.
-- The project builds: \`rojo build default.project.json -o <temp>/check.rbxl\`.
+- The project builds: \`rojo build <place>.project.json -o <temp>/check.rbxl\` for every \`*.project.json\` at the root, not only the default place.
 - Lint and type checks the project has pass: selene, luau-lsp, Lune tests.
 - Nothing the feature replaced is still referenced: search for the old remote names, \`DataStoreService\`, \`FireServer\` and \`OnServerEvent\` in its files.
 - \`.forge/MIGRATION.md\` is updated.
@@ -235,7 +235,54 @@ Measure with Lighthouse first (F8 overlay, \`Lighthouse.export()\`), change one 
 | Tide | https://acidgorgon.github.io/Tide/ | guide/getting-started, guide/players, guide/entities, guide/time-and-rewind, reference/api, reference/config |
 | Lighthouse | https://acidgorgon.github.io/Lighthouse/ | guide/getting-started, guide/probes, guide/network, reference/api |
 
-Without web access, read the vendored source: each library's \`init.luau\` lists its public API.`
+Without web access, read the vendored source: each library's \`init.luau\` lists its public API.
+
+## 8. Games with several places
+
+One repo holds every place. Each \`*.project.json\` at the root is one place:
+
+- \`default.project.json\` is the main place;
+- the others are named after their place, for example \`race.project.json\` or \`lobby.project.json\`.
+
+Forge's place switcher picks which place Rojo serves, and **Serve all places** serves them all.
+
+### Layout
+
+Read every \`*.project.json\` first. Together they say which folders each place gets. Follow the split the project already uses. If it has none yet:
+
+- **Code every place runs** stays in \`src/shared\`, \`src/server\` and \`src/client\`, and every place file maps it. That covers saving, shared systems, the Harbor libraries and the shared schemas.
+- **Code only one place runs** goes in \`places/<Place>/shared\`, \`places/<Place>/server\` and \`places/<Place>/client\`, mapped only by that place's file.
+- Before you add a folder, check how ModuleLoader finds Services and Controllers, so place-only features still load.
+
+### Harbor across places
+
+- **Anchor: one save for every place.**
+  - Every place uses the same store name, the same key and the same template.
+  - Keep the template in one server module that every place maps, for example \`src/server/Data/Template.luau\`.
+  - On a teleport, the old server ends the session and the session lock hands the save to the new server. \`Data:Await(player)\` waits for it.
+  - Never give a place its own store for data the player carries between places. A place's own progress goes in its own key of the same profile, for example \`Race = { BestLap = 0 }\`.
+- **Template changes must work on older servers.** Places are published separately, and old servers keep running until they close, so a player can teleport from an updated main place into an old race server.
+  - Only add fields, with defaults.
+  - Never rename or remove a saved field, or change its type, without a migration in \`MIGRATION.md\` that the user has approved.
+- **Teleport data is not trusted.**
+  - The client can forge anything in \`TeleportOptions:SetTeleportData\` and \`player:GetJoinData()\`.
+  - Keep what matters (match id, team, entry fee) in the save, or in \`MemoryStoreService\` keyed by the reserved server's access code, and check it when the player arrives.
+  - Teleport from the server with \`TeleportService:TeleportAsync\`. On \`TeleportInitFailed\`, retry a few times, then tell the player.
+- **Current: one shared schema, plus one per place.**
+  - \`events.blink\` holds the events every place uses.
+  - A place's own events go in \`<place>.blink\` at the repo root, for example \`race.blink\`. Forge compiles every root \`.blink\` file.
+  - Give each place schema its own \`ServerOutput\` and \`ClientOutput\` inside that place's folders, for example \`places/Race/shared/events/server.luau\`.
+  - Add \`option RemoteScope = "<PLACE>"\` to the place schema. Two schemas loaded in one place would otherwise create remotes with the same name.
+- **Ripple: one schema for the game.** States a place never creates cost nothing. The player state that wraps the Anchor profile must be the same in every place.
+- **Tide:** call \`Tide.start\` in each place that has moving things, with that place's own options: \`origin\` at the centre of that place's map, and its own kinds. Vehicles in a race place are a fast-physics design decision (see 4.4): ask the user.
+- **Lighthouse:** start it in every place. Shared systems keep the same probe names, so places can be compared.
+
+### Migration and release
+
+- \`MIGRATION.md\` gets a **Shared** section and one section per place.
+- Migrate the shared systems first: saving, shared events, the Ripple player state. Then do each place.
+- Studio can't teleport between places. Test each place on its own with Anchor's \`Mock = true\`. Ask the user to test teleports in a published test place or a private server.
+- The report names the places that need publishing. When the save template, \`events.blink\` or the Ripple schema change, every place that uses them must be published.`
 
 export const REFACTOR_SKILL = `---
 name: forge-refactor
@@ -247,7 +294,8 @@ description: Refactor, migrate or optimize a Roblox game in the RBX Forge framew
 1. Read \`.forge/FRAMEWORK.md\` in full, and the project's \`AGENTS.md\`. They are the rules for this job and override your defaults.
 2. Read \`.forge/MIGRATION.md\`.
    - If it does not exist, do the audit in FRAMEWORK.md section 4 and write it.
-   - For a whole-game refactor, show the user the plan (features, their order, open questions such as raw DataStore formats or ball physics) and wait for a go-ahead before changing code.
+   - With more than one \`*.project.json\` at the root, the game has several places. Audit every place and lay MIGRATION.md out as FRAMEWORK.md section 8 says: shared systems first, then each place.
+   - For a whole-game refactor, show the user the plan (places, features, their order, open questions such as raw DataStore formats or ball physics) and wait for a go-ahead before changing code.
 3. Pick the next unchecked item in MIGRATION.md, or the feature the user named. Migrate it in the order networking, data, state, movement, telemetry, optimization (FRAMEWORK.md 4.1 to 4.6). Before you use an API call you have not used in this project yet, read its Harbor docs page.
 4. Run the checks in FRAMEWORK.md section 5 and tick the item in MIGRATION.md.
 5. Report:

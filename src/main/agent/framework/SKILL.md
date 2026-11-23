@@ -8,7 +8,8 @@ description: Refactor, migrate or optimize a Roblox game in the RBX Forge framew
 1. Read `.forge/FRAMEWORK.md` in full, and the project's `AGENTS.md`. They are the rules for this job and override your defaults.
 2. Read `.forge/MIGRATION.md`.
    - If it does not exist, do the audit in FRAMEWORK.md section 4 and write it.
-   - For a whole-game refactor, show the user the plan (features, their order, open questions such as raw DataStore formats or ball physics) and wait for a go-ahead before changing code.
+   - With more than one `*.project.json` at the root, the game has several places. Audit every place and lay MIGRATION.md out as FRAMEWORK.md section 8 says: shared systems first, then each place.
+   - For a whole-game refactor, show the user the plan (places, features, their order, open questions such as raw DataStore formats or ball physics) and wait for a go-ahead before changing code.
 3. Pick the next unchecked item in MIGRATION.md, or the feature the user named. Migrate it in the order networking, data, state, movement, telemetry, optimization (FRAMEWORK.md 4.1 to 4.6). Before you use an API call you have not used in this project yet, read its Harbor docs page.
 4. Run the checks in FRAMEWORK.md section 5 and tick the item in MIGRATION.md.
 5. Report:

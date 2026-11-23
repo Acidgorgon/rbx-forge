@@ -345,7 +345,8 @@ test('auto-sync skips its commit and the pull while files are staged, and pushes
 
   const s = await sync.syncNow()
   assert.equal(s.error, undefined)
-  assert.match(s.note ?? '', /did not commit your changes \(files are staged/)
+  assert.match(s.note ?? '', /did not commit your changes \(1 file is staged in Source control \(src\/shop\.luau\)\)/)
+  assert.ok(s.commitBlockedSince && Date.now() - s.commitBlockedSince < 60_000, 'blocked since this sync')
   assert.equal(git(me, 'log', '-1', '--format=%s').trim(), 'start')
   // The selection is untouched.
   assert.deepEqual(paths((await scm.status()).staged), ['A src/shop.luau'])
@@ -377,6 +378,7 @@ test('auto-sync skips its commit and the pull while files are staged, and pushes
   const normal = await sync.syncNow()
   assert.equal(normal.error, undefined)
   assert.equal(normal.note, undefined)
+  assert.equal(normal.commitBlockedSince, undefined)
   assert.equal(normal.behind, 0)
   assert.equal(normal.dirty, 0)
   assert.match(git(me, 'log', '-1', '--format=%s'), /harness: sync/)

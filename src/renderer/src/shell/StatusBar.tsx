@@ -137,6 +137,12 @@ export function StatusBar() {
           {!!git.ahead && <span className="mono">↑{git.ahead}</span>}
         </span>
       )}
+      {git?.isRepo && git.commitBlockedSince && Date.now() - git.commitBlockedSince >= 30 * 60_000 && (
+        <span className="sb" onClick={() => actions.showSide('sync')} title={git.note ?? 'Auto-sync is not committing: files are staged or a commit message is typed in Source control'}>
+          <Icon name="warn" size={12} style={{ color: 'var(--warn)' }} />
+          <span style={{ color: 'var(--warn)' }}>Auto-commit blocked ({ago(git.commitBlockedSince)})</span>
+        </span>
+      )}
       {place && state.places.length > 1 && (
         <span className="sb opt-2" onClick={() => actions.openPalette('>Switch place')} title={`Active place ${place.file}`}>
           <Icon name="flag" size={12} />

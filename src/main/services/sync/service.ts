@@ -69,6 +69,8 @@ export interface SyncEngineLike {
   // "Pull to disk" for them.
   studioOnly?(placeKey: string): { items: StudioOnlyScript[]; holds: boolean }
   pullStudioOnly?(placeKey: string): Promise<SyncEntry[]>
+  // Saves Studio's copies of held conflicts and Studio-only scripts before Serve anyway.
+  backupStudio?(placeKey: string): Promise<{ dir: string; files: string[] }>
   recordDirectPush?(placeKey: string, ops: SyncPushOp[]): Promise<void>
   // How many files the place's Studio is behind the disk (engine.ts drift), null without a base.
   drift?(projectFile: string, placeKey: string): Promise<{ behind: number; files: { file: string; mtime: number }[]; deleted?: string[] } | null>
@@ -1183,6 +1185,10 @@ export class SyncService {
   async serveAnyway(placeKey: string): Promise<SyncStatus> {
     const state = this.placeStates.get(placeKey)
     if (!state) throw new Error(`No Studio session for ${placeKey}`)
+    // Rojo is about to push the disk over Studio: keep Studio's side of everything held first. A failed
+    // backup refuses to serve (nothing is overwritten that was not saved).
+    const backup = this.deps.engine?.backupStudio ? await this.deps.engine.backupStudio(placeKey) : undefined
+    if (backup?.files.length) this.deps.log?.(`sync: saved Studio's copy of ${backup.files.length} held file(s) to ${backup.dir} before serving anyway`)
     this.forced.add(state.projectFile)
     this.deps.log?.(`sync: serving ${state.projectFile} with ${this.conflictsFor(placeKey).length} held conflict(s) (serve anyway); it keeps serving through re-checks and Studio sessions until you choose Hold again`)
     this.refresh()

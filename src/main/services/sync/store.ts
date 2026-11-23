@@ -49,6 +49,15 @@ interface IndexFile {
   // Places whose first sync is still undecided: nothing is written or trashed for them until the user
   // picks a side (Studio wins / Disk wins / per file).
   firstSync?: string[]
+  // Direct Sync (disk -> Studio): files whose current base came from a disk push (place -> file -> base
+  // digest), i.e. written in Forge and not edited in Studio since. Studio missing such a file (a push
+  // undone with Ctrl+Z, a place closed without saving, Studio never sending it) is never read as
+  // "deleted in Studio": the disk copy stays and is pushed again. A Studio edit pulled to disk (a set()
+  // with another copy) or a delete ends it, and the file syncs both ways again.
+  pushed?: Record<string, Record<string, string>>
+  // The base digest each pushed file had before its push (place -> file -> digest): Studio still showing
+  // it (a place closed without saving the push) is an older copy, also after Forge restarts.
+  pushedPrev?: Record<string, Record<string, string>>
 }
 
 export class BaseStore {
@@ -118,6 +127,43 @@ export class BaseStore {
     const old = this.index.places[placeKey]?.[file]
     if (old && old !== hash) this.supersede(placeKey, file, old, hash, caughtUp)
     this.setHash(placeKey, file, hash)
+    // Studio confirming the pushed copy keeps the mark; any other copy is a Studio edit.
+    if (this.index.pushed?.[placeKey]?.[file] !== hash) this.clearPushed(placeKey, file)
+  }
+
+  // Marks the file's current base as one a Direct Sync push wrote (see IndexFile.pushed).
+  // prev: the base digest before the push, if any (see IndexFile.pushedPrev).
+  markPushed(placeKey: string, file: string, prev?: string | null): void {
+    const hash = this.index.places[placeKey]?.[file]
+    if (!hash) return
+    const place = ((this.index.pushed ??= {})[placeKey] ??= {})
+    if (place[file] !== hash) {
+      place[file] = hash
+      this.dirty = true
+    }
+    if (prev && prev !== hash) {
+      const before = ((this.index.pushedPrev ??= {})[placeKey] ??= {})
+      if (before[file] !== prev) {
+        before[file] = prev
+        this.dirty = true
+      }
+    }
+  }
+
+  // True while the file's base is the copy a Direct Sync push wrote (see IndexFile.pushed).
+  isPushedUnconfirmed(placeKey: string, file: string): boolean {
+    const hash = this.index.places[placeKey]?.[file]
+    return !!hash && this.index.pushed?.[placeKey]?.[file] === hash
+  }
+
+  private clearPushed(placeKey: string, file: string): void {
+    for (const table of [this.index.pushed, this.index.pushedPrev]) {
+      const place = table?.[placeKey]
+      if (!place || !(file in place)) continue
+      delete place[file]
+      if (!Object.keys(place).length) delete table![placeKey]
+      this.dirty = true
+    }
   }
 
   // Digest-only base (legacy migration).
@@ -141,7 +187,8 @@ export class BaseStore {
 
   // True when `hash` is a copy this place's base already moved on from (see history).
   superseded(placeKey: string, file: string, hash: string): boolean {
-    return this.history.get(`${placeKey}\u0000${file}`)?.includes(hash) ?? false
+    if (this.history.get(`${placeKey}\u0000${file}`)?.includes(hash)) return true
+    return this.isPushedUnconfirmed(placeKey, file) && this.index.pushedPrev?.[placeKey]?.[file] === hash
   }
 
   // The base's digest only (no blob read), or null.
@@ -162,6 +209,7 @@ export class BaseStore {
       delete place[file]
       this.dirty = true
     }
+    this.clearPushed(placeKey, file)
   }
 
   // Moves bases for `from` (a file, or a directory and everything below it) to `to`.
@@ -176,6 +224,7 @@ export class BaseStore {
       if (next !== null) {
         place[next] = place[key]
         delete place[key]
+        this.clearPushed(placeKey, key)
         const h = this.history.get(`${placeKey}\u0000${key}`)
         if (h) {
           this.history.set(`${placeKey}\u0000${next}`, h)
@@ -219,6 +268,12 @@ export class BaseStore {
     if (placeKey in this.index.places) {
       delete this.index.places[placeKey]
       this.dirty = true
+    }
+    for (const table of [this.index.pushed, this.index.pushedPrev]) {
+      if (table?.[placeKey]) {
+        delete table[placeKey]
+        this.dirty = true
+      }
     }
     this.setFirstSync(placeKey, false)
   }

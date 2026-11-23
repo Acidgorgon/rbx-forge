@@ -406,7 +406,9 @@ export class SyncEngine {
         if (!('file' in op) || !op.file) continue
         if (s && !insideMappedRoots(s.map, op.file)) continue
         if (op.kind === 'upsert-script') {
+          const prev = await this.store.hashOf(placeKey, op.file)
           await this.store.set(placeKey, op.file, canon('script', op.source), true)
+          this.store.markPushed(placeKey, op.file, prev)
           this.confirmedDeletes.get(placeKey)?.delete(op.file)
           if (s?.tree) {
             const targetKey = pkey(op.path)
@@ -420,7 +422,11 @@ export class SyncEngine {
         } else if (op.kind === 'upsert-instance') {
           if (op.file.endsWith('.model.json')) {
             const text = await this.read(op.file)
-            if (text !== null) await this.store.set(placeKey, op.file, canon('model', text), true)
+            if (text !== null) {
+              const prev = await this.store.hashOf(placeKey, op.file)
+              await this.store.set(placeKey, op.file, canon('model', text), true)
+              this.store.markPushed(placeKey, op.file, prev)
+            }
           }
           this.confirmedDeletes.get(placeKey)?.delete(op.file)
           touched = true
@@ -1732,11 +1738,38 @@ export class SyncEngine {
     })
   }
 
+  // A file Forge wrote and pushed, not edited in Studio since (store.isPushedUnconfirmed); a meta file
+  // counts when its script does (it carries that script's RunContext / properties).
+  private pushedHere(placeKey: string, file: string): boolean {
+    if (this.store.isPushedUnconfirmed(placeKey, file)) return true
+    const m = /^(.*\/)?(.+)\.meta\.jsonc?$/.exec(file)
+    if (!m) return false
+    const dir = m[1] ?? ''
+    for (const suffix of ['', '.server', '.client', '.plugin']) {
+      for (const ext of ['.luau', '.lua']) if (this.store.isPushedUnconfirmed(placeKey, `${dir}${m[2]}${suffix}${ext}`)) return true
+    }
+    return false
+  }
+
+  private studioHas(s: Session, inst: string[]): boolean {
+    const key = pkey(inst)
+    for (const n of s.tree?.values() ?? []) if (pkey(n.path) === key) return true
+    return false
+  }
+
   private async diskOnly(s: Session, file: string, kind: UnitKind, inst: string[], stamp: string, guard?: DeleteGuard): Promise<SyncEntry> {
     s.conflicts.delete(file)
     const base = await this.store.get(s.placeKey, file)
     // First sync undecided: nothing is trashed.
     if (!base || s.firstSync) return this.entry(file, 'disk-ahead', inst)
+    // Written in Forge and pushed, not edited in Studio since: Studio missing it (Ctrl+Z of the push, a
+    // place closed without saving, an instance Forge's tree has not seen yet) is not a Studio delete.
+    // The disk copy is the user's work: kept (and pushed again on the next check). Delete the file in
+    // Forge to remove the script.
+    // Not when Studio has the instance (its form changed: Foo.luau -> Foo/init.luau, the old form goes).
+    if (this.pushedHere(s.placeKey, file) && !this.studioHas(s, inst)) {
+      return this.entry(file, 'disk-ahead', inst, { note: 'written in Forge, not in Studio (undone there, or the place was not saved): kept on disk, pushed again' })
+    }
     // Another place still maps the file: the delete only means this place no longer has it.
     const others = sharedWith(this.maps, s.map, isGitkeep(file) ? `${dirOf(file)}/init.meta.json` : file)
     if (others.length) {

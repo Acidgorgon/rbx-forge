@@ -9,7 +9,8 @@ Harbor APIs are listed in section 7. Read the linked page before you use a call 
 - **The server decides.** Clients send intents ("buy item 12", "tackle toward this direction at this time"), never results (damage, currency, positions of other players, "I hit them"). Check every intent against game state on the server: ownership, distance, cooldown, whether the action is possible right now.
 - **A refactor keeps behaviour.** Same gameplay, same numbers, same data. If a change alters behaviour (a fixed exploit, a changed cooldown), list it in your report as a behaviour change.
 - **Never touch live data by accident.** Never rename a DataStore, a store name or a key prefix that holds real player data. Test data code with Anchor's Studio options (`Mock = true`), never against the live store.
-- **Never edit:** `Packages/`, `ServerPackages/`, `DevPackages/` (Wally), generated files (`src/shared/events/*.luau`, `src/shared/Ripple/Server.luau` and `Client.luau`), or vendored Harbor code (`src/shared/Tide`, `src/shared/Lighthouse`, `src/server/Anchor`). Change the schema or the game code instead.
+- **Never edit:** `Packages/`, `ServerPackages/`, `DevPackages/` (Wally), generated files (the `events` and `Ripple` modules the schemas write), or vendored Harbor code (`vendor/`). Change the schema or the game code instead.
+- **Server code stays off the client.** Nothing server-only goes in `ReplicatedStorage` (`src/shared`): not generated server modules, not Anchor, not server config or validation rules. Clients download all of it (section 2).
 - **Studio-only instances.** Remotes, values and scripts that exist only in Studio (Forge marks them `*`) are not in the repo. Do not delete them blindly: list them in the report so the user can remove them in Studio, or delete them through the Studio tools when you have them.
 - **Small steps.** One feature per change. After each one, run the checks in section 5 and stop so the user can test in Studio.
 - `--!strict` on every new or rewritten module. Use `task.wait`, `task.spawn`, `task.delay` and `task.defer`, never `wait`, `spawn` or `delay`.
@@ -43,16 +44,33 @@ Creating the shared folder makes the `./dev` watcher scaffold the Service and th
 
 | Library | How it is installed | Where it lives | Require |
 |---|---|---|---|
-| Current | CLI pinned in `rokit.toml`: `current = "Acidgorgon/current@<version>"` | schema `events.blink` at the repo root; generated `src/shared/events/server.luau` and `client.luau` | `ReplicatedStorage.Shared.events.server` / `.client` |
-| Ripple | CLI pinned in `rokit.toml`: `ripple = "Acidgorgon/Ripple@<version>"` | schema `src/shared/Ripple.ripple`; generated `src/shared/Ripple/Server.luau` and `Client.luau` | `ReplicatedStorage.Shared.Ripple.Server` / `.Client` |
-| Anchor | copy of the repo's `src/` | `src/server/Anchor` | `ServerScriptService.Server.Anchor` (server only) |
-| Tide | copy of the repo's `src/` | `src/shared/Tide` | `ReplicatedStorage.Shared.Tide` |
-| Lighthouse | copy of the repo's `src/` | `src/shared/Lighthouse` | `ReplicatedStorage.Shared.Lighthouse` |
+| Current | CLI pinned in `rokit.toml`: `current = "Acidgorgon/current@<version>"` | schema `events.blink` at the repo root. Client module `src/shared/events/client.luau`; server module `src/server/events/server.luau` (`option ClientOutput` / `option ServerOutput`). | `ReplicatedStorage.Shared.events.client` / `ServerScriptService.Server.events.server` |
+| Ripple | CLI pinned in `rokit.toml`: `ripple = "Acidgorgon/Ripple@<version>"` | schema `game.ripple` at the repo root. Client module `src/shared/Ripple/Client.luau`; server module `src/server/Ripple/Server.luau` (`option ClientOutput` / `option ServerOutput`, Ripple 0.1.1 or later). | `ReplicatedStorage.Shared.Ripple.Client` / `ServerScriptService.Server.Ripple.Server` |
+| Anchor | copy of the repo's `src/` in `vendor/Anchor/src` | mapped by the project file to `ServerScriptService.Anchor` | `ServerScriptService.Anchor` (server only) |
+| Tide | copy of the repo's `src/` in `vendor/Tide/src` | mapped to `ReplicatedStorage.Tide` | `ReplicatedStorage.Tide` |
+| Lighthouse | copy of the repo's `src/` in `vendor/Lighthouse/src` | mapped to `ReplicatedStorage.Lighthouse` | `ReplicatedStorage.Lighthouse` |
 
+- **Server modules never go in ReplicatedStorage.** Every client downloads everything in `ReplicatedStorage`, and exploiters can read it. That includes:
+  - the generated server modules;
+  - Anchor;
+  - server-only config, validation rules and anything secret.
+
+  Put them in `src/server` (`ServerScriptService`) or `src/ServerStorage` (`ServerStorage`). If a project still writes a server module into `src/shared`:
+  1. Point its `ServerOutput` at `src/server/...`.
+  2. Regenerate.
+  3. Delete the old copy.
+  4. Update its requires.
+
+  A Ripple CLI older than 0.1.1 ignores `ServerOutput`: update the pin first.
 - These paths are the defaults for a project that does not have them yet. If the project already keeps a schema or a library elsewhere (another `.blink` file, `tools/current-schema.luau`, another `.ripple` file), keep using it, and do not create a second one.
 - Library toggles live in `src/shared/Modules/LibsConfig.luau` (`UseCurrent`, `UseRipple`, ...). Change one key at a time and keep the file's formatting.
-- Anchor, Tide and Lighthouse are not on Wally yet. If one is missing, or its folder holds only a placeholder `init.luau`, ask the user to add it, or copy `src/` from the latest release of `github.com/Acidgorgon/<Library>`. Write the version you used in `.forge/MIGRATION.md`.
-- Ripple's CLI writes its output into a folder named after the schema, next to it. That is why the schema is `src/shared/Ripple.ripple`. Run `ripple src/shared/Ripple.ripple`; Forge does the same when the schema changes.
+- Anchor, Tide and Lighthouse are not on Wally yet. If one is missing, or its folder holds only a placeholder `init.luau`:
+  - copy `src/` from the latest release of `github.com/Acidgorgon/<Library>` into `vendor/<Library>/src`;
+  - map it in every `*.project.json` as in the table;
+  - write the version you used in `.forge/MIGRATION.md`.
+
+  If you can't download it, ask the user to add it.
+- Compile with `current events.blink` and `ripple game.ripple`. With both output options set, Ripple needs no `--out`. The `./dev` loop and Forge regenerate both whenever a schema is saved.
 - If `rokit.toml` still pins `blink`, switch it to `current`: Forge's **Packages → Tools → Switch**, or edit the line and run `rokit install`. Then change `blink` to `current` in `tools/dev.sh` and `tools/dev.ps1`, or the dev loop keeps compiling with Blink. Blink rejects `From: Both`.
 
 ## 3. What replaces what
@@ -61,7 +79,7 @@ Creating the shared folder makes the `./dev` watcher scaffold the Service and th
 |---|---|---|
 | `RemoteEvent`, `UnreliableRemoteEvent`, `RemoteFunction`, Blink, ByteNet, Zap, Warp, BridgeNet | **Current** events and functions in `events.blink` | typed, batched, validated on the server |
 | `ProfileService`, `ProfileStore`, raw `DataStoreService`, a custom `DataService` | **Anchor** | session locked; dupe-proof trades, exactly-once receipts |
-| Value objects, attributes, `FireClient` of whole tables, ReplicaService, Replica, Charm, Reflex sync | **Ripple** states in `Ripple.ripple` | sends only changed fields; clients get plain tables |
+| Value objects, attributes, `FireClient` of whole tables, ReplicaService, Replica, Charm, Reflex sync | **Ripple** states in `game.ripple` | sends only changed fields; clients get plain tables |
 | Custom character or NPC replication, client lerping of other players, Chrono, manual network ownership tricks | **Tide** | interpolation, ownership and a rewind history are built in |
 | Lag compensation, trusting client hit reports | **Tide** `Tide.at` on the server | see 4.4 |
 | `os.clock()` timing prints, custom profilers, analytics wrappers | **Lighthouse** | probes, counters, overlay (F8), player telemetry |
@@ -121,7 +139,7 @@ Then migrate one feature at a time, in this order.
 
 ### 4.3 State: Ripple
 
-- Describe the state in `src/shared/Ripple.ripple`:
+- Describe the state in `game.ripple`:
   - `Scope: Player` for data only its player sees (inventory, currency);
   - `Scope: All` for data everyone sees (match clock, score);
   - `Scope: Manual` for a chosen group (a team, a party).
@@ -201,7 +219,7 @@ Measure with Lighthouse first (F8 overlay, `Lighthouse.export()`), change one th
 
 ## 5. Definition of done (per feature)
 
-- The schemas compile and the generated files are current: `current events.blink`, `ripple src/shared/Ripple.ripple`.
+- The schemas compile and the generated files are current: `current events.blink`, `ripple game.ripple`.
 - The project builds: `rojo build <place>.project.json -o <temp>/check.rbxl` for every `*.project.json` at the root, not only the default place.
 - Lint and type checks the project has pass: selene, luau-lsp, Lune tests.
 - Nothing the feature replaced is still referenced: search for the old remote names, `DataStoreService`, `FireServer` and `OnServerEvent` in its files.
@@ -219,7 +237,7 @@ Measure with Lighthouse first (F8 overlay, `Lighthouse.export()`), change one th
    - pin `current` and `ripple` in `rokit.toml`;
    - add Anchor, Tide and Lighthouse;
    - start Lighthouse;
-   - create `events.blink` and `src/shared/Ripple.ripple` if they are missing.
+   - create `events.blink` and `game.ripple` if they are missing, with the server modules written outside ReplicatedStorage (section 2).
 3. For each feature, most important first: 4.1 through 4.5.
 4. Optimization pass (4.6) with before and after numbers.
 5. Remove dead code and Studio-only leftovers, update `MIGRATION.md`, final report.
@@ -270,7 +288,7 @@ Read every `*.project.json` first. Together they say which folders each place ge
 - **Current: one shared schema, plus one per place.**
   - `events.blink` holds the events every place uses.
   - A place's own events go in `<place>.blink` at the repo root, for example `race.blink`. Forge compiles every root `.blink` file.
-  - Give each place schema its own `ServerOutput` and `ClientOutput` inside that place's folders, for example `places/Race/shared/events/server.luau`.
+  - Give each place schema its own `ServerOutput` and `ClientOutput` inside that place's folders, for example `places/Race/shared/events/client.luau` and `places/Race/server/events/server.luau`.
   - Add `option RemoteScope = "<PLACE>"` to the place schema. Two schemas loaded in one place would otherwise create remotes with the same name.
 - **Ripple: one schema for the game.** States a place never creates cost nothing. The player state that wraps the Anchor profile must be the same in every place.
 - **Tide:** call `Tide.start` in each place that has moving things, with that place's own options: `origin` at the centre of that place's map, and its own kinds. Vehicles in a race place are a fast-physics design decision (see 4.4): ask the user.

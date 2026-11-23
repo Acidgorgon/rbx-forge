@@ -40,7 +40,7 @@ return {
 const STARTER_CURRENT_SCHEMA = `-- Current networking schema
 option Casing = "Camel"
 option ClientOutput = "src/shared/events/client.luau"
-option ServerOutput = "src/shared/events/server.luau"
+option ServerOutput = "src/server/events/server.luau"
 `
 
 const STARTER_RIPPLE_SCHEMA = `-- Ripple ECS / Sync schema starter

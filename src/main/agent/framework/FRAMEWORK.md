@@ -71,6 +71,7 @@ Creating the shared folder makes the `./dev` watcher scaffold the Service and th
 
 First, the audit.
 
+- **A game that was built in Studio** may have its scripts copied into `legacy/<Place>/`. `legacy/<Place>/INDEX.md` lists every script with its Roblox path, and every remote. This copy is read-only and Rojo does not map it: the real scripts still run in Studio. Audit from it, write the new code in `src/`, and when a feature is migrated, list the Studio scripts it replaces so the user can delete them. Never edit `legacy/`. Delete it only when the user says the migration is finished.
 - Read the whole game, every place, and write `.forge/MIGRATION.md`. If the file already exists, continue from it. With several places, follow section 8 for how to lay it out.
 - List every:
   - remote: `Instance.new("RemoteEvent")`, `:FireServer`, `OnServerEvent`, `InvokeServer`, `*.blink`;

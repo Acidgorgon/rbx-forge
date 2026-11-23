@@ -385,7 +385,7 @@ test('createSync: bridge handler per project, studio-conflict shape, guarded git
   await tick()
   assert.deepEqual(wiring.studioConflicts(), [{ path: 'src/skills/Uppercut.luau', repoSource: 'D\n', studioSource: 'S\n', base: 'return 1\n', placeKey: '111', instancePath: ['ReplicatedStorage', 'Skills', 'Uppercut'], reason: 'both-changed' }])
   assert.ok(emitted.some(([e, p]) => e === 'studio:conflicts' && (p as unknown[]).length === 1))
-  assert.equal(summaries.at(-1), 'Forge Direct Sync: 1 conflict held')
+  assert.equal(summaries.at(-1), 'Forge Sync: 1 conflict held')
   await wiring.resolveStudioConflict('src/skills/Uppercut.luau', 'studio')
   assert.equal(readFileSync(join(root, 'src/skills/Uppercut.luau'), 'utf8'), 'S\n')
 

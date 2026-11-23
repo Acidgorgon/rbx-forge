@@ -28,7 +28,7 @@ import type {
   UnlinkedPlace,
   WaitReason
 } from '../../../shared/sync/types.ts'
-import { DRIFT_FILES_MAX, isForgeSyncEngine, STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
+import { DEFAULT_SYNC_ENGINE, DRIFT_FILES_MAX, isForgeSyncEngine, STUDIO_ONLY_MAX, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, UNSYNCED_REFS_MAX } from '../../../shared/sync/types.ts'
 import type { SyncPollHint, SyncPollInfo, SyncPushAck, SyncPushBatch, SyncPushOp } from '../../../shared/sync/protocol.ts'
 import type { ForgeSyncSettings, SyncCommitResult } from '../../../shared/sync/api.ts'
 import { DIRECT_PUSH_PLUGIN_VERSION, PLUGIN_VERSION, SYNC_GATE_PLUGIN_VERSION } from '../../../shared/studio/plugin.ts'
@@ -334,9 +334,9 @@ export function placeKeyOf(place: SyncPlace, projectFile?: string): string {
 }
 
 export function engineSetting(settings: { get<T>(key: string, fallback: T): T }): ForgeSyncSettings {
-  const engine = settings.get<string>(SYNC_ENGINE_SETTING, 'forge-direct')
+  const engine = settings.get<string>(SYNC_ENGINE_SETTING, DEFAULT_SYNC_ENGINE)
   return {
-    engine: engine === 'forge' || engine === 'project' || engine === 'off' ? engine : 'forge-direct',
+    engine: engine === 'forge-direct' || engine === 'forge' || engine === 'project' || engine === 'off' ? engine : DEFAULT_SYNC_ENGINE,
     gateRojo: settings.get<boolean>(SYNC_GATE_SETTING, true) !== false
   }
 }

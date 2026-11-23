@@ -66,10 +66,11 @@ test('gate states that hold rojo serve, and the engine setting', () => {
   assert.equal(gateHolds('clear'), false)
   assert.equal(gateHolds('idle'), false)
   assert.equal(gateHolds(undefined), false)
-  assert.equal(syncEngineOf((_k, fb) => fb), 'forge-direct')
+  assert.equal(syncEngineOf((_k, fb) => fb), 'forge')
+  assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'forge-direct' as T), 'forge-direct')
   assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'forge' as T), 'forge')
   assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'project' as T), 'project')
-  assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'nonsense' as T), 'forge-direct')
+  assert.equal(syncEngineOf(<T>(_k: string, _fb: T) => 'nonsense' as T), 'forge')
 })
 
 test('rojo serve waits while the place is checking or blocked, stops for a new Studio session, restarts when clear', shOnly, async () => {
@@ -169,8 +170,8 @@ test('dev loop gets FORGE_SYNC=1 with Forge Sync; the old studioSync service is 
   }
 })
 
-test('forge-direct default skips rojo startup in startAll and reports Direct Forge Sync active', async () => {
-  const { root, supervisor, rojo } = make({})
+test('forge-direct skips rojo startup in startAll and reports Direct Forge Sync active', async () => {
+  const { root, supervisor, rojo } = make({ 'sync.engine': 'forge-direct' })
   await supervisor.setRoot(root)
   await supervisor.startAll()
   assert.equal(rojo()?.state, 'stopped')

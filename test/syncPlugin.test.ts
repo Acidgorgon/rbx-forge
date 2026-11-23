@@ -413,7 +413,7 @@ test('plugin: Direct Sync pushes new/edited scripts disk -> Studio without poll-
       return (place?.pushStats?.pushed ?? 0) >= 3 && place?.pushStats?.pending === 0
     })
     checked = true
-  })
+  }, { engine: 'forge-direct' })
   assert.ok(checked, out)
   assert.ok(polls < 25, `expected < 25 polls (no spin loop), got ${polls}\n${out}`)
   assert.match(out, /TET CREATED print\("hello from disk"\)/, out)

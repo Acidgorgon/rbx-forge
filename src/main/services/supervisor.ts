@@ -3,7 +3,7 @@ import { randomUUID } from 'node:crypto'
 import { existsSync, mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import type { LogLine, PlaceInfo, RojoPlaceStatus, ServiceId, ServiceState, ServiceStatus } from '@shared/types'
-import { isForgeSyncEngine, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState, type RojoServeState, type WaitReason } from '../../shared/sync/types.ts'
+import { DEFAULT_SYNC_ENGINE, isForgeSyncEngine, SYNC_ENGINE_SETTING, SYNC_GATE_SETTING, type GateState, type RojoServeState, type WaitReason } from '../../shared/sync/types.ts'
 import { findBash, findPowerShell, findTool, run, spawnTool, toolEnv } from './tools.ts'
 import { gateAction, isRojoPanic, RestartPolicy, ROJO_STABLE_MS, secondsText, type RestartPolicyOptions } from './rojoRestart.ts'
 import { isRojoProcess, systemProcessTools, type ProcessTools } from './portOwner.ts'
@@ -133,8 +133,8 @@ const WAITING_DETAIL = "Waiting for Studio's first sync check"
 
 
 export function syncEngineOf(getSetting: <T>(key: string, fallback: T) => T): 'forge-direct' | 'forge' | 'project' | 'off' {
-  const engine = getSetting<string>(SYNC_ENGINE_SETTING, 'forge-direct')
-  return engine === 'forge' || engine === 'project' || engine === 'off' ? engine : 'forge-direct'
+  const engine = getSetting<string>(SYNC_ENGINE_SETTING, DEFAULT_SYNC_ENGINE)
+  return engine === 'forge-direct' || engine === 'forge' || engine === 'project' || engine === 'off' ? engine : DEFAULT_SYNC_ENGINE
 }
 
 export function isTemplateOrigin(url: string): boolean {

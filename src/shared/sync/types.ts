@@ -316,7 +316,10 @@ export interface UnlinkedPlace {
 export const UNSYNCED_REFS_MAX = 100
 
 // Settings keys.
-export const SYNC_ENGINE_SETTING = 'sync.engine' // 'forge-direct' (default) | 'forge' | 'project' | 'off'
+export const SYNC_ENGINE_SETTING = 'sync.engine' // 'forge' (default) | 'forge-direct' | 'project' | 'off'
+// Forge Sync + Rojo is the default while Forge Direct Sync (disk -> Studio without Rojo) matures; Direct
+// is opt-in from Settings > Sync.
+export const DEFAULT_SYNC_ENGINE = 'forge' as const
 export const SYNC_GATE_SETTING = 'sync.gateRojo' // default true
 
 export function isForgeSyncEngine(e: unknown): e is 'forge-direct' | 'forge' {

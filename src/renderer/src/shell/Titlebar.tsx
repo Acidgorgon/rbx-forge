@@ -249,10 +249,16 @@ export function Titlebar() {
           <button
             className={`btn-forge ${directConnected ? 'running' : 'stopped'}`}
             onClick={() => actions.showSide('sync')}
-            title={directConnected ? 'Direct 2-way Forge Sync connected to Studio' : 'Direct 2-way Forge Sync enabled (click to inspect)'}
+            title={
+              directConnected
+                ? state.studioConflicts.length
+                  ? `Direct 2-way Forge Sync connected (${state.studioConflicts.length} conflicted file(s) and deletes paused until resolved; new & unconflicted edits still sync)`
+                  : 'Direct 2-way Forge Sync connected to Studio'
+                : 'Direct 2-way Forge Sync enabled (click to inspect)'
+            }
           >
-            <span className={`led ${directConnected ? 'ok' : 'idle'}`} />
-            Direct Sync
+            <span className={`led ${directConnected ? (state.studioConflicts.length ? 'warn' : 'ok') : 'idle'}`} />
+            {state.studioConflicts.length ? `Direct Sync · ${state.studioConflicts.length}` : 'Direct Sync'}
           </button>
         ) : (
           <button

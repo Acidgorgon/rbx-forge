@@ -74,6 +74,7 @@ export interface DirectPushOptions {
   debounceMs?: number
   now?: () => number
   canPushPlace: (placeKey: string) => boolean
+  canDeletePlace?: (placeKey: string) => boolean
   isFileConflicted: (placeKey: string, file: string) => boolean
   onEntries?: (placeKey: string, entries: SyncEntry[]) => void
   onChange?: () => void
@@ -241,12 +242,20 @@ export class DirectPushEngine {
     this.knownStudioHashes.delete(placeKey)
   }
 
+  private canDelete(placeKey: string): boolean {
+    return (this.opts.canDeletePlace ?? this.opts.canPushPlace)(placeKey)
+  }
+
   hasPending(placeKey: string): boolean {
     if (!this.opts.canPushPlace(placeKey)) return false
     const q = this.queues.get(placeKey)
     if (!q) return false
     if (q.inflight) return true
-    return q.ops.some((op) => !('file' in op) || !op.file || !this.opts.isFileConflicted(placeKey, op.file))
+    return q.ops.some(
+      (op) =>
+        (op.kind !== 'delete' || this.canDelete(placeKey)) &&
+        (!('file' in op) || !op.file || !this.opts.isFileConflicted(placeKey, op.file))
+    )
   }
 
   stats(placeKey: string): PlacePushStats | undefined {
@@ -303,6 +312,7 @@ export class DirectPushEngine {
     // Detect deletions (previously known on Studio, now gone from disk under this map)
     for (const [rel] of prevHashes) {
       if (snap.hashes.has(rel)) continue
+      if (!this.canDelete(placeKey)) continue
       if (this.opts.isFileConflicted(placeKey, rel)) continue
       const instPath = instancePathForPush(map, rel)
       if (!instPath || instPath.length < 2) continue
@@ -340,8 +350,12 @@ export class DirectPushEngine {
     if (!q) return undefined
     if (q.inflight) return q.inflight
 
-    // Filter out any ops that became conflicted in the meantime
-    q.ops = q.ops.filter((op) => !('file' in op) || !op.file || !this.opts.isFileConflicted(placeKey, op.file))
+    // Filter out any ops that became conflicted or restricted in the meantime
+    q.ops = q.ops.filter(
+      (op) =>
+        (op.kind !== 'delete' || this.canDelete(placeKey)) &&
+        (!('file' in op) || !op.file || !this.opts.isFileConflicted(placeKey, op.file))
+    )
     if (!q.ops.length) return undefined
 
     const batchOps: SyncPushOp[] = []

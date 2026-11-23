@@ -451,6 +451,15 @@ export class SyncService {
     return !!this.deps.engine && !!this.deps.mapping && isForgeSyncEngine(this.settings().engine)
   }
 
+  private canDirectPush(placeKey: string): boolean {
+    if (!this.directMode() || !this.liveSession(placeKey)) return false
+    const g = this.gate(placeKey)
+    if (g === 'clear') return true
+    if (g !== 'blocked') return false
+    if (this.deps.engine?.studioOnly?.(placeKey)?.holds) return false
+    return !this.conflictsFor(placeKey).some((c) => c.reason === 'first-run')
+  }
+
   private async ensureDirectEngines(): Promise<void> {
     if (this.closed || !this.directMode() || !this.deps.engine) {
       this.sourcemapWatcher?.close()
@@ -472,7 +481,8 @@ export class SyncService {
       this.pushEngine = new DirectPushEngine({
         root: this.root,
         now: this.now,
-        canPushPlace: (pk) => this.directMode() && this.liveSession(pk) && this.gate(pk) === 'clear',
+        canPushPlace: (pk) => this.canDirectPush(pk),
+        canDeletePlace: (pk) => this.directMode() && this.liveSession(pk) && this.gate(pk) === 'clear',
         isFileConflicted: (pk, file) => this.conflictsFor(pk).some((c) => c.file === file),
         onEntries: (pk, entries) => void this.recordDirectPush(pk, entries),
         onChange: () => this.refresh()
@@ -654,7 +664,7 @@ export class SyncService {
   }
 
   private async syncDirectPush(placeKey: string, projectFile?: string): Promise<void> {
-    if (!this.directMode() || !this.pushEngine || this.gate(placeKey) !== 'clear') return
+    if (!this.pushEngine || !this.canDirectPush(placeKey)) return
     const pf = projectFile ?? this.placeStates.get(placeKey)?.projectFile
     if (!pf) return
     const map = this.maps.find((m) => m.projectFile === pf)
@@ -890,7 +900,7 @@ export class SyncService {
           }
           const conflicts = engine.conflicts().filter((c) => c.placeKey === session.placeKey).length
           const after = this.gate(session.placeKey)
-          if (this.directMode() && after === 'clear') await this.syncDirectPush(session.placeKey, state.projectFile)
+          if (this.canDirectPush(session.placeKey)) await this.syncDirectPush(session.placeKey, state.projectFile)
           const held = after === 'blocked' && session.soft ? '; rojo serve stops: the re-check found something to hold' : this.forced.has(state.projectFile) && engine.gate(session.placeKey) === 'blocked' ? '; rojo keeps serving (Serve anyway is on: Hold again in Forge Sync to hold it)' : ''
           this.deps.log?.(`sync: ${state.projectFile} reconciled, ${entries.length} files, ${conflicts} conflict${conflicts === 1 ? '' : 's'}${held}`)
         }
@@ -967,7 +977,7 @@ export class SyncService {
       await this.suppressPushEcho(placeKey, file)
     }
     if (take === 'disk' || take === 'merged') {
-      if (this.directMode() && this.gate(placeKey) === 'clear') await this.syncDirectPush(placeKey)
+      if (this.canDirectPush(placeKey)) await this.syncDirectPush(placeKey)
     }
     this.refresh()
     return this.status()
@@ -980,7 +990,7 @@ export class SyncService {
     if (take === 'studio') {
       await this.markWritten(files)
       for (const f of files) await this.suppressPushEcho(placeKey, f)
-    } else if (this.directMode() && this.gate(placeKey) === 'clear') {
+    } else if (this.canDirectPush(placeKey)) {
       await this.syncDirectPush(placeKey)
     }
     this.refresh()
@@ -1542,7 +1552,12 @@ export class SyncService {
     if (v > 0 && v < SYNC_GATE_PLUGIN_VERSION && this.settings().gateRojo) {
       return { level: 'warn', action: 'restart-studio', text: `Restart Studio to update the Forge Bridge plugin (v${v} → v${PLUGIN_VERSION}). Until then rojo serve waits: an older plugin's check could let Rojo delete scripts that exist only in Studio.` }
     }
-    if (v > 0 && v < PLUGIN_VERSION) return { level: 'info', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (syncs folders Rojo creates after Studio opened, Script Editor text in unpublished places, and Ctrl+D copies of scripts).` }
+    if (v > 0 && v < PLUGIN_VERSION) {
+      if (this.directMode()) {
+        return { level: 'warn', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (required for disk -> Studio Direct Sync).` }
+      }
+      return { level: 'info', action: 'restart-studio', text: `Studio runs Forge Bridge v${v}; restart Studio to load v${PLUGIN_VERSION} (syncs folders Rojo creates after Studio opened, Script Editor text in unpublished places, and Ctrl+D copies of scripts).` }
+    }
     return undefined
   }
 

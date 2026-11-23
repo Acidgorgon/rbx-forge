@@ -2,10 +2,10 @@
 // to tools/watch-features.sh sync_feature(), and every file is written only when missing, so it does
 // not matter whether Forge or the dev watcher writes first.
 import type { TreeNode } from '@shared/types'
-import { storybookFile, storyFile } from '@shared/storyTemplates'
-import { dirname, findNode, roots } from './roblox'
+import { storybookFile, storyFile } from '../../../shared/storyTemplates.ts'
+import { dirname, findNode, roots } from './roblox.ts'
 
-export { storyCovered } from '@shared/storyTemplates'
+export { storyCovered } from '../../../shared/storyTemplates.ts'
 
 export type NewKind = 'ModuleScript' | 'Script' | 'LocalScript' | 'Feature' | 'Folder' | 'Story' | 'Storybook'
 
@@ -60,6 +60,24 @@ export function instanceForDir(tree: TreeNode[], dir: string): string[] | null {
   return walk(tree, [])
 }
 
+const ROBLOX_SERVICES = new Set([
+  'ReplicatedStorage',
+  'ServerScriptService',
+  'ServerStorage',
+  'StarterPlayer',
+  'StarterPlayerScripts',
+  'StarterCharacterScripts',
+  'StarterGui',
+  'StarterPack',
+  'Workspace',
+  'Lighting',
+  'ReplicatedFirst',
+  'SoundService',
+  'Teams',
+  'Chat',
+  'TextChatService'
+])
+
 // Repo directory that maps to an instance, inferred from the files under it (Rojo maps folder
 // names to instance names). null when it cannot hold new files (Studio-only, Wally, plain file).
 export function dirForInstance(tree: TreeNode[], instancePath: string[]): string | null {
@@ -79,7 +97,13 @@ export function dirForInstance(tree: TreeNode[], instancePath: string[]): string
     return null
   }
   const found = search(node.children, 1)
-  if (found !== null) return found || null
+  if (found !== null && found !== '') {
+    const leaf = found.split('/').pop()?.toLowerCase() ?? ''
+    const isService = instancePath.length === 1 || ROBLOX_SERVICES.has(node.name)
+    const badSrc = found === 'src' && node.name.toLowerCase() !== 'src'
+    const badService = isService && leaf !== node.name.toLowerCase()
+    if (!badSrc && !badService) return found
+  }
   // Empty folder: parent's directory plus the name.
   if (instancePath.length > 1) {
     const parent = dirForInstance(tree, instancePath.slice(0, -1))
@@ -88,6 +112,28 @@ export function dirForInstance(tree: TreeNode[], instancePath: string[]): string
   const key = instancePath.join('/')
   const known: Record<string, string> = { 'ReplicatedStorage/Shared': 'src/shared', 'ServerScriptService/Server': 'src/server', 'StarterPlayer/StarterPlayerScripts/Client': 'src/client/Client' }
   return known[key] ?? null
+}
+
+export function resolveCreateTarget(tree: TreeNode[], instancePath: string[] | null): { instancePath: string[]; dir: string } | null {
+  if (!instancePath || !instancePath.length) return null
+  const direct = dirForInstance(tree, instancePath)
+  if (direct) return { instancePath, dir: direct }
+  const node = findNode(tree, instancePath)
+  if (!node || node.origin === 'studio') return null
+  if (instancePath.length === 1 || ROBLOX_SERVICES.has(node.name)) {
+    const preferred = ['Shared', 'Server', 'Client', 'StarterPlayerScripts']
+    const children = node.children.filter((c) => c.origin !== 'studio' && c.name !== 'Packages' && c.name !== '_Index')
+    children.sort((a, b) => {
+      const ai = preferred.indexOf(a.name)
+      const bi = preferred.indexOf(b.name)
+      return (ai === -1 ? 99 : ai) - (bi === -1 ? 99 : bi)
+    })
+    for (const c of children) {
+      const hit = resolveCreateTarget(tree, [...instancePath, c.name])
+      if (hit) return hit
+    }
+  }
+  return null
 }
 
 // Default target for a create request when nothing is selected.

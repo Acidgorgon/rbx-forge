@@ -263,3 +263,54 @@ test('DirectPushEngine: preserves parent scripts mapped to init.luau and file->f
     push.close()
   }
 })
+
+test('DirectPushEngine: pushes unconflicted creates while holding conflicted files and deletes', async () => {
+  const root = mkdtempSync(join(tmpdir(), 'forge-push-partial-'))
+  dirs.push(root)
+
+  put(
+    root,
+    'default.project.json',
+    JSON.stringify({
+      name: 'PartialTest',
+      tree: {
+        $className: 'DataModel',
+        ReplicatedStorage: {
+          Shared: { $path: 'src/shared' }
+        }
+      }
+    })
+  )
+  put(root, 'src/shared/Conflicted.luau', 'return "disk"\n')
+  put(root, 'src/shared/Fresh.luau', 'return "new"\n')
+
+  const maps = await loadPlaces(root)
+  const map = maps[0]
+  const push = new DirectPushEngine({
+    root,
+    canPushPlace: () => true,
+    canDeletePlace: () => false,
+    isFileConflicted: (_pk, rel) => rel === 'src/shared/Conflicted.luau'
+  })
+  try {
+    push.recordStudioSnapshot('place:1', map, [
+      { id: 'r1', path: ['ReplicatedStorage', 'Shared'], className: 'Folder' },
+      { id: 'r2', path: ['ReplicatedStorage', 'Shared', 'Conflicted'], className: 'ModuleScript', source: 'return "studio"\n' },
+      { id: 'r3', path: ['ReplicatedStorage', 'Shared', 'RemovedOnDisk'], className: 'ModuleScript', source: 'return "gone"\n' }
+    ])
+
+    const ops = await push.syncPlace('place:1', map)
+    assert.equal(ops.some((o) => o.kind === 'delete'), false)
+    assert.equal(ops.some((o) => 'file' in o && o.file === 'src/shared/Conflicted.luau'), false)
+    assert.equal(ops.some((o) => 'file' in o && o.file === 'src/shared/Fresh.luau'), true)
+    assert.equal(push.hasPending('place:1'), true)
+
+    const batch = push.pullNextBatch('place:1')
+    assert.ok(batch)
+    assert.equal(batch.ops.some((o) => o.kind === 'delete'), false)
+    assert.equal(batch.ops.some((o) => 'file' in o && o.file === 'src/shared/Conflicted.luau'), false)
+    assert.equal(batch.ops.some((o) => 'file' in o && o.file === 'src/shared/Fresh.luau'), true)
+  } finally {
+    push.close()
+  }
+})

@@ -1858,6 +1858,13 @@ local function applyPushBatch(batch: any)
 		table.insert(errors, { path = { "batch" }, message = tostring(runErr) })
 	end
 
+	if #applied > 0 then
+		print(("[Forge Bridge] Forge Direct Sync: applied %d change(s) from disk"):format(#applied))
+	end
+	if #errors > 0 then
+		warn(("[Forge Bridge] Forge Direct Sync: %d error(s) applying disk changes: %s"):format(#errors, tostring(errors[1].message)))
+	end
+
 	if sync.session then
 		local ackBody: any = {
 			session = sync.session,

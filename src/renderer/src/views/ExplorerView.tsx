@@ -11,7 +11,7 @@ import { Icon } from '../components/Icons'
 import { ClassIcon, FileGlyph } from '../components/ClassIcon'
 import { useMenu, type MenuEntry } from '../components/Menu'
 import { basename, featuresOf, initSuffix, realmOfFile, realmOfInstance, requireExpression, roots, scriptsFlat, findNode, instancePathOfFile } from '../lib/roblox'
-import { createHint, createItem, defaultTarget, dirForInstance, instanceForDir, realmOfDir, storyCovered, type NewKind } from '../lib/templates'
+import { createHint, createItem, defaultTarget, dirForInstance, instanceForDir, realmOfDir, resolveCreateTarget, storyCovered, type NewKind } from '../lib/templates'
 import { validateName } from '../shell/Overlays'
 import { errorText, isMac, keyHint } from '../lib/format'
 import { entryTarget, isUnder, protectedReason } from '@shared/fileOps'
@@ -367,6 +367,14 @@ export function ExplorerView() {
       if (node?.filePath && !initSuffix(node.filePath)) ip = ip.slice(0, -1)
     }
     if (!ip || !findNode(state.tree, ip)) ip = defaultTarget(state.tree, kind)
+    let targetDir = ip ? dirForInstance(state.tree, ip) : null
+    if (ip && kind !== 'Feature') {
+      const resolved = resolveCreateTarget(state.tree, ip)
+      if (resolved) {
+        ip = resolved.instancePath
+        targetDir = resolved.dir
+      }
+    }
     if (!ip) {
       actions.toast({ text: 'No place to create this', detail: 'Open a Rojo project first', kind: 'err' })
       return
@@ -380,7 +388,7 @@ export function ExplorerView() {
       return n
     })
     const name = kind === 'Feature' ? 'NewFeature' : kind === 'Folder' ? 'NewFolder' : kind === 'ModuleScript' ? 'NewModule' : kind === 'Script' ? 'NewScript' : kind === 'Story' ? 'NewStory' : kind === 'Storybook' ? 'Stories' : 'NewLocalScript'
-    setCreating({ kind, parentKey: key, instancePath: ip, dir: dirForInstance(state.tree, ip), depth: ip.length, name })
+    setCreating({ kind, parentKey: key, instancePath: ip, dir: targetDir, depth: ip.length, name })
   }
 
   useEffect(() => {
@@ -704,7 +712,8 @@ export function ExplorerView() {
     const dir = r.dir ?? (ip ? dirForInstance(state.tree, ip) : null)
     const targetIp = ip && r.filePath && !initSuffix(r.filePath) ? ip.slice(0, -1) : ip
     const targetDir = r.filePath && !initSuffix(r.filePath) ? (targetIp ? dirForInstance(state.tree, targetIp) : null) : dir
-    if (mode === 'tree') items.push({ label: 'New', icon: <Icon name="plus" />, submenu: newSubmenu(targetIp, targetDir) })
+    const resolved = mode === 'tree' && targetIp ? resolveCreateTarget(state.tree, targetIp) : null
+    if (mode === 'tree') items.push({ label: 'New', icon: <Icon name="plus" />, submenu: newSubmenu(resolved?.instancePath ?? targetIp, resolved?.dir ?? targetDir) })
     else if (r.dir) {
       // Files tab folder: create inside the instance this folder maps to.
       const dirIp = instanceForDir(state.tree, r.dir)
@@ -848,7 +857,8 @@ export function ExplorerView() {
   const headMenu = (el: HTMLElement) => {
     const ip = mode === 'tree' ? (one ?? focusRow)?.instancePath ?? null : null
     const target = ip ? (findNode(state.tree, ip)?.filePath && !initSuffix(findNode(state.tree, ip)?.filePath) ? ip.slice(0, -1) : ip) : defaultTarget(state.tree, 'ModuleScript')
-    menu.openUnder(el, newSubmenu(target, target ? dirForInstance(state.tree, target) : null))
+    const resolved = target ? resolveCreateTarget(state.tree, target) : null
+    menu.openUnder(el, newSubmenu(resolved?.instancePath ?? target, resolved?.dir ?? (target ? dirForInstance(state.tree, target) : null)))
   }
 
   const studioCount = useMemo(() => {
